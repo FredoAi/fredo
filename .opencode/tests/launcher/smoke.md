@@ -11,7 +11,7 @@
 - [x] S-3: Launcher shell reachable — the launcher's entry point renders the FREDO notch + avatar + `>` command bar + grid
   - **PASS.** Clicking `div[role="button"][aria-label="Fredo launcher"]` (the notch trigger) opened the full-screen launchpad overlay (`role="dialog" aria-label="Fredo launcher"`) with the pixel-butler avatar (`<svg color="var(--accent-primary)">`, 206 rects), `input[role="searchbox"]` ("search or command"), and `div#fredo-launcher-grid[role="grid"]` with 4 tiles. Screenshot: `ac3-shell-light.jpeg`.
 - [x] S-4: Telemetry Settings accessible — gear/nav opens the settings dialog with sections visible
-  - **PASS.** `button[aria-label="Settings"]` opened the settings dialog (`chakra-dialog__content`) with nav sections: Companion, Appearance, Fredo Setup, Telemetry + FEATURES (My Work Items, Infrastructure Diagram, Model Storage, Run CLI). The Appearance section (BASE THEME Turbo/Classic, ACCENT COLORS, BACKGROUNDS, TEXT, STATUS, FONTS, ANIMATION STYLE) is visible — theme switching works.
+  - **PASS.** `button[aria-label="Settings"]` opened the settings dialog (`chakra-dialog__content`) with the static nav sections (Companion, Appearance, Fredo Setup, Telemetry) plus the then-discovered feature sections. (The current retained surface is asserted by `.opencode/tests/settings/` F-29 and the exact 8-id boot set by `retainedApplicationSet.test.ts`.) The Appearance section (BASE THEME Turbo/Classic, ACCENT COLORS, BACKGROUNDS, TEXT, STATUS, FONTS, ANIMATION STYLE) is visible — theme switching works.
 - [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2808/e2e/smoke.jpeg")` succeeds
   - **PASS.** Screenshots captured continuously (`.opencode/tmp/2808/e2e/*.jpeg`) — `tauri_webview_screenshot` succeeds.
 
@@ -279,4 +279,97 @@
 ### #2904 testing round 1 (spec/2904 @ 027bbf1f) — result
 
 - **S-31 PASS (live).** Model capture: one-line indicator `launcher-command-model-listening-chip` (`Fredo is listening`), `fieldContentW 206 ≥ 140`, `verticalOrNarrow []`, probe `overlapField` = the end-slot chip only (border-box probe artifact; content-box intersection 0); screenshot succeeded; console clean. Local leg: `Listening` chip + `Listening…` + hint chip, one line. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+## #2917 extension — solid-Fredo quick paths on the launcher
+
+> Issue #2917 fills Fredo's hollow interior additively. Quick paths only — the full matrix lives in
+> `functional.md` F-108..F-112 / `regression.md` R-64..R-66. **Verification policy: live** — screenshot +
+> console-clean per step; a property-existence check is never a PASS.
+
+- [ ] S-32: **Solid interior in both themes.** On the launcher surface with the companion OFF (decorative
+      seat mascot) and ON, capture dark base + `light-default`; sample the head-interior/mouth-void pixels
+      inside the figure. **Expected:** the interior resolves to the live accent (no background showing
+      through) in BOTH themes; `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-33: **Open/close churn keeps the figure intact.** Open and close the launcher several times with
+      the fill active. **Expected:** the mascot renders solid each time (no partial fill, no stuck
+      animation, no stale colour); screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum
+      update depth exceeded`.
+- [ ] S-34: **Launcher geometry unchanged.** Measure the command-bar `getBoundingClientRect().y` and the
+      seat-slot WRAPPER `offsetWidth`/`offsetHeight`/`margin-bottom`. **Expected:** `y` within ±1 px of the
+      pre-change baseline; wrapper exactly 80×100 + 16 px; no new scrollbar/overflow; screenshot succeeds;
+      console clean.
+
+## #2922 extension — whole-body solid Fredo quick paths on the launcher
+
+> Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
+> the full matrix lives in `functional.md` F-113..F-117 / `regression.md` R-67..R-69; the metric
+> definition is in `.opencode/tests/companion/functional.md` `#2922 extension`. **Verification
+> policy: live** — a property-existence check is never a PASS.
+
+- [ ] S-35: **Solid seat mascot in both themes.** Companion OFF so `.fredo-avatar-idle` renders at the
+      seat; freeze motion (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`);
+      capture dark base + `light-default` and evaluate the BINDING `seeThrough` metric over the mask
+      `M` (`union(58 base rects) ∪ union(17 interior bands)`, eroded `E = 2 rendered px`) — frame **A**
+      (as rendered, backdrop `B0`) vs frame **D** (the same DOM with a solid probe `B1` inserted BEHIND
+      the figure in the same stacking context; `B1` = `#ffffff` on dark presets, `#000000` on
+      `light-default`), `T = 8`. **Expected:** `seeThroughCount == 0` in BOTH themes (no backdrop shows
+      through the body) and `.fredo-companion-avatar` is absent; `tauri_webview_screenshot` succeeds;
+      console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-36: **Open/close churn keeps the body solid.** Open and close the launcher several times with
+      the fill active. **Expected:** the mascot renders solid each time (no partial fill, no stuck
+      animation, no stale colour); screenshot succeeds; console clean.
+- [ ] S-37: **Seat geometry unchanged with the solid body.** Companion OFF / ON-at-home / ON-away:
+      measure the command-bar `y` and the seat-slot WRAPPER 80×100 + 16 px. **Expected:** `|Δy| ≤ 1 px`;
+      wrapper exactly 80×100 + 16 px; the inter-leg gap stays background (no leak); screenshot
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+## #2954 extension — open-apps row quick paths (live)
+
+> Issue #2954 moves the open-apps surface into the engaged launcher and removes the dock. Quick paths
+> only — the full matrix lives in `functional.md` F-118..F-125 / `regression.md` R-70..R-74.
+> **Verification policy: live.**
+
+- [ ] S-38: **Engaged launcher shows the Open apps row.** Open ≥1 window (Mission Monitor), engage the
+      launcher (focus `input[role="searchbox"]`). **Expected:** `[data-testid="launcher-open-apps"]`
+      (`role="region" aria-label="Open apps"`) renders ABOVE `#fredo-launcher-grid` with a heading
+      `| OPEN APPS` and one `launcher-open-app-entry-<id>` per open window; `tauri_webview_screenshot`
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-39: **Resting / zero-window absence.** On a clean desktop (resting) and again with 0 windows
+      engaged: `[data-testid="launcher-open-apps"]` and `[data-testid="app-dock"]` are `count 0`;
+      screenshot succeeds; console clean.
+
+## #3120 extension — navigation-grounded launcher quick paths (live)
+
+> Issue #3120 grounds the launcher in the active app's navigation context and adds the grouped
+> palette, the confirmation and undo-by-description. Quick paths only — the full matrix lives in
+> `functional.md` F-126..F-162 / `regression.md` R-75..R-86. **Verification policy: live.**
+> Levers: the `functional.md` `#3120` L1–L6 recipe (L1 open the pilot, L5 the relay intent).
+
+- [ ] S-40: **The context header renders on open.** L1 (type `wire` + Enter) then `Ctrl+Space`.
+      **Expected:** `[data-testid="launcher-context"]` renders with the path (`Canvas`),
+      a selection summary when something is selected, and the first ≤3 available verb chips; the
+      launcher is focused in the bar; screenshot succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-41: **The `>` palette is grouped.** Type `>` → **Expected:** `launcher-palette-list` with one
+      `launcher-palette-group` per place, full-path group headings, a risk word on the `Delete` row
+      and a key hint chip; arrow down moves the selection and the announcer text changes; screenshot
+      succeeds; console clean.
+- [ ] S-42: **Destructive confirm → cancel changes nothing.** L3 select one element → `>` `delete` +
+      Enter → Cancel (or Esc). **Expected:** the dialog named `Run Delete?` appeared with Cancel
+      focused; after cancel the element is still present, no journal entry was added and no error
+      line rendered; screenshot succeeds; console clean.
+- [ ] S-43: **Undo by description.** L5 one companion mutation → type `undo the companion's last
+      change` + Enter. **Expected:** exactly one new trail entry labelled `Undo <verb>` attributed to
+      `You`, the companion entry still listed, the launcher closed to reveal the trail; screenshot
+      succeeds; console clean.
+- [ ] S-44: **`/ Ask` opens the launcher.** In Wireframe click `[data-testid="navigation-rail-ask"]`
+      (or `>` `ask` + Enter). **Expected:** the launcher opens with the bar focused, empty, and the
+      context header visible for the Wireframe app; Esc returns focus to the rail button; screenshot
+      succeeds; console clean.
+- [ ] S-45: **Evidence + liveness.** Query `telemetry_spans` (telemetry-query skill) after the run and
+      upload one screenshot via `upload-evidence`. **Expected:** a NON-ZERO span count with a recent
+      `max(ingested_at)` (NOT `fredo emit` — that writes no spans) and a resolvable
+      `https://github.com/user-attachments/...` URL embedded in `## Tests Runs`; a static-only PASS
+      is a FALSE PASS.
 

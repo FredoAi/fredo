@@ -1,5 +1,12 @@
 # app-dock — Regression
 
+> **RETIRED by #2954 — DO NOT RUN against the post-#2954 build.** The persistent dock is REMOVED
+> (no `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close`); the open-apps surface moved
+> INTO the engaged launcher. Every row below is HISTORICAL (pre-#2954). The live assertions now live
+> in `.opencode/tests/launcher/functional.md` `#2954 extension` (F-118..F-125) with hooks
+> `launcher-open-apps` / `launcher-open-app-entry-<windowId>` / `launcher-open-app-close-<windowId>`.
+> The relocated `dock-arrange` is PRESERVED (see launcher R-71 / workspace-layout).
+
 The "must not change" baseline for the positionable dock surface. #2848 adds position choice (Sidebar / Bottom bar) — the **Sidebar orientation is the unchanged #2838/#2841 baseline and must be byte-identical** until a user opts into Bottom bar; the window engine stays READ-ONLY; existing `AppDock.test.tsx` cases stay green. Map 1:1 to `.opencode/tmp/2848/triage.md` `## QA Expert` (Regression risks). Seeded from issue #2848.
 
 > Run the app-dock suite's own regression alongside the overlapping prior suites listed at the bottom — desktop-chrome F-14..F-23 / R-15..R-20 and window-manager F-20..F-35 / R-11/R-12 — per `.opencode/tests/README.md` "regression runs".

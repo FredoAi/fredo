@@ -26,7 +26,7 @@ pub struct EmitArgs {
     #[arg(long)]
     pub correlation_id: Option<String>,
 
-    /// Event provider (snake_case): open_code, claude_code, internal
+    /// Event provider (snake_case): open_code, claude_code, copilot_cli, internal
     #[arg(long, value_enum, default_value = "internal")]
     pub provider: CliEventProvider,
 
@@ -67,6 +67,7 @@ pub enum CliEventState {
 pub enum CliEventProvider {
     OpenCode,
     ClaudeCode,
+    CopilotCli,
     Internal,
 }
 
@@ -91,6 +92,7 @@ pub fn build_fredo_event_from_args(args: EmitArgs) -> anyhow::Result<FredoEvent>
     let provider = match args.provider {
         CliEventProvider::OpenCode => EventProvider::OpenCode,
         CliEventProvider::ClaudeCode => EventProvider::ClaudeCode,
+        CliEventProvider::CopilotCli => EventProvider::CopilotCli,
         CliEventProvider::Internal => EventProvider::Internal,
     };
 
@@ -290,6 +292,31 @@ mod tests {
 
         let event = build_fredo_event_from_args(args).unwrap();
         assert_eq!(event.state, EventState::Init);
+    }
+
+    #[test]
+    fn emit_args_accepts_provider_vocabulary_including_copilot_cli() {
+        // Spec #2932 ST-1 (R10): `fredo emit --provider copilot_cli` must parse
+        // and map to EventProvider::CopilotCli; the pre-existing three values
+        // keep parsing/mapping byte-identically.
+        for (raw, expected) in [
+            ("open_code", EventProvider::OpenCode),
+            ("claude_code", EventProvider::ClaudeCode),
+            ("copilot_cli", EventProvider::CopilotCli),
+            ("internal", EventProvider::Internal),
+        ] {
+            let args: EmitArgs = clap::Parser::try_parse_from([
+                "emit",
+                "--event-type",
+                "chat",
+                "--provider",
+                raw,
+            ])
+            .unwrap_or_else(|e| panic!("--provider {raw} must parse: {e}"));
+            let event = build_fredo_event_from_args(args).unwrap();
+            assert_eq!(event.provider, expected, "--provider {raw} mapping");
+            assert_eq!(event.provider.as_str(), raw, "--provider {raw} token");
+        }
     }
 
     #[test]

@@ -1,23 +1,25 @@
 /**
- * useVoiceDictation — Spec #2877 ST-3 unit pins.
+ * useVoiceDictation — Spec #2877 ST-3 unit pins; one path since Spec #2914 ST-5.
  *
  * Covers: the guarded dynamic listener registration through `adapterBridge`
- * (never a static `@tauri-apps/api` import, never RTDB/`useEventRows`), the
- * committed/partial/liveText merge semantics (R-3.1), the state contract
- * (`listening` / `origin` / `errorCode` / `detail` / `deviceName`), the
- * lifecycle methods never throwing to the caller, the final-before-idle
- * ordering (R-4.3), cancel discarding the in-flight partial (R-4.4), and the
- * unmount contract (unlisten + no state update / no throw after unmount).
+ * (never a static `@tauri-apps/api` import, never RTDB/`useEventRows`), the state
+ * contract (`listening` / `origin` / `errorCode` / `detail` / `deviceName`), the
+ * lifecycle methods never throwing to the caller, and the unmount contract
+ * (unlisten + no state update / no throw after unmount).
  *
- * Spec #2887 ST-7 adds the resident-engine observable (`engineResident`, ST-3's
- * `stt:state` start stamp) the launcher's honest hold cue derives from.
+ * Spec #2914 ST-9 — the resident-engine observable (`engineResident`) is GONE
+ * with the deleted engine (SA-11): the hook no longer exposes or mirrors it, and
+ * the launch-window hold cue derives from `holdPending` alone.
  *
- * Spec #2888 ST-2 adds the transcript-case seam: every `stt:transcript` segment
- * is projected through `normalizeTranscriptSegment` (sentence case, the product
- * name, the declared intentional capitals) at this single registration, with the
- * session-scoped `segmentSeenRef` deriving the utterance opening once per
- * session. The merge semantics (R-3.1) and lifecycle fields are unchanged — the
- * expectations below simply carry the NORMALISED text the seam now emits.
+ * Spec #2897 ST-2/ST-5 adds the model-audio phase + at-ceiling signal and the
+ * pinned per-input ceiling (`limitMs`) the launcher indicator/countdown derive
+ * from.
+ *
+ * Spec #2914 ST-5 — the `stt:transcript` producer/consumer and the whole
+ * transcript merge are GONE (voice has exactly ONE model-audio path), so this
+ * file no longer pins transcript merge/normalize/casing and the hook must NOT
+ * register `stt:transcript` at all. The `stt:state` lifecycle, phase, ceiling
+ * and cancel assertions are kept.
  */
 
 import { readFileSync } from 'node:fs';
@@ -57,16 +59,6 @@ const okStart = (): SttStartResult => ({
   sampleRate: 48000,
 });
 
-const transcript = (over: Partial<Record<string, unknown>>) => ({
-  sessionId: 's1',
-  revision: 1,
-  segmentId: 0,
-  text: '',
-  isFinal: false,
-  latencyMs: 5,
-  ...over,
-});
-
 const emit = (event: string, payload: unknown) => {
   act(() => {
     (handlers[event] ?? []).forEach((handler) => handler(payload));
@@ -96,27 +88,27 @@ afterEach(() => {
 // ── 1. Subscription + regression invariants ─────────────────────────────────
 
 describe('useVoiceDictation — control-plane subscription', () => {
-  it('registers stt:transcript + stt:state through adapterBridge.listen', () => {
+  it('registers stt:state through adapterBridge.listen — and NEVER stt:transcript', () => {
     renderHook(() => useVoiceDictation());
 
     const events = listenMock.mock.calls.map((call) => call[0]);
-    expect(events).toContain('stt:transcript');
     expect(events).toContain('stt:state');
+    // Spec #2914 ST-5 (G-183 #16) — the transcript event is never consumed:
+    // there is exactly one model-audio path and no local recogniser.
+    expect(events).not.toContain('stt:transcript');
   });
 
   it('exposes the initial idle contract', () => {
     const { result } = renderHook(() => useVoiceDictation());
 
     expect(result.current.listening).toBe(false);
-    expect(result.current.committed).toBe('');
-    expect(result.current.partial).toBe('');
-    expect(result.current.liveText).toBe('');
     expect(result.current.errorCode).toBeNull();
     expect(result.current.detail).toBeNull();
     expect(result.current.deviceName).toBeNull();
     expect(result.current.origin).toBeNull();
-    // #2887 ST-7 — fail-closed: unknown residency is NOT resident.
-    expect(result.current.engineResident).toBe(false);
+    // Spec #2914 ST-9 (SA-11) — the removed residency observable never reappears
+    // in the state contract (its only source was the deleted wire field).
+    expect('engineResident' in result.current).toBe(false);
     // #2897 ST-2 — no model-audio phase and no ceiling signal while idle.
     expect(result.current.modelAudioPhase).toBeNull();
     expect(result.current.limitReached).toBe(false);
@@ -124,7 +116,7 @@ describe('useVoiceDictation — control-plane subscription', () => {
     expect(result.current.modelAudioLimitMs).toBeNull();
   });
 
-  it('never statically imports @tauri-apps/api, never uses useEventRows, no auto-submit, no POC residue', () => {
+  it('never statically imports @tauri-apps/api, never uses useEventRows, no transcript consumer, no POC residue', () => {
     // vitest runs with cwd = apps/ui; resolve the hook source relative to it.
     const rawSource = readFileSync(
       resolve(process.cwd(), 'src/shared/hooks/useVoiceDictation.ts'),
@@ -136,162 +128,21 @@ describe('useVoiceDictation — control-plane subscription', () => {
 
     expect(source).not.toMatch(/@tauri-apps\/api/);
     expect(source).not.toMatch(/useEventRows/);
-    // No auto-submit / autosend dispatch in this stream client (ST-5 / #2878 own those).
+    // Spec #2914 ST-5 (G-183 #16) — the transcript path is gone at the source:
+    // no `stt:transcript` registration and no transcript-case projection.
+    expect(source).not.toMatch(/stt:transcript/);
+    expect(source).not.toMatch(/normalizeTranscriptSegment|transcriptCase/);
+    // No auto-submit / autosend dispatch in this stream client.
     expect(source).not.toMatch(/auto[-_]?submit|autosend|handleQueryChange/i);
     // Production source — the spike header is gone (REQ-NF3).
     expect(rawSource).not.toContain('SPIKE #2876');
     expect(rawSource).not.toContain('THROWAWAY POC');
+    // Spec #2914 ST-9 (SA-11) — no resident-engine remnant survives in the hook.
+    expect(source).not.toMatch(/engineResident|ResidentEngine/);
   });
 });
 
-// ── 2. Transcript merge semantics (R-3.1) ───────────────────────────────────
-
-describe('useVoiceDictation — transcript merge (R-3.1)', () => {
-  it('a partial REPLACES the current segment; the final commits it and clears the partial', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    // #2888 ST-2 — the seam emits the NORMALISED form of the raw engine text.
-    emit('stt:transcript', transcript({ revision: 1, text: 'hello' }));
-    expect(result.current.partial).toBe('Hello');
-    expect(result.current.liveText).toBe('Hello');
-
-    // Cumulative segment text: the newer partial REPLACES, never appends.
-    emit('stt:transcript', transcript({ revision: 2, text: 'hello world' }));
-    expect(result.current.partial).toBe('Hello world');
-    expect(result.current.liveText).toBe('Hello world');
-
-    emit('stt:transcript', transcript({ revision: 3, text: 'hello world', isFinal: true }));
-    expect(result.current.committed).toBe('Hello world');
-    expect(result.current.partial).toBe('');
-    expect(result.current.liveText).toBe('Hello world');
-  });
-
-  it('joins successive finalized segments with a single space', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'first', isFinal: true }));
-    // A continuation segment: lowercase-initial (the opening capital is spent).
-    emit('stt:transcript', transcript({ revision: 2, text: 'second', isFinal: false }));
-    expect(result.current.liveText).toBe('First second');
-
-    emit('stt:transcript', transcript({ revision: 3, text: 'second', isFinal: true }));
-    expect(result.current.committed).toBe('First second');
-    expect(result.current.partial).toBe('');
-  });
-});
-
-// ── 2b. The transcript-case seam (Spec #2888 ST-2) ──────────────────────────
-//
-// The projection runs at the single `stt:transcript` registration, so the text
-// EVERY consumer of this hook sees is already the normal form. The session-scoped
-// `segmentSeenRef` derives the utterance opening once per session: the first
-// segment of a session (partial or final) is capitalised, a continuation is not.
-
-describe('useVoiceDictation — the transcript-case seam (#2888 ST-2)', () => {
-  const listen = () =>
-    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
-  const idle = () =>
-    emit('stt:state', { listening: false, code: null, detail: null, origin: 'launcher' });
-
-  it('normalises a raw uppercase PARTIAL in place (no ALL-CAPS window)', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-    listen();
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'CALL THE API FREDO' }));
-
-    expect(result.current.partial).toBe('Call the API Fredo');
-    expect(result.current.liveText).toBe('Call the API Fredo');
-    expect(result.current.committed).toBe('');
-  });
-
-  it('normalises a raw uppercase FINAL and commits it exactly once', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-    listen();
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'HELLO WORLD', isFinal: true }));
-
-    expect(result.current.committed).toBe('Hello world');
-    expect(result.current.partial).toBe('');
-    expect(result.current.liveText).toBe('Hello world');
-  });
-
-  it('renders a partial and its matching final identically (no re-casing churn)', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-    listen();
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'CALL THE API FREDO' }));
-    const atPartial = result.current.liveText;
-
-    emit('stt:transcript', transcript({ revision: 2, text: 'CALL THE API FREDO', isFinal: true }));
-
-    expect(result.current.liveText).toBe(atPartial);
-    expect(result.current.committed).toBe('Call the API Fredo');
-  });
-
-  it('capitalises the FIRST final of a session and keeps a later final lowercase-initial', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-    listen();
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'HELLO', isFinal: true }));
-    expect(result.current.committed).toBe('Hello');
-
-    // The second ASR segment of the SAME utterance is a continuation.
-    emit('stt:transcript', transcript({ revision: 2, text: 'WORLD', isFinal: true }));
-    expect(result.current.committed).toBe('Hello world');
-    expect(result.current.partial).toBe('');
-
-    // …and the same is true when the continuation is seen as a live partial first.
-    emit('stt:transcript', transcript({ revision: 3, text: 'AGAIN' }));
-    expect(result.current.partial).toBe('again');
-    expect(result.current.liveText).toBe('Hello world again');
-  });
-
-  it('is session-scoped: a SECOND session re-capitalises the opening (no leak)', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    listen();
-    emit('stt:transcript', transcript({ revision: 1, text: 'HELLO WORLD', isFinal: true }));
-    expect(result.current.committed).toBe('Hello world');
-
-    idle();
-    listen();
-    emit('stt:transcript', transcript({ revision: 1, text: 'WORLD', isFinal: true }));
-
-    // The new utterance's opening is capitalised again — the ref reset per session.
-    expect(result.current.committed).toBe('Hello world World');
-  });
-
-  it('canonicalizes the product name and keeps the declared capitals', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-    listen();
-
-    emit('stt:transcript', transcript({ revision: 1, text: 'ASK FRITO ABOUT THE API', isFinal: true }));
-
-    expect(result.current.committed).toBe('Ask Fredo about the API');
-  });
-
-  it('never touches the lifecycle fields — transcripts carry text only', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 90,
-      engineResident: true,
-    });
-    emit('stt:transcript', transcript({ revision: 1, text: 'CALL THE API FREDO' }));
-
-    expect(result.current.listening).toBe(true);
-    expect(result.current.origin).toBe('launcher');
-    expect(result.current.errorCode).toBeNull();
-    expect(result.current.detail).toBeNull();
-    expect(result.current.engineResident).toBe(true);
-  });
-});
-
-// ── 3. stt:state contract ───────────────────────────────────────────────────
+// ── 2. stt:state contract ───────────────────────────────────────────────────
 
 describe('useVoiceDictation — stt:state', () => {
   it('applies listening / origin / errorCode / detail', () => {
@@ -337,41 +188,18 @@ describe('useVoiceDictation — stt:state', () => {
   });
 });
 
-// ── 3b. The resident-engine observable (Spec #2887 ST-7) ─────────────────────
+// ── 3. Idle sweep / `disabled` lifecycle (#2887 ST-7; #2914 ST-9 re-point) ───
 //
-// ST-3 stamps `engineResident` (and `readyMs`) on the START-success
-// `stt:state`. The launcher's honest hold cue derives from it: `false` = the
-// engine was NOT resident at the start (the launch window) ⇒ `warming`; `true`
-// ⇒ `starting`. These pins fix the mirror rule (a START writes it, an IDLE
-// event must not clear it, the typed voice-off signal does).
+// Spec #2914 ST-9 — the resident-engine observable (`engineResident`) is GONE
+// with the deleted engine: the hook no longer exposes or mirrors it, and the
+// launch-window hold cue derives from `holdPending` alone (pinned in
+// `launcherVoiceDictation.test.tsx`). The lifecycle assertions that surrounded
+// it are kept here (G-125 re-point): an idle sweep ends the capture without
+// fabricating an error, and the typed `disabled` voice-off signal surfaces its
+// error code.
 
-describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', () => {
-  it('mirrors the START stamp and is fail-closed while unknown', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 118,
-      engineResident: true,
-    });
-    expect(result.current.engineResident).toBe(true);
-
-    // A launch-window start JOINED the in-flight warm: never an optimistic stamp.
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 2_940,
-      engineResident: false,
-    });
-    expect(result.current.engineResident).toBe(false);
-  });
-
-  it('an idle state event never clears the last START stamp (its false means "no start happened")', () => {
+describe('useVoiceDictation — idle / `disabled` lifecycle (#2887 ST-7; #2914 ST-9)', () => {
+  it('an idle sweep ends the capture without fabricating an error', () => {
     const { result } = renderHook(() => useVoiceDictation());
 
     emit('stt:state', {
@@ -380,37 +208,24 @@ describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', ()
       detail: null,
       origin: 'launcher',
       readyMs: 90,
-      engineResident: true,
     });
-    expect(result.current.engineResident).toBe(true);
+    expect(result.current.listening).toBe(true);
 
-    // The session ended: the SWEEPING event clears `listening`/errors, but the
-    // engine stays parked — clearing residency here would mislabel every later
-    // hold as a launch-window `warming`.
+    // The session ended: the SWEEPING event clears `listening`/errors.
     emit('stt:state', {
       listening: false,
       code: null,
       detail: null,
       origin: 'launcher',
       readyMs: null,
-      engineResident: false,
     });
     expect(result.current.listening).toBe(false);
-    expect(result.current.engineResident).toBe(true);
+    expect(result.current.errorCode).toBeNull();
+    expect(result.current.detail).toBeNull();
   });
 
-  it('the typed `disabled` voice-off signal clears it (the voice-disabled edge)', () => {
+  it('the typed `disabled` voice-off signal surfaces its error code', () => {
     const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', {
-      listening: true,
-      code: null,
-      detail: null,
-      origin: 'launcher',
-      readyMs: 90,
-      engineResident: true,
-    });
-    expect(result.current.engineResident).toBe(true);
 
     emit('stt:state', {
       listening: false,
@@ -419,11 +234,11 @@ describe('useVoiceDictation — the resident-engine observable (#2887 ST-7)', ()
       origin: 'launcher',
     });
     expect(result.current.errorCode).toBe('disabled');
-    expect(result.current.engineResident).toBe(false);
+    expect(result.current.detail).toBe('Voice input is disabled in Companion settings.');
   });
 });
 
-// ── 3c. The model-audio phase + ceiling signal (#2897 ST-2) ─────────────────
+// ── 4. The model-audio phase + ceiling signal (#2897 ST-2) ──────────────────
 //
 // The backend stamps `phase` on `stt:state` (`capturing` on the start,
 // `processing` on a model-audio stop) and `limitReached` on the at-ceiling stop.
@@ -458,7 +273,7 @@ describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST
     expect(result.current.modelAudioPhase).toBe('processing');
   });
 
-  it('leaves the phase null on a legacy / local-transcription state', () => {
+  it('leaves the phase null on a state without a model-audio phase', () => {
     const { result } = renderHook(() => useVoiceDictation());
 
     emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
@@ -554,7 +369,7 @@ describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST
     expect(result.current.limitReached).toBe(false);
   });
 
-  it('surfaces the backend ceiling from `stt:state.limitMs` and clears it on a local state (#2897 ST-5)', () => {
+  it('surfaces the backend ceiling from `stt:state.limitMs` and clears it on a state without a bound (#2897 ST-5)', () => {
     const { result } = renderHook(() => useVoiceDictation());
 
     emit('stt:state', {
@@ -579,77 +394,13 @@ describe('useVoiceDictation — the model-audio phase + ceiling signal (#2897 ST
     });
     expect(result.current.modelAudioLimitMs).toBe(30_000);
 
-    // A legacy / local event carries no bound and clears the display value.
+    // An event without a bound clears the display value.
     emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
     expect(result.current.modelAudioLimitMs).toBeNull();
   });
 });
 
-// ── 3d. REQ-2 — local transcription regression protection (#2897 ST-7) ───────
-//
-// The model-audio additions are ADDITIVE: in `'local'` mode (the default, and
-// the healed value of an absent key on an upgraded install) the shipped
-// transcript merge, lifecycle and idle contract are unchanged, and the
-// model-audio signals stay at their legacy values. These pins ADD to the
-// shipped suite — no existing assertion is weakened.
-
-describe('useVoiceDictation — local transcription regression protection (#2897 ST-7)', () => {
-  it('a full local session keeps the shipped merge + lifecycle and never reports model-audio state', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    // The default/idle contract is the legacy one — every model-audio signal is
-    // at its shipped value with NO `phase`/`limitReached`/`limitMs` on the wire.
-    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
-    expect(result.current.listening).toBe(true);
-    expect(result.current.origin).toBe('launcher');
-    expect(result.current.modelAudioPhase).toBeNull();
-    expect(result.current.limitReached).toBe(false);
-    expect(result.current.modelAudioLimitMs).toBeNull();
-
-    // Partials/finals merge exactly as shipped (R-3.1).
-    emit('stt:transcript', transcript({ revision: 1, text: 'hello' }));
-    expect(result.current.partial).toBe('Hello');
-    emit('stt:transcript', transcript({ revision: 2, text: 'hello world' }));
-    expect(result.current.partial).toBe('Hello world');
-    emit('stt:transcript', transcript({ revision: 3, text: 'hello world', isFinal: true }));
-    expect(result.current.committed).toBe('Hello world');
-    expect(result.current.partial).toBe('');
-    expect(result.current.liveText).toBe('Hello world');
-
-    // A local stop keeps the legacy shape: no phase, no ceiling, no limit flag.
-    emit('stt:state', { listening: false, code: null, detail: null, origin: 'launcher' });
-    expect(result.current.listening).toBe(false);
-    expect(result.current.modelAudioPhase).toBeNull();
-    expect(result.current.limitReached).toBe(false);
-    expect(result.current.modelAudioLimitMs).toBeNull();
-    expect(result.current.committed).toBe('Hello world');
-  });
-
-  it('a model-audio error code never changes the local transcript path', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
-    emit('stt:transcript', transcript({ revision: 1, text: 'local words' }));
-    expect(result.current.partial).toBe('Local words');
-
-    // The typed model-audio codes are part of the closed vocabulary the local
-    // hook can carry, but they carry no phase/ceiling state.
-    emit('stt:state', {
-      listening: false,
-      code: 'modelAudioUnsupported',
-      detail: 'the model rejected audio',
-      origin: 'launcher',
-    });
-    expect(result.current.errorCode).toBe('modelAudioUnsupported');
-    expect(result.current.modelAudioPhase).toBeNull();
-    expect(result.current.limitReached).toBe(false);
-    expect(result.current.modelAudioLimitMs).toBeNull();
-    // The local transcript already committed is never rewritten by the error.
-    expect(result.current.partial).toBe('Local words');
-  });
-});
-
-// ── 4. start() ──────────────────────────────────────────────────────────────
+// ── 5. start() ──────────────────────────────────────────────────────────────
 
 describe('useVoiceDictation — start()', () => {
   it('invokes stt_start with the origin and reflects the reported device', async () => {
@@ -789,7 +540,7 @@ describe('useVoiceDictation — start()', () => {
   });
 });
 
-// ── 5. stop() — final before idle (R-4.3) ───────────────────────────────────
+// ── 6. stop() ───────────────────────────────────────────────────────────────
 
 describe('useVoiceDictation — stop()', () => {
   it('invokes stt_stop and reflects idle', async () => {
@@ -802,23 +553,6 @@ describe('useVoiceDictation — stop()', () => {
     });
 
     expect(invokeMock).toHaveBeenCalledWith('stt_stop');
-    expect(result.current.listening).toBe(false);
-  });
-
-  it('keeps the committed final emitted before listening:false (R-4.3 ordering)', () => {
-    const { result } = renderHook(() => useVoiceDictation());
-
-    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
-    emit('stt:transcript', transcript({ revision: 1, text: 'good morning' }));
-    expect(result.current.partial).toBe('Good morning');
-
-    // The backend commits the final BEFORE the idle state event.
-    emit('stt:transcript', transcript({ revision: 2, text: 'good morning', isFinal: true }));
-    emit('stt:state', { listening: false, code: null, detail: null, origin: 'launcher' });
-
-    expect(result.current.committed).toBe('Good morning');
-    expect(result.current.partial).toBe('');
-    expect(result.current.liveText).toBe('Good morning');
     expect(result.current.listening).toBe(false);
   });
 
@@ -835,51 +569,52 @@ describe('useVoiceDictation — stop()', () => {
   });
 });
 
-// ── 6. cancel() — discard the partial (R-4.4) ───────────────────────────────
+// ── 7. cancel() ─────────────────────────────────────────────────────────────
 
 describe('useVoiceDictation — cancel()', () => {
-  it('invokes stt_cancel, discards the in-flight partial, and commits nothing (R-4.4)', async () => {
+  it('invokes stt_cancel and reflects idle (R-4.4)', async () => {
     invokeMock.mockResolvedValue(undefined);
     const { result } = renderHook(() => useVoiceDictation());
 
-    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
-    emit('stt:transcript', transcript({ revision: 1, text: 'half a sentence' }));
-    expect(result.current.partial).toBe('Half a sentence');
+    emit('stt:state', {
+      listening: true,
+      code: null,
+      detail: null,
+      origin: 'launcher',
+      phase: 'capturing',
+    });
 
     await act(async () => {
       await result.current.cancel();
     });
 
     expect(invokeMock).toHaveBeenCalledWith('stt_cancel');
-    expect(result.current.partial).toBe('');
-    expect(result.current.committed).toBe('');
-    expect(result.current.liveText).toBe('');
     expect(result.current.listening).toBe(false);
   });
 
-  it('still resolves and discards the partial when the invoke rejects', async () => {
+  it('still resolves and reflects idle when the invoke rejects', async () => {
     invokeMock.mockRejectedValue(new Error('ipc unavailable'));
     const { result } = renderHook(() => useVoiceDictation());
 
-    emit('stt:transcript', transcript({ revision: 1, text: 'draft' }));
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
     await act(async () => {
       await result.current.cancel();
     });
 
-    expect(result.current.partial).toBe('');
+    expect(result.current.listening).toBe(false);
   });
 });
 
-// ── 7. Lifecycle after unmount ──────────────────────────────────────────────
+// ── 8. Lifecycle after unmount ──────────────────────────────────────────────
 
 describe('useVoiceDictation — unmount contract', () => {
-  it('unlistens both control-plane events on unmount', async () => {
+  it('unlistens the control-plane event on unmount', async () => {
     const { unmount } = renderHook(() => useVoiceDictation());
     await act(async () => {});
 
     unmount();
 
-    expect(unlisteners).toHaveLength(2);
+    expect(unlisteners).toHaveLength(1);
     unlisteners.forEach((unlisten) => expect(unlisten).toHaveBeenCalled());
   });
 
@@ -889,7 +624,7 @@ describe('useVoiceDictation — unmount contract', () => {
     unmount();
     await act(async () => {});
 
-    expect(unlisteners).toHaveLength(2);
+    expect(unlisteners).toHaveLength(1);
     unlisteners.forEach((unlisten) => expect(unlisten).toHaveBeenCalled());
   });
 
@@ -925,7 +660,7 @@ describe('useVoiceDictation — unmount contract', () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('ignores a late transcript that arrives after unmount (hostile unlisten)', async () => {
+  it('ignores a late state event that arrives after unmount (hostile unlisten)', async () => {
     // Simulate an adapter that fails to actually detach the handler.
     listenMock.mockImplementation(async (event: string, handler: Handler) => {
       (handlers[event] ??= []).push(handler);
@@ -934,15 +669,15 @@ describe('useVoiceDictation — unmount contract', () => {
     const { result, unmount } = renderHook(() => useVoiceDictation());
     await act(async () => {});
 
-    emit('stt:transcript', transcript({ revision: 1, text: 'before unmount' }));
-    expect(result.current.partial).toBe('Before unmount');
+    emit('stt:state', { listening: true, code: null, detail: null, origin: 'launcher' });
+    expect(result.current.listening).toBe(true);
 
     const snapshot = result.current;
     unmount();
 
     act(() => {
-      (handlers['stt:transcript'] ?? []).forEach((handler) =>
-        handler(transcript({ revision: 2, text: 'after unmount' })),
+      (handlers['stt:state'] ?? []).forEach((handler) =>
+        handler({ listening: false, code: null, detail: null, origin: 'launcher' }),
       );
     });
 

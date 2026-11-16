@@ -144,7 +144,23 @@ function Test-Script-Syntax {
     return
   }
   try {
-    $null = Get-Command $FilePath -ErrorAction Stop
+    # A `.ps1` is a script and MUST be parsed: `Get-Command` only resolves the
+    # file as a command and never parses its body, so it stayed green on a
+    # dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified variable
+    # reference in a double-quoted string). Parse every script with the PowerShell
+    # AST parser and fail on any error. Non-script callers (e.g. the SKILL.md
+    # presence check) keep the command-resolution check — markdown is not
+    # PowerShell and must not be AST-parsed.
+    if ([System.IO.Path]::GetExtension($FilePath) -eq ".ps1") {
+      $tokens = $null
+      $parseErrors = $null
+      [System.Management.Automation.Language.Parser]::ParseFile($FilePath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+      if ($parseErrors -and $parseErrors.Count -gt 0) {
+        throw "parse errors in ${FilePath}: $($parseErrors[0].Message)"
+      }
+    } else {
+      $null = Get-Command $FilePath -ErrorAction Stop
+    }
     Write-Host "PASS" -ForegroundColor Green
     $global:passed++
     $global:results += @{ Name = $Name; Status = "PASS"; Detail = "Valid PowerShell script" }
@@ -211,10 +227,10 @@ Test-Script "Context block surfaces retry state (round + reason)" {
     # Simulate a rework: two entries into testing (the round source — the first entry
     # is round 1, the second is round 2) plus a failed audit verdict (the reason source).
     if (-not (Test-Path $log)) { throw "jsonl not created for scratch issue" }
-    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
-    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v1","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-2 observable"}'
+    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v1","event_name":"audit.verdict","actor":"orchestrator","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-2 observable"}'
     [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     # After the rework: round 2 (second testing entry), retry marker, reason surfaced.
     $out2 = & rust-script $ps --issue $issueNum --agent tester 2>&1
@@ -230,7 +246,7 @@ Test-Script "Context block surfaces retry state (round + reason)" {
 
 # Round-aware verification guard: a retry round is only satisfied by evidence
 # carrying the CURRENT round. A stale round-1 PASS must never clear a round-2
-# audit — the round is stamped on the restart Decision comment AND enforced by
+# audit — the round is stamped on the restart Audit Verdict comment AND enforced by
 # verification_status (round-1 evidence on a round-2 issue fails closed).
 Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" {
   $url = Mock-IssueCreate "temp: round-aware verify" "round-aware scratch" ""
@@ -249,10 +265,10 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
     # Simulate a rework: two testing entries advance the round to 2 (first = round 1,
     # second = round 2), and a failed audit verdict records the retry reason. The
     # round-1 PASS is then stale.
-    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
-    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v2","event_name":"audit.verdict","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-3"}'
+    $verdict = '{"ts":"2026-08-09T00:00:00Z","event_id":"v2","event_name":"audit.verdict","actor":"orchestrator","entity":{"issueId":"%N%"},"phase":"audit","outcome":"failed","message":"missed AC-3"}'
     [System.IO.File]::AppendAllText($log, $verdict.Replace("%N%", $issueNum) + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     # The round-1 PASS is the LATEST evidence but the issue is round 2 — verification
     # must fail closed (static+live PASS but wrong round).
@@ -260,7 +276,7 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
     $auditStr = if ($audit -is [array]) { $audit -join "`n" } else { "$audit" }
     if ($auditStr -notmatch "Round: 2") { throw "audit should surface round 2, got: $auditStr" }
     # audit-record --verdict success must be blocked (verification not OK).
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "x" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "cannot record success") { throw "round-1 evidence must not clear round-2 audit, got: $outStr" }
     return "round-aware guard: round-1 PASS blocked on round-2 audit"
@@ -271,10 +287,12 @@ Test-Script "Round-aware verification: round-1 PASS cannot clear round-2 audit" 
   }
 }
 
-# record-improvement: the SI records an on-the-go pipeline improvement — posts a
-# ## Pipeline Improvement (round N) comment, records a pipeline.improvement event,
-# and persists a guardrail to references.md. Gated to self-improver.
-Test-Script "record-improvement posts comment + event + guardrail" {
+# record-improvement: the Curator records an on-the-go pipeline improvement - posts
+# the ONE ## Pipeline Improvement comment (not round-tagged), records a
+# pipeline.improvement event, and ALLOCATES the next free G-NNN id (stamped as
+# guardrailId + printed). The machine must NOT author the ### G- record
+# (Curator-authored, principle 6), so references.md is left untouched. Gated to curator.
+Test-Script "record-improvement posts comment + event + allocates guardrail id" {
   $url = Mock-IssueCreate "temp: record-improvement" "improvement scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -296,25 +314,28 @@ Test-Script "record-improvement posts comment + event + guardrail" {
     $devStr = if ($dev -is [array]) { $dev -join "`n" } else { "$dev" }
     if ($devStr -notmatch "not allowed to record-improvement") { throw "Expected role-gate block, got: $devStr" }
     # missing --reason rejected
-    $noReason = & rust-script $ps --issue $issueNum --agent self-improver --action record-improvement 2>&1
+    $noReason = & rust-script $ps --issue $issueNum --agent curator --action record-improvement 2>&1
     if ($LASTEXITCODE -eq 0) { throw "record-improvement without --reason should fail" }
     $global:LASTEXITCODE = 0
     # positive path
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action record-improvement --reason "G-test: sandbox gap fixed" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "G-test: sandbox gap fixed" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "IMPROVEMENT COMMENTED: round 1") { throw "Expected improvement comment, got: $outStr" }
-    if ($outStr -notmatch "GUARDRAIL PERSISTED: G-") { throw "Expected guardrail persist, got: $outStr" }
-    # comment landed on the issue
+    if ($outStr -notmatch "GUARDRAIL ID ALLOCATED: G-") { throw "Expected guardrail id allocation, got: $outStr" }
+    # comment landed on the issue — ONE structured `## Pipeline Improvement`
+    # comment (not round-tagged), carrying the Curator footer (anti-spoofing).
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
-    if ($joined -notmatch "## Pipeline Improvement \(round 1\)") { throw "Improvement comment not posted, got: $joined" }
+    if ($joined -notmatch "## Pipeline Improvement\b") { throw "Improvement comment not posted, got: $joined" }
+    if ($joined -match "## Pipeline Improvement \(round") { throw "improvement comment must NOT be round-tagged (ONE per run), got: $joined" }
+    if ($joined -notmatch "\*Authored by Curator\*") { throw "improvement comment lacks the Curator footer, got: $joined" }
     # pipeline.improvement event recorded
     $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
     if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
-    # guardrail appended to references.md
+    # references.md must be UNCHANGED — the machine no longer authors the guardrail record
     $after = (Select-String -Path $refs -Pattern '^### G-' -ErrorAction SilentlyContinue | Measure-Object).Count
-    if ($after -le $before) { throw "guardrail not appended to references.md (before=$before after=$after)" }
-    return "record-improvement: comment + event + guardrail verified"
+    if ($after -ne $before) { throw "references.md was modified by record-improvement (before=$before after=$after) - the machine must not author ### G- records" }
+    return "record-improvement: comment + event + guardrail id allocation verified (references.md untouched)"
   } finally {
     # Restore references.md byte-for-byte (the test's record-improvement appends a
     # real guardrail record to this TRACKED file). A byte-exact restore keeps the
@@ -328,19 +349,19 @@ Test-Script "record-improvement posts comment + event + guardrail" {
   }
 }
 
-# The orchestrator (self-improver) gets an operational snapshot on context
-Test-Script "Orchestration context snapshot (self-improver)" {
-  $output = & rust-script $ps --issue $TestIssue --agent self-improver 2>&1
+# The orchestrator gets an operational snapshot on context
+Test-Script "Orchestration context snapshot (orchestrator)" {
+  $output = & rust-script $ps --issue $TestIssue --agent orchestrator 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   foreach ($f in @("Impl plan:", "Spec branch ahead:", "Evidence on plan:", "A2A file:", "Spec branch:", "Open blocked:")) {
     if ($outputStr -notmatch [regex]::Escape($f)) { throw "Missing orchestration field: $f" }
   }
-  # A non-self-improver actor must NOT get the snapshot
+  # A non-orchestrator actor must NOT get the snapshot
   $testerOut = & rust-script $ps --issue $TestIssue --agent tester 2>&1
   $testerStr = if ($testerOut -is [array]) { $testerOut -join "`n" } else { "$testerOut" }
   if ($testerStr -match "Spec branch ahead:") { throw "Tester should not get the orchestration snapshot" }
-  return "orchestration snapshot present for self-improver only"
+  return "orchestration snapshot present for orchestrator only"
 }
 
 Test-Script "Per-issue metrics" {
@@ -391,7 +412,7 @@ Test-Script "Action failures recorded as metric events" {
 }
 
 Test-Script "Prune stale branches (idempotent)" {
-  $output = & rust-script $ps --action prune --agent self-improver 2>&1
+  $output = & rust-script $ps --action prune --agent orchestrator 2>&1
   if ($LASTEXITCODE -ne 0) { throw "Script failed: $output" }
   $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
   if ($outputStr -notmatch "PRUNED:") { throw "Expected PRUNED: in output, got: $outputStr" }
@@ -408,7 +429,7 @@ Test-Script "prune deletes local spec branches whose upstream is gone" {
     & rust-script $ps --action mock-git --gitargs "branch spec/$n1 origin/main" 2>&1 | Out-Null
     # Local branch WITH a live remote → must be kept.
     & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n2" 2>&1 | Out-Null
-    $out = & rust-script $ps --action prune --agent self-improver 2>&1
+    $out = & rust-script $ps --action prune --agent orchestrator 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "prune failed: $outStr" }
     if ($outStr -notmatch "spec/$n1") { throw "gone-upstream branch spec/$n1 should be pruned, got: $outStr" }
@@ -433,7 +454,7 @@ Test-Script "prune --remote deletes closed-spec remote branches, keeps open" {
     Mock-IssueClose $nClosed | Out-Null
     & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nOpen" 2>&1 | Out-Null
     & rust-script $ps --action mock-git --gitargs "push -u origin spec/$nClosed" 2>&1 | Out-Null
-    $out = & rust-script $ps --action prune --agent self-improver --remote 2>&1
+    $out = & rust-script $ps --action prune --agent orchestrator --remote 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "prune --remote failed: $outStr" }
     if ($outStr -notmatch "spec/$nClosed") { throw "closed-spec remote spec/$nClosed should be deleted, got: $outStr" }
@@ -465,7 +486,7 @@ Test-Script "Prune sweeps orphaned worktree dirs (no .git) but keeps git-marked 
   New-Item -ItemType Directory -Path $kept -Force | Out-Null
   Set-Content -Path (Join-Path $kept ".git") -Value "gitdir: .opencode-git-prune-sweep-kept" -Encoding UTF8
   try {
-    $output = & rust-script $ps --action prune --agent self-improver 2>&1
+    $output = & rust-script $ps --action prune --agent orchestrator 2>&1
     $outputStr = if ($output -is [array]) { $output -join "`n" } else { "$output" }
     if ($LASTEXITCODE -ne 0) { throw "prune failed: $outputStr" }
     if (Test-Path $debris) { throw "pure debris dir should have been swept: $debris" }
@@ -626,14 +647,25 @@ Test-Script "Write actions are role-gated" {
 } -ExpectedExitCode 1
 
 # audit-record must reject a restart targeting the terminal phase (no GitHub write —
-# the done-rejection fires before any gh call), and refuse to post a Decision comment
+# the done-rejection fires before any gh call), and refuse to post an Audit Verdict comment
 # on an issue that is not in the audit phase.
 Test-Script "audit-record rejects restart-to-done / non-audit issue (no mutation)" {
-  $out = & rust-script $ps --issue $TestIssue --agent self-improver --action audit-record --verdict restart --phase done 2>&1
+  $out = & rust-script $ps --issue $TestIssue --agent auditor --action audit-record --verdict restart --phase done 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($LASTEXITCODE -eq 0) { throw "Expected non-zero exit, got 0" }
   if ($outStr -notmatch "illegal restart phase|audit phase") { throw "Expected rejection (illegal restart or audit-phase guard), got: $outStr" }
   return "audit-record restart-to-done rejected"
+} -ExpectedExitCode 1
+
+# The auditor is the independent gate: it must PASS the audit-record role gate
+# (only the illegal-restart/audit-phase guard rejects it), so the extracted role
+# is authoritative — not blocked by the monolith's old SI-only gate.
+Test-Script "audit-record is allowed for the auditor (independent gate)" {
+  $out = & rust-script $ps --issue $TestIssue --agent auditor --action audit-record --verdict restart --phase done 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($outStr -match "not allowed to") { throw "auditor must pass the audit-record role gate, got: $outStr" }
+  if ($outStr -notmatch "illegal restart phase|audit phase") { throw "Expected the illegal-restart/audit-phase guard after the role gate, got: $outStr" }
+  return "auditor allowed to audit-record (role gate passed)"
 } -ExpectedExitCode 1
 
 Remove-Item -LiteralPath $badDraft -Force -ErrorAction SilentlyContinue
@@ -712,7 +744,7 @@ Test-Script "Comment with a heading in the body does not get a double header" {
   $body = Join-Path $env:TEMP "fredo-headed-body.md"
   Set-Content -Path $body -Value "## Status`n`nSpec complete." -Encoding UTF8
   try {
-    $out = & rust-script $ps --issue $TestIssue --agent self-improver --action comment --prefix Status --body-file $body 2>&1
+    $out = & rust-script $ps --issue $TestIssue --agent orchestrator --action comment --prefix Status --body-file $body 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "comment failed (exit $LASTEXITCODE): $outStr" }
     $comments = @(Mock-IssueComments $TestIssue)
@@ -766,7 +798,7 @@ Test-Script "Evidence comment prefix is removed and refused" {
   $body = Join-Path $env:TEMP "fredo-evidence-removed.md"
   try {
     Set-Content -Path $body -Value "Verdict: **PASS** (5/5 ACs)`n| AC1 | PASS | live | evidence |" -Encoding UTF8
-    foreach ($agent in @("tester", "self-improver")) {
+    foreach ($agent in @("tester", "orchestrator")) {
       $out = & rust-script $ps --issue $issueNum --agent $agent --action comment --prefix Evidence --body-file $body 2>&1
       $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
       if ($LASTEXITCODE -eq 0) { throw "Evidence prefix should be refused for $agent, got exit 0: $outStr" }
@@ -833,7 +865,7 @@ Nothing beyond harness validation.
   Set-Content -Path $draft -Value $draftBody -Encoding UTF8
   $issueNum = $null
   try {
-    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: transition positive-path" --body-file $draft --issue-type backlog 2>&1
+    $create = & rust-script $ps --agent orchestrator --action create-issue --title "temp: transition positive-path" --body-file $draft --issue-type backlog 2>&1
     if ($LASTEXITCODE -ne 0) { throw "create-issue failed: $create" }
     $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
     if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
@@ -841,7 +873,7 @@ Nothing beyond harness validation.
     if (-not $m.Success) { throw "Could not parse issue number from: $createStr" }
     $issueNum = [int]$m.Groups[1].Value
 
-    $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $trans = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "transition failed (exit $LASTEXITCODE): $transStr" }
     if ($transStr -notmatch "TRANSITIONED:") { throw "Expected TRANSITIONED:, got: $transStr" }
@@ -875,23 +907,148 @@ Test-Script "audit-record success -> cleanup, then close-issue -> done" {
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
-    if ($outStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected AUDIT PASS -> CLEANUP, got: $outStr" }
-    # After audit success, the issue is OPEN in the cleanup phase (teardown pending).
+    if ($outStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected AUDIT PASS -> POST-AUDIT, got: $outStr" }
+    # The verdict comment is the machine-posted `## Audit Verdict` (NOT `## Decision`),
+    # carrying a parseable `Verdict:` line and the Auditor footer (anti-spoofing).
+    $vjoined = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vjoined -notmatch "## Audit Verdict") { throw "audit-record must post a ## Audit Verdict comment, got: $vjoined" }
+    if ($vjoined -match "## Decision") { throw "audit-record must NOT post a ## Decision comment, got: $vjoined" }
+    if ($vjoined -notmatch "Verdict: \*\*SUCCESS\*\*") { throw "audit verdict comment lacks the SUCCESS verdict line, got: $vjoined" }
+    if ($vjoined -notmatch "\*Authored by Auditor\*") { throw "audit verdict comment lacks the Auditor footer, got: $vjoined" }
+    # After audit success the issue enters the post-audit phase (self-improvement + gate merge).
     $st = Mock-IssueState $issueNum
-    if ($st.State -ne "OPEN") { throw "Expected OPEN in cleanup, got state $($st.State)" }
-    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
-    # The SI runs teardown, then labels the issue done from cleanup (human closes).
-    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    if ($st.State -ne "OPEN") { throw "Expected OPEN in post-audit, got state $($st.State)" }
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label, got: $($st.Labels)" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-audit lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have
+    # MERGED. Drive maint-pr with the working-tree marker so the mock opens the PR
+    # and force-merges it (--admin; the mock default), recording merged:true.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
+    $stCleanup = Mock-IssueState $issueNum
+    if ($stCleanup.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($stCleanup.Labels)" }
+    # The Orchestrator runs teardown, then labels the issue done from cleanup (human closes).
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
     if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "audit-record success -> cleanup -> labeled done (open, human closes) (#$issueNum)"
+    # The done close posts ONE `## Final Status` comment (outcome + the machine's
+    # metrics), NOT a separate metrics `## Status` comment; Orchestrator footer.
+    $fjoined = (Mock-IssueComments $issueNum) -join "`n"
+    if ($fjoined -notmatch "## Final Status") { throw "close-issue done must post a ## Final Status comment, got: $fjoined" }
+    if ($fjoined -notmatch "## Metrics") { throw "## Final Status must fold in the machine metrics, got: $fjoined" }
+    if ($fjoined -notmatch "\*Authored by Orchestrator\*") { throw "## Final Status lacks the Orchestrator footer, got: $fjoined" }
+    if ($fjoined -match "## Status\b") { throw "the separate metrics ## Status comment must be gone, got: $fjoined" }
+    return "audit-record success -> post-audit -> cleanup -> labeled done (open, human closes) (#$issueNum)"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# audit-record + record-improvement accept a structured --body-file draft: the
+# machine owns the header + the footer (anti-spoofing), the agent owns the
+# structured body. This is the ONE-message-per-phase convention (Audit Verdict /
+# Pipeline Improvement). A duplicate header the agent included is NOT re-emitted.
+Test-Script "audit-record + record-improvement accept structured --body-file" {
+  $url = Mock-IssueCreate "temp: structured body" "structured body scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  $av = Join-Path $env:TEMP "fredo-audit-verdict-body.md"
+  try {
+    # live-policy PASS so audit-record --verdict success clears the verification gate.
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    # The Auditor's structured draft (template shape): its own `## Audit Verdict` header.
+    [System.IO.File]::WriteAllText($av, "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n## Per-AC re-derivation`n`n| AC | Verdict |`n|----|----|`n| GA-1 | PASS |`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --body-file $av 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record --body-file failed (exit $LASTEXITCODE): $outStr" }
+    $vj = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vj -notmatch "## Audit Verdict") { throw "audit-record did not post the Audit Verdict comment, got: $vj" }
+    if (($vj -split "## Audit Verdict").Count -ne 2) { throw "duplicate ## Audit Verdict header (the draft's header was not stripped), got: $vj" }
+    if ($vj -notmatch "Per-AC re-derivation") { throw "the structured body was not posted, got: $vj" }
+    if ($vj -notmatch "\*Authored by Auditor\*") { throw "the Auditor footer is missing, got: $vj" }
+    # The Curator's structured improvement draft at the CONVENTIONAL path
+    # (`.opencode/tmp/<issue>/pipeline-improvement.md`), posted with NO --reason and
+    # NO --body-file — the machine auto-reads the draft (artifacts.md convention).
+    [System.IO.File]::WriteAllText("$dir/pipeline-improvement.md", "## Class`n`ntechnique`n`n## Root cause`n`nmechanism`n`n## Lever`n`nplaybook`n`n## Guardrails`n`nnone (curation only)`n`n## Effectiveness`n`nPending", [System.Text.UTF8Encoding]::new($false))
+    $iout = & rust-script $ps --issue $issueNum --agent curator --action record-improvement 2>&1
+    $ioutStr = if ($iout -is [array]) { $iout -join "`n" } else { "$iout" }
+    if ($LASTEXITCODE -ne 0) { throw "record-improvement (conventional draft) failed (exit $LASTEXITCODE): $ioutStr" }
+    if (Test-Path "$dir/pipeline-improvement.md") { throw "the conventional pipeline-improvement.md draft must be consumed after posting" }
+    $ij = (Mock-IssueComments $issueNum) -join "`n"
+    if ($ij -notmatch "## Pipeline Improvement") { throw "record-improvement did not post the Pipeline Improvement comment, got: $ij" }
+    if ($ij -match "## Pipeline Improvement \(round") { throw "improvement comment must NOT be round-tagged, got: $ij" }
+    if ($ij -notmatch "## Effectiveness") { throw "the structured improvement body was not posted, got: $ij" }
+    if ($ij -notmatch "\*Authored by Curator\*") { throw "the Curator footer is missing, got: $ij" }
+    # The pipeline.improvement event was recorded (with an allocated guardrailId).
+    $log = ".opencode/state/issues/$issueNum.jsonl"
+    $ev = Select-String -Path $log -Pattern 'pipeline.improvement' -ErrorAction SilentlyContinue | Measure-Object
+    if ($ev.Count -lt 1) { throw "pipeline.improvement event not recorded in $log" }
+    return "structured --body-file: Audit Verdict + Pipeline Improvement posted (headers/footers machine-owned)"
+  } finally {
+    Remove-Item -LiteralPath $av -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# audit-record injects the machine's `Verdict:` line when the Auditor's draft
+# omits it, so the audit/cleanup exit guards can always read the verdict from the
+# posted comment (the verdict is machine-known via --verdict, never parsed prose).
+Test-Script "audit-record injects the verdict line when the draft omits it" {
+  $url = Mock-IssueCreate "temp: verdict inject" "verdict-inject scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $av = Join-Path $env:TEMP "fredo-audit-noverdict.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    # A draft with NO `Verdict:` line.
+    [System.IO.File]::WriteAllText($av, "## Integrity gate`n`n- verify: INTEGRITY OK", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --body-file $av 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    $vj = (Mock-IssueComments $issueNum) -join "`n"
+    if ($vj -notmatch "## Audit Verdict") { throw "missing ## Audit Verdict header, got: $vj" }
+    if ($vj -notmatch "Verdict: \*\*SUCCESS\*\*") { throw "the machine must inject the SUCCESS verdict line, got: $vj" }
+    if ($vj -notmatch "Integrity gate") { throw "the structured body was dropped, got: $vj" }
+    return "audit-record injected the missing verdict line"
+  } finally {
+    Remove-Item -LiteralPath $av -Force -ErrorAction SilentlyContinue
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -915,12 +1072,48 @@ Test-Script "testing->audit merges a clean spec PR (merge-gate happy path)" {
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
     # Open the spec PR in the mock store.
     $null = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "transition should pass with a clean spec PR (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "SPEC PR MERGED") { throw "Expected SPEC PR MERGED, got: $outStr" }
     if ($outStr -notmatch "TRANSITIONED") { throw "Expected TRANSITIONED, got: $outStr" }
     return "testing->audit merged the clean spec PR on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Spec #3026 hardening: a live-policy PASS whose `telemetry_spans` reference shares a
+# line with the REQUIRED "no `telemetry_spans` row" disclosure (a native-loop feature
+# whose telemetry surface differs) must STILL count as live evidence — the negation
+# matcher must not flag a line that also carries a positive live-query signal
+# (`spanCount` / `rows=` / `ingested_at`). The timeline's per-round verdict dedup
+# (G-020) forbids a corrected re-post, so a formatting false positive here deadlocks
+# the round.
+Test-Script "live evidence accepts a combined telemetry-count + no-span disclosure line" {
+  $url = Mock-IssueCreate "temp: combined telemetry line" "combined telemetry scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    # One line carrying BOTH a genuine live count AND a "no <telemetry_spans> row"
+    # disclosure (the natural phrasing a tester uses for a native-loop feature).
+    $combined = "Verdict: PASS`nLIVE: telemetry_spans spanCount=537 (app-pool read) - the feature emits no telemetry_spans row; DISCLOSED.`n`n*Authored by Tester*"
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", $combined, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $null = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -match "static-only") { throw "combined live-evidence line wrongly blocked as static-only: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED") { throw "combined live-evidence line should clear the guard: $outStr" }
+    return "combined telemetry-count + no-span disclosure line accepted as live evidence (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
@@ -953,7 +1146,7 @@ Test-Script "merge guard blocks real CI failure but exempts sub-10s env failures
     $pr = Get-Content $prFile -Raw | ConvertFrom-Json
     $pr.statusCheckRollup = @(@{ name = "build"; status = "COMPLETED"; conclusion = "FAILURE"; startedAt = "2026-08-25T00:00:00Z"; completedAt = "2026-08-25T00:05:00Z" })
     [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $g = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
     if ($LASTEXITCODE -eq 0) { throw "real CI failure must block the transition, got exit 0: $gStr" }
     if ($gStr -notmatch "CI check 'build' failed") { throw "Expected CI-failure block, got: $gStr" }
@@ -962,7 +1155,7 @@ Test-Script "merge guard blocks real CI failure but exempts sub-10s env failures
     $pr.statusCheckRollup = @(@{ name = "build"; status = "COMPLETED"; conclusion = "FAILURE"; startedAt = "2026-08-25T00:00:00Z"; completedAt = "2026-08-25T00:00:03Z" })
     $pr.mergeStateStatus = "UNSTABLE"
     [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
-    $ok = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
     if ($LASTEXITCODE -ne 0) { throw "sub-10s env exemption should allow the merge (exit $LASTEXITCODE): $okStr" }
     if ($okStr -notmatch "SPEC PR MERGED") { throw "Expected SPEC PR MERGED after exemption, got: $okStr" }
@@ -986,7 +1179,7 @@ Test-Script "Serving guard: spec-less root blocks testing entry" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     # NO mock commits on spec/<N> -> the simulated root is not at the spec tip.
-    $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
+    $g = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
     if ($LASTEXITCODE -eq 0) { throw "spec-less root must block, got exit 0: $gStr" }
     if ($gStr -notmatch "repo root is not on spec/") { throw "Expected wrong-root block, got: $gStr" }
@@ -1011,7 +1204,10 @@ Test-Script "Serving guard: root at spec tip passes testing entry" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
-    $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
+    # The developer pushes the branch (the real workflow) — a spec PR can only be
+    # opened from a branch that exists on origin.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    $p = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "matching serving record should pass, got exit ${LASTEXITCODE}: $pStr" }
     if ($pStr -notmatch "TRANSITIONED") { throw "Expected TRANSITIONED, got: $pStr" }
@@ -1042,7 +1238,7 @@ Test-Script "audit-record success blocked without valid verification" {
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS (static source analysis)`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "x" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "x" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "cannot record success") { throw "Expected cannot-record-success block, got: $outStr" }
     $st = Mock-IssueState $issueNum
@@ -1062,14 +1258,32 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "rework" 2>&1
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# Implementation Plan #$issueNum - scratch`n`n## Summary`ngoal`n`n## Software Architect`nscratch`n`n## UI/UX Expert`nN/A`n`n## QA Expert`nscratch`n`n## Staffing Plan`n1 dev`n`n## Deployment Notes`nnone`n`n## Risks & Mitigations`nnone`n`n## Convergence: agreed`n", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --reason "rework" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
-    if ($outStr -notmatch "AUDIT -> implementation") { throw "Expected AUDIT -> implementation, got: $outStr" }
+    if ($outStr -notmatch "AUDIT RESTART -> POST-AUDIT") { throw "Expected AUDIT RESTART -> POST-AUDIT, got: $outStr" }
     $st = Mock-IssueState $issueNum
-    if ($st.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st.Labels)" }
-    return "audit-record restart moved #$issueNum audit -> implementation"
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label after restart, got: $($st.Labels)" }
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: restart lesson" 2>&1 | Out-Null
+    $rout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $routStr = if ($rout -is [array]) { $rout -join "`n" } else { "$rout" }
+    if ($routStr -notmatch "TRANSITIONED: post-audit -> implementation") { throw "Expected post-audit -> implementation, got: $routStr" }
+    $st2 = Mock-IssueState $issueNum
+    if ($st2.Labels -notcontains "ready-for-dev") { throw "Expected ready-for-dev label after restart, got: $($st2.Labels)" }
+    # A restart exit does NOT require (nor record) a merged SPEC MAINT PR — the run
+    # is not done, so the maintenance PR is only required on the success exit.
+    $mpEv = @(Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" })
+    if ($mpEv.Count -ne 0) { throw "restart path must not require/record a maint-pr" }
+    return "audit-record restart moved #$issueNum audit -> post-audit -> implementation"
   } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -1093,7 +1307,7 @@ generate-work removed-path Implementation Plan
   Set-Content -Path $draft -Value $planBody -Encoding UTF8
   $planNum = $null
   try {
-    $create = & rust-script $ps --agent self-improver --action create-issue --title "temp: generate-work removed-path" --body-file $draft --issue-type impl-plan 2>&1
+    $create = & rust-script $ps --agent orchestrator --action create-issue --title "temp: generate-work removed-path" --body-file $draft --issue-type impl-plan 2>&1
     if ($LASTEXITCODE -ne 0) { throw "create-issue (impl-plan) failed: $create" }
     $createStr = if ($create -is [array]) { $create -join "`n" } else { "$create" }
     if ($createStr -notmatch "CREATED:") { throw "Expected CREATED:, got: $createStr" }
@@ -1101,7 +1315,7 @@ generate-work removed-path Implementation Plan
     if (-not $m.Success) { throw "Could not parse plan issue number from: $createStr" }
     $planNum = [int]$m.Groups[1].Value
 
-    $out = & rust-script $ps --issue $planNum --agent self-improver --action generate-work 2>&1
+    $out = & rust-script $ps --issue $planNum --agent orchestrator --action generate-work 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected generate-work-removed note, got: $outStr" }
     if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "generate-work must not create sub-issues/tester, got: $outStr" }
@@ -1131,7 +1345,7 @@ generate-work removed-path Implementation Plan
 
 # Structured root cause (SI-decision data): audit-record restart accepts
 # --root-cause defect|technique|environment|scope, records it as an audit.verdict
-# event attribute, prints it in the Decision, and the context block surfaces it.
+# event attribute, prints it in the Audit Verdict, and the context block surfaces it.
 Test-Script "audit-record restart records a structured root cause" {
   $url = Mock-IssueCreate "temp: root cause" "root-cause scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -1140,11 +1354,11 @@ Test-Script "audit-record restart records a structured root cause" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "missed ACs" --root-cause environment 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --reason "missed ACs" --root-cause environment 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "restart with root-cause failed (exit $LASTEXITCODE): $outStr" }
     # Invalid enum refused.
-    $bad = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "x" --root-cause vibes 2>&1
+    $bad = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --reason "x" --root-cause vibes 2>&1
     $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
     if ($LASTEXITCODE -eq 0) { throw "invalid root-cause must be refused, got exit 0: $badStr" }
     if ($badStr -notmatch "invalid --root-cause") { throw "Expected invalid-root-cause refusal, got: $badStr" }
@@ -1234,7 +1448,7 @@ P3
   }
 }
 
-Test-Script "link-revision is self-improver/PO-gated and idempotent" {
+Test-Script "link-revision is orchestrator/PO-gated and idempotent" {
   $url = Mock-IssueCreate "temp: link rev" "scratch" ""
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -1244,10 +1458,10 @@ Test-Script "link-revision is self-improver/PO-gated and idempotent" {
     $deny = & rust-script $ps --issue $issueNum --agent developer --action link-revision --revises 1 2>&1
     $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
     if ($denyStr -notmatch "BLOCKED: actor developer not allowed") { throw "expected role gate, got: $denyStr" }
-    $first = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $first = & rust-script $ps --issue $issueNum --agent orchestrator --action link-revision --revises 1 2>&1
     $firstStr = if ($first -is [array]) { $first -join "`n" } else { "$first" }
     if ($firstStr -notmatch "LINKED:") { throw "expected LINKED, got: $firstStr" }
-    $second = & rust-script $ps --issue $issueNum --agent self-improver --action link-revision --revises 1 2>&1
+    $second = & rust-script $ps --issue $issueNum --agent orchestrator --action link-revision --revises 1 2>&1
     $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
     if ($secondStr -notmatch "ALREADY LINKED") { throw "expected idempotent ALREADY LINKED, got: $secondStr" }
     return "link-revision role-gated + idempotent"
@@ -1263,7 +1477,7 @@ Test-Script "improvement action reports acceptance with interval and raw counts"
   $out = & rust-script $ps --action improvement --json 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($LASTEXITCODE -ne 0) { throw "improvement --json failed: $outStr" }
-  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity")) {
+  foreach ($f in @("acceptance", "posterior_mean", "ci95", "decision", "link_coverage", "specs_created", "integrity", "root_cause_mix_on_restarts", "rework_cause_mix_on_rounds", "dominant_root_cause_class")) {
     if ($outStr -notmatch $f) { throw "improvement json missing field: $f" }
   }
   return "improvement report shape OK"
@@ -1290,7 +1504,7 @@ Test-Script "audit-record success records spec size from the plan's Effort line"
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "SPEC SIZE RECORDED: 8 story points") { throw "Expected SPEC SIZE RECORDED note, got: $outStr" }
@@ -1324,7 +1538,7 @@ Test-Script "audit-record spec size prefers the canonical Staffing Plan Effort l
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "SPEC SIZE RECORDED: 11 story points") { throw "Expected SPEC SIZE RECORDED: 11, got: $outStr" }
@@ -1473,12 +1687,12 @@ Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
   return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
 }
 
-# Self-Improver may merge a FEATURE branch but never main/master (incl. --ff-only)
+# Orchestrator may merge a FEATURE branch but never main/master (incl. --ff-only)
 Test-Script "SI git merge: feature allowed, main/master denied" {
-  $feature = (Get-BashEffect "self-improver" "git merge spec/633") -eq "allow"
-  $mainDeny = (Get-BashEffect "self-improver" "git merge main") -eq "deny"
-  $ffDeny = (Get-BashEffect "self-improver" "git merge --ff-only main") -eq "deny"
-  $masterDeny = (Get-BashEffect "self-improver" "git merge --ff-only master") -eq "deny"
+  $feature = (Get-BashEffect "orchestrator" "git merge spec/633") -eq "allow"
+  $mainDeny = (Get-BashEffect "orchestrator" "git merge main") -eq "deny"
+  $ffDeny = (Get-BashEffect "orchestrator" "git merge --ff-only main") -eq "deny"
+  $masterDeny = (Get-BashEffect "orchestrator" "git merge --ff-only master") -eq "deny"
   if (-not $feature -or -not $mainDeny -or -not $ffDeny -or -not $masterDeny) { throw "SI merge scoping broken: feature=$feature main=$mainDeny ff-only=$ffDeny master=$masterDeny" }
   return "SI merge: spec/633 allowed, main/master/--ff-only denied"
 }
@@ -1495,7 +1709,7 @@ Test-Script "create-branch is removed (worktree on spec branch)" {
 # transition, so the standalone actions are gone.
 Test-Script "Spec lifecycle actions are transition side-effects (removed)" {
   foreach ($action in @("create-spec-branch", "create-pr", "merge-pr")) {
-    $out = & rust-script $ps --issue $TestIssue --agent self-improver --action $action --title t --body-file x --pr 1 2>&1
+    $out = & rust-script $ps --issue $TestIssue --agent orchestrator --action $action --title t --body-file x --pr 1 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' for $action, got: $outStr" }
   }
@@ -1524,7 +1738,7 @@ Test-Script "set-permission appends, preserves order/EOL, never touches the real
   $real = Get-Content "opencode.json" -Raw
   $beforeCrlf = ([regex]::Matches($real, "`r`n")).Count
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $outStr" }
   if ((Get-Content "opencode.json" -Raw) -ne $real) { throw "real opencode.json was modified" }
@@ -1537,14 +1751,14 @@ Test-Script "set-permission appends, preserves order/EOL, never touches the real
   $afterLf = ([regex]::Matches($edited, "(?<!`r)`n")).Count
   if ($afterLf -ne 0) { throw "EOL mixed: $afterLf LF-only line(s) introduced" }
   if (([regex]::Matches($edited, "`r`n")).Count -le $beforeCrlf) { throw "no line added" }
-  $out2 = & rust-script $ps --agent self-improver --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out2 = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
   $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
   if ($out2Str -notmatch "NO-OP") { throw "expected NO-OP on re-run, got: $out2Str" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
   return "append-last; order+EOL preserved; real config untouched; idempotent"
 }
 
-Test-Script "set-permission is self-improver only" {
+Test-Script "set-permission is machinist only" {
   $scratch = New-PermScratch
   $out = & rust-script $ps --agent developer --action set-permission --role developer --tool bash --pattern "git rm*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -1555,7 +1769,7 @@ Test-Script "set-permission is self-improver only" {
 
 Test-Script "set-permission refuses an unknown agent" {
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent self-improver --action set-permission --role nobody --tool bash --pattern "x*" --decision allow --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent machinist --action set-permission --role nobody --tool bash --pattern "x*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
   if ($outStr -notmatch "no agent 'nobody'") { throw "unknown role not refused, got: $outStr" }
@@ -1564,7 +1778,7 @@ Test-Script "set-permission refuses an unknown agent" {
 
 Test-Script "set-permission refuses a flat-action category" {
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent self-improver --action set-permission --role developer --tool edit --pattern "x" --decision deny --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool edit --pattern "x" --decision deny --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
   if ($outStr -notmatch "flat action") { throw "flat action not refused, got: $outStr" }
@@ -1612,8 +1826,8 @@ Test-Script "generate-work reports removal (no sub-issues)" {
   return "generate-work removed note verified"
 }
 
-# triage-init is self-improver-only (role gate fires before any file write)
-Test-Script "triage-init is self-improver-only" {
+# triage-init is orchestrator-only (role gate fires before any file write)
+Test-Script "triage-init is orchestrator-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action triage-init 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "not allowed to triage-init") { throw "Expected role-gate block, got: $outStr" }
@@ -1630,7 +1844,7 @@ Test-Script "triage-init creates the A2A file" {
   $issueNum = [int]$m.Groups[1].Value
   $a2a = ".opencode/tmp/$issueNum/triage.md"
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action triage-init 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action triage-init 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "triage-init failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "TRIAGE A2A FILE CREATED:") { throw "Expected TRIAGE A2A FILE CREATED:, got: $outStr" }
@@ -1646,7 +1860,7 @@ Test-Script "triage-init creates the A2A file" {
   }
 }
 
-# tests-commit is role-gated (self-improver + tester only)
+# tests-commit is role-gated (orchestrator + tester only)
 Test-Script "tests-commit is role-gated" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action tests-commit --feature mission-monitor 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -1669,7 +1883,7 @@ Test-Script "tests-commit commits a feature suite to main" {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: scratch functional case`n", [System.Text.UTF8Encoding]::new($true))
     [System.IO.File]::WriteAllText("$dir/smoke.md", "- [ ] S-1: scratch smoke case`n", [System.Text.UTF8Encoding]::new($true))
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action tests-commit --feature $feat 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action tests-commit --feature $feat 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "TESTS COMMITTED:") { throw "Expected TESTS COMMITTED:, got: $outStr" }
@@ -1690,8 +1904,8 @@ Test-Script "tests-commit commits a feature suite to main" {
   }
 }
 
-# update-plan is self-improver-only (role gate fires before any body read/write)
-Test-Script "update-plan is self-improver-only" {
+# update-plan is orchestrator-only (role gate fires before any body read/write)
+Test-Script "update-plan is orchestrator-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action update-plan --section software-architect --body-file x 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "not allowed to update-plan") { throw "Expected role-gate block, got: $outStr" }
@@ -1712,7 +1926,7 @@ Test-Script "update-plan rejects a draft without the section" {
   try {
     New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
     Set-Content -Path "$planDraftDir/triage-plan.md" -Value "## Some Other Section`ncontent here" -Encoding UTF8
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action update-plan --section software-architect --body-file $draft 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -eq 0) { throw "Expected failure, got exit 0" }
     if ($outStr -notmatch "no '## ' section matching") { throw "Expected section-not-found error, got: $outStr" }
@@ -1739,7 +1953,7 @@ Test-Script "update-plan positive path (replace software-architect section in dr
   try {
     New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
     Set-Content -Path "$planDraftDir/triage-plan.md" -Value "## Software Architect`n### Domain Model`n(empty)`n## Summary`nold summary" -Encoding UTF8
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action update-plan --section software-architect --body-file $draft 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action update-plan --section software-architect --body-file $draft 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "update-plan failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "PLAN UPDATED:") { throw "Expected PLAN UPDATED:, got: $outStr" }
@@ -1778,15 +1992,15 @@ Full domain model body that should NOT be re-posted on retry.
 ## Risks & Mitigations
 Subagent regression risk under chat-only contract.
 
-*Authored by Self-Improver*
+*Authored by Orchestrator*
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
     # Simulate a prior entry into implementation (this is a rework re-entry).
-    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-test-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-test-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
     New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
     [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
 
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
 
@@ -1825,7 +2039,7 @@ Test-Script "Architect-authored fix-plan.md replaces the derived Fix Plan on ret
 ## Risks & Mitigations
 Derived-risk marker that must NOT appear.
 
-*Authored by Self-Improver*
+*Authored by Orchestrator*
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
     $authored = @"
@@ -1847,11 +2061,11 @@ Root cause class: defect
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), $authored, [System.Text.UTF8Encoding]::new($false))
     # Simulate a prior entry into implementation (this is a rework re-entry).
-    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-authored-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-authored-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
     New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
     [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
 
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
 
@@ -1874,6 +2088,63 @@ Root cause class: defect
   }
 }
 
+# Audit-restart Fix Plan round (#2974): the audit-record restart flushes pending
+# drafts BEFORE appending the destination `phase.started` (mirroring the
+# transition handler). A prior ordering bug flushed AFTER the restart's own
+# `implementation` entry, so the plan-comment decision counted it twice and
+# stamped an off-by-one `## Fix Plan (round 3)` while the retry context read
+# `round 2`. This locks the ordering: the header must equal the retry round.
+Test-Script "audit-restart fix plan stamps the retry round, not an off-by-one" {
+  $url = Mock-IssueCreate "temp: audit-restart fixplan round" "audit-restart fix-plan round scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draftDir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    $authored = @'
+Root cause class: scope
+
+## Failed ACs
+
+- AC1: a failure-injection leg is UNVERIFIED in the audit-restart round.
+
+## Root Cause (file:line)
+
+- features/pg_supervisor/state.rs:221 - data dir hard-wired; no induction lever.
+
+## Fix Scope
+
+- [ ] FS-1 env-gated data-dir override seam.
+
+*Authored by Software Architect*
+'@
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "fix-plan.md"), $authored, [System.Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    $impl = '{"ts":"2026-08-10T00:00:01.000000000+00:00","event_id":"arfix-impl-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attributes":{"phase":"implementation","from":"planning"},"message":"started implementation"}'
+    $test = '{"ts":"2026-08-10T00:00:02.000000000+00:00","event_id":"arfix-test-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"testing","outcome":"success","attributes":{"phase":"testing","from":"implementation"},"message":"started testing"}'
+    $aud  = '{"ts":"2026-08-10T00:00:03.000000000+00:00","event_id":"arfix-audit-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"audit","outcome":"success","attributes":{"phase":"audit","from":"testing"},"message":"started audit"}'
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$impl`n$test`n$aud`n", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --root-cause scope --reason "complete the missed AC evidence" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record restart failed (exit $LASTEXITCODE): $outStr" }
+
+    $comments = @(Mock-IssueComments $issueNum)
+    $joined = $comments -join "`n"
+    if ($joined -notmatch "## Fix Plan \(round 2\)") { throw "Expected '## Fix Plan (round 2)' on the audit-restart leg, got: $joined" }
+    if ($joined -match "## Fix Plan \(round 3\)") { throw "Off-by-one fix-plan round recurred: $joined" }
+    if (Test-Path "$draftDir/fix-plan.md") { throw "fix-plan.md draft should be consumed after posting" }
+    return "audit-restart fix plan stamped round 2 on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # An UNCLASSIFIED fix-plan (no valid `Root cause class:` line) is refused on a
 # rework re-entry — the draft is kept until the Architect classifies the round.
 Test-Script "Unclassified fix-plan is refused (root-cause class mandatory)" {
@@ -1887,11 +2158,11 @@ Test-Script "Unclassified fix-plan is refused (root-cause class mandatory)" {
   try {
     New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "## Failed ACs`n`n- AC1: broken.`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
-    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-unclass-1","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-unclass-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
     New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
     [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
 
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments should warn, not hard-fail: $outStr" }
     if ($outStr -notmatch "lacks a valid 'Root cause class:") { throw "Expected unclassified refusal, got: $outStr" }
@@ -1901,7 +2172,7 @@ Test-Script "Unclassified fix-plan is refused (root-cause class mandatory)" {
     if ($joined -match "Fix Plan") { throw "unclassified Fix Plan must NOT be posted: $joined" }
     # Invalid class value also refused.
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "Root cause class: vibes`n`n## Failed ACs`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
-    $out2 = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out2 = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
     if ($out2Str -match "COMMENTED: Fix Plan") { throw "invalid class must NOT post: $out2Str" }
     return "unclassified + invalid-class fix plans refused on #$issueNum"
@@ -1930,13 +2201,13 @@ Test-Script "First entry posts the full Triage Plan (not a Fix Plan)" {
 ## Summary
 Goal summary.
 
-*Authored by Self-Improver*
+*Authored by Orchestrator*
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "triage-plan.md"), $fullPlan, [System.Text.UTF8Encoding]::new($false))
     # A stray fix-plan.md must NEVER post on a first entry (Fix Plan is retry-only).
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), "Stray fix scope.`n`n*Authored by Software Architect*", [System.Text.UTF8Encoding]::new($false))
 
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
 
@@ -2062,16 +2333,19 @@ Test-Script "Tests Runs draft without a Verdict: line is not posted" {
     }
   }
 
-# Project Status sync is best-effort and fail-safe: create-issue must succeed even
-# when the `gh api graphql` project-status calls are unsupported (mock mode). The
-# `[project-status]` warning is logged, never fatal.
-Test-Script "Project status sync is best-effort (create-issue survives graphql unsupported)" {
+# Project Status sync is best-effort and fail-safe (#3071 Change 2): create-issue
+# must succeed even when the `gh api graphql` project-status sync FAILS, and the
+# failure must be recorded as a `state_machine.failure` event (site
+# `sync-project-status`) so it is visible in the log/metrics — never silent.
+Test-Script "Project status sync is best-effort + failure recorded (create-issue survives graphql failure)" {
   $url = Mock-IssueCreate "temp: project status best-effort" "project status scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
-  $issueNum = [int]$m.Groups[1].Value
+  $scratchNum = [int]$m.Groups[1].Value
+  $newNum = 0
+  $env:FREDO_MOCK_GRAPHQL_FAIL = "1"  # force every project-status graphql call to fail
   try {
     $body = ".opencode/tmp/intake.md"
     New-Item -ItemType Directory -Path ".opencode/tmp" -Force | Out-Null
@@ -2080,12 +2354,22 @@ Test-Script "Project status sync is best-effort (create-issue survives graphql u
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "create-issue failed (exit $LASTEXITCODE): $outStr" }
     if ($outStr -notmatch "CREATED:") { throw "expected CREATED:, got: $outStr" }
-    # In mock mode the graphql project-status calls are unsupported -> [project-status] warning, not fatal.
+    # The sync failed but create-issue survived (never blocked), and the failure surfaced.
     if ($outStr -match "BLOCKED") { throw "project-status sync must never block create-issue: $outStr" }
-    return "create-issue succeeded with best-effort project-status sync (#$issueNum)"
+    if ($outStr -notmatch "sync failed") { throw "expected a [project-status] failure note, got: $outStr" }
+    # The failure is recorded on the NEW issue's event log (not silent).
+    $newNum = [int]([regex]::Match($outStr, "issues/(\d+)").Groups[1].Value)
+    $newLog = ".opencode/state/issues/$newNum.jsonl"
+    if (-not (Test-Path $newLog)) { throw "no event log for the created issue #$newNum" }
+    if (-not (Select-String -Path $newLog -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "project-status sync failure must be recorded as a state_machine.failure event"
+    }
+    return "create-issue survived a failed Status sync; failure recorded (#$newNum)"
   } finally {
+    $env:FREDO_MOCK_GRAPHQL_FAIL = $null
     Remove-Item ".opencode/tmp/intake.md" -Force -ErrorAction SilentlyContinue
-    Mock-Cleanup $issueNum
+    Mock-Cleanup $scratchNum
+    if ($newNum) { Mock-Cleanup $newNum }
     $global:LASTEXITCODE = 0
   }
 }
@@ -2101,20 +2385,20 @@ Test-Script "Triage exit gate requires a converged plan deliverable (A2A file)" 
   $issueNum = [int]$m.Groups[1].Value
   try {
     # No A2A plan yet → the triage exit guard must block on convergence.
-    $before = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $before = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $beforeStr = if ($before -is [array]) { $before -join "`n" } else { "$before" }
     if ($beforeStr -notmatch "not converged") { throw "Expected convergence block, got: $beforeStr" }
     # Seed the A2A deliverable WITHOUT the convergence marker — still blocked.
     $a2aDir = ".opencode/tmp/$issueNum"
     New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# Implementation Plan #$issueNum - scratch`n`n## Summary`ngoal`n`n## Software Architect`nscratch`n`n## UI/UX Expert`nN/A`n`n## QA Expert`nscratch`n`n## Staffing Plan`n1 dev`n`n## Deployment Notes`nnone`n`n## Risks & Mitigations`nnone", [System.Text.UTF8Encoding]::new($false))
-    $mid = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $mid = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $midStr = if ($mid -is [array]) { $mid -join "`n" } else { "$mid" }
     if ($midStr -notmatch "not converged") { throw "Expected convergence block without '## Convergence: agreed', got: $midStr" }
     # Append the convergence marker to the A2A FILE (the plan deliverable) — gate clears.
     $a2a = Get-Content "$a2aDir/triage.md" -Raw
     [System.IO.File]::WriteAllText("$a2aDir/triage.md", $a2a.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
-    $after = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $after = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $afterStr = if ($after -is [array]) { $after -join "`n" } else { "$after" }
     if ($afterStr -match "not converged") { throw "Convergence block should clear after '## Convergence: agreed', got: $afterStr" }
     if ($afterStr -notmatch "TRIAGE PLAN DRAFTED:|SPEC BRANCH CREATED:") { throw "Expected plan assembly side-effects, got: $afterStr" }
@@ -2169,7 +2453,7 @@ Low
   $closeList = @()
   try {
     # intake -> triage auto-seeds the A2A file; replace it with a converged draft.
-    $t1 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $t1 = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     if ($LASTEXITCODE -ne 0) { throw "intake->triage failed: $t1" }
     if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
     $draft = @(
@@ -2235,7 +2519,7 @@ Low
     $a2aRaw = Get-Content $a2a -Raw
     [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
 
-    $trans = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $trans = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $transStr = if ($trans -is [array]) { $trans -join "`n" } else { "$trans" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed (exit $LASTEXITCODE): $transStr" }
     foreach ($need in @("TRIAGE PLAN DRAFTED:", "SPEC BRANCH CREATED:", "TESTS COMMITTED:")) {
@@ -2316,7 +2600,7 @@ Low
   $a2aDir = ".opencode/tmp/$issueNum"
   try {
     # backlog -> planning (single legal exit, inferred)
-    $t1 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $t1 = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     if ($LASTEXITCODE -ne 0) { throw "backlog->planning failed: $t1" }
     if (-not (Test-Path $a2a)) { throw "A2A file not auto-seeded: $a2a" }
     # Converge a plan (planning exit gate needs the deliverable).
@@ -2341,7 +2625,7 @@ Low
     $a2aRaw = Get-Content $a2a -Raw
     [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
     # planning -> implementation (assembles plan + spec branch).
-    $t2 = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $t2 = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $t2Str = if ($t2 -is [array]) { $t2 -join "`n" } else { "$t2" }
     if ($LASTEXITCODE -ne 0) { throw "planning->implementation failed: $t2Str" }
     if ($t2Str -notmatch "TRIAGE PLAN DRAFTED:") { throw "expected plan assembly, got: $t2Str" }
@@ -2349,7 +2633,7 @@ Low
     if ($st.Labels -notcontains "ready-for-dev") { throw "expected ready-for-dev after planning->implementation, got: $($st.Labels)" }
     # The RESCOPE leg: implementation -> planning is legal WITHOUT the forward gate
     # (spec/2745 has no commits — the backward leg is the pre-implementation rescope).
-    $r = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase planning 2>&1
+    $r = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase planning 2>&1
     $rStr = if ($r -is [array]) { $r -join "`n" } else { "$r" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->planning rescope failed (exit $LASTEXITCODE): $rStr" }
     if ($rStr -notmatch "TRANSITIONED: implementation -> planning") { throw "Expected rescope transition, got: $rStr" }
@@ -2367,8 +2651,8 @@ Low
   }
 }
 
-# transition is self-improver-only
-Test-Script "transition is self-improver-only" {
+# transition is orchestrator-only
+Test-Script "transition is orchestrator-only" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action transition 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "not allowed to transition") { throw "Expected role-gate block, got: $outStr" }
@@ -2386,7 +2670,7 @@ Test-Script "Decision comments are machine-only" {
   $body = Join-Path $env:TEMP "fredo-decision-body.md"
   try {
     [System.IO.File]::WriteAllText($body, "test", [System.Text.UTF8Encoding]::new($false))
-    foreach ($agent in @("tester", "self-improver")) {
+    foreach ($agent in @("tester", "orchestrator")) {
       $out = & rust-script $ps --issue $issueNum --agent $agent --action comment --prefix Decision --body-file $body 2>&1
       $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
       if ($LASTEXITCODE -eq 0) { throw "Decision prefix should be refused for $agent, got exit 0: $outStr" }
@@ -2434,7 +2718,10 @@ Test-Script "Product Owner posts Status (Decision/Question/Evidence prefixes rem
   }
 }
 
-# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed
+# timeline comments: drafts in .opencode/tmp/<issue>/*.md are posted + consumed.
+# `po-backlog.md` is NOT a timeline comment (the issue BODY is the single backlog),
+# and `orchestrator-summary.md` is RETIRED (superseded by `## Final Status`) — both
+# are left unconsumed and never posted.
 Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $url = Mock-IssueCreate "temp: timeline comments" "timeline scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
@@ -2445,23 +2732,198 @@ Test-Script "timeline comments posted from tmp drafts (post-comments)" {
   $dir = ".opencode/tmp/$issueNum"
   try {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    # PO Backlog is no longer a timeline comment (the issue BODY is the single source).
+    # Not timeline comments: the PO Backlog (the issue BODY is the source) and the
+    # retired Orchestrator Summary (superseded by `## Final Status`).
     [System.IO.File]::WriteAllText("$dir/po-backlog.md", "As a tester, I can see the PO backlog comment.`n`n*Authored by Product Owner*", [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText("$dir/si-summary.md", "Audit verdict: SUCCESS`n`n*Authored by Self-Improver*", [System.Text.UTF8Encoding]::new($false))
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    [System.IO.File]::WriteAllText("$dir/orchestrator-summary.md", "Retired closing narrative.`n`n*Authored by Orchestrator*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
-    if ($outStr -notmatch "COMMENTED: SI Summary") { throw "expected SI Summary comment, got: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Development Summary \(round 1\)") { throw "expected Development Summary comment, got: $outStr" }
     if ($outStr -match "COMMENTED: PO Backlog") { throw "PO Backlog comment must NOT be auto-posted, got: $outStr" }
-    # si-summary draft consumed; po-backlog draft left unconsumed (no longer a timeline comment).
-    if (Test-Path "$dir/si-summary.md") { throw "si-summary draft not consumed" }
+    if ($outStr -match "COMMENTED: Orchestrator Summary") { throw "Orchestrator Summary is retired and must NOT be posted, got: $outStr" }
+    # dev-summary draft consumed; the two non-timeline drafts left unconsumed.
+    if (Test-Path "$dir/dev-summary.md") { throw "dev-summary draft not consumed" }
     if (-not (Test-Path "$dir/po-backlog.md")) { throw "po-backlog draft should be left unconsumed" }
-    # comments actually on the issue; SI Summary is machine-stamped with the round.
+    if (-not (Test-Path "$dir/orchestrator-summary.md")) { throw "retired orchestrator-summary draft should be left unconsumed" }
+    # comments actually on the issue; Development Summary is machine-stamped with the round.
     $cmts = Mock-IssueComments $issueNum
     $joined = $cmts -join "`n"
     if ($joined -match "## PO Backlog") { throw "PO Backlog must NOT appear on the issue: $joined" }
-    if ($joined -notmatch "## SI Summary \(round 1\)") { throw "SI Summary comment not posted to issue: $joined" }
-    return "timeline: SI Summary posted + consumed; PO Backlog draft left unconsumed (body is the source)"
+    if ($joined -match "## Orchestrator Summary") { throw "## Orchestrator Summary must NOT appear (retired): $joined" }
+    if ($joined -notmatch "## Development Summary \(round 1\)") { throw "Development Summary comment not posted to issue: $joined" }
+    return "timeline: Development Summary posted + consumed; PO Backlog + retired Orchestrator Summary left unconsumed"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405: per-developer verification drafts (`dev-verify-<ST-id>.md`) flush with the
+# DOCUMENTED top-level header `## Developer <ST-id> -- verification` (em-dash). The
+# title is DERIVED from the filename. One per developer; the anti-spoofing footer
+# gate still applies (an unattributed draft is refused and KEPT for its author).
+Test-Script "dev-verify drafts flush as Developer <ST-id> verification (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify flush" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # Two developers -> two attributed drafts; one unattributed (must be refused + kept).
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-1.md", "Files changed: connect.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-2.md", "Files changed: classify.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-3.md", "No footer here.", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Developer ST-1 ") { throw "expected the ST-1 developer comment, got: $outStr" }
+    if ($outStr -notmatch "COMMENTED: Developer ST-2 ") { throw "expected the ST-2 developer comment, got: $outStr" }
+    if ($outStr -match "Developer ST-3") { throw "an unattributed dev-verify draft must NOT post, got: $outStr" }
+    # Attributed drafts consumed; the unattributed one kept.
+    if (Test-Path "$dir/dev-verify-ST-1.md") { throw "ST-1 draft not consumed" }
+    if (Test-Path "$dir/dev-verify-ST-2.md") { throw "ST-2 draft not consumed" }
+    if (-not (Test-Path "$dir/dev-verify-ST-3.md")) { throw "unattributed ST-3 draft should be kept" }
+    # The posted comments carry the DOCUMENTED top-level header (never `## Status`).
+    # Read the store with an explicit UTF-8 decode so the em-dash in the header survives
+    # (PS 5.1's default Get-Content decode is ANSI, which mojibakes the native UTF-8 output).
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    if ($joined -notmatch "(?m)^## Developer ST-1 $dash verification") { throw "ST-1 did not carry the documented top-level header: $joined" }
+    if ($joined -notmatch "(?m)^## Developer ST-2 $dash verification") { throw "ST-2 did not carry the documented top-level header: $joined" }
+    if ($joined -match "(?m)^## Status") { throw "dev-verify must NOT post a ## Status header: $joined" }
+    return "dev-verify: ST-1/ST-2 flushed with the documented header; unattributed ST-3 refused + kept"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405: the `comment` action honours the documented per-developer header too -- a
+# `dev-verify-<ST-id>.md` body file (or any body starting `## Developer ...`) posts
+# as `## Developer <ST-id> -- verification`, NOT `## Status`. The prefix gate is
+# unchanged (arbitrary prose still gets `## Status`). The transition flush is then
+# idempotent: a draft already posted via `comment` is consumed, never duplicated.
+Test-Script "comment action produces the documented Developer header (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify comment" "dev-verify comment scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $bodyFile = "$dir/dev-verify-ST-7.md"
+    [System.IO.File]::WriteAllText($bodyFile, "Files changed: query.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    # The documented channel: post the dev-verify draft via `comment`.
+    $out = & rust-script $ps --issue $issueNum --agent developer --action comment --prefix Status --body-file $bodyFile 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "comment failed: $outStr" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    if ($joined -notmatch "(?m)^## Developer ST-7 $dash verification") { throw "comment did not produce the documented header: $joined" }
+    if ($joined -match "(?m)^## Status") { throw "comment must NOT prepend ## Status for a dev-verify draft: $joined" }
+    # The flush is idempotent: the draft is already posted -> consumed, not re-posted.
+    $flush = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $flushStr = if ($flush -is [array]) { $flush -join "`n" } else { "$flush" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $flushStr" }
+    if (Test-Path $bodyFile) { throw "a dev-verify draft already posted via comment should be consumed by the idempotent flush" }
+    $p2 = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $devComments = @($p2.comments | Where-Object { $_.body -like "## Developer ST-7*" })
+    if ($devComments.Count -ne 1) { throw "expected exactly ONE Developer ST-7 comment, got $($devComments.Count)" }
+    return "comment action posts the documented Developer header; flush is idempotent (no duplicate)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405 no-double-head: a `dev-verify-<ST-id>.md` draft that ALREADY carries the
+# documented top-level header (`## Developer <ST-id> -- verification`) must flush
+# with a SINGLE header, never a second prepended copy (observed on #3080: the
+# late flush produced `## Developer ST-1 -- verification` twice).
+Test-Script "dev-verify draft with its own header does not double-head (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify double-head" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # The draft carries its own documented header already.
+    $body = "## Developer ST-4 $dash verification`n`nFiles changed: hook.rs`n`n*Authored by Developer*"
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-4.md", $body, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p.comments | ForEach-Object { $_.body }) -join "`n"
+    $hdrCount = ([regex]::Matches($joined, "(?m)^## Developer ST-4 $dash verification")).Count
+    if ($hdrCount -ne 1) { throw "expected exactly ONE '## Developer ST-4 -- verification' header, got ${hdrCount}: $joined" }
+    return "dev-verify draft with its own header flushes with a single header (no double-head)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-405 idempotency vs an older `## Status`-headed verification: a legacy
+# `## Status` comment with the documented `## Developer <ST-id> -- verification`
+# header NESTED inside (the pre-fix shape on #3080) is recognized, so the flush
+# consumes the stale draft and posts NO duplicate.
+Test-Script "dev-verify flush recognizes a nested Status verification (G-405)" {
+  $ps = ".opencode/scripts/pipeline-state.rs"
+  $dash = [char]0x2014
+  $url = Mock-IssueCreate "temp: dev-verify nested status" "dev-verify scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $dir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # Seed the pre-fix #3080 shape: a `## Status` comment whose body NESTS the
+    # documented `## Developer ST-5 -- verification` heading (the old `comment`
+    # action prepended `## Status` over a draft that already had the heading).
+    $legacy = "## Status`n`n## Developer ST-5 $dash verification`n`nFiles changed: x.rs`n`n*Authored by Developer*"
+    $seed = "$dir/status-nested.md"
+    [System.IO.File]::WriteAllText($seed, $legacy, [System.Text.UTF8Encoding]::new($false))
+    $seedOut = & rust-script $ps --issue $issueNum --agent orchestrator --action comment --prefix Status --body-file $seed 2>&1
+    $seedStr = if ($seedOut -is [array]) { $seedOut -join "`n" } else { "$seedOut" }
+    if ($LASTEXITCODE -ne 0) { throw "seeding the nested Status comment failed: $seedStr" }
+    # A stale draft for the same developer is still on disk.
+    [System.IO.File]::WriteAllText("$dir/dev-verify-ST-5.md", "Files changed: x.rs`n`n*Authored by Developer*", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
+    if (Test-Path "$dir/dev-verify-ST-5.md") { throw "the stale dev-verify draft should be consumed (recognized as already posted)" }
+    $storeFile = Mock-StorePath "issues\$issueNum.json"
+    $p2 = [System.IO.File]::ReadAllText($storeFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $joined = @($p2.comments | ForEach-Object { $_.body }) -join "`n"
+    $hdrCount = ([regex]::Matches($joined, "(?m)^## Developer ST-5 $dash verification")).Count
+    if ($hdrCount -ne 1) { throw "the nested Status verification must not be duplicated, got ${hdrCount} headers: $joined" }
+    return "nested ## Status verification recognized; stale draft consumed, no duplicate"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -2486,7 +2948,7 @@ Test-Script "Development Summary stamps the next testing round (count + 1)" {
     $dir = ".opencode/tmp/$issueNum"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action post-comments 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr" }
     if ($outStr -notmatch "COMMENTED: Development Summary \(round 1\)") { throw "fresh issue should stamp round 1, got: $outStr" }
@@ -2504,13 +2966,13 @@ Test-Script "Development Summary stamps the next testing round (count + 1)" {
   $issueNum2 = [int]$m2.Groups[1].Value
   try {
     $log = ".opencode/state/issues/$issueNum2.jsonl"
-    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"self-improver","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
+    $testing = '{"ts":"2026-08-09T00:00:00Z","event_id":"t%ID%","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"%N%"},"phase":"testing","outcome":"success","message":"started testing"}'
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum2).Replace("%ID%", "1") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     [System.IO.File]::AppendAllText($log, $testing.Replace("%N%", $issueNum2).Replace("%ID%", "2") + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
     $dir2 = ".opencode/tmp/$issueNum2"
     New-Item -ItemType Directory -Path $dir2 -Force | Out-Null
     [System.IO.File]::WriteAllText("$dir2/dev-summary.md", "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
-    $out2 = & rust-script $ps --issue $issueNum2 --agent self-improver --action post-comments 2>&1
+    $out2 = & rust-script $ps --issue $issueNum2 --agent orchestrator --action post-comments 2>&1
     $outStr2 = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed: $outStr2" }
     if ($outStr2 -notmatch "COMMENTED: Development Summary \(round 3\)") { throw "two testing entries should stamp round 3, got: $outStr2" }
@@ -2531,16 +2993,16 @@ Test-Script "block/unblock positive + missing reason" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action block --reason "test blocker" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action block --reason "test blocker" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "block failed: $outStr" }
     $st = Mock-IssueState $issueNum
     if ($st.Labels -notcontains "blocked") { throw "Expected blocked label, got: $($st.Labels)" }
-    $out2 = & rust-script $ps --issue $issueNum --agent self-improver --action unblock 2>&1
+    $out2 = & rust-script $ps --issue $issueNum --agent orchestrator --action unblock 2>&1
     if ($LASTEXITCODE -ne 0) { throw "unblock failed: $out2" }
     $st2 = Mock-IssueState $issueNum
     if ($st2.Labels -contains "blocked") { throw "blocked label should be removed, got: $($st2.Labels)" }
-    $out3 = & rust-script $ps --issue $issueNum --agent self-improver --action block 2>&1
+    $out3 = & rust-script $ps --issue $issueNum --agent orchestrator --action block 2>&1
     if ($LASTEXITCODE -eq 0) { throw "block without --reason should fail" }
     $global:LASTEXITCODE = 0
     return "block/unblock positive + missing reason rejected"
@@ -2559,7 +3021,7 @@ Test-Script "close-issue positive (cancel) + done gate" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase canceled 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase canceled 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "close-issue failed: $outStr" }
     $st = Mock-IssueState $issueNum
@@ -2582,7 +3044,7 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
   $issueNum = [int]$m.Groups[1].Value
   try {
     # Done-close from the audit phase is blocked (must be in cleanup).
-    $blocked = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
     if ($blockedStr -notmatch "only cleanup-phase features can close as done") { throw "Expected cleanup-only block, got: $blockedStr" }
     # Record the audit verdict (success) → audit → cleanup. The verdict seeds via
@@ -2591,30 +3053,187 @@ Test-Script "Cleanup phase: done-close gated to cleanup" {
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $ar = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $ar = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
-    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
+    if ($arStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected audit->post-audit, got: $arStr" }
     $st = Mock-IssueState $issueNum
-    if ($st.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($st.Labels)" }
+    if ($st.Labels -notcontains "post-audit") { throw "Expected post-audit label, got: $($st.Labels)" }
+    # Done-close from post-audit is ALSO blocked (only cleanup closes).
+    $blockedPost = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $blockedPostStr = if ($blockedPost -is [array]) { $blockedPost -join "`n" } else { "$blockedPost" }
+    if ($blockedPostStr -notmatch "only cleanup-phase features can close as done") { throw "Expected cleanup-only block from post-audit, got: $blockedPostStr" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: cleanup-gate lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have MERGED.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
+    $stC = Mock-IssueState $issueNum
+    if ($stC.Labels -notcontains "cleanup") { throw "Expected cleanup label, got: $($stC.Labels)" }
     # Now the done-label succeeds from cleanup.
-    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done from cleanup, got: $closeStr" }
     $st2 = Mock-IssueState $issueNum
-    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got: $($st2.State)" }
+    if ($st2.State -ne "OPEN") { throw "Expected OPEN (human closes manually), got state $($st2.State)" }
     if ($st2.Labels -notcontains "done") { throw "Expected done label, got: $($st2.Labels)" }
-    return "cleanup phase: done-label gated to cleanup, audit→cleanup→done (open) works"
+    return "cleanup phase: done-label gated to cleanup, audit->post-audit->cleanup->done (open) works"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
 }
 
-# Reopen leg: done → planning (human-review rework). A feature labeled done (left OPEN for
-# manual human close) loops back to planning when the human reports a post-merge defect; the
-# stale converged A2A is backed up and re-seeded fresh so the fix round re-converges.
-Test-Script "Reopen: done -> planning re-seeds A2A" {
-  $url = Mock-IssueCreate "temp: reopen leg" "reopen scratch" "audit"
+# Ad-hoc-script surfacing (the #3077 lesson): scripts an agent improvised under
+# `.opencode/tmp/<issue>/` must be listed deterministically at the cleanup/close
+# boundary so recurring ones can be routed to the Toolsmith. The scan is additive
+# and best-effort: it prints the inventory, records an `ad-hoc-scripts` event
+# (count + comma-joined paths), folds a `## Ad-hoc Scripts` section into the
+# `## Final Status`, filters to .ps1/.js/.ts (never .md/.json), and never blocks.
+Test-Script "ad-hoc scripts surfaced at the done close (list + event + final status)" {
+  $url = Mock-IssueCreate "temp: adhoc script surface" "adhoc scratch" "cleanup"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  try {
+    # Three improvised scripts (nested + extension-case) and two non-script files
+    # that must NOT be listed.
+    New-Item -ItemType Directory -Path "$dir/e2e" -Force | Out-Null
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText("$dir/e2e/probe.ps1", "Write-Host probe", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/helper.js", "console.log('helper')", $utf8)
+    [System.IO.File]::WriteAllText("$dir/notes.TS", "export const n = 1", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/data.json", "{}", $utf8)
+    [System.IO.File]::WriteAllText("$dir/e2e/REPORT.md", "# report", $utf8)
+    # Prerequisites for the done close: a PASS verdict + a posted success Audit Verdict.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", $utf8)
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText("$dir/verdict-draft.md", "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n*Authored by Auditor*", $utf8)
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $dir/verdict-draft.md" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue done failed: $outStr" }
+    if ($outStr -notmatch "labeled done") { throw "Expected labeled-done, got: $outStr" }
+    # (1) printed inventory — exactly the three scripts, repo-relative, filtered.
+    if ($outStr -notmatch "AD-HOC SCRIPTS \(3\)") { throw "Expected a 3-script inventory, got: $outStr" }
+    foreach ($p in @("e2e/probe.ps1", "e2e/helper.js", "notes.TS")) {
+      if ($outStr -notmatch [regex]::Escape($p)) { throw "Expected $p in the printed inventory, got: $outStr" }
+    }
+    if ($outStr -match "data\.json") { throw "Non-script files must not be listed, got: $outStr" }
+    if ($outStr -match "REPORT\.md") { throw "Non-script files must not be listed, got: $outStr" }
+    # (2) recorded event — count + paths.
+    if (-not (Test-Path $log)) { throw "event log missing for scratch issue" }
+    $evt = Select-String -Path $log -Pattern '"event_name":"ad-hoc-scripts"' -ErrorAction SilentlyContinue
+    if (-not $evt) { throw "Expected an ad-hoc-scripts event in the log" }
+    if ("$($evt.Line)" -notmatch '"count":"3"') { throw "Expected count=3 on the event, got: $($evt.Line)" }
+    if ("$($evt.Line)" -notmatch "e2e/probe\.ps1") { throw "Expected the script paths on the event, got: $($evt.Line)" }
+    # (3) folded into the ONE Final Status comment.
+    $comments = (Mock-IssueComments $issueNum) -join "`n"
+    if ($comments -notmatch "## Final Status") { throw "Expected a Final Status comment" }
+    if ($comments -notmatch "## Ad-hoc Scripts") { throw "Expected the Final Status ad-hoc section" }
+    if ($comments -notmatch "e2e/probe\.ps1") { throw "Expected the script path inside the Final Status ad-hoc section" }
+    return "ad-hoc scripts surfaced at the done close (3 listed, event count+paths, Final Status folded) (#$issueNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Project Status sync — the close legs must actually apply (regression #3071).
+# The `canceled` option id (`98236657`) is ALL DIGITS; passing it with `gh`'s `-F`
+# makes gh coerce it to an Int, which GitHub rejects against the query's `String!`
+# variable ("Could not coerce value 98236657 to String") — the silent failure that
+# left #3071 stuck. `done` now maps to `Reviewing` (`df73e18b`, alphanumeric — the
+# finished spec awaits human review); `canceled` maps to `Done` (`98236657`, the
+# all-digit id), so the canceled leg carries the all-digit `-f` regression. The mock
+# `gh api graphql` simulates that `-F` inference, so the end-to-end close FAILS if
+# the machine regresses to `-F` and PASSES with the raw-string `-f`.
+Test-Script "Project status sync: done -> Reviewing, canceled -> Done (all-digit id via raw -f)" {
+  # (1) Pin the mock's `-F` coercion directly: an all-digit `-F` value against a
+  # `String!` variable is rejected (as GitHub does); the raw-string `-f` passes.
+  & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -F o=98236657' 2>&1 | Out-Null
+  if ($LASTEXITCODE -eq 0) { throw "mock graphql must reject an all-digit -F value against a String! variable (the #3071 bug)" }
+  $global:LASTEXITCODE = 0
+  $okGql = & rust-script $ps --action mock-gh --ghargs 'api graphql -f query=query($o:String!){updateProjectV2ItemFieldValue} -f o=98236657' 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "mock graphql must accept the raw-string -f value, got: $okGql" }
+  $global:LASTEXITCODE = 0
+  # (2) End-to-end done-close: `done` now maps to `Reviewing` (alphanumeric id); the
+  # close must apply it and must NOT record a sync failure. Drive an issue straight to
+  # a done-closeable state (label `cleanup` + a success `## Audit Verdict` + a live-policy
+  # PASS verdict).
+  $url = Mock-IssueCreate "temp: project-status done sync" "project status scratch" "cleanup"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  # (3) End-to-end canceled-close: `canceled` maps to the all-digit `Done` id
+  # (`98236657`); the close must apply it via raw `-f` and must NOT record a failure.
+  # (canceled is allowed from any non-done phase — no verdict/cleanup setup needed.)
+  $curl = Mock-IssueCreate "temp: project-status canceled sync" "canceled scratch" ""
+  $global:LASTEXITCODE = 0
+  $curlStr = if ($curl -is [array]) { $curl -join "" } else { "$curl" }
+  $cm = [regex]::Match($curlStr, "issues/(\d+)")
+  if (-not $cm.Success) { throw "Could not parse issue number from: $curlStr" }
+  $cancelNum = [int]$cm.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $log = ".opencode/state/issues/$issueNum.jsonl"
+  $clog = ".opencode/state/issues/$cancelNum.jsonl"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    [System.IO.File]::WriteAllText("$dir/decision.md", "## Audit Verdict`n`nVerdict: **SUCCESS**`n`n*Authored by Auditor*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $dir/decision.md" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue done failed: $outStr" }
+    if ($outStr -notmatch "labeled done") { throw "Expected labeled-done, got: $outStr" }
+    if ($outStr -notmatch "\[project-status\] #$issueNum") { throw "Expected the done Status sync to run, got: $outStr" }
+    if ($outStr -notmatch "Status 'Reviewing'") { throw "Expected the done Status sync to set 'Reviewing', got: $outStr" }
+    if ($outStr -match "sync failed") { throw "done Status sync must not fail: $outStr" }
+    # A failed sync is recorded in the event log; a clean success leaves no such event.
+    if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "done Status sync recorded a failure event"
+    }
+    # Canceled leg: the all-digit `Done` id must go as a raw string.
+    $cout = & rust-script $ps --issue $cancelNum --agent orchestrator --action close-issue --to-phase canceled 2>&1
+    $coutStr = if ($cout -is [array]) { $cout -join "`n" } else { "$cout" }
+    if ($LASTEXITCODE -ne 0) { throw "close-issue canceled failed: $coutStr" }
+    if ($coutStr -notmatch "\[project-status\] #$cancelNum") { throw "Expected the canceled Status sync to run, got: $coutStr" }
+    if ($coutStr -notmatch "Status 'Done'") { throw "Expected the canceled Status sync to APPLY the all-digit 'Done' id (raw-string -f), got: $coutStr" }
+    if ($coutStr -match "sync failed") { throw "canceled Status sync must not fail - the all-digit option id must go as a raw string: $coutStr" }
+    if ((Test-Path $clog) -and (Select-String -Path $clog -Pattern 'sync-project-status' -ErrorAction SilentlyContinue)) {
+      throw "canceled Status sync recorded a failure event - the option id was not sent as a raw string"
+    }
+    return "done -> Reviewing, canceled -> Done (all-digit id via -f, no silent failure) (#$issueNum/#$cancelNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    Mock-Cleanup $cancelNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# No reopen leg: `done` is terminal. A post-merge defect is handled by a follow-up spec
+# (linked via `revises: #N` / `feature.revised`), never a reopen - so `done -> planning`
+# is refused.
+Test-Script "Reopen removed: done -> planning is refused (terminal)" {
+  $url = Mock-IssueCreate "temp: no-reopen leg" "no-reopen scratch" "audit"
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
   $m = [regex]::Match($urlStr, "issues/(\d+)")
@@ -2626,32 +3245,36 @@ Test-Script "Reopen: done -> planning re-seeds A2A" {
     New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
-    $ar = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict success --reason "ok" 2>&1
+    $ar = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
     $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
-    if ($arStr -notmatch "AUDIT PASS -> CLEANUP") { throw "Expected audit→cleanup, got: $arStr" }
-    $close = & rust-script $ps --issue $issueNum --agent self-improver --action close-issue --to-phase done 2>&1
+    if ($arStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "Expected audit->post-audit, got: $arStr" }
+    # post-audit → cleanup (the Curator's recorded improvement satisfies the exit guard).
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: reopen-removed lesson" 2>&1 | Out-Null
+    # The success exit (post-audit -> cleanup) requires the SPEC MAINT PR to have MERGED.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    $mp = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+    if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "Expected SPEC MAINT PR MERGED, got: $mpStr" }
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup, got: $poutStr" }
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
     $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
     if ($closeStr -notmatch "labeled done") { throw "Expected labeled-done, got: $closeStr" }
-    # Plant a stale converged A2A the reopen must back up and re-seed.
-    [System.IO.File]::WriteAllText("$draftDir/triage.md", "## Convergence: agreed`nstale round-5 draft", [System.Text.UTF8Encoding]::new($false))
-    # Transition to done is still refused (reopen goes to planning, not done).
-    $bad = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase done 2>&1
-    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
-    if ($badStr -notmatch "illegal transition done -> done|transition to done is not allowed") { throw "Expected done-block, got: $badStr" }
-    # The reopen leg: done → planning.
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase planning 2>&1
+    # The reopen leg was REMOVED: `done` is terminal — the transition is illegal.
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase planning 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($LASTEXITCODE -ne 0) { throw "reopen transition failed: $outStr" }
-    if ($outStr -notmatch "TRANSITIONED: done -> planning") { throw "Expected done->planning, got: $outStr" }
-    if ($outStr -notmatch "A2A re-seeded") { throw "Expected A2A re-seed note, got: $outStr" }
-    if (-not (Test-Path "$draftDir/triage.md")) { throw "Expected fresh A2A file after reopen" }
-    $fresh = Get-Content "$draftDir/triage.md" -Raw
-    if ($fresh -match "stale round-5 draft") { throw "A2A not re-seeded fresh (stale content survived)" }
-    $st3 = Mock-IssueState $issueNum
-    if ($st3.Labels -notcontains "planning") { throw "Expected planning label, got: $($st3.Labels)" }
-    if ($st3.Labels -contains "done") { throw "done label should have been swapped off, got: $($st3.Labels)" }
-    return "reopen leg: done→planning legal, label swapped, stale A2A backed up + re-seeded (#$issueNum)"
+    if ($outStr -notmatch "illegal transition done -> planning") { throw "Expected the removed reopen leg to be refused, got: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "done") { throw "done label must remain after the refused transition, got: $($st.Labels)" }
+    if ($st.Labels -contains "planning") { throw "planning label must NOT be applied, got: $($st.Labels)" }
+    return "reopen removed: done -> planning refused, done label intact (#$issueNum)"
   } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -2666,7 +3289,7 @@ Test-Script "audit-record rejects legal restart on non-audit issue" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action audit-record --verdict restart --phase implementation --reason "test" 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict restart --phase implementation --reason "test" 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "requires the issue to be in the audit phase") { throw "Expected audit-phase guard, got: $outStr" }
     return "audit-record non-audit guard verified"
@@ -2770,7 +3393,7 @@ Low
   $closeList = @()
   $prNum = $null
   try {
-    & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "intake->triage failed" }
     $draft = @(
       "# Implementation Plan #$issueNum - scratch",
@@ -2792,7 +3415,7 @@ Low
     [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
     $a2aRaw = Get-Content $a2a -Raw
     [System.IO.File]::WriteAllText($a2a, $a2aRaw.TrimEnd() + "`n`n## Convergence: agreed", [System.Text.UTF8Encoding]::new($false))
-    $t = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $t = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $tStr = if ($t -is [array]) { $t -join "`n" } else { "$t" }
     if ($LASTEXITCODE -ne 0) { throw "triage->implementation failed: $tStr" }
     if ($tStr -notmatch "TRIAGE PLAN DRAFTED:") { throw "no triage-plan draft: $tStr" }
@@ -2800,7 +3423,7 @@ Low
     $planNum = $issueNum
 
     # gate must block while the spec branch has NO commits (developer hasn't pushed)
-    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
+    $b = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
     $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
     if ($bStr -notmatch "no commits beyond main") { throw "Expected no-commits block, got: $bStr" }
 
@@ -2812,7 +3435,7 @@ Low
     & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "mock commit failed" }
     Remove-Item $specMarker -Force -ErrorAction SilentlyContinue
-    $p = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase testing 2>&1
+    $p = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
     $pStr = if ($p -is [array]) { $p -join "`n" } else { "$p" }
     if ($LASTEXITCODE -ne 0) { throw "implementation->testing should pass: $pStr" }
     if ($pStr -notmatch "TRANSITIONED:") { throw "Expected transition, got: $pStr" }
@@ -2822,7 +3445,7 @@ Low
     [System.IO.File]::WriteAllText($evBody, "## Tests Runs`n`nVerdict: PASS (static source analysis, no live run)", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evBody" 2>&1 | Out-Null
     Remove-Item $evBody -Force -ErrorAction SilentlyContinue
-    $g = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $g = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $gStr = if ($g -is [array]) { $g -join "`n" } else { "$g" }
     if ($gStr -notmatch "static-only") { throw "Expected static-only block, got: $gStr" }
     # A FAIL verdict WITH a telemetry_spans token must STILL block (not PASS).
@@ -2830,7 +3453,7 @@ Low
     [System.IO.File]::WriteAllText($evFail, "## Tests Runs`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
-    $h = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $h = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $hStr = if ($h -is [array]) { $h -join "`n" } else { "$h" }
     if ($hStr -notmatch "not PASS") { throw "Expected FAIL-verdict block, got: $hStr" }
     # The exact #1499 vector: a VALID live PASS, then a newer FAIL — the newer FAIL
@@ -2843,7 +3466,7 @@ Low
     [System.IO.File]::WriteAllText($evFail, "## Tests Runs`n`nVerdict: FAIL`nSELECT ... FROM telemetry_spans ... rows=0", [System.Text.UTF8Encoding]::new($false))
     & rust-script $ps --action mock-gh --ghargs "issue comment $planNum --body-file $evFail" 2>&1 | Out-Null
     Remove-Item $evFail -Force -ErrorAction SilentlyContinue
-    $j = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase audit 2>&1
+    $j = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
     $jStr = if ($j -is [array]) { $j -join "`n" } else { "$j" }
     if ($jStr -notmatch "not PASS") { throw "Newer FAIL must block despite earlier valid PASS, got: $jStr" }
     return "impl gate + verification guardrail: no-commits, static-only, FAIL, valid-PASS-then-FAIL"
@@ -2876,11 +3499,11 @@ Test-Script "testing->implementation human-authorized rework bypasses the eviden
   $issueNum = [int]$m.Groups[1].Value
   try {
     # Baseline: no tester evidence -> the normal rework leg is blocked.
-    $b = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation 2>&1
+    $b = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
     $bStr = if ($b -is [array]) { $b -join "`n" } else { "$b" }
     if ($bStr -notmatch "no tester Evidence") { throw "Expected evidence block without the flag, got: $bStr" }
     # The flag WITHOUT a reason must still block (the authorization is justified).
-    $nr = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized 2>&1
+    $nr = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized 2>&1
     $nrStr = if ($nr -is [array]) { $nr -join "`n" } else { "$nr" }
     if ($nrStr -notmatch "no tester Evidence") { throw "Expected evidence block without a reason, got: $nrStr" }
     # Seed the A2A (the implementation-entry side-effect reads it).
@@ -2888,7 +3511,7 @@ Test-Script "testing->implementation human-authorized rework bypasses the eviden
     New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
     # Flag + reason -> allowed; records human.authorization; label implementation.
-    $ok = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" 2>&1
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" 2>&1
     $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
     if ($LASTEXITCODE -ne 0) { throw "human-authorized rework failed: $okStr" }
     if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "Expected testing->implementation, got: $okStr" }
@@ -3105,7 +3728,7 @@ Test-Script "intake exit gate requires the required sections" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "missing required section") { throw "Expected sections block, got: $outStr" }
     return "intake gate: missing sections block"
@@ -3124,7 +3747,7 @@ Test-Script "transition --to-phase done is refused" {
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    $out = & rust-script $ps --issue $issueNum --agent self-improver --action transition --to-phase done 2>&1
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase done 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -match "TRANSITIONED:") { throw "should not transition to done, got: $outStr" }
     if ($outStr -notmatch "illegal transition|transition to done is not allowed") { throw "Expected a done-block, got: $outStr" }
@@ -3153,9 +3776,9 @@ Test-Script "Hardening PUT-locks an OPEN pipeline issue (lock-path regression)" 
   if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
   $issueNum = [int]$m.Groups[1].Value
   try {
-    # The one-shot hardening pass (self-improver) enumerates OPEN pipeline issues and
+    # The one-shot hardening pass (machinist) enumerates OPEN pipeline issues and
     # PUT-locks the non-temp candidate (this action is repo-level: no --issue needed).
-    $out = & rust-script $ps --agent self-improver --action hardening-lock-open-issues 2>&1
+    $out = & rust-script $ps --agent machinist --action hardening-lock-open-issues 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($outStr -notmatch "LOCKED: #$issueNum") { throw "hardening should PUT-lock #$issueNum, got: $outStr" }
     if ($outStr -match "LOCK FAILED") { throw "hardening reported a per-issue lock failure, got: $outStr" }
@@ -3214,8 +3837,8 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
   } | ConvertTo-Json -Depth 8
   [System.IO.File]::WriteAllText((Join-Path $prsDir "$humanNum.json"), $human, [System.Text.UTF8Encoding]::new($false))
   try {
-    # The one-shot repo action (self-improver; repo-level, no --issue needed).
-    $out = & rust-script $ps --agent self-improver --action close-dependabot-prs 2>&1
+    # The one-shot repo action (machinist; repo-level, no --issue needed).
+    $out = & rust-script $ps --agent machinist --action close-dependabot-prs 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "close-dependabot-prs should exit 0, got exit ${LASTEXITCODE}: $outStr" }
     if ($outStr -notmatch "CLOSED: #$depNum") { throw "Dependabot PR #$depNum should be closed, got: $outStr" }
@@ -3234,14 +3857,701 @@ Test-Script "close-dependabot-prs closes Dependabot PRs and leaves human PRs ope
   }
 }
 
+# --- Spec #2944 env-isolation contract pins (CU-H, ST-13) ---
+# Static pins over the dev-env lifecycle + pipeline-state lease contracts — the
+# anti-regression harness for R-3.3/R-3.4/R-5.3. Fully offline (plain file reads;
+# no GitHub/branch writes). They pin STABLE contracts (action names, param names,
+# path shapes, kill posture) — never line numbers — so concurrent CU-C/CU-D edits
+# stay green as long as the contract holds.
+Write-Host "Env-isolation contract pins (Spec #2944):" -ForegroundColor Cyan
+
+$devEnvSrc = Get-Content ".opencode/scripts/dev-env.ps1" -Raw
+$psSrc = Get-Content ".opencode/scripts/pipeline-state.rs" -Raw
+
+# R-3.3: no global image-name kill anywhere in the lifecycle. Every kill is
+# PID-scoped to the target environment's manifest (image-guarded).
+Test-Script "dev-env.ps1: no global image-name kill (/IM), manifest-scoped teardown" {
+  if ($devEnvSrc -match '(?i)/IM\b') { throw "dev-env.ps1 contains a global image-name kill (/IM): $($Matches[0])" }
+  if ($devEnvSrc -notmatch 'function Stop-EnvManifest\b') { throw "manifest-scoped teardown function Stop-EnvManifest missing" }
+  if ($devEnvSrc -notmatch 'taskkill /PID \$t\.pid /T') { throw "manifest-scoped PID kill (taskkill /PID <manifest pid> /T) missing" }
+  if ($devEnvSrc -notmatch 'Test-RoleImageMatch') { throw "manifest kill is not image-guarded (stale-PID protection)" }
+  return "no /IM image kill; manifest-scoped, image-guarded PID teardown present"
+}
+
+# R-3.2: the Clean action is a first-class lifecycle action (declared + dispatched).
+Test-Script "dev-env.ps1: Clean action declared in ValidateSet + dispatched" {
+  if ($devEnvSrc -notmatch '\[ValidateSet\([^)]*"Up"[^)]*"Clean"') { throw "Clean missing from the -Action ValidateSet" }
+  if ($devEnvSrc -notmatch '(?m)^\s*"Clean"\s*\{') { throw "Clean dispatch arm missing from the Action switch" }
+  return "Clean in ValidateSet + dispatch"
+}
+
+# R-1.1/R-2.2: the env selectors are part of the shipped param surface.
+Test-Script "dev-env.ps1: accepts -EnvId / -EnvSlot / -ServingCheckout" {
+  foreach ($p in @('\[string\]\$EnvId\b', '\[int\]\$EnvSlot\b', '\[string\]\$ServingCheckout\b')) {
+    if ($devEnvSrc -notmatch $p) { throw "dev-env.ps1 param missing: $p" }
+  }
+  return "-EnvId / -EnvSlot / -ServingCheckout params present"
+}
+
+# R-3.4: the same-issue lease path + schema exist in BOTH the lifecycle script
+# (write/refuse/reclaim) and the state machine (serving record + context).
+Test-Script "same-issue env lease path + schema present (dev-env.ps1 + pipeline-state.rs)" {
+  if ($devEnvSrc -notmatch 'env-leases') { throw "dev-env.ps1 has no env-leases path" }
+  if ($devEnvSrc -notmatch '\$SpecIssue\.json') { throw "dev-env.ps1 lease path is not issue-keyed (<issue>.json)" }
+  if ($devEnvSrc -notmatch 'function Test-EnvLeaseLive\b') { throw "dev-env.ps1 has no live-lease check (refuse-second-Up)" }
+  if ($psSrc -notmatch 'env-leases') { throw "pipeline-state.rs has no env-leases path" }
+  if ($psSrc -notmatch 'struct EnvLease\b') { throw "pipeline-state.rs has no EnvLease schema" }
+  return "env lease (.opencode/state/env-leases/<issue>.json) path + schema pinned"
+}
+
+# --- Spec #3066 env-isolation guard pins (ST-2) ---
+# Static pins over the fail-closed shared-cluster guard. They pin STABLE
+# contracts (action name, param names, function names, refusal codes, kill
+# posture) -- never line numbers -- so concurrent edits stay green as long as the
+# contract holds. Fully offline (plain file reads; no GitHub/branch writes).
+Write-Host "Env-isolation guard pins (Spec #3066):" -ForegroundColor Cyan
+
+# R-1a/R-2a: the guard-only AssertIsolation action is declared in the -Action
+# ValidateSet and dispatched (no PostgreSQL/app launch, no G-052 check).
+Test-Script "dev-env.ps1: AssertIsolation action declared in ValidateSet + dispatched" {
+  if ($devEnvSrc -notmatch '\[ValidateSet\([^)]*"Up"[^)]*"AssertIsolation"') { throw "AssertIsolation missing from the -Action ValidateSet" }
+  if ($devEnvSrc -notmatch '(?m)^\s*"AssertIsolation"\s*\{') { throw "AssertIsolation dispatch arm missing from the Action switch" }
+  if ($devEnvSrc -notmatch 'Assert-NoSharedClusterTarget -ActionName "AssertIsolation"') { throw "AssertIsolation arm does not invoke the guard" }
+  return "AssertIsolation in ValidateSet + dispatch calls the guard"
+}
+
+# R-2/R-3: the guard surface (functions, marker, env flag, seam, refusal codes,
+# exit 3, audit file) is present and wired into the Up path.
+Test-Script "dev-env.ps1: env-isolation guard surface present (Spec #3066)" {
+  foreach ($needle in @(
+    'function Test-SharedClusterTarget\b',
+    'function Assert-NoSharedClusterTarget\b',
+    '\[switch\]\$RequireIsolation\b',
+    'FREDO_REQUIRE_ENV_ISOLATION',
+    'FREDO_SHARED_APPDATA_DIR',
+    'env-isolation\.jsonl',
+    'ISOLATION REFUSED \(shared-dir\)',
+    'ISOLATION REFUSED \(sentinel-seam\)',
+    'Assert-NoSharedClusterTarget -ActionName "Up"'
+  )) {
+    if ($devEnvSrc -notmatch $needle) { throw "guard surface missing: $needle" }
+  }
+  if ($devEnvSrc -notmatch 'exit 3\b') { throw "guard has no exit 3 refusal" }
+  return "guard functions + marker + env flag + seam + codes + exit 3 + Up wiring present"
+}
+
+# R-5b/R-NF-2: the env teardown path carries no global image-name kill (/IM);
+# the manifest-scoped, image-guarded teardown is present.
+Test-Script "dev-env.ps1: no /IM on the env teardown path (Spec #3066)" {
+  if ($devEnvSrc -match '(?i)/IM\b') { throw "dev-env.ps1 contains a global image-name kill (/IM)" }
+  if ($devEnvSrc -notmatch 'function Stop-EnvManifest\b') { throw "manifest-scoped teardown Stop-EnvManifest missing" }
+  if ($devEnvSrc -notmatch 'Test-RoleImageMatch') { throw "manifest kill is not image-guarded" }
+  return "IMAGE_KILL_PRESENT=False; MANIFEST_TEARDOWN_PRESENT=True; IMAGE_GUARD_PRESENT=True"
+}
+
+# F-1/F-6 (Spec #3066 round 2): the ST-5 induction lever MUST arm the guard on
+# every refusal leg. In legacy mode (no -EnvId/-EnvSlot/-ServingCheckout) ONLY the
+# -RequireIsolation switch arms it; a refusal leg that omits it runs un-armed and
+# never refuses -- the exact round-1 defect AC2/AC3 failed on (the developer could
+# not execute PowerShell in the sandbox, so the un-armed invocation was never
+# caught before the tester ran it). Pin the arming token so it cannot regress.
+Test-Script "error-path-levers.ps1: refusal legs arm the guard (Spec #3066 F-6)" {
+  $leverPath = ".opencode/tests/env-isolation/error-path-levers.ps1"
+  if (-not (Test-Path $leverPath)) { throw "ST-5 induction lever missing: $leverPath" }
+  $leverSrc = Get-Content $leverPath -Raw
+  # Any of the three contract-equivalent arming forms is acceptable.
+  $armsBase  = $leverSrc -match '"AssertIsolation"\s*,\s*"-RequireIsolation"'
+  $armsExtra = $leverSrc -match '-ExtraArgs\s+@\(\s*"-RequireIsolation"'
+  $armsEnv   = $leverSrc -match 'FREDO_REQUIRE_ENV_ISOLATION\s*='
+  if (-not ($armsBase -or $armsExtra -or $armsEnv)) {
+    throw "the ST-5 lever does not arm the guard: expected -RequireIsolation in the AssertIsolation base args (or per-leg -ExtraArgs, or FREDO_REQUIRE_ENV_ISOLATION in -LegEnv)"
+  }
+  foreach ($leg in @('"SharedDirRefusal"', '"SentinelRefusal"', '"NoGlobalImageKill"')) {
+    if ($leverSrc -notmatch [regex]::Escape($leg)) { throw "refusal leg missing from the lever: $leg" }
+  }
+  return "AssertIsolation guard invocation arms -RequireIsolation; SharedDirRefusal/SentinelRefusal/NoGlobalImageKill present"
+}
+
+# --- Spec #3141 ST-6: the retired companion `llama` port ---
+# The out-of-process companion server is gone (inference is in-process), so no
+# dev environment records or checks a `llama` port any more; the companion
+# DIRECTORY remains the per-env artifact dimension. These pins implement the AC's
+# literal predicate on RAW script text (a comment mentioning the retired token is
+# not an emitted port), with a non-vacuity control proving each pattern matches a
+# seeded hit.
+Write-Host "Retired companion llama port (Spec #3141):" -ForegroundColor Cyan
+
+Test-Script "dev-env.ps1: emits no companion llama port in the manifest/evidence/status" {
+  # The manifest / evidence `ports`/`endpoints` literals and the status line must
+  # carry no `llama` entry, and no `$LlamaPort` variable may survive.
+  foreach ($pattern in @(
+    'llama\s*=\s*\$LlamaPort',
+    'LlamaPort',
+    'llama \$vLlama',
+    'FREDO_LLAMA_SERVER_PORT'
+  )) {
+    if ($devEnvSrc -match $pattern) {
+      throw "dev-env.ps1 still emits the retired companion port: $($Matches[0])"
+    }
+  }
+  # NON-VACUITY CONTROL: the same patterns DO match a seeded hit.
+  $seeded = 'llama    = $LlamaPort' + "`n" + 'FREDO_LLAMA_SERVER_PORT = "16004"'
+  $caught = @()
+  foreach ($pattern in @('llama\s*=\s*\$LlamaPort', 'LlamaPort', 'FREDO_LLAMA_SERVER_PORT')) {
+    if ($seeded -match $pattern) { $caught += $pattern }
+  }
+  if ($caught.Count -lt 3) {
+    throw "non-vacuity control failed: the pin patterns do not all catch a seeded hit ($($caught -join ', '))"
+  }
+  # The companion DIR dimension SURVIVES (AC-27): the pin is scoped to the port.
+  if ($devEnvSrc -notmatch 'FREDO_LLAMA_SERVER_COMPANION_DIR') {
+    throw "the per-env companion dir override must survive the port retirement (AC-27)"
+  }
+  return "no llama port in manifest/evidence/status; companion-dir override present; seeded control caught"
+}
+
+Test-Script "verify-env-isolation.ps1: no llama port entry and no llama role" {
+  $isoSrc = Get-Content ".opencode/scripts/verify-env-isolation.ps1" -Raw
+  foreach ($pattern in @(
+    'Name = "llama"',
+    'llama\s*=\s*@\("llama-server"\)',
+    'Role = "llama"'
+  )) {
+    if ($isoSrc -match $pattern) {
+      throw "verify-env-isolation.ps1 still maps the retired companion port: $($Matches[0])"
+    }
+  }
+  # NON-VACUITY CONTROL: a seeded entry is caught.
+  $seeded = '@{ Name = "llama";    Role = "llama"; Optional = $true }' + "`n" + 'llama    = @("llama-server")'
+  $caught = 0
+  if ($seeded -match 'Name = "llama"') { $caught++ }
+  if ($seeded -match 'llama\s*=\s*@\("llama-server"\)') { $caught++ }
+  if ($caught -lt 2) {
+    throw "non-vacuity control failed: the isolation pin patterns do not catch a seeded hit"
+  }
+  # The four required endpoints survive.
+  foreach ($name in @('vite', 'mcp', 'otlpGrpc', 'otlpHttp')) {
+    if ($isoSrc -notmatch ("Name = `"$name`"")) { throw "required endpoint dropped: $name" }
+  }
+  return "no llama port/role; four required endpoints present; seeded control caught"
+}
+
+# --- set-permission --decision remove (per-pattern + pattern-less flat) ---
+Write-Host "set-permission remove:" -ForegroundColor Cyan
+
+Test-Script "set-permission remove deletes a per-pattern rule (order-preserving, NO-OP absent)" {
+  $scratch = New-PermScratch
+  try {
+    $addA = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision allow --config-file $scratch 2>&1
+    $addAStr = if ($addA -is [array]) { $addA -join "`n" } else { "$addA" }
+    if ($addAStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-a, got: $addAStr" }
+    $addB = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-b*" --decision allow --config-file $scratch 2>&1
+    $addBStr = if ($addB -is [array]) { $addB -join "`n" } else { "$addB" }
+    if ($addBStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-b, got: $addBStr" }
+    $withRules = Get-Content $scratch -Raw
+    if ($withRules.IndexOf('"zz-remove-a*"') -lt 0 -or $withRules.IndexOf('"zz-remove-b*"') -lt 0) { throw "rules not added" }
+    # Remove A — order-preserving: B survives and the document still parses.
+    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
+    if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
+    $after = Get-Content $scratch -Raw
+    if ($after.IndexOf('"zz-remove-a*"') -ge 0) { throw "zz-remove-a was not removed" }
+    if ($after.IndexOf('"zz-remove-b*"') -lt 0) { throw "zz-remove-b was lost (not order-preserving)" }
+    $null = $after | ConvertFrom-Json
+    if ($after.IndexOf('"* | *"') -lt 0) { throw "the trailing deny rules vanished" }
+    # Removing an absent rule is a NO-OP.
+    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
+    if ($againStr -notmatch "NO-OP") { throw "expected NO-OP on absent remove, got: $againStr" }
+    return "per-pattern remove: deleted + order-preserving + NO-OP absent"
+  } finally {
+    Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "set-permission pattern-less add/remove edits a top-level flat key" {
+  $scratch = New-PermScratch
+  try {
+    # Add a flat top-level key (no --pattern).
+    $add = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision deny --config-file $scratch 2>&1
+    $addStr = if ($add -is [array]) { $add -join "`n" } else { "$add" }
+    if ($addStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $addStr" }
+    $edited = Get-Content $scratch -Raw
+    if ($edited -notmatch '"zzflatkey"\s*:\s*"deny"') { throw "flat key not added" }
+    $null = $edited | ConvertFrom-Json
+    # Remove the flat key (no --pattern).
+    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
+    $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
+    if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
+    $edited2 = Get-Content $scratch -Raw
+    if ($edited2 -match '"zzflatkey"') { throw "flat key not removed" }
+    $null = $edited2 | ConvertFrom-Json
+    # A second remove is a NO-OP.
+    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
+    $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
+    if ($againStr -notmatch "NO-OP") { throw "expected NO-OP, got: $againStr" }
+    return "pattern-less: flat key added then removed + NO-OP"
+  } finally {
+    Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- human.review (the done-window operator decision, PO-gated) ---
+Write-Host "human.review:" -ForegroundColor Cyan
+
+Test-Script "human.review records accept/reject (PO-gated) and improvement counts them" {
+  $url = Mock-IssueCreate "temp: human.review" "human.review scratch" "done"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  try {
+    # Role gate: only the product-owner records the operator's decision.
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action human.review --decision accept 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "not allowed to human.review") { throw "expected role gate, got: $denyStr" }
+    # An invalid decision is refused.
+    $bad = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision maybe 2>&1
+    if ($LASTEXITCODE -eq 0) { throw "invalid decision should fail" }
+    $global:LASTEXITCODE = 0
+    # accept → outcome success, attrs decision/note/reviewer.
+    $acc = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision accept --note "looks good" --reviewer "human" 2>&1
+    $accStr = if ($acc -is [array]) { $acc -join "`n" } else { "$acc" }
+    if ($LASTEXITCODE -ne 0) { throw "human.review accept failed: $accStr" }
+    if ($accStr -notmatch "HUMAN REVIEW RECORDED: accept") { throw "expected accept recorded, got: $accStr" }
+    $log = ".opencode/state/issues/$issueNum.jsonl"
+    $accEv = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.review" } | Select-Object -Last 1
+    if (-not $accEv) { throw "no human.review event recorded" }
+    if ($accEv.outcome -ne "success") { throw "accept should be outcome success, got $($accEv.outcome)" }
+    if ($accEv.attributes.decision -ne "accept") { throw "decision attr wrong: $($accEv.attributes.decision)" }
+    if ($accEv.attributes.reviewer -ne "human") { throw "reviewer attr wrong: $($accEv.attributes.reviewer)" }
+    # reject → outcome failed.
+    $rej = & rust-script $ps --issue $issueNum --agent product-owner --action human.review --decision reject --note "regression" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "human.review reject failed" }
+    $rejEv = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.review" } | Select-Object -Last 1
+    if ($rejEv.outcome -ne "failed") { throw "reject should be outcome failed, got $($rejEv.outcome)" }
+    # improvement surfaces the raw accept/reject counts.
+    $imp = & rust-script $ps --action improvement --json 2>&1
+    $impStr = if ($imp -is [array]) { $imp -join "`n" } else { "$imp" }
+    $impJson = $impStr | ConvertFrom-Json
+    if ($null -eq $impJson.human_review) { throw "improvement json missing human_review" }
+    if ([int]$impJson.human_review.accept -lt 1) { throw "expected >=1 accept counted, got $($impJson.human_review.accept)" }
+    if ([int]$impJson.human_review.reject -lt 1) { throw "expected >=1 reject counted, got $($impJson.human_review.reject)" }
+    return "human.review: accept/reject recorded + counted (#$issueNum)"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- maint-pr (the post-audit SPEC MAINT PR) ---
+Write-Host "maint-pr:" -ForegroundColor Cyan
+
+Test-Script "maint-pr opens ONE SPEC MAINT PR and force-merges it (--admin)" {
+  $url = Mock-IssueCreate "temp: maint-pr" "maint-pr scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $pending = Join-Path $env:FREDO_MOCK_STORE "maint-merge-pending"
+  $closed = Join-Path $env:FREDO_MOCK_STORE "maint-merge-closed"
+  try {
+    # Role gate: only the orchestrator may open the maintenance PR.
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action maint-pr 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "not allowed to maint-pr") { throw "expected role gate, got: $denyStr" }
+    # A clean tree is a NO-OP, never fatal (no marker → git status empty).
+    $noop = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $noopStr = if ($noop -is [array]) { $noop -join "`n" } else { "$noop" }
+    if ($LASTEXITCODE -ne 0) { throw "clean tree should NO-OP, got exit ${LASTEXITCODE}: $noopStr" }
+    if ($noopStr -notmatch "NO-OP: no post-audit changes") { throw "expected NO-OP, got: $noopStr" }
+    # Make the working tree dirty for the post-audit paths (mock marker).
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    # Happy path: ONE PR off maint/<N>, force-merged with --admin → MERGED.
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "maint-pr failed: $outStr" }
+    if ($outStr -notmatch "SPEC MAINT PR MERGED") { throw "expected SPEC MAINT PR MERGED, got: $outStr" }
+    $prN = [regex]::Match($outStr, "/pull/(\d+)").Groups[1].Value
+    if (-not $prN) { throw "no PR number parsed: $outStr" }
+    $prObj = Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$prN.json") -Raw | ConvertFrom-Json
+    if ($prObj.state -ne "MERGED") { throw "SPEC MAINT PR should be MERGED, got $($prObj.state)" }
+    if ($prObj.head -ne "maint/$issueNum") { throw "SPEC MAINT PR head should be maint/$issueNum, got $($prObj.head)" }
+    # Exactly ONE maintenance PR was opened (no per-concern split).
+    $maintPrs = @(Get-ChildItem (Join-Path $env:FREDO_MOCK_STORE "prs") -Filter *.json | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.head -like "maint/*" })
+    if ($maintPrs.Count -ne 1) { throw "expected exactly ONE maint PR, got $($maintPrs.Count)" }
+    # The event records branch/pr/merged=true (no concern attr).
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" } | Select-Object -Last 1
+    if (-not $ev) { throw "no merged maint-pr event recorded" }
+    if ($ev.attributes.branch -ne "maint/$issueNum") { throw "event branch wrong: $($ev.attributes.branch)" }
+    if ($ev.attributes.pr -ne "$prN") { throw "event pr wrong: $($ev.attributes.pr)" }
+    # Merge-await verification: an unmerged PR (mock marker) leaves the PR OPEN →
+    # the bounded poll times out → maint-pr ERRORS (the gate fails, no merged event).
+    New-Item -ItemType File -Path $pending -Force | Out-Null
+    $env:FREDO_MAINT_MERGE_ATTEMPTS = "1"
+    $to = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $toStr = if ($to -is [array]) { $to -join "`n" } else { "$to" }
+    if ($LASTEXITCODE -eq 0) { throw "an unmerged PR should fail the gate, got: $toStr" }
+    if ($toStr -notmatch "did not merge within the timeout") { throw "expected timeout error, got: $toStr" }
+    $global:LASTEXITCODE = 0
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    # A closed-unmerged PR errors too (mock marker).
+    New-Item -ItemType File -Path $closed -Force | Out-Null
+    $cl = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $clStr = if ($cl -is [array]) { $cl -join "`n" } else { "$cl" }
+    if ($LASTEXITCODE -eq 0) { throw "a closed-unmerged PR should fail the gate, got: $clStr" }
+    if ($clStr -notmatch "closed unmerged") { throw "expected closed-unmerged error, got: $clStr" }
+    $global:LASTEXITCODE = 0
+    return "maint-pr: ONE SPEC MAINT PR, force-merged (--admin); unmerged/closed fail the gate (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $closed -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\FREDO_MAINT_MERGE_ATTEMPTS -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Regression #3075 (G-406): a FAILED first attempt leaves an OPEN `maint/<N>` PR
+# whose head replays the squash-merged spec diff. The second invocation must NOT
+# fail on `gh pr create` ("a pull request for branch … already exists") and must
+# NOT replay the spec tip: it closes the stale PR, deletes its stale head, bases
+# the fresh branch on `origin/main`, opens a clean PR, and merges it.
+Test-Script "maint-pr recovers an open maint/<N> PR onto origin/main and merges" {
+  $url = Mock-IssueCreate "temp: maint-pr recovery" "maint-pr recovery scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $pending = Join-Path $env:FREDO_MOCK_STORE "maint-merge-pending"
+  $diverged = Join-Path $env:FREDO_MOCK_STORE "maint-base-diverged"
+  $baseFile = Join-Path $env:FREDO_MOCK_STORE "checkout-base"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    Remove-Item -LiteralPath $baseFile -Force -ErrorAction SilentlyContinue
+    $env:FREDO_MAINT_MERGE_ATTEMPTS = "1"
+    # First attempt: the PR opens + pushes, but the (mock) merge stays OPEN → the
+    # bounded verification times out → the action errors (the gate fails).
+    New-Item -ItemType File -Path $pending -Force | Out-Null
+    $first = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $firstStr = if ($first -is [array]) { $first -join "`n" } else { "$first" }
+    if ($LASTEXITCODE -eq 0) { throw "first attempt should fail on the unmerged PR, got: $firstStr" }
+    if ($firstStr -notmatch "did not merge within the timeout") { throw "expected timeout error, got: $firstStr" }
+    $global:LASTEXITCODE = 0
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    # The failed attempt left exactly ONE OPEN maint PR — the recovery input.
+    $open = @(Mock-PrList "maint/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected the failed attempt to leave ONE open maint PR, got $($open.Count)" }
+    $staleN = $open[0]
+    # Second attempt: recover. No merge marker → it must end MERGED.
+    $second = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($LASTEXITCODE -ne 0) { throw "second maint-pr failed: $secondStr" }
+    if ($secondStr -notmatch "SPEC MAINT PR MERGED") { throw "expected SPEC MAINT PR MERGED, got: $secondStr" }
+    # The branch was based on the CURRENT origin/main, not the spec tip/HEAD.
+    if (-not (Test-Path -LiteralPath $baseFile)) { throw "maint-pr never recorded a checkout base - branch was not based on origin/main" }
+    $base = (Get-Content -LiteralPath $baseFile -Raw).Trim()
+    if ($base -ne "origin/main") { throw "maint branch must be based on origin/main, got '$base'" }
+    # The stale PR was closed; a NEW clean PR was opened and merged.
+    $stale = Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$staleN.json") -Raw | ConvertFrom-Json
+    if ($stale.state -ne "CLOSED") { throw "stale PR #$staleN should be CLOSED, got $($stale.state)" }
+    $merged = @(Mock-PrList "maint/$issueNum" "merged")
+    if ($merged.Count -ne 1) { throw "expected ONE merged maint PR after recovery, got $($merged.Count)" }
+    $newN = $merged[0]
+    if ("$newN" -eq "$staleN") { throw "recovery must open a NEW PR (closed stale #$staleN), not reuse it" }
+    # Event: merged:true + the NEW pr number + branch (the contract is preserved).
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" } | Select-Object -Last 1
+    if (-not $ev) { throw "no merged maint-pr event recorded after recovery" }
+    if ("$($ev.attributes.pr)" -ne "$newN") { throw "event pr wrong: $($ev.attributes.pr) vs $newN" }
+    if ($ev.attributes.branch -ne "maint/$issueNum") { throw "event branch wrong: $($ev.attributes.branch)" }
+    # G-1976 loud failure: if origin/main changed a path that still carries a
+    # pending edit, refuse (do NOT clobber) and fail the gate.
+    New-Item -ItemType File -Path $diverged -Force | Out-Null
+    $clobber = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $clobberStr = if ($clobber -is [array]) { $clobber -join "`n" } else { "$clobber" }
+    if ($LASTEXITCODE -eq 0) { throw "a diverged base with pending edits must fail loudly, got: $clobberStr" }
+    if ($clobberStr -notmatch "cannot base the SPEC MAINT PR" -or $clobberStr -notmatch "docs/ARCHITECTURE.md") {
+      throw "expected the G-1976 clobber refusal, got: $clobberStr"
+    }
+    $global:LASTEXITCODE = 0
+    return "maint-pr recovery: stale maint/$issueNum PR closed, fresh branch on origin/main merged (event merged:true); diverged base refused (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $pending -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $diverged -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $baseFile -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\FREDO_MAINT_MERGE_ATTEMPTS -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The success exit (post-audit -> cleanup) is gated on the merged SPEC MAINT PR:
+# with the Curator improvement recorded but NO maint-pr, the transition is BLOCKED
+# (so `done` is unreachable). A restart exit is NOT gated (covered by the
+# audit-record restart test above).
+Test-Script "post-audit -> cleanup requires the merged SPEC MAINT PR" {
+  $url = Mock-IssueCreate "temp: post-audit merge gate" "merge gate scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1 | Out-Null
+    $refs = "docs/agentic-pipeline/playbooks/references.md"
+    $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: merge-gate lesson" 2>&1 | Out-Null
+    # No maint-pr yet → post-audit -> cleanup is BLOCKED on the merged event.
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($blockedStr -notmatch "no merged SPEC MAINT PR recorded") { throw "Expected merged-gate block, got: $blockedStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "post-audit") { throw "issue must stay post-audit after the blocked transition, got: $($st.Labels)" }
+    # Once the SPEC MAINT PR force-merges (--admin), the same transition succeeds.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+    & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1 | Out-Null
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "Expected post-audit -> cleanup after the merge, got: $poutStr" }
+    return "post-audit -> cleanup gated on the merged SPEC MAINT PR (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- Machine dead-end: `post-audit → testing` after the spec PR merged ---
+# The spec PR is squash-merged at `testing → audit` and the repo's
+# `delete_branch_on_merge` removes `spec/<N>` — so a later audit restart to
+# `testing` found no head branch. The machine used to call `gh pr create`
+# unconditionally, which can never succeed (`No commits between main and
+# spec/<N>` after a squash merge) → every post-merge restart to testing was
+# structurally impossible (observed live on #3141). Now: recreate the branch from
+# origin/main and skip the PR (NO-PR round).
+Test-Script "post-audit->testing recreates a merged-away spec branch and opens NO PR" {
+  $url = Mock-IssueCreate "temp: post-merge testing restart" "post-merge restart scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # Post-merge state: the spec PR is MERGED and the head branch is GONE.
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+    if (-not $prNum) { throw "no PR number from mock create: $prStr" }
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Mock-StorePath "refs\spec\$issueNum")) { throw "precondition: remote spec branch should be gone" }
+    # The post-audit exit guard requires the Curator's recorded improvement.
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-merge restart lesson" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge restart to testing must pass, got exit ${LASTEXITCODE}: $outStr" }
+    if ($outStr -match "No commits between") { throw "must not attempt gh pr create in the post-merge state: $outStr" }
+    if ($outStr -notmatch "TRANSITIONED: post-audit -> testing") { throw "Expected the transition, got: $outStr" }
+    if ($outStr -notmatch "SPEC BRANCH RECREATED from origin/main") { throw "Expected the recreate note, got: $outStr" }
+    if ($outStr -notmatch "no spec PR opened \(already merged") { throw "Expected the NO-PR note, got: $outStr" }
+    # The branch exists again, based on origin/main (G-421 descent).
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$issueNum"))) { throw "spec branch was not recreated on origin" }
+    if (-not (Test-Path (Mock-StorePath "local-refs\spec\$issueNum"))) { throw "spec branch was not recreated locally" }
+    # No NEW spec PR was opened for the recreated branch (exactly the merged one).
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 0) { throw "the NO-PR round must not open a spec PR, got $($open.Count) open" }
+    # The no-PR round is recorded so the orchestrator/auditor can see it.
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "spec-branch.recreated" } | Select-Object -Last 1
+    if (-not $ev) { throw "no spec-branch.recreated event recorded" }
+    if ($ev.attributes.pr -ne "none") { throw "spec-branch.recreated pr attr should be 'none', got '$($ev.attributes.pr)'" }
+    if ($ev.attributes.reason -ne "already-merged") { throw "spec-branch.recreated reason attr wrong: $($ev.attributes.reason)" }
+    return "post-merge restart to testing recreated spec/$issueNum from origin/main, opened NO PR (event recorded)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Fail-CLOSED: a genuinely LOST branch (no head, and NO merged spec PR) must not be
+# silently re-invented — a main-based PR would show nothing, and a stale-tip PR
+# would replay work. The transition errors with an actionable message.
+Test-Script "post-audit->testing fails CLOSED when the spec branch is lost (no merged PR)" {
+  $url = Mock-IssueCreate "temp: lost spec branch" "lost branch scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # No spec ref on origin, no PR of any state — a genuinely LOST branch. Model the
+    # realistic state: the post-audit doc-sync left the repo root checked out ON
+    # `spec/<N>`, so the local ref still exists (the refused-transition test above
+    # proves the serving guard is satisfied when a local ref exists and no merge is
+    # recorded). The mock serving guard reads refs: give it the local ref only.
+    & rust-script $ps --action mock-git --gitargs "branch spec/$issueNum origin/main" 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: lost-branch lesson" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a lost spec branch must fail CLOSED, got exit 0: $outStr" }
+    if ($outStr -notmatch "missing on origin and no merged spec PR") { throw "Expected the lost-branch refusal, got: $outStr" }
+    if ($outStr -match "No commits between") { throw "must not attempt gh pr create on a lost branch: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "post-audit") { throw "issue must stay post-audit after the failed transition, got: $($st.Labels)" }
+    if (Test-Path (Mock-StorePath "refs\spec\$issueNum")) { throw "a lost branch must NOT be invented on origin" }
+    return "lost spec branch refusal: post-audit->testing fails closed with an actionable message (#$issueNum)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The normal FIRST `→ testing` must be unchanged: branch present + commits beyond
+# main → the spec PR is opened (no recreate, no skip).
+Test-Script "first ->testing still opens the spec PR (branch present, commits ahead)" {
+  $url = Mock-IssueCreate "temp: first testing" "first testing scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 2 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "first ->testing should pass, got exit ${LASTEXITCODE}: $outStr" }
+    if ($outStr -notmatch "SPEC PR CREATED") { throw "first ->testing must open the spec PR, got: $outStr" }
+    if ($outStr -match "SPEC BRANCH RECREATED|SPEC PR SKIPPED") { throw "no post-merge path may fire on a first entry, got: $outStr" }
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected exactly ONE open spec PR, got $($open.Count)" }
+    return "first ->testing opens the spec PR (no recreate/skip path) on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The OTHER post-merge dead-end: `post-audit → implementation`. That arm calls
+# `ensure_spec_branch`, which re-creates the (deleted) branch from main. Before this
+# fix it pushed the STALE local ref as-is, so the recreated branch replayed the
+# merged round (non-descendant, G-421) and the following `implementation → testing`
+# opened a PR whose diff was the whole previous round. Now the stale ref is reseeded
+# onto origin/main, so the recreated branch carries no commits beyond main.
+Test-Script "post-audit->implementation post-merge reseeds the stale ref onto main" {
+  $url = Mock-IssueCreate "temp: post-merge impl restart" "post-merge impl scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+  try {
+    # Post-merge: the PR merged, the remote head is gone, and a stale LOCAL ref
+    # survives (the post-audit doc-sync leaves the root checked out on spec/<N>).
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "branch spec/$issueNum origin/main" 2>&1 | Out-Null
+    # The stale local ref still counts "commits ahead" from the merged round.
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 3 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: post-merge impl lesson" 2>&1 | Out-Null
+    # Restart to implementation: the branch is re-created from origin/main (G-421) —
+    # the stale ref must NOT be pushed as-is (it would replay the merged round).
+    New-Item -ItemType Directory -Path ".opencode/tmp/$issueNum" -Force | Out-Null
+    [System.IO.File]::WriteAllText(".opencode/tmp/$issueNum/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    $impl = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $implStr = if ($impl -is [array]) { $impl -join "`n" } else { "$impl" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge restart to implementation must pass, got exit ${LASTEXITCODE}: $implStr" }
+    if ($implStr -notmatch "TRANSITIONED: post-audit -> implementation") { throw "Expected the transition, got: $implStr" }
+    if ($implStr -notmatch "SPEC BRANCH RESEEDED onto origin/main|SPEC BRANCH CREATED:") { throw "Expected the branch re-created from main, got: $implStr" }
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$issueNum"))) { throw "spec branch was not re-created on origin" }
+    # The recreated branch carries NO commits beyond main (the stale 3 must be gone).
+    $ahead = & rust-script $ps --action mock-git --gitargs "fetch origin spec/$issueNum" 2>&1 | Out-Null
+    $aheadOut = & rust-script $ps --action mock-git --gitargs "rev-list --count origin/main..FETCH_HEAD" 2>&1
+    $aheadStr = if ($aheadOut -is [array]) { $aheadOut -join "" } else { "$aheadOut" }
+    if ($aheadStr.Trim() -ne "0") { throw "recreated branch must carry 0 commits beyond main, got: $aheadStr" }
+    # Next `implementation → testing` with NO new work is (correctly) blocked by the
+    # implementation exit gate — the developer must push this round's work.
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($blockedStr -notmatch "has no commits beyond main") { throw "Expected the no-commits block on an empty recreated branch, got: $blockedStr" }
+    # After the developer pushes this round's work the transition must open a PR
+    # (never fail on gh pr create for a main-based branch).
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 1 2>&1 | Out-Null
+    $test = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $testStr = if ($test -is [array]) { $test -join "`n" } else { "$test" }
+    if ($LASTEXITCODE -ne 0) { throw "post-merge implementation->testing must pass after a push, got exit ${LASTEXITCODE}: $testStr" }
+    if ($testStr -match "No commits between") { throw "must not attempt gh pr create on an empty branch: $testStr" }
+    if ($testStr -notmatch "SPEC PR CREATED") { throw "expected the round's spec PR after the push, got: $testStr" }
+    $open = @(Mock-PrList "spec/$issueNum" "open")
+    if ($open.Count -ne 1) { throw "expected exactly ONE open spec PR for the new round, got $($open.Count)" }
+    return "post-merge restart to implementation re-created from main; empty branch blocks, push opens the round PR (#$issueNum)"
+  } finally {
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
   "dev-env.ps1",
   "pre-commit.ps1",
   "wait-telemetry.ps1",
-  "process-hygiene.ps1"
+  "process-hygiene.ps1",
+  "launch-artifact-probe.ps1",
+  "inspect-webview-config.ps1"
 )
+# ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
+# landed — the pin stays green whether or not CU-C has shipped it yet.
+if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
+  $scripts += "verify-env-isolation.ps1"
+}
 
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
@@ -3255,6 +4565,125 @@ Remove-Item -LiteralPath $env:FREDO_MOCK_STORE -Recurse -Force -ErrorAction Sile
 Write-Host "Skills:" -ForegroundColor Cyan
 
 Test-Script-Syntax "pipeline-state skill" ".opencode/skills/pipeline-state/SKILL.md"
+
+Test-Script-Syntax "doc-sync skill" ".opencode/skills/doc-sync/SKILL.md"
+
+# doc-sync content pin: the skill must document the single-SPEC-MAINT-PR gate flow
+# (`maint-pr`) and the five product-doc categories, and must NOT prescribe the
+# removed `git push origin main` direct write. NOTE: the concern split was dropped
+# from the machine, so the skill must NOT teach the removed `--concern` split
+# either (the doc-sync skill itself is updated out-of-band by the human).
+Test-Script "doc-sync skill pins the maint-pr gate flow + doc categories" {
+  $src = Get-Content ".opencode/skills/doc-sync/SKILL.md" -Raw
+  foreach ($tok in @("maint-pr")) {
+    if ($src -notmatch [regex]::Escape($tok)) { throw "doc-sync skill missing token: $tok" }
+  }
+  foreach ($c in @("ARCHITECTURE.md", "CLI_GUIDE.md", "SETUP.md", "SECURITY.md", "FAQ.md")) {
+    if ($src -notmatch [regex]::Escape($c)) { throw "doc-sync skill missing product-doc category: $c" }
+  }
+  if ($src -match "git push origin main") { throw "doc-sync skill still references the removed 'git push origin main'" }
+  return "doc-sync skill: maint-pr gate flow + categories present, no removed push"
+}
+
+# dev-environment skill pin (G-401 fix): a completed spec must STOP + CLEAN its
+# isolated env at the cleanup phase. The skill must carry the run-complete teardown
+# command, the lease->env-id lookup, and the why (the accumulation is the G-401
+# collision class); the old unconditional "leave it running" instruction must be
+# gone (it is right intra-run only). Guards the guidance against silent regression.
+Test-Script "dev-environment skill pins the run-complete env teardown" {
+  $src = Get-Content ".opencode/skills/dev-environment/SKILL.md" -Raw
+  foreach ($tok in @(
+    ".opencode/state/env-leases/",
+    "-Action Clean -EnvId",
+    "-Spec <N>",
+    "G-401",
+    "cleanup"
+  )) {
+    if ($src -notmatch [regex]::Escape($tok)) { throw "dev-environment skill missing token: $tok" }
+  }
+  if ($src -match [regex]::Escape("Do NOT stop the dev:tauri instance")) {
+    throw "dev-environment skill still carries the unconditional 'Do NOT stop the dev:tauri instance' instruction"
+  }
+  return "dev-environment skill: run-complete teardown + lease lookup + G-401 present; unconditional stop removed"
+}
+
+# --- Webview-security evidence probes (toolsmith, #3077 promotion) ---
+# The static inspector is READ-ONLY and deterministic, so it is executed against
+# the real config here: a green pin proves the tool works AND the shipped
+# boundary still matches the expected values.
+Test-Script "inspect-webview-config.ps1: current config is hardened" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/inspect-webview-config.ps1" 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "expected exit 0, got $LASTEXITCODE`n$outStr" }
+  if ($outStr -notmatch "RESULT=PASS") { throw "missing RESULT=PASS`n$outStr" }
+  if ($outStr -notmatch "SUMMARY checks=\d+ passed=\d+ failed=0") { throw "unexpected summary`n$outStr" }
+  $global:LASTEXITCODE = 0
+  return "inspector: RESULT=PASS"
+}
+
+# The live probe cannot run in the offline harness (it needs a built release
+# artifact and launches a GUI), so pin its contract instead: debug refusal, the
+# fast BeginConnect probe, the bridge scan, and the orphan report.
+Test-Script "launch-artifact-probe.ps1: debug refusal + fast probe + teardown" {
+  $probePath = ".opencode/scripts/launch-artifact-probe.ps1"
+  $src = Get-Content $probePath -Raw
+  foreach ($tok in @(
+    "BeginConnect",
+    "-RequireClosed",
+    "FREDO_MCP_BASE_PORT",
+    "WebSocket server listening",
+    "ORPHANS_LEFT",
+    "Stop-Process",
+    "HasExited",
+    "600"
+  )) {
+    if (-not $src.Contains($tok)) { throw "launch-artifact-probe missing token: $tok" }
+  }
+  # The warning comment legitimately names Test-NetConnection; fail only on an
+  # actual call (AST CommandAst), never on prose.
+  $tokens = $null
+  $parseErrors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $probePath).Path, [ref]$tokens, [ref]$parseErrors)
+  $calls = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq "Test-NetConnection"
+  }, $true))
+  if ($calls.Count -gt 0) { throw "launch-artifact-probe must not call Test-NetConnection (it stalls on CLOSED ports)" }
+  if (-not $src.Contains("\debug\")) { throw "launch-artifact-probe must refuse a \debug\ exe" }
+  return "launch-artifact-probe: debug refusal + BeginConnect(600ms) + bridge scan + teardown"
+}
+
+Test-Script-Syntax "webview-security-evidence skill" ".opencode/skills/webview-security-evidence/SKILL.md"
+
+Test-Script "webview-security-evidence skill documents both probes" {
+  $src = Get-Content ".opencode/skills/webview-security-evidence/SKILL.md" -Raw
+  foreach ($tok in @(
+    "inspect-webview-config.ps1",
+    "launch-artifact-probe.ps1",
+    "-Exe",
+    "-Ports",
+    "-RequireClosed",
+    "Test-NetConnection",
+    "ORPHANS_LEFT"
+  )) {
+    if (-not $src.Contains($tok)) { throw "webview-security-evidence skill missing token: $tok" }
+  }
+  if (-not $src.Contains("\debug\")) { throw "webview-security-evidence skill must document the \debug\ refusal" }
+  return "webview-security-evidence: static + live invocations + failure modes"
+}
+
+# Guard the recurrence directly: the durable suite must point at the committed
+# probes, not the hand-written Test-NetConnection launch that hung in #3077.
+Test-Script "webview-security-boundary suite uses the committed probes" {
+  $src = Get-Content ".opencode/tests/webview-security-boundary/functional.md" -Raw
+  foreach ($tok in @("launch-artifact-probe.ps1", "inspect-webview-config.ps1", "-RequireClosed")) {
+    if (-not $src.Contains($tok)) { throw "webview-security-boundary suite missing committed-tool token: $tok" }
+  }
+  if ($src.Contains("Test-NetConnection 127.0.0.1 -Port 16932")) {
+    throw "F-5 still prescribes the Test-NetConnection launch that hung in #3077"
+  }
+  return "webview-security-boundary suite: committed probes referenced, old launch removed"
+}
 
 # --- Summary ---
 Write-Host ""

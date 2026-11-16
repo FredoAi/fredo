@@ -1,6 +1,6 @@
 # Triage Plan Comment Template
 
-> Drafted by the **Self-Improver** after the triage cluster converges, as `.opencode/tmp/<issue>/triage-plan.md`, auto-posted as `## Triage Plan` by the triage → implementation transition. **Should contain ALL the information** needed to implement + verify the feature.
+> Drafted by the **Orchestrator** after the triage cluster converges, as `.opencode/tmp/<issue>/triage-plan.md`, auto-posted as `## Triage Plan` by the triage → implementation transition. **Should contain ALL the information** needed to implement + verify the feature.
 
 <!-- The full converged plan — everything below is required. -->
 
@@ -29,7 +29,7 @@
 
 ## QA Plan
 
-> **Verification policy: live** (or `static` ONLY if every AC is verifiable without a running system).
+> **Verification policy: live** (or `static` when every AC is verifiable without a running system — including any prove-a-negative / static-config AC: an absent privilege/debug surface, or a build-profile/config value such as CSP, `withGlobalTauri`, a capability grant, or `#[cfg(debug_assertions)]` gating). A `static` row is verified from the source/config/built artifact + the committed gate wrapper; `live` is only for a genuine runtime behaviour a user can observe.
 
 | REQ | Test case | Expected | Edge cases |
 |-----|-----------|----------|------------|
@@ -44,4 +44,4 @@
 
 - [ ] **No deviations from the acceptance criteria.** (If YES — any AC observable key changed — the PO must approve via a `Decision` comment before implementation.)
 
-*Authored by Self-Improver*
+*Authored by Orchestrator*

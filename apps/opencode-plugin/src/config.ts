@@ -4,6 +4,19 @@
  * Loads configuration from plugin options tuple, OPENCODE_* environment variables,
  * and built-in defaults, in that order of precedence.
  *
+ * Shared global plugin file, per-process env (Spec #2944 ST-11):
+ * The plugin is installed ONCE at a global path (e.g.
+ * `~/.config/opencode/plugins/fredo.js`) and is shared by every OpenCode process
+ * on the machine. There is deliberately NO endpoint written into that global
+ * file. Endpoint/protocol resolution reads the *process* environment at plugin
+ * init, so each OpenCode process streams to the receiver named by its own
+ * `OPENCODE_OTLP_ENDPOINT`. A session spawned by test environment A inherits A's
+ * injected env (`OPENCODE_OTLP_ENDPOINT` + `FREDO_ENV_ID`) and therefore streams
+ * to A's receiver only — the shared plugin file never routes a session to a
+ * sibling environment's endpoint. Endpoint precedence is:
+ *   plugin-option `endpoint`  →  OPENCODE_OTLP_ENDPOINT  →  DEFAULT_ENDPOINT
+ * (protocol: plugin-option → OPENCODE_OTLP_PROTOCOL → DEFAULT_PROTOCOL).
+ *
  * Stripped from the reference: no disabledMetrics, disabledTraces, disabledLogs,
  * otlpHeaders, otlpHeadersHelper, resourceAttributes, spanAttributes, metricsTemporality.
  */
@@ -58,6 +71,11 @@ function hasNonEmptyEnv(key: string): boolean {
  * Resolves the plugin config from plugin `options` and `OPENCODE_*` environment
  * variables. For every field a provided option wins over the environment
  * variable, which in turn wins over the built-in default.
+ *
+ * `endpoint` is the effective OTLP target consumed by `otel.ts`; it is resolved
+ * per-process from `OPENCODE_OTLP_ENDPOINT` (see the per-process env model in the
+ * file header). The default stays `http://localhost:4317` when neither the option
+ * nor the env var is set — the legacy single-env path is unchanged.
  */
 export function loadConfig(options: FredoPluginOptions = {}): FredoPluginConfig {
   const resolvedOptions = typeof options === "object" && options !== null ? options : {};

@@ -1,0 +1,54 @@
+# nextest profiles for Fredo (Spec #3141 build-cost remediation).
+#
+# WHY THIS EXISTS
+# ---------------
+# The in-process companion engine (`llama-cpp-4`) added tests that load the
+# real pinned GGUF trio (2.44 GB model + 0.92 GB projector + 59 MB draft) to
+# prove live behaviour (AC-19 MTP draft/accept counters, AC-22 twice-construct,
+# AC-23 CPU fallback). Those tests are CORRECT and REQUIRED at the verification
+# gate - but they are catastrophically slow to run on every iteration:
+#
+#     measured: individual model-loading tests took 183 s - 1141 s each
+#     measured: a full `cargo nextest run` spent 1180 s to get through 600 of
+#               1681 tests before failing
+#
+# They also serialise against each other (a process-global force-CPU env seam
+# plus the process-once llama backend), so parallelism cannot rescue them.
+#
+# Running them on every `cargo nextest run` made each pipeline round pay tens
+# of minutes for evidence that only the TESTER round actually needs.
+#
+# PROFILES
+# --------
+# `default`  - fast feedback. Skips the model-loading modules entirely. Use for
+#              ordinary development iteration. This is what a bare
+#              `cargo nextest run` uses.
+# `live`     - the full gate INCLUDING model-loading tests. Use when collecting
+#              acceptance evidence for the live-verification policy.
+#              Run as: `cargo nextest run --profile live`
+#
+# The skip is by MODULE PATH, so it stays correct as tests are added to those
+# modules - it never needs a per-test allowlist that silently rots.
+
+[profile.default]
+# Exclude the GGUF-loading modules. Everything else (unit tests, serialization
+# pins, pure predicates, webview/DB suites) still runs.
+default-filter = "not (test(/llm_server::engine::mtp_tests/) | test(/llm_server::engine::integration/))"
+
+# Model loading is dominated by disk + GPU/CPU init, not by test concurrency.
+# Keep the default suite parallel; the heavy modules are excluded above.
+test-threads = "num-cpus"
+
+[profile.live]
+# The full suite, model-loading modules included - the verification gate.
+#
+# `default-filter` is EXPLICITLY reset to `all()`: nextest profiles INHERIT the
+# `[profile.default]` filter, so omitting this line silently kept the exclusion
+# and the "live" profile ran exactly the same 1612 tests as `default` (verified:
+# it reported "14 tests skipped via profile.default.default-filter"). This line
+# is what makes the profile actually mean something.
+default-filter = "all()"
+# Model loading is dominated by disk + GPU/CPU init, not by test concurrency.
+# The model modules serialise internally (ENV_LOCK + the process-once backend),
+# so a shared count is fine and lets the other 1600+ tests overlap.
+test-threads = "num-cpus"

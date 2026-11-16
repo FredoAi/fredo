@@ -3,6 +3,11 @@
 > Drafted by the **Tester** as `.opencode/tmp/<issue>/tests-runs.md`, auto-posted by the testing → audit transition (or via `post-comments`). The verification gate reads `## Tests Runs` for the verdict + `telemetry_spans` evidence. This is the only verdict path — the `--prefix Evidence` alias was removed.
 
 <!-- V1 — verdict line MUST be the first content line: "Verdict: **PASS**" or "Verdict: **FAIL**" -->
+<!-- Do NOT add a `## Tests Runs` heading below the verdict line. The machine prepends and
+     round-stamps that heading; a heading written lower in the body is posted verbatim and the
+     verdict reader — which reads the comment's LEADING line — never finds it, blocking the
+     exit gate ("no tester Evidence / Tests Runs comment found"). Write no heading, or make it
+     the very first line (G-013). -->
 
 Verdict: **PASS** (N/N ACs)
 
@@ -18,6 +23,13 @@ Verdict: **PASS** (N/N ACs)
 <!-- `live` = real telemetry-query / DOM / screenshot result you produced.
      `static` allowed ONLY if the plan declares `> Verification policy: static`.
      A case you could not run live is UNVERIFIED/FAIL, never PASS.
+
+     A row the spec's own PR cannot discriminate (no diff can produce the leg — a skipped
+     leg, a rejected leg, a single-stack filter match) is pre-authorized by the plan as
+     `logic-verified, no discriminating run`: quote the post-change logic that carries the
+     property beside it and state why the leg is unproducible. Use that literal phrase so the
+     Auditor recognises the pre-authorized shape; never induce a red required check and never
+     open a throwaway PR to manufacture a leg (G-410).
 
      ONE screenshot per AC: every AC row carries its own `upload-evidence` image
      as the https:// raw URL the action prints (committed to `.opencode/evidence/<issue>/`

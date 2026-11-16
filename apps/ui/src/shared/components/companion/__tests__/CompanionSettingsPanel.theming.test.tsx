@@ -42,10 +42,24 @@ function readSource(relativePath: string): string {
 const bothInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
-    { id: 'llamaServer', state: 'installed', detail: 'llama-server found.', resolvedPath: 'C:\\llama-server.exe' },
     { id: 'modelFiles', state: 'installed', detail: 'All required model files present.', resolvedPath: 'C:\\models' },
   ],
 };
+
+function healthyEngineStatus() {
+  return {
+    running: true,
+    healthy: true,
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
+    lastError: null,
+    backendMode: 'auto' as const,
+    devices: [],
+    backend: 'cpu' as const,
+  };
+}
 
 describe('#2864 ST-5 — Companion surface consumes registered tokens (ST-3/ST-4)', () => {
   const panel = readSource(PANEL_PATH);
@@ -161,6 +175,7 @@ describe('#2864 ST-5 — Companion ready view DOM regression', () => {
   it('renders the unified section header (h2 + accessible name) and the named switch, with no wizard', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'get_llama_server_status') return healthyEngineStatus();
       return undefined;
     });
 

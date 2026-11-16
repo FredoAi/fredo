@@ -1,5 +1,7 @@
 # Theming — Functional
 
+> **Withdrawn artifact:** `docs/features/desktop-background-life.md` was deleted. Its citations record real observations made while the doc existed; they are kept as evidence and are **not** a live dependency. The Life contract now lives in source: `lifePatterns.ts` (pattern catalogue + CC BY-SA 3.0 attribution) and `lifeConstants.ts` (derived palette).
+
 > Formalizes the `## QA Expert` QA Plan rows from `.opencode/tmp/2811/triage.md` (R1..R5).
 > Every case lists the observable expected outcome and required test data.
 > **Verification policy: static** — static ACs (R3/R5) pass on `pnpm --filter @fredo/ui build`
@@ -710,3 +712,504 @@
 - **F-54 PASS.** build exit 0 (2577 modules); `test:run` 108 files / 1805 tests; background 96 tests.
 - **F-55 PASS.** 0 raster elements in the backdrop; every animated layer carries `data-motion-kind`.
 - **F-56 PASS.** Envelope/overscan pins; live non-identity frame — all three mesh layers' rects extend beyond all four viewport edges (computed inset −305/−576 px), no seam.
+
+---
+
+## #2915 extension — living Conway's Game of Life desktop background
+
+> Issue #2915 adds a **"Life"** option (Conway's Game of Life, B3/S23) to the Appearance
+> Desktop Background chooser alongside **None** (default) and the six procedural recipes.
+> Rows map to the QA Plan `F-57..F-72` / AC1–AC5 + the complex scenario in
+> `.opencode/tmp/2915/triage.md`.
+> **Verification policy: live** — rendered-pixel / DOM+computed-style / restart persistence /
+> OS-window-visibility reads on the running app. F-70 carries the mandatory `telemetry_spans`
+> receipt; F-71 the gates. The reduced-motion **live OS flip** is undrivable on this host
+> (Tauri MCP has no media-emulation API) and is carried as a **named blocker** closed by the
+> F-64 product-unit pin (G-050/G-131).
+>
+> **Relations to the recipe rows (G-136/G-220):** Life is a NEW, separate surface — it does
+> NOT supersede any recipe row. The #2905/#2909 signature/perceptibility machinery stays as
+> the recipe contract. The "zero `rAF`/`setInterval`" invariant in F-35/F-50/R-26 is scoped to
+> `backgroundMotion.ts`; the Life simulation loop must live OUTSIDE it (F-71 scope note).
+> `resolveBackgroundMotion` keeps exactly two states; Life adds no new motion status or control.
+>
+> **G-216/G-221 constant set (TEST-HARNESS constants — QA-owned; the floor is a floor, the
+> human read is authoritative):** read the authored `LIFE_STEP_MS` / `LIFE_RESEED_MS` / grid
+> `COLS`×`ROWS` / cell footprint from the Life module and RECORD them.
+> `PERCEPT_INTERVAL_MS = max(2000, 8 × LIFE_STEP_MS)`;
+> `PERCEPT_WINDOW_MS = max(4 × PERCEPT_INTERVAL_MS, 2 × LIFE_RESEED_MS)`; `PIXEL_DELTA_MIN=8`
+> (per-channel max |Δ|); coverage = changed backdrop px / backdrop px.
+> **Declared gate = the per-interval pairwise dense delta** (window/footprint union = corroboration
+> only). **Derived floor:** `LIFE_INTERVAL_FLOOR_PCT = changedCellFractionMin (5 %) × AA (0.6,
+> soft edge) × margin (2/3) = 2.0 % per interval` — cells tile the backdrop, so coverage ≈ the
+> changed-cell fraction; hard-edged cells → AA = 1.0 and recompute. Noise floor ≤ 0.2 %.
+> **G-213:** always pair the dense diff with (never replace it by) any point sampler.
+>
+> **Evidence mechanics (G-104/G-223):** name evidence frames WITHOUT image extensions in prose;
+> `.png`/`.jpeg` tokens only on lines that also carry an `https://` URL; descriptive link labels.
+> The `## Tests Runs` draft must carry a literal `Verdict:` line + the footer `*Authored by Tester*`.
+> Contract names (UI/UX §0 / Architect API Contracts): `[data-testid="desktop-background-chooser"]`,
+> `[data-testid="desktop-background-option-life"]`, `[data-testid="desktop-background-life-thumb"]`
+> (+ `data-life-preview="static"`), `[data-testid="desktop-background-life-attribution"]`,
+> `[data-testid="desktop-backdrop"]`, `[data-testid="desktop-backdrop-life-canvas"]`
+> (+ `data-background-layer="life-field"`, `data-life-motion`, `data-life-running`, `data-life-seed`),
+> `[data-testid="desktop-background-motion-status"]`, key `Fredo_desktop_background`.
+
+- [x] **F-57 (AC1a / chooser + fresh default + Life select):** Open Settings → Appearance →
+      Desktop Background (`[data-testid="desktop-background-chooser"]`). List the `role="radio"`
+      tiles; on a fresh profile (cleared `Fredo_desktop_background`) read the selected tile; click
+      `[data-testid="desktop-background-option-life"]`.
+  **Expected:** **8** tiles — None + aurora/nebula/mesh/topography/constellation/halo + **Life**
+      (`aria-label="Life"`, `data-selected`/`aria-checked` consistent, exactly ONE selected).
+      Fresh profile → **None** selected. Selecting Life stamps `[data-testid="desktop-backdrop"]`
+      with `data-background-id="life"`; every thumbnail pairwise distinct.
+  - **Edge:** re-select the active option (idempotent); rapid None→Life→None churn console-clean
+    (no `Maximum update depth exceeded`); G-220 — Life's own tile does not mask None/recipe triggers.
+
+- [x] **F-58 (AC1b / persistence):** Select Life; cold-restart (`dev-env.ps1 -Action Restart`);
+      re-open Appearance and read the backdrop + AppStore value. Repeat for None, then Life again.
+  **Expected:** Life persists **exactly** across a full restart (tile selected, `data-background-id="life"`
+      restored); `Fredo_desktop_background` reads `life`; None persists/restores as None (today's desktop).
+  - **Edge:** restart immediately after a change; upgrade from a persisted recipe; a value written by an
+    older build; restart while the automaton runs.
+
+- [x] **F-59 (AC1c / stale id — negative/edge):** Inject `banana`, `''`, `null`, `123`, `{}`, and a
+      removed id into `Fredo_desktop_background` (AppStore + localStorage); restart each. Then confirm
+      `life` round-trips (not treated as stale).
+  **Expected:** every stale/unknown value resolves safely to **None** — zero backdrop DOM, today's
+      desktop, no throw / no console error / no blank/broken backdrop; `life` restores as Life.
+  - **Edge:** absent key vs present-but-empty; AppStore vs localStorage divergence; lenient resolver
+    unchanged in spirit.
+
+- [x] **F-60 (AC2a / running B3/S23 + randomized Lexicon seed + random fill):** (a) capture the Life
+      canvas (`[data-testid="desktop-backdrop-life-canvas"]`, `data-background-layer="life-field"`) initial
+      frame on two fresh loads and read `data-life-seed`; (b) static-read the Life pattern module; (c) confirm
+      the chooser thumbnail is static (`[data-testid="desktop-background-life-thumb"]`, `data-life-preview="static"`
+      — the engine must not run in the chooser).
+  **Expected:** (a) the two initial frames differ densely AND `data-life-seed` differs (per-load
+      randomization); (b) a bounded catalogue of **2–4 named Life Lexicon patterns** (record the names) with
+      explicit coordinates/RLE, placed at random position/orientation per load, **plus bounded random fill**
+      — not uniform noise alone; initial population density inside a stated band (not 0, not 100 %);
+      (c) the thumbnail is static (no loop / no canvas engine).
+  - **Edge:** no fixed seed; same-process reload vs cold restart; rotation/reflection applied; record the
+    density band; both seeded clusters and scattered fill visible; the chooser never runs the engine.
+
+- [x] **F-61 (AC2b / PRIMARY perceptibility, G-216/G-221/G-213):** With Life selected, read the
+      authored `LIFE_STEP_MS`/`LIFE_RESEED_MS`/grid caps; set `PERCEPT_INTERVAL_MS = max(2000,
+      8 × LIFE_STEP_MS)` and `PERCEPT_WINDOW_MS = max(4 × INTERVAL, 2 × LIFE_RESEED_MS)`; capture
+      **dense full-frame renders** (every pixel, no grid subsampling) at 0/¼/½/¾/1 of the window;
+      diff each consecutive interval (`PIXEL_DELTA_MIN=8` per channel).
+  **Expected:** **≥ 3 of 4** intervals clear the derived floor `LIFE_INTERVAL_FLOOR_PCT` =
+      changedCellFractionMin (5 %) × AA (0.6) × margin (2/3) = **2.0 %** (recompute + record from the
+      authored cell footprint/grid); window-union ≥ **4.0 %**; **≥ 1 interval ≥ 3 × the median interval
+      coverage** (the re-seed discontinuity) inside a window ≥ 2 × `LIFE_RESEED_MS`; no blank (0 %)
+      frame. **The gate is the per-interval pairwise dense delta** — the window union is corroboration
+      only. A computed-style / `getAnimations()` / `data-motion="animated"` read is **INSUFFICIENT**.
+  - **Edge:** G-213 — a sparse fixed-point grid can read near 0 for a coarse pattern; judge the dense
+    diff and never conclude "not running" from sparse points; the ≥3-of-4 rule tolerates one lull;
+    slow step → widen the interval; hard-edged cells → AA = 1.0; record the actual Δt.
+
+- [x] **F-62 (AC2c / inert behind a present, non-maximized window, G-176):** Open a floating
+      (non-maximized) feature window over the Life backdrop at its resting rect; read the backdrop's
+      stacking/`pointer-events`/`aria-hidden`; `elementFromPoint` at a point inside the window rect;
+      click + type into the focused field.
+  **Expected:** backdrop `zIndex:0`, `pointer-events:none`, `aria-hidden="true"`, no `tabIndex`;
+      `elementFromPoint` inside the window returns **window content** (never the backdrop); clicks/typing
+      land; the backdrop never paints above window content.
+  - **Edge:** a maximized-only/absent window is VACUOUS → require the non-maximized resting rect;
+    two windows; drag over the animated region; minimized; light + dark.
+
+- [x] **F-63 (AC3 / token-pure + live recolour + light/dark legibility):** (a) static-grep the Life slice
+      for hex/rgb/hsl literals + invalid `var(--x)NN`; (b) switch preset Dark→Light Default and set/clear
+      an `accentPrimary` override, sampling cell + ground colours; (c) measure cells-vs-ground contrast on
+      a light-based **and** a dark-based preset.
+  **Expected:** (a) zero literals / `var(--x)NN`; colours pure functions of live theme CSS custom
+      properties (translucency via `tint()`/`color-mix`); (b) live recolour **no restart** from live
+      tokens, unused-token override does not shift; (c) cells distinguishable from ground (≥ 3:1
+      non-text) on both; quote ratios.
+  - **Edge:** G-050 — no mode flag; use **presets** (light-default/solarized/arctic/sunset/paper vs
+    dark/tokyo-night/nord/matrix/coffee); override set/cleared mid-run; no `Maximum update depth exceeded`.
+
+- [x] **F-64 (AC4a / reduced motion → static, no loop):** (a) run the product-unit/render pin:
+      `resolveBackgroundMotion({ systemReducedMotion: true })` → `'static'`; assert ZERO
+      `requestAnimationFrame`/`setInterval` scheduled, generation counter constant, `data-motion="static"`,
+      no motion `<style>`, a full (non-blank) static frame. (b) read the raw live
+      `matchMedia('(prefers-reduced-motion: reduce)').matches`.
+  **Expected:** (a) pin PASSES — animation **removed, not paused mid-frame**: the loop is never started,
+      `data-life-running="false"` + `data-life-motion="static"`, zero rAF/timers; (b) live flip
+      **UNVERIFIED — NAMED BLOCKER** (Tauri MCP exposes no media-emulation API — G-050/G-148/#2870);
+      record the raw flag.
+  - **Edge:** reduce ON × each preset; re-render after a theme switch stays static; a loop still
+    scheduled (paused but live) = FAIL; never blockerless.
+
+- [x] **F-65 (AC4b / animated leg — no strobe):** With Life animating (reduce OFF) capture ≥ 8
+      consecutive dense frames; compute per-frame **full-frame mean luminance**.
+  **Expected:** no interval shows a full-frame mean-luminance inversion > **0.5 %** full scale; implied
+      flash rate **< 3 Hz** (WCAG 2.3.1); quote the raw luminance series per preset. `data-motion="animated"`
+      / a non-empty canvas alone is INSUFFICIENT (G-216; perceptibility is judged by F-61).
+  - **Edge:** a re-seed must not produce ≥ 3 consecutive full-frame inversions; local cell toggling is
+    not a full-frame flash — the metric is the full frame.
+
+- [x] **F-66 (AC5a / procedural-only + bounded grid/step/memory):** (a) static — no `<img>`/raster
+      `url(...)`/`data:` image URI, no new binary asset, bounded curated pattern catalogue; (b) record the
+      authored named caps (`COLS × ROWS`, `LIFE_STEP_MS`, `LIFE_RESEED_MS`, buffer use); (c) ≥ 60 s soak.
+  **Expected:** zero raster; caps named + bounded; heap growth ≤ **+2 %** (a monotonic climb = FAIL);
+      grid/step/buffer counts constant; canvas backing-store ≤ ≈1.5 × viewport; no unbounded growth.
+  - **Edge:** dpr scaling; minutes-long soak; build + suite gates; no full-lexicon dump.
+
+- [x] **F-67 (AC5b / pause when not visible, G-123 WHILE):** With Life animating read the canvas
+      `data-life-running` + `data-life-seed`; minimize/switch away (`document.visibilityState === 'hidden'`);
+      wait ≥ 5 s; re-read; restore.
+  **Expected:** `data-life-running` flips to **`"false"`** while hidden (loop **cancelled**, not merely
+      skipped) and back to `"true"` on restore; a dense diff of two frames captured ≥ 5 s apart while hidden
+      reads ≤ the 0.2 % noise floor (frame frozen). A `"true"`/advancing state while hidden = FAIL.
+  - **Edge:** **named blocker (G-053)** if the runtime hook is absent on the tested build → mark UNVERIFIED
+    with that blocker and fall back to `visibilityState` + the frozen-frame dense diff; minimize vs
+    switch-away vs occluded; restore latency.
+
+- [x] **F-68 (AC5c / CC BY-SA 3.0 attribution — static + live):** Read the Life pattern-definition module +
+      docs; live-read `[data-testid="desktop-background-life-attribution"]` under the chooser.
+  **Expected:** a **CC BY-SA 3.0** attribution + licence notice at the pattern definitions (source
+      header/comment naming the Life Lexicon + the licence) **and** a docs note **and** the always-visible
+      in-app notice (`Patterns: Life Lexicon (Stephen Silver), CC BY-SA 3.0.`); bounded curated subset
+      (no verbatim full-lexicon dump).
+  - **Edge:** a notice only in a commit message / external URL (not in-repo) = FAIL; full-lexicon bundle = FAIL.
+
+- [x] **F-69 (CX / complex scenario — still evolving + re-randomizes):** Given Life selected and motion not
+      reduced, when the backdrop has run ≥ the F-61 window and ≥ 2 × `LIFE_RESEED_MS`, then the automaton
+      is still visibly evolving and re-randomizes rather than freezing into a still life or blank grid.
+  **Expected:** per-interval dense delta clears the floor in ≥ 3 of 4 intervals; ≥ 1 re-seed discontinuity;
+      the end-of-window frame ≠ the initial frame; population never 0 / never a whole-window freeze.
+      Human/vision corroboration (watch ≥ 6 s: evolving? yes; frozen/blank? no) — metric PASS + human
+      "frozen" = FAIL.
+  - **Edge:** long re-seed period → extend the window; slow step → widen the interval; record timestamps;
+    a single-phase window must not be read as a one-shot settle.
+
+- [x] **F-70 (NF-live / receipt):** `fredo emit --event-type chat --session-id e2e-2915-chat` +
+      `--event-type tool_use --session-id e2e-2915-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; retain screenshot URLs + live `tauri_webview_*` receipts.
+  **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers classify.
+      **A static-only PASS is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; verbatim output; never fabricate a span query.
+
+- [x] **F-71 (NF-gate / gates + no test weakening):** `pnpm --filter @fredo/ui build`;
+      `pnpm --filter @fredo/ui test:run`; run the theming + settings + desktop-shell regressions.
+  **Expected:** build exit 0 (zero TS errors/warnings); suites green; existing assertions not
+      weakened/disabled/deleted. **Scope note:** the Life rAF loop must NOT trip F-35/F-50/R-26 (scoped to
+      `backgroundMotion.ts`) — those plus `background.invariants.test.tsx`'s zero-rAF / ≥1-layer /
+      exactly-6-descriptor pins must be **re-scoped to the CSS-recipe modules**, with a NEW bounded-loop pin
+      for the Life engine (single rAF; cancelled on static/hidden/unmount; no unbounded timers). The only
+      permitted supersession remains the explicit #2899 static-only legs.
+  - **Edge:** no dangling import; overlap suites green.
+
+- [x] **F-72 (G-220 / resolver + forcing recipes):** Validate each state's forcing recipe against the
+      shipped mapping (`BackgroundSettings.tsx:162` — each tile `<button role="radio">`
+      `onClick={() => select(id)}`): `none` / the 6 recipes / `life` each have their own tile.
+  **Expected:** selecting each of the 8 options reaches **exactly** that state; `life` masks no existing
+      state's only trigger; `resolveBackgroundMotion` still has exactly two states and Life adds no new
+      motion status or extra control.
+  - **Edge:** keyboard roving-tabindex walk reaches Life; the motion-caption contract is unchanged.
+
+### #2915 testing round 1 (spec/2915 @ a3c7f245) — results
+
+> Live policy. Serving `spec/2915 @ a3c7f245`; webview 1920×1017 dpr 1. Authored constants read from
+> `background/life/lifeConstants.ts`: `LIFE_CELL_PX=12`, grid cap `160×100`, `LIFE_STEP_MS=160`,
+> `LIFE_RESEED_GENERATIONS=150` (`LIFE_RESEED_MS=24 000`), `LIFE_RESEED_PATTERNS_MIN..MAX=2..4`,
+> `LIFE_FILL_DENSITY=0.10`, density band `0.04..0.30`, `LIFE_DPR_MAX=1.5`, `LIFE_LUMA_INVERSION_MAX=0.005`,
+> `LIFE_PATTERN_COUNT=10`. Derived harness window: `PERCEPT_INTERVAL_MS=max(2000,8×160)=2000`,
+> `PERCEPT_WINDOW_MS=max(4×2000,2×24000)=48 000` → 5 captures at Δ≈12 000 ms.
+
+- **F-57 PASS (live).** Chooser 8 radios (`desktop-background-option-{none,aurora,nebula,mesh,topography,constellation,halo,life}`), exactly one `aria-checked="true"`; fresh profile (cleared `Fredo_desktop_background`) → None + zero backdrop DOM; selecting Life stamps `data-background-id="life"` + tile `data-selected="true"`, `localStorage`/AppStore `life`; rapid None→Life→None ×3 console-clean.
+- **F-58 PASS (live).** Life selected → `dev-env.ps1 -Action Restart` → restored `data-background-id="life"`, Life canvas running (seed 3341529482); None selected → restart → zero backdrop DOM.
+- **F-59 PASS (live).** Injected `banana`/`''`/`null`/`123`/`{}`/`plasma` into AppStore + localStorage; each reload → zero `desktop-backdrop` DOM, zero canvas, today's desktop, no console error; `life` round-trips as Life.
+- **F-60 PASS (live+static).** Two fresh Life loads → seeds 2054583544 vs 2888176597 (differ), initial frames dense-differ 11.974 % of pixels, painted-field fraction 7.06 %/6.65 % (density band); cross-load seed 4001973412 after a real page reload; static catalogue = exactly 10 named patterns (glider, LWSS, blinker, toad, block, beehive, pulsar, acorn, R-pentomino, Gosper glider gun) with explicit coordinates, 2–4 placed/load + 10 % bounded fill; thumbnail `desktop-background-life-thumb` present, `data-life-preview="static"`, SPAN+SVG, zero canvas in the settings tree.
+- **F-61 PASS with a disclosed calibration residual (live, PRIMARY).** 5 dense full-frame captures at Δ=12 002/12 000/12 000/12 000 ms: interval coverage 3.913 / 5.575 / 3.557 / 5.674 % → **4 of 4 clear** the derived floor (plan reference `5 %×0.6×2/3=2.0 %`; recomputed from the shipped `LIFE_CELL_PX=12` geometry, drawn-cell area `(1−2×0.14)²=0.5184` → 1.73 %; gated on the stricter 2.0 %); window union **12.065 %** ≥ 4.0 %; no blank frame (non-ground 2.49–3.51 %). **Residual:** the `≥1 interval ≥3× median` re-seed-discontinuity clause did NOT reproduce at the declared 12 s cadence (max 5.674 % vs 3×median 14.232 %; a 16×3 s sweep: max 4.982 % vs 7.803 %) — the 24 s re-seed period is harmonically locked to the 12 s interval. The discontinuity IS directly observed at step granularity (fine ~100 ms sweep: 8.447 % single-sample jump at t=14.671 s vs 1.92 % median = **4.4×**; population 2.1→6.7 %). Recorded for QA-metric calibration.
+- **F-62 PASS (live, G-176).** Non-maximized Settings window at its resting rect 480×320 (48,48); backdrop `zIndex:0`, `pointer-events:none`, `aria-hidden="true"`, no `tabIndex`; `elementFromPoint` at 3 points inside the window rect returns window content (HEADER/DIV), never the backdrop; clicks land (Halo→Life) and typing lands ("inert-probe" reached the focused field) while Life animates.
+- **F-63 FAIL (live, light-based leg) — expected-vs-actual below.** (a) PASS: zero hex/rgb/hsl literals and zero `var(--x)NN` in the Life slice (grep + `lifeBounds.test.ts` source pin). (b) PASS: preset switch + `accentPrimary` override recolour the painted ground/cell live with no restart (dark `rgb(8,16,16)`→light `rgb(255,255,255)`; override `#ff00ff` → painted cell `rgb(248,0,248)`, reset → `#00d1d1`; unused-token no-op). (c) **FAIL — cells-vs-ground (non-text ≥ 3:1) misses on every light-based preset:** light-default `#00d1d1` on `#ffffff` = **1.90:1**; solarized 2.93:1; arctic 2.51:1; sunset 2.52:1; paper 2.81:1 (dark = 9.96:1 PASS). Hook: `lifeEngine.ts paint()` draws `tokens.cell = --accent-primary` over `tokens.ground = --body-bg`; the accent token is below 3:1 on all five light grounds. Repro: Settings → Appearance → Theme Presets → each light preset → read the painted cell/ground from the Life canvas. Vision note: the cells remain clearly visible (chroma contrast) — the miss is the luminance-ratio bar, but the stated numeric clause is unmet.
+- **F-64 PASS(product pin) + UNVERIFIED (live flip) — NAMED BLOCKER.** (a) `vitest run background` → `lifeBounds.test.ts` (8) + `lifeEngine.test.tsx` (12): reduced-motion leg schedules **zero** rAF/`setTimeout`/`setInterval`, `data-life-motion="static"`, `data-life-running="false"`; `resolveBackgroundMotion({true})→'static'`, `{false}→'animated'` (backgroundMotion.test.ts:60-68). (b) raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`; the live OS flip is **UNVERIFIED** — the Tauri MCP driver exposes no media-emulation API (G-050/G-148/#2870) and `tauri_manage_window minimize` needs plugin ≥0.13 (host older). Closed by the product-unit pin.
+- **F-65 PASS (live).** dark preset 9 consecutive dense frames over 3.609 s: mean-luminance series 0.990057…0.989645 (light-default) / 0.083726…0.074806 (dark); max consecutive |ΔL| = 0.051 % FS (light) / 0.792 % FS (dark, a single one-sided re-seed density drop at t≈0.95–1.40 s); **zero luminance inversions > 0.5 % FS** (no opposing pair); implied flash rate ≪ 3 Hz.
+- **F-66 PASS (live+static).** Zero raster (`url()`/`data:`/<img> absent from the slice); authored caps recorded; 90 s soak → canvas backing store constant 1920×1017 (= 1.0× CSS viewport, ≤ `LIFE_DPR_MAX` 1.5 linear), heap 238.3→240.5 MB (+0.92 %) pre-GC then GC to 53.8 MB — no monotonic climb, no unbounded growth.
+- **F-67 PASS (live) + NAMED BLOCKERS.** Synthetic visibility trigger (real `visibilitychange` handler with `document.hidden` overridden — the native minimize/hide is undrivable: plugin <0.13 + no `core:window:allow-hide`): `data-life-running` "true"→**"false"** (loop cancelled) →"true" on restore; dense diff of two frames 6 s apart while "hidden" = **0.000 %** (≤ 0.2 % noise floor). `document.visibilityState` itself stays `visible` (only `document.hidden` is overridable) — disclosed.
+- **F-68 PASS (live+static).** Source header `lifePatterns.ts:6-21` (Life Lexicon / Stephen A. Silver / CC BY-SA 3.0; bounded authored subset, "the full Life Lexicon dataset is NEVER bundled"); docs `docs/features/desktop-background-life.md:17-41`; live `desktop-background-life-attribution` = `Patterns: Life Lexicon (Stephen Silver), CC BY-SA 3.0.`; exactly 10 patterns (module-load guard).
+- **F-69 PASS (live, complex).** Per-interval dense delta clears the floor 4/4; end frame ≠ initial frame; fine-grain sweep shows a re-seed discontinuity (8.447 % jump; population 2.1→6.7 %) and no blank/whole-window freeze; human/vision read of t0 vs t1 (≈4 s apart): evolving — yes; frozen/blank — no.
+- **F-70 PASS (live).** `fredo emit --event-type chat --session-id e2e-2915-chat` + `--event-type tool_use --session-id e2e-2915-tool --tool-name read_file`; `telemetry_spans` total **24 959**, `max(ingested_at) 2026-09-21T07:34:25.127Z` (recent); `chat_rows` e2e-2915-chat state=init ×2; `tool_use_rows` e2e-2915-tool tool_name read_file ×2.
+- **F-71 PASS.** `pnpm --filter @fredo/ui build` exit 0 (2582 modules, only the pre-existing chunk advisory); `pnpm --filter @fredo/ui test:run` **115 files / 1700 tests passed, 0 failed**; background suite 9 files / 140 tests; `git diff main spec/2915 --stat` shows the ONLY test-expectation edits are `BackgroundSettings.test.tsx` (7→8 radios, End→`life`) + purely additive `DesktopBackdrop.test.tsx`/new Life files — no assertion weakened/disabled/deleted; `background.invariants.test.tsx` byte-identical.
+- **F-72 PASS (live).** Each of the 8 tiles reaches exactly its state (None → zero backdrop; six recipes → their layers; Life → the canvas); exactly one selected/checked per click; `resolveBackgroundMotion` still exactly two states; no new control/motion status.
+
+### #2915 testing round 2 (spec/2915 @ 79a80c1b) — results
+
+> Re-test after the round-1 F-63 FAIL fix (`79a80c1` — cell token `--accent-primary` → `--accent-strong`).
+> Live policy. Serving `spec/2915 @ 79a80c1b`; webview 1920×1017 dpr 1; raw
+> `matchMedia('(prefers-reduced-motion: reduce)').matches = false`. **Verdict: PASS (16/16 rows).**
+
+- **F-57 PASS (live).** 8 radios, exactly one `aria-checked="true"`; fresh profile (cleared AppStore + localStorage) → None + zero backdrop DOM/canvas; Life → `data-background-id="life"`, tile `data-selected`, `localStorage` `life`, canvas running; document canvas count 1.
+- **F-58 PASS (live).** Life → `dev-env.ps1 -Action Restart` → restored (new seed 1391331599, running true); None → restart → AppStore `none`, zero backdrop/canvas.
+- **F-59 PASS (live).** `banana`/`''`/`{}`/`123`/removed `plasma` → zero backdrop DOM, today's desktop, console clean; `life` round-trips (seed 1465378034). `null` rejected by the typed `save_setting` command (`invalid type: null, expected a string`).
+- **F-60 PASS (live+static).** seeds 3479934306 vs 4190341673; loaded-frame cell-grid diff 7.772 %; 10-pattern catalogue; thumbnail SPAN+SVG `data-life-preview="static"`, zero canvas in the settings tree.
+- **F-61 PASS (live, PRIMARY) with the disclosed calibration residual.** Dense full-frame Δ=12 s intervals 4.832 / 4.378 / 5.219 / 3.930 % (4/4 ≥ 2.0 %); union 4.578 %; no blank frame. **Residual:** the `≥1 interval ≥3× median` clause is harmonically locked at 12 s (24 s re-seed period = 2× multiple); observable at fine granularity — **120 ms consecutive dense-diff max 9.455 % vs 2.18 % median = 4.34×** (t=28.813 s), and painted-population step 0.419 pp vs 0.03 pp median = 13.97×.
+- **F-62 PASS (live, G-176).** Non-maximized 480×320 @ (48,48) window; backdrop z=0 / `pointer-events:none` / `aria-hidden` / no tabindex; `elementFromPoint` ×4 → window content; nav click + typed "inert-probe" landed while Life animated.
+- **F-63 PASS (live+static) — round-1 FAIL fixed.** (a) zero literals / `var(--x)NN`. (b) painted-canvas recolour live, no restart (light-default cell `#057b7d` → override `#ff00ff` → `#920897` 7.767:1; pale `#7dd3fc` → `#4a7c95` 4.557:1; reset → base 5.497:1; unused `cardBg` override no shift). (c) **painted cell-vs-ground non-text ratios: light-default 5.078, solarized 3.742, arctic 4.588, sunset 4.729, paper 5.051 (all ≥3:1); dark 11.508, coffee 10.172.** Full-canvas histogram proves the `color-mix`-derived cell was actually painted (no ground fallback).
+- **F-64 PASS (product pin) + UNVERIFIED (live flip) — NAMED BLOCKER.** `vitest run background` 9 files / 140 tests; `lifeBounds` 8/8 + `lifeEngine` 12/12 (static leg zero rAF/timers). No media-emulation API on the host (G-050/G-148/#2870); closed by the pin.
+- **F-65 PASS (live).** dark 11-frame max consecutive |ΔL| = 0.171 % FS; light-default 12-frame max = 0.219 % FS; zero inversions > 0.5 % FS; implied flash ≪ 3 Hz.
+- **F-66 PASS (live+static).** Zero raster; authored caps; clean 70.004 s soak heap start 36.97 → peak 37.29 MB (**+0.882 %**), end 37.16 MB, 6 GC decreases, no monotonic climb; canvas backing store constant 1920×1017 (1.0× CSS viewport).
+- **F-67 PASS (live) + NAMED BLOCKERS.** `data-life-running` true→**false**→true via `document.hidden` override + the real `visibilitychange` handler; hidden full-frame diff over **15.365 s = 0.000 %**; post-restore evolving 2.486 %/1.5 s. Native minimize/hide undrivable (plugin <0.13; no `core:window:allow-hide`); `document.visibilityState` stayed `visible` — disclosed.
+- **F-68 PASS (live+static).** `lifePatterns.ts:6-21` + `docs/features/desktop-background-life.md:17-41` + live `desktop-background-life-attribution`; 10 patterns.
+- **F-69 PASS (live, complex).** 4/4 intervals clear; re-seed discontinuity 9.455 % vs 2.18 % median = 4.34×; end frame ≠ initial; population never 0; vision (light-default frames apart): evolving yes, frozen/blank no.
+- **F-70 PASS (live).** `telemetry_spans` total **25 497**, `max(ingested_at) 2026-09-21T08:05:23.266Z`; `chat_rows` e2e-2915-chat init ×2; `tool_use_rows` e2e-2915-tool read_file ×2.
+- **F-71 PASS.** build exit 0 (2582 modules); `test:run` **115 files / 1700 tests**; `background.invariants.test.tsx` byte-identical; only chooser 7→8 + additive test edits.
+- **F-72 PASS (live).** All 8 options reach exactly their state; one selected per click; two motion states; no new control.
+
+---
+
+## #2925 extension — a calmer, less glaring Life backdrop (revises #2915)
+
+> Issue #2925 revises #2915: the shipped Life field is **too bright and nearly monochrome**. It must be
+> rendered **materially dimmer** with **reduced single-hue dominance**, while staying **perceptibly
+> animated** and keeping foreground legibility. Rows map to the QA Plan `Q-1..Q-16` / AC1–AC5 in
+> `.opencode/tmp/2925/triage.md` (new rows `F-73..F-88`). No prior row is superseded.
+> **Verification policy: live** — rendered-pixel / DOM+computed-style / restart persistence /
+> visibility reads on the running app. F-87 carries the mandatory `telemetry_spans` receipt; F-88 the
+> gates. The reduced-motion live OS flip stays a **named blocker** (Tauri MCP has no media-emulation
+> API — G-050/G-148/#2870), closed by the F-81 product-unit pin.
+>
+> **G-136 — RE-BASELINE, NOT SUPERSESSION.** The historical `F-57..F-72` / `S-20..S-23` / `R-29..R-33`
+> records stand, unedited. This section **extends** their expected values for the dimmed field
+> (`F-61` → `F-75`; `F-63` → `F-76`; `S-20..S-23` → `S-24..S-27`; `R-29..R-33` → `R-34..R-38`) and adds
+> the new AC1 luminance/dominance audit `F-73`/`F-74`.
+>
+> **Measurement definitions (identical on BOTH legs).**
+> - **Field luminance** = arithmetic MEAN of per-pixel WCAG relative luminance
+>   `L = 0.2126·R' + 0.7152·G' + 0.0722·B'` (8-bit sRGB linearized: `c/255 > 0.04045` →
+>   `((c/255 + 0.055)/1.055)^2.4`, else `(c/255)/12.92`) over the **unmasked Life backdrop rect** of the
+>   **composited desktop capture** (windows closed — so an overlay-based dim is captured). Shell chrome
+>   (clock/status/launcher strip) masked per the F-46 recipe (max per-channel delta ≤ 2 outside the
+>   clock). Report mean / median / p95 / share of pixels with `L > 0.5`.
+> - **Dominance** = painted pixels are those with per-channel delta > 8 from the modal ground colour;
+>   the dominant band is the 30°-wide HSL hue band containing the most painted pixels (near-neutral
+>   painted pixels with `S < 0.10` excluded). **Dominance share** = painted pixels in that band / all
+>   painted pixels. **Dominant-hue saturation** = mean HSL `S = (max−min)/max` of those pixels.
+> - **Perceptibility** = coverage (changed backdrop px / total) at `PIXEL_DELTA_MIN = 8` per-channel max
+>   delta; the **gated quantity is the per-interval pairwise dense delta** (G-221); window/footprint
+>   union is corroboration only. Apply it to the **resolved (dimmed) tokens**, never the pre-dim render.
+> - **Materiality floors (QA-proposed; the Architect's declared dim target supersedes when stronger):**
+>   field luminance **≥ 10 % relative reduction**; dominance **≥ 25 % relative share reduction OR ≥ 0.10
+>   absolute saturation reduction**. Identical-frame repeats must read ≤ 1 % relative (E-51).
+>
+> **New expected baselines (open Q6).** #2915 recorded cell-vs-ground ratios
+> light-default 5.078:1, solarized 3.742:1, arctic 4.588:1, sunset 4.729:1, paper 5.051:1,
+> dark 11.508:1, coffee 10.172:1; perceptibility 3.913–5.674 % per 12 s interval against the
+> 2.0 %/interval floor. After #2925 the SAME metrics are expected to read: field luminance **≥ 10 %
+> relative lower**, dominance share **≥ 25 % relative lower OR** dominant-hue saturation **−0.10
+> absolute**, perceptibility **still ≥ 2.0 %/interval** (the floor is NOT traded away), cell-vs-ground
+> **still ≥ 3:1 on every preset**, foreground chrome **still ≥ 4.5:1 body / ≥ 3:1 non-text**. Record the
+> actuals; a metric that regresses below its #2915 value is a FAIL naming it.
+
+- [ ] **F-73 (AC1a / Q-1 — BEFORE→AFTER rendered-field luminance, the dimming leg):** Materialise the
+      BEFORE tip (`dev-env.ps1 -Action Up -Spec 2925 -At <pre-change-tip>` — the #2915 merge tip on
+      `main`; record the SHA), select **Life** with all feature windows closed, capture the composited
+      desktop; repeat on the tested tip. Compute mean field luminance per the definitions above.
+      **Expected:** AFTER mean field luminance is materially lower than BEFORE — QA hard floor **≥ 10 %
+      relative reduction** (UI/UX design direction **≥ 20 % relative** on light-based presets; the
+      Architect's declared target supersedes when stronger, recorded). On dark-based presets judge
+      primarily on the **painted-pixel luminance** leg (the frame mean is ground-dominated). Report
+      mean / median / p95 / glare share for BOTH legs. **Restore to the tested tip per G-163** (`git checkout -f <tested-tip>`,
+      verify `git status --porcelain` clean + every tip-deleted file absent, record the served commit)
+      BEFORE any AFTER leg.
+      **Edge:** no live BEFORE cycle reachable → the pre-authorized fallback column (removed-code diff +
+      arithmetic composite + durable #2915 recorded values), with the empirical numbers disclosed as
+      **UNVERIFIED**, never fabricated; identical-frame measurement noise ≤ 1 % relative (E-51);
+      shell-chrome mask; Life on both a light and a dark preset.
+- [ ] **F-74 (AC1b / Q-2 — reduced single-hue dominance):** On the same BEFORE/AFTER frames histogram
+      painted pixels (per-channel delta > 8 from the modal ground) by HSL hue; compute the dominant 30°
+      band share and its mean saturation.
+      **Expected:** dominance is **reduced** — **dominant-hue mean saturation/chroma reduction ≥ 0.10
+      absolute (PRIMARY)** — AND the field still carries ≥ 1 painted hue (not neutralised to a flat
+      grey). The **share** branch alone cannot fire under a uniform field-wide dim (lit-cell pixel share
+      is unchanged), so it is OR-only corroboration, never the sole gate (UI/UX Q4). Record band centre /
+      share / mean saturation on both legs.
+      **Edge:** a dim that lowers luminance only, with dominance unchanged, is a FAIL on this leg;
+      near-neutral painted pixels (S < 0.10) excluded identically on both legs; the mechanism
+      (accent-mix vs per-cell alpha vs darker ground) is the Architect's call — the row measures the
+      observable only.
+- [ ] **F-75 (AC2 / Q-3 — perceptibility on the RESOLVED dimmed tokens; extends F-61, G-216/G-221/G-228):**
+      Read the authored `LIFE_STEP_MS` / `LIFE_RESEED_MS` / grid caps / cell footprint and RECORD them;
+      set `PERCEPT_INTERVAL_MS = max(2000, 8 × LIFE_STEP_MS)`,
+      `PERCEPT_WINDOW_MS = max(4 × INTERVAL, 2 × LIFE_RESEED_MS)` (= 48 000 ms shipped),
+      `PIXEL_DELTA_MIN = 8`; sample at `PERCEPT_SAMPLE_MS = 10 000` ms — **off-harmonic** (re-seed
+      24 000 / 10 000 = 2.4; record the ratio). Capture **dense full-frame** diffs (every pixel, no grid
+      subsampling) of the rendered backdrop via an **in-page accumulator** (`window.__lifePerceptSamples`
+      — test-only sampler diffs each tick against the previous and pushes `{t, coveragePct, meanAbsDelta}`)
+      polled by the driver in **bounded calls each < 3 s** (G-229 — never one long in-page call).
+      **Expected:** **≥ 3 of 4** intervals clear the derived floor `LIFE_INTERVAL_FLOOR_PCT` (recompute
+      from the authored cell footprint — shipped `(1−2×0.14)² = 0.5184 × 5 % × 2/3 ≈ 1.73 %`, gated on
+      the stricter **2.0 %/interval**); window union **≥ 4.0 %**; **≥ 1 interval ≥ 3 × median** (the
+      re-seed discontinuity) OR the fine-granularity probe (consecutive dense diffs at ≈ 2 ×
+      `LIFE_STEP_MS`) reported raw; **no blank (0 %) / frozen frame**; the human read (two screenshots +
+      ≥ 6 s watch) confirms the field is **evolving**. **The gate is the per-interval pairwise dense
+      delta — `PIXEL_DELTA_MIN`, the interval, the window and the floor are FIXED.** A sub-floor reading
+      is the measured **dim-vs-perceptibility FAIL (dimmed into invisibility)** — never lower
+      `PIXEL_DELTA_MIN` to pass. Metric PASS + human "frozen" = FAIL.
+      **Edge:** thin margin (baseline 3.93–5.22 %/interval vs the 2.0 % floor) — a dim that scales
+      per-channel frame deltas below 8 collapses coverage; single-phase window; harmonic lock (G-228) →
+      report the raw series rather than looping; canvas-pixel vs composited read disclosed; slowness →
+      widen the interval; hard-edged cells → AA = 1.0.
+- [ ] **F-76 (AC3a / Q-4 — cell-vs-ground ≥ 3:1 on every preset, on the DIMMED field; extends F-63,
+      G-227):** Sample the painted cell colour vs ground on **all 20 shipped rows** — 18 built-ins
+      (`themePresets`, `app/types/theme.ts:233`) + `turbo` + `classic` — **re-baselining** the 7 #2915
+      presets (light-default, solarized, arctic, sunset, paper, dark, coffee); **solarized is the
+      acceptance-binding row** (~32 % field-wide dim headroom; ground-only darkening breaks it at ~10 %
+      sRGB).
+      **Expected:** painted cell-vs-ground non-text ratio **≥ 3:1 on EVERY of the 20 rows**; quote the
+      dimmed AFTER ratios beside the #2915 baselines (5.078 / 3.742 / 4.588 / 4.729 / 5.051 / 11.508 /
+      10.172). **A dim that trades any row below 3:1 = FAIL naming the preset + pair.** Arbitrary user
+      accents cannot be floor-guaranteed at baseline → gate them on **no regression vs the same accent
+      pre-dimming** and document the user's choice.
+      **Edge:** pre-validate the exact painted token pair per preset (G-227) — a token swap that
+      changes the painted pair must be re-measured; light vs dark `--body-bg`; unused-token override; a
+      mechanism that dims ground and cells unequally shrinks the ratio.
+- [ ] **F-77 (AC3b / Q-5 — foreground legibility vs the dimmed field; UI/UX sign-off):** Measure
+      shell-chrome text (command bar, clock, tiles, ticks) vs its effective backdrop containing the
+      dimmed field, and window content vs its opaque surface, on a **light** and a **dark**
+      preset/accent.
+      **Expected:** UI/UX validates body text **≥ 4.5:1**, large/bold **≥ 3:1**, non-text UI **≥ 3:1**
+      on BOTH; quote every ratio. UI/UX owns the sign-off; QA binds the rendered-pixel measurement and
+      the floors.
+      **Edge:** compare against a **None / Life-absent control** — the dim must not *reduce* chrome
+      contrast; window content is background-invariant (opaque surface); pale accent + light worst case;
+      window over the busiest field region; a dimming overlay must not sit above a window (F-85).
+- [ ] **F-78 (AC4a / Q-6 — zero literals + zero `var(--x)NN`, extends `lifeBounds.test.ts`):** Static
+      grep the Life slice for hex/rgb/hsl literals and the invalid `var(--x)NN` alpha-append pattern;
+      extend the `lifeBounds.test.ts` source pin to cover the new dim expression.
+      **Expected:** ZERO colour literals (comment issue-refs exempt) and ZERO `var(--x)NN` alpha-append
+      in the Life slice; the dim is a pure function of live theme CSS custom properties via
+      `tint()`/`color-mix`. A canvas `ctx.fillStyle` cannot consume `var()` — the dim expression must be
+      **browser-resolved** (derived CSS vars registered in `ThemeProvider` next to `--accent-strong`, or
+      `getComputedStyle` on a probe) and defined **ONCE as a shared paint-expression constant** consumed
+      by the live engine, the canvas style, and the thumbnail so they cannot drift. Any literal or
+      alpha-append = FAIL naming file:line.
+      **Edge:** distinguish a JS-concatenated 8-digit hex (OK); `transparent`/`inherit`/`currentColor`/
+      `none` allowed; an inline `rgba()` in the component = FAIL; the pre-existing stale
+      `--accent-primary` mention in `backgroundRegistry.ts` is a comment (not a literal) — but see F-86.
+- [ ] **F-79 (AC4b / Q-7 — live recolour, no restart):** Switch preset (light-default → dark) and
+      set/clear an `accentPrimary` override while Life runs; sample the rendered cell/ground before and
+      after each change.
+      **Expected:** the dimmed field recolours **live with no restart** and derives from the live tokens
+      (the dim expression re-resolves on the theme change); no stale colour; no
+      `Maximum update depth exceeded`.
+      **Edge:** rapid churn; chooser open during the switch; override set then cleared; the dim must not
+      double-apply/stack on a re-render.
+- [ ] **F-80 (AC4c / Q-8 — unused-token negative pin):** Override a token the Life field does **not**
+      consume (pick it from the authored `resolveLifeTokens` consumption list — e.g. `cardBg`) and
+      re-sample the rendered field; then revert.
+      **Expected:** the field paint does **NOT shift** beyond the noise floor (≤ 1 % relative mean
+      luminance / max per-channel delta ≤ 2); reverting restores the prior paint exactly.
+      **Edge:** a field that shifts on an unconsumed token = FAIL; use the authored consumption list,
+      not an assumed token set.
+- [ ] **F-81 (AC5a / Q-9 — reduced motion = one seeded static frame, zero rAF/timers):** (a) run the
+      product-unit/render pin with `resolveBackgroundMotion({ systemReducedMotion: true })`; (b) read
+      the raw live `matchMedia('(prefers-reduced-motion: reduce)').matches`.
+      **Expected:** pin PASSES — `data-life-motion="static"`, `data-life-running="false"`, ZERO
+      `requestAnimationFrame`/`setInterval` scheduled, generation counter constant, a full (non-blank)
+      seeded frame (motion REMOVED, not paused mid-frame). (b) live flip **UNVERIFIED — NAMED BLOCKER**
+      (Tauri MCP exposes no media-emulation API — G-050/G-148/#2870); record the raw flag.
+      **Edge:** reduce ON × presets; a theme switch during the static render stays static; a
+      paused-but-live loop still scheduled = FAIL; never blockerless.
+- [ ] **F-82 (AC5b / Q-10 — per-load seed + periodic re-randomize policy unchanged):** Two fresh loads
+      → read `data-life-seed`; watch ≥ 2 × `LIFE_RESEED_MS`.
+      **Expected:** per-load seed **differs** between loads; the automaton still re-randomizes on the
+      authored cadence (a discontinuity is observed); no freeze into a still life or blank grid; the
+      dimming must NOT alter the `lifeConstants.ts` seed/re-seed policy.
+      **Edge:** same-process reload vs cold restart; long re-seed period → extend the window; the seed
+      value itself is not asserted, only that it varies.
+- [ ] **F-83 (AC5c / Q-11 — pause-when-hidden: loop CANCELLED, not merely skipped):** Flip the real
+      `visibilitychange` handler with `document.hidden` overridden; read `data-life-running`;
+      dense-diff two frames ≥ 5 s apart while hidden; restore.
+      **Expected:** `data-life-running` flips `"true"` → **`"false"`** (the rAF loop is **cancelled**,
+      not merely skipped) → `"true"` on restore; the hidden-window dense diff ≤ the 0.2 % noise floor;
+      post-restore the field advances again.
+      **Edge:** native minimize/hide undrivable (plugin < 0.13; no `core:window:allow-hide`) — disclosed;
+      a `"true"`/advancing state while hidden = FAIL; restore latency; occluded vs switch-away.
+- [ ] **F-84 (AC5d / Q-12 — bounded grid/cadence/DPR/memory caps unchanged):** (a) read the authored
+      caps (`COLS × ROWS`, `LIFE_STEP_MS`, `LIFE_RESEED_MS`, `LIFE_DPR_MAX`, `LIFE_FILL_DENSITY` band);
+      (b) ≥ 60 s soak reading JS heap + canvas backing-store size.
+      **Expected:** caps byte-unchanged vs #2915; heap ≤ **+2 %** with no monotonic climb; canvas
+      backing store ≤ 1.5 × viewport (shipped = 1.0×) and constant; the dimming adds **no new unbounded
+      structure and no second rAF/timer**.
+      **Edge:** dpr scaling; minutes-long soak; a dim implemented as an extra render pass must not add a
+      loop; the dim must not allocate per frame (no churn); build + suite gates.
+- [ ] **F-85 (AC5e / Q-13 — inert backdrop, unchanged):** Open a non-maximized feature window over the
+      Life backdrop at its resting rect; read stacking / `pointer-events` / `aria-hidden` / `tabIndex`;
+      `elementFromPoint` inside the window rect; click + type into the focused field.
+      **Expected:** backdrop `zIndex: 0`, `pointer-events: none`, `aria-hidden="true"`, no `tabIndex`;
+      `elementFromPoint` returns **window content** (never the backdrop, never a dimming overlay);
+      clicks/typing land; the backdrop never paints above window content.
+      **Edge:** a dimming OVERLAY must sit on the same z=0 layer below `WindowManager` — an overlay
+      above a window = FAIL; maximized / floating / minimized; two windows; drag over the field; light
+      + dark.
+- [ ] **F-86 (AC5f / Q-14 — chooser-thumbnail consistency; open Q5):** Compare
+      `[data-testid="desktop-background-life-thumb"]` (`data-life-preview="static"`) against the live
+      dimmed field.
+      **Expected:** the thumbnail does not visibly contradict the live dimmed field (same cell/ground
+      token family, comparable dominance). Per the UI/UX disposition (**FIX IN-SLICE, Q5**):
+      `LifeThumbnail.tsx` must paint from the **same resolved dimmed cell/ground expression** as the live
+      engine (not raw `var(--accent-primary)`, stale vs the canvas's `--accent-strong`), mirror the dim
+      via the shared paint constant, and the stale `LIFE_BACKGROUND` comment in `backgroundRegistry.ts`
+      must be corrected. A thumbnail that still promises a brighter/different field = FAIL.
+      **Edge:** a bright thumbnail beside a dimmed field = contradiction → FAIL or a named disposition;
+      thumbnail stale after a token change; `data-life-preview="static"` preserved (no engine in the
+      chooser).
+- [ ] **F-87 (NF-live / Q-15 — receipt):** `fredo emit --event-type chat --session-id e2e-2925-chat` +
+      `--event-type tool_use --session-id e2e-2925-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows`; retain screenshot URLs + live `tauri_webview_*` receipts.
+      **Expected:** `telemetry_spans` **NON-ZERO** with a recent `max(ingested_at)`; both markers
+      classify. **A static-only PASS is a FALSE PASS.**
+      **Edge:** re-run on the tested tip; verbatim output; never fabricate a span query.
+- [ ] **F-88 (NF-gate / Q-16 — gates + no test weakening):** `pnpm --filter @fredo/ui build`;
+      `pnpm --filter @fredo/ui test:run`; run the theming + settings + desktop-shell regressions.
+      **Expected:** build exit 0 (zero TS errors/warnings); suites green; no existing assertion
+      weakened/disabled/deleted; the recipe-module zero-rAF pins and `background.invariants.test.tsx`
+      stay byte-identical; zero literals / `var(--x)NN` / raster in the slice.
+      **Edge:** no dangling import; the new `lifeBounds.test.ts` pins are order-independent/deterministic
+      (G-222); overlap suites green.
+
+### #2925 testing round 1 (spec/2925 @ 446ac18a, BEFORE 05ee822) — results
+
+> Live policy. Serving `spec/2925 @ 446ac18a`; BEFORE leg materialised the #2915 merge tip `05ee822ade1f` via `dev-env.ps1 -Action Up -Spec 2925 -At 05ee822` (restored per G-163; `git status --porcelain` clean). Webview 1920×1017 dpr 1; raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`. Harness: canvas `getImageData` over the 1920×1017 Life backdrop rect; WCAG relative luminance; HSL `S=(max−min)/max`; painted = per-channel |Δ|>8 from the modal ground. **Verdict: FAIL (2/16 rows).**
+
+- **F-73 PASS (live).** light-default mean field L `0.985311 → 0.731488` = **−25.8 %** (glare share 98.45→97.64 %, painted mean L 0.30031→0.19076 = −36.5 %); dark painted mean L `0.42345 → 0.33388` = **−21.1 %** (glare 1.95→0 %). BEFORE reproduces the #2915 records exactly (light 5.0777 vs 5.078; dark 11.5084 vs 11.508).
+- **F-74 FAIL (live) — light preset saturation leg.** light-default dominant-band mean S `0.7340 → 0.7181` = **−0.0159 absolute** (modal cell 0.960→0.935 = −0.025; share 96.49→94.76 % = −1.8 % relative) vs the ≥0.10 abs / ≥25 % rel floor. dark is marginal (−0.0969 mean / −0.103 modal). Root cause: the cell mix toward the near-black light-preset `--text-primary` is ≈ uniform darkening, and HSL saturation is scale-invariant.
+- **F-75 PASS (live) with disclosed calibration residual.** 10 s-cadence per-interval dense coverage (light-default, resolved dimmed tokens) **3.2726 / 6.5964 / 5.0449 / 5.6258 % → 4/4 ≥ 2.0 %**; union 5.1266 %; no blank frame; fine 2 s series 1.9688–5.726 % (median 2.896 %), max/median 1.98× (<3× — fine series reported raw per the plan; same residual class #2915 disclosed). Vision read: frames ≈6 s apart clearly differ.
+- **F-76 PASS (live).** 20/20 painted cell-vs-ground ≥3:1 (light-default 6.219, solarized **3.748** binding, arctic 4.991, sunset 5.103, paper 5.370, dark 9.396, coffee 8.670, tokyo-night 6.976, monochrome 15.908, cyberpunk 7.728, deep-space 8.047, dracula 7.876, matrix 12.468, nord 6.591, synthwave 7.867, terminal-green 8.938, high-contrast 15.128, blueprint 10.419, classic 5.103, turbo 7.698). No `LIFE_CONTRAST_MIN` revert on any shipped row. `turbo` is unreachable in the shipped UI (`ThemeProvider.tsx:153` locks `activeTheme='classic'`) → synthetic-token leg (disclosed).
+- **F-77 FAIL (live) — shell chrome on the dimmed field.** light-default clock `--text-secondary #5f6b7a` 16 px/500 over the dimmed ground `rgb(224,224,224)` = **4.110:1** (BEFORE 5.425:1); solarized 1.879 (pre-dim 2.479), paper 2.623, tokyo-night 2.879, arctic 3.209, dracula 3.269, sunset 3.296, nord 3.861. Window content is fine (light header 4.676, nav 16.333; dark header 7.464). The plan's UI/UX §3 (G-227) shell-chrome pre-validation was not performed.
+- **F-78 PASS (live+static).** Zero colour literals (only issue-ref comments) and zero `var(--x)NN` in the Life slice; `lifeBounds.test.ts` +44 additive lines.
+- **F-79 PASS (live).** accent `#00d1d1→#ff00ff` repainted the field live (cell `rgb(6,88,92) → rgb(104,8,109)`), seed constant, no reload; reset restored.
+- **F-80 PASS (live).** unconsumed `cardBg #123456` left the paint unchanged (mean L +0.026 % ≤1 %); reset exact.
+- **F-81 PASS (pin) + live flip UNVERIFIED — NAMED BLOCKER.** reduced-motion leg green (zero rAF/timers); raw flag `false`; no Tauri MCP media-emulation API (G-050/G-148/#2870).
+- **F-82 PASS (live).** seeds `544781312 → 684323452 → 1501610903 → 312008421`; re-seed policy byte-unchanged; no freeze/blank.
+- **F-83 PASS (live) + named limitations.** `data-life-running` true→false→true; hidden diff **0.0000 %** over 34.0 s; post-restore 3.8628 %/1.9 s. Native minimize/hide undrivable; `document.visibilityState` stayed `visible`.
+- **F-84 PASS (live) with a disclosed heap observation.** Caps byte-unchanged; backing store constant 1920×1017 (1.0× viewport); 60 s soak heap 37.58 → 38.97/40.09/38.97/38.86/40.67/39.32 MB (sawtooth, no monotonic climb; peak +8.2 % disclosed).
+- **F-85 PASS (live).** backdrop z=0 / `pointer-events:none` / `aria-hidden` / no tabIndex; `elementFromPoint` inside a 480×320 floating window returns window content; a real tile click landed and typing reached the search box while Life animated.
+- **F-86 PASS (live).** thumbnail `data-life-preview="static"`, zero canvas; computed ground `--body-bg`, cells `--life-cell`, final scrim `color(srgb 0 0 0 / 0.12)` → composited cell ≈ live painted cell; no `var(--accent-primary)`; registry comment corrected.
+- **F-87 PASS (live).** `telemetry_spans` n=**28814**, `max(ingested_at)` **2026-09-21T23:05:13.119Z**; `chat_rows` e2e-2925-chat init; `tool_use_rows` e2e-2925-tool read_file.
+- **F-88 PASS.** build exit 0 (2583 modules); `test:run` **120 files / 1786 tests**; `background.invariants.test.tsx` + `backgroundMotion.ts` not in the diff; `BackgroundSettings.test.tsx` change is additive/strengthening.
+
+### #2925 testing round 2 (spec/2925 @ 897ce4cc, BEFORE 05ee822) — results
+
+> Re-test after the round-1 fix (`a195059`/`897ce4c`: `LIFE_CELL_MIX 0.2→0.35`, new `LIFE_NEUTRAL_BG_MIX 0.3`, `LIFE_SCRIM_WEIGHT 0.2→0.12` ⇒ 7.2 % black; three derived `--life-*` expressions). Live policy. Serving `spec/2925 @ 897ce4cc`; BEFORE leg `05ee822ade1f` restored per G-163. Webview 1920×1017 dpr 1; raw `matchMedia('(prefers-reduced-motion: reduce)').matches = false`. **Verdict: PASS (33/33 rows).**
+
+- **F-73 PASS (live).** Same canvas harness both legs. light-default full-frame mean WCAG L **0.975313 → 0.824144 = −15.50 %** (≥14 % declared / ≥10 % QA floor); dark painted-pixel mean L **0.429891 → 0.307450 = −28.48 %** (≥18 % target). BEFORE reproduces the #2915 records (5.0777 vs 5.078; 11.5084 vs 11.508).
+- **F-74 PASS — round-1 FAIL fixed (live).** PRIMARY dominant-band mean HSL S: light-default **0.73667 → 0.54510 = −0.1916** (modal cell 0.9600→0.7075 = −0.2525); dark **0.53169 → 0.39550 = −0.1362** (modal 0.5340→0.3915). Non-neutralisation `S_post ≥ 0.10`: 0.5451 / 0.3955. Share OR-only: 0.9641→0.9541 light, 1.000 dark.
+- **F-75 PASS (live).** light-default resolved-token per-interval dense coverage **3.6589 / 5.5844 / 5.1555 / 5.2371 % → 4/4 ≥ 2.0 %**; fine 320 ms series 2.4441–3.4206 % (median 2.8562); no blank/frozen.
+- **F-76 PASS (live).** 20 rows painted cell-vs-ground ≥3:1 — solarized **3.323 binding**, light-default 5.594, arctic 4.461, sunset 4.663, paper 4.755, dark 8.708, coffee 8.105, tokyo-night 6.514, monochrome 14.028, cyberpunk 7.326, deep-space 7.616, dracula 7.294, matrix 11.136, nord 6.093, synthwave 7.408, terminal-green 8.209, high-contrast 13.394, blueprint 9.321, classic 4.916; `turbo` synthetic 7.338 (locked). Guard inert.
+- **F-77 PASS — round-1 FAIL fixed (live, two-tier binding gate).** In scope: clock `--text-secondary` 16 px/500 + nav-hint labels 11 px/300 (same token). **Tier A 0 failures** — light-default R0 5.425 → **R1 4.634** (round-1 4.110), dark 7.464→7.565, monochrome 7.838, cyberpunk 6.880, deep-space 5.680, matrix 6.405, coffee 6.032, synthwave 5.399, terminal-green 4.947, high-contrast 15.908, blueprint 7.092, classic 5.104. **Tier B 0 failures** — tokyo-night 2.762→2.823, solarized 2.479→**2.110** (−14.9 %), arctic 4.240→3.605, sunset 4.368→3.733, dracula 3.026→3.154, nord 3.496→3.710, paper 3.474→2.966 (all ≤20 % loss).
+- **F-78 PASS (static).** Zero literals / `var(--x)NN` in the Life slice; the `lifeBounds` pins strengthened (0.35 / 0.3 / 0.12 + 3-line expression contract).
+- **F-79 PASS (live).** accent `#00d1d1 → #ff00ff` repainted live (cell `rgb(30,103,105) → rgb(115,33,120)`, cell-vs-ground 5.594→8.088; ground unchanged); Discard restored; console clean.
+- **F-80 PASS (live).** unconsumed `cardBg #123456` applied (`--card-bg`=#123456) left the paint byte-identical (mean L Δ +0.126 %); reset exact.
+- **F-81 PASS (pin) + live flip UNVERIFIED — NAMED BLOCKER.** `vitest run background/life` 52/52 (lifeSimulation 22, lifeBounds 11, lifeEngine 19); raw flag `false`; no Tauri MCP media-emulation API (G-050/G-148/#2870).
+- **F-82 PASS (live).** seeds `647090965 → 260100747` across same-tip loads; policy byte-unchanged; no freeze/blank.
+- **F-83 PASS (live) + named limitations.** `data-life-running` true→false→true; hidden dense diff **0.0000 %** (≥5 s apart); post-restore 5.2699 %. Native minimize/hide undrivable; `document.visibilityState` stayed `visible`.
+- **F-84 PASS (live).** Caps byte-unchanged; backing store constant 1920×1017 (1.0× viewport); 108 s soak heap 62.62→62.08 MB (**−0.86 %**), no monotonic climb; no second rAF/timer.
+- **F-85 PASS (live).** Floating 480×320 @ (720,349) window; backdrop z=0 / `pointer-events:none` / `aria-hidden` / tabIndex −1; `elementFromPoint` ×4 inside the window rect → window content, never the backdrop.
+- **F-86 PASS (live).** Thumbnail `data-life-preview="static"`, zero canvas; computed ground `--body-bg`, cells `--life-cell` (= canvas computed `color`), final scrim `color(srgb 0 0 0 / 0.072)`; no `var(--accent-primary)`; registry comment + docs updated.
+- **F-87 PASS (live).** `telemetry_spans` n=**29810**, `max(ingested_at)` **2026-09-21T23:53:32.723Z**; `chat_rows` e2e-2925-chat init; `tool_use_rows` e2e-2925-tool read_file.
+- **F-88 PASS.** build exit 0 (2583 modules); `test:run` **120 files / 1787 tests** (+1 lifeEngine guard case); `background.invariants.test.tsx` + `backgroundMotion.ts` not in the diff; `lifeBounds` pins strengthened.

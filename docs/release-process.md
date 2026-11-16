@@ -63,7 +63,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   → `tauri-apps/tauri-action@v1`.
 - **`tauri-action` inputs:** `projectPath: apps/tauri/src-tauri` (the Tauri project is **not** at the
   repo root); `tagName: app-v__VERSION__` (`__VERSION__` is substituted from `tauri.conf.json`
-  `version` = `0.1.0`); `releaseName: 'Fredo v__VERSION__'`; `releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'`;
+  `version` = `0.2.0`); `releaseName: 'Fredo v__VERSION__'`; `releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'`;
   **`releaseDraft: true`**; `prerelease: false`; `args: ${{ matrix.args }}`.
 - **`releaseDraft: true` is the deliberately-reviewed gate** — tauri-action creates a **DRAFT**
   GitHub Release and uploads the artifacts to it. Nothing is public until the owner publishes the
@@ -98,7 +98,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
 
 ### 4. `apps/tauri/src-tauri/tauri.conf.json` — bundle config consumed by the release build
 
-- `productName: "Fredo"`, `version: "0.1.0"` (feeds `__VERSION__`), `identifier: "com.fredo.app"`.
+- `productName: "Fredo"`, `version: "0.2.0"` (feeds `__VERSION__`), `identifier: "com.fredo.app"`.
 - `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`. **No change is
   required** — `release.yml` reads the existing config. **No signing identity is configured**
   (`macOS.signingIdentity: null`) — code signing/notarization is deferred (NFR-4).
@@ -246,14 +246,14 @@ or publishes.**
    requires a PR, there is no direct-merge path; the merge itself is the PR merge.)
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
    runs the Windows-only matrix, builds the Windows installer, and uploads it to a **DRAFT** GitHub
-   Release (tag `app-v0.1.0` at the branch tip).
+   Release (tag `app-v0.2.0` at the branch tip).
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
    deliberately-reviewed artifacts because nothing is public before this step.
 
 > **Reproducibility note:** every artifact is built from the `release/stable` tip with a fixed ref,
 > `pnpm install --frozen-lockfile`, the committed `Cargo.lock`, and SHA-pinned actions — so a given
-> tip always yields the same build. The bundle `version` (`0.1.0`) is read from
+> tip always yields the same build. The bundle `version` (`0.2.0`) is read from
 > `tauri.conf.json` at build time and injected into the release tag/name.
 
 ---

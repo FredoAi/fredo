@@ -1,6 +1,6 @@
 # Artifact Catalog
 
-Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule — the exceptions are the ephemeral working files under `.opencode/tmp/<issue>/`: the triage A2A working file `.opencode/tmp/<issue>/triage.md` (gitignored), the working draft for triage deliberation, and the Self-Improver's observations log `.opencode/tmp/<issue>/observations.md` (improvement candidates captured while orchestrating).
+Every document and object produced in the pipeline — who creates it, who consumes it, and its template. All artifacts live on GitHub (issues, comments, branches) per the backbone rule — the exceptions are the ephemeral working files under `.opencode/tmp/<issue>/`: the triage A2A working file `.opencode/tmp/<issue>/triage.md` (gitignored), the working draft for triage deliberation, and the Orchestrator's observations log `.opencode/tmp/<issue>/observations.md` (improvement candidates captured while orchestrating).
 
 ---
 
@@ -49,23 +49,23 @@ flowchart LR
 
 | Artifact | Producer | Consumer | Format | Location |
 |----------|----------|----------|--------|----------|
-| Backlog Issue | Product Owner | Self-Improver, Triage cluster | GitHub issue | Backlog #N |
-| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Self-Improver | Markdown bullets (file:line) | `## Triage Plan` comment on the feature issue |
+| Backlog Issue | Product Owner | Orchestrator, Triage cluster | GitHub issue | Backlog #N |
+| Domain Model | Software Architect (triage) | UI/UX Expert, QA Expert, Orchestrator | Markdown bullets (file:line) | `## Triage Plan` comment on the feature issue |
 | Design Assets | UI/UX Expert (triage) | Developer, Tester | Mockups / component specs / images | `## Triage Plan` comment (links) |
-| QA Plan | QA Expert (triage) | Self-Improver, Tester | Structured markdown | `## Triage Plan` comment |
-| Triage A2A working file | State machine (auto-seeds on `intake → triage`) + Software Architect / UI/UX Expert / QA Expert | Triage cluster, Self-Improver | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored; auto-seeded) |
-| Observations log | Self-Improver (orchestrator) | Self-Improver (audit — input to the end-of-spec improvement decision) | Markdown (agent-tagged, one line per blocker/pattern) | `.opencode/tmp/<issue>/observations.md` (ephemeral, gitignored) |
+| QA Plan | QA Expert (triage) | Orchestrator, Tester | Structured markdown | `## Triage Plan` comment |
+| Triage A2A working file | State machine (auto-seeds on `intake → triage`) + Software Architect / UI/UX Expert / QA Expert | Triage cluster, Orchestrator | Markdown (per-agent `## <Agent>` sections + `## Discussion`) | `.opencode/tmp/<issue>/triage.md` (ephemeral, gitignored; auto-seeded) |
+| Observations log | Orchestrator | Curator (input to the end-of-spec durable-lesson decision) | Markdown (agent-tagged, one line per blocker/pattern) | `.opencode/tmp/<issue>/observations.md` (ephemeral, gitignored) |
 | Feature Test Suite | QA Expert (sole test author; seeds at triage), Tester (executes + expands) | Tester, later specs (regression) | Markdown checklists (`functional.md` / `regression.md` / `exploratory.md` / `smoke.md`) | `.opencode/tests/<feature>/` (durable, version-controlled via `tests-commit` → main) |
-| Converged plan deliverable (`## Convergence: agreed` in the A2A file) | Self-Improver | State machine (triage exit guard) | `## Convergence: agreed` marker appended to `.opencode/tmp/<issue>/triage.md` | Feature issue #N (via `.opencode/tmp/<issue>/triage.md`) |
+| Converged plan deliverable (`## Convergence: agreed` in the A2A file) | Orchestrator | State machine (triage exit guard) | `## Convergence: agreed` marker appended to `.opencode/tmp/<issue>/triage.md` | Feature issue #N (via `.opencode/tmp/<issue>/triage.md`) |
 | Plan (`## Triage Plan` comment) | State machine (transition side-effect: assembles the plan draft from the A2A file and auto-posts it) | Developer pool, Tester | `## Triage Plan` timeline comment on the feature issue (seeded from the triage template) | Feature issue #N |
 | Fix Plan (`## Fix Plan (round N)` comment) | Software Architect (drafts `.opencode/tmp/<issue>/fix-plan.md` from the tester's FAIL verdict); State machine (round-stamps + posts it) | Developer pool, Tester | Timeline comment: `## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, footer `*Authored by Software Architect*` | Feature issue #N |
 | Plan Checklist | Software Architect (triage) | Developer pool | The `- [ ]` lines under `### Sub-issue Decomposition` in the plan comment — the work list developers execute on `spec/<N>` | Feature issue #N |
-| Staffing Plan | Triage cluster | Self-Improver | Section of the plan comment | Feature issue #N |
-| Timeline Comments (PO Backlog / Triage Plan / Development Summary / Tests Runs / SI Summary) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
+| Staffing Plan | Triage cluster | Orchestrator | Section of the plan comment | Feature issue #N |
+| Timeline Comments (`## Triage Plan` / `## Developer <ST-id> — verification` / `## Development Summary` / `## Tests Runs` / `## Fix Plan (round N)` / `## Audit Verdict` / `## Pipeline Improvement` / `## Final Status`) | State machine (auto-posts drafts from `.opencode/tmp/<issue>/*.md` on transitions / `audit-record` / `record-improvement` / `close-issue`) | Pipeline readers | Markdown comments (`## <Title>`, `*Authored by <Agent>*`) | Feature issue #N |
 | Feature PR | State machine (auto: created on `→testing`, merged on `testing→audit`) | Tester | GitHub PR | `spec/<N>` branch → `main` |
-| Verification Comment | Developer | Self-Improver | Markdown comment (`Status`) | Feature issue #N |
-| Test Report | Tester | Self-Improver, Product Owner | Markdown + evidence | Feature issue #N |
-| Verdict Comment | Tester | Self-Improver, Developer pool | Markdown comment (`## Tests Runs` / `Status`) | Feature issue #N |
+| Developer Verification Comment | Developer (one per developer) | Orchestrator | Markdown comment (`## Developer <ST-id> — verification`) | Feature issue #N |
+| Test Report | Tester | Orchestrator, Product Owner | Markdown + evidence | Feature issue #N |
+| Verdict Comment | Tester | Auditor, Orchestrator, Developer pool | Markdown comment (`## Tests Runs`) | Feature issue #N |
 
 ---
 
@@ -127,10 +127,10 @@ The plan is one comment per feature, structured per-agent. Each `##` section is 
 | Software Architect | Domain Model (file:line), Requirements (EARS behavioral + prose constraints), API Contracts & Data Models, Sub-issue Decomposition + Effort Estimates (the `- [ ]` work checklist) | Software Architect |
 | UI/UX Expert | Design Assets (or "N/A") | UI/UX Expert |
 | QA Expert | QA Plan (test-case table) | QA Expert |
-| Summary | Goal + acceptance criteria | Self-Improver |
-| Staffing Plan | Developer count, roles, effort, heuristic used | Self-Improver |
-| Deployment Notes | Branch strategy, CI checks, infrastructure | Self-Improver |
-| Risks & Mitigations | Blockers + fallbacks | Self-Improver |
+| Summary | Goal + acceptance criteria | Orchestrator |
+| Staffing Plan | Developer count, roles, effort, heuristic used | Orchestrator |
+| Deployment Notes | Branch strategy, CI checks, infrastructure | Orchestrator |
+| Risks & Mitigations | Blockers + fallbacks | Orchestrator |
 
 ```markdown
 # Implementation Plan #<issue> — <title>
@@ -160,26 +160,28 @@ The plan is one comment per feature, structured per-agent. Each `##` section is 
 
 ### Implementation checklist (the work list)
 
-There are **no sub-issues and no tester issue** — `generate-work` was removed (PO decision). The plan's `### Sub-issue Decomposition` `- [ ]` lines ARE the work list: each line carries intent (goal + why), non-goals, the EARS requirement IDs it satisfies, and the files it owns. Developers work these checklist items directly on the feature's `spec/<N>` branch (worktree detached at its tip, per the [developer playbook](playbooks/developer.md)) and report via a `Status` Verification comment on the **feature** issue.
+There are **no sub-issues and no tester issue** — `generate-work` was removed (PO decision). The plan's `### Sub-issue Decomposition` `- [ ]` lines ARE the work list: each line carries intent (goal + why), non-goals, the EARS requirement IDs it satisfies, and the files it owns. Developers work these checklist items directly on the feature's `spec/<N>` branch (worktree detached at its tip, per the [developer playbook](playbooks/developer.md)) and each reports via a per-developer `## Developer <ST-id> — verification` comment on the **feature** issue.
 
 ### Timeline comments (the issue narrative)
 
-The feature issue's timeline is built from five titled comments that the state machine auto-posts from drafts in `.opencode/tmp/<issue>/` on every transition and `audit-record` (`post-comments` flushes pending drafts manually). Each draft must carry an `*Authored by <Agent>*` footer (anti-spoofing) and is consumed (deleted) after posting.
+The feature issue's timeline is built from the **structured phase comments** the state machine auto-posts from drafts in `.opencode/tmp/<issue>/` on every transition, `audit-record`, `record-improvement`, and `close-issue` (`post-comments` flushes pending drafts manually). Each draft must carry an `*Authored by <Agent>*` footer (anti-spoofing) and is consumed (deleted) after posting. The issue BODY is the single PO Backlog — no `## PO Backlog` comment is posted.
 
 | Draft file | Comment title | Posted at |
 |------------|---------------|-----------|
-| `po-backlog.md` | `## PO Backlog` | intake |
 | `triage-plan.md` | `## Triage Plan` | triage → implementation |
+| `dev-verify-<ST-id>.md` | `## Developer <ST-id> — verification` | implementation — one per developer, via the `comment` action |
+| `dev-summary.md` | `## Development Summary` | implementation → testing (the assembled roll-up) |
 | `fix-plan.md` | `## Fix Plan (round N)` | rework re-entry into implementation (`testing → implementation`, or an audit restart) — authored by the **Software Architect** from the tester's FAIL verdict; retry rounds only |
-| `dev-summary.md` | `## Development Summary` | implementation → testing |
-| `tests-runs.md` | `## Tests Runs` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
-| `si-summary.md` | `## SI Summary` | audit → done |
+| `tests-runs.md` | `## Tests Runs (round N)` | testing — carries the tester's verdict; the verification gate reads it (the only evidence source) |
+| `audit-verdict.md` | `## Audit Verdict` | audit — the Auditor's one structured verdict, via `audit-record` |
+| `pipeline-improvement.md` | `## Pipeline Improvement` | post-audit — the Curator's ONE improvement comment, via `record-improvement` |
+| `final-status.md` | `## Final Status` | done — outcome + doc-sync + metrics + merged PRs, via `close-issue --to-phase done` |
 
 ### Fix Plan (retry rounds)
 
 > **Canonical template:** [templates/Fix-plan-comment-template.md](templates/Fix-plan-comment-template.md)
 
-On a rework re-entry the full plan is never re-posted. The fix scope is a design decision, so it is authored by the **Software Architect** — dispatched by the Self-Improver with the tester's FAIL verdict BEFORE the feature re-enters implementation. The architect diagnoses the root cause (code + telemetry research is its scope, never the orchestrator's) and drafts `.opencode/tmp/<issue>/fix-plan.md` (`## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, ending `*Authored by Software Architect*`). The state machine posts it as the machine-stamped `## Fix Plan (round N)` timeline comment and consumes both it and any pending plan draft (nothing double-posts). **Fallback only:** when no authored draft exists, the machine derives a compact plan from the Triage Plan draft (checklist + risks). A stray `fix-plan.md` on a first entry is never posted.
+On a rework re-entry the full plan is never re-posted. The fix scope is a design decision, so it is authored by the **Software Architect** — dispatched by the Orchestrator with the tester's FAIL verdict BEFORE the feature re-enters implementation. The architect diagnoses the root cause (code + telemetry research is its scope, never the orchestrator's) and drafts `.opencode/tmp/<issue>/fix-plan.md` (`## Failed ACs`, `## Root Cause (file:line)`, `## Fix Scope`, ending `*Authored by Software Architect*`). The state machine posts it as the machine-stamped `## Fix Plan (round N)` timeline comment and consumes both it and any pending plan draft (nothing double-posts). **Fallback only:** when no authored draft exists, the machine derives a compact plan from the Triage Plan draft (checklist + risks). A stray `fix-plan.md` on a first entry is never posted.
 
 ### Test Report
 
@@ -197,13 +199,19 @@ On a rework re-entry the full plan is never re-posted. The fix scope is a design
 - Verdict: PASS / FAIL
 ```
 
-### Verification Comment (Developer)
+### Developer Verification Comment
+
+> One per developer, posted via the `comment` action on the FEATURE issue. The header is `## Developer <ST-id> — verification`; it ends `*Authored by Developer*`. The assembled `## Development Summary` (from `dev-summary.md`) remains the transition-flushed roll-up across the pool.
 
 ```markdown
-## Status — Feature #N
+## Developer ST-<id> — verification
+
 - Files changed: <summary>
 - Build: PASSED / FAILED
 - Tests: <P passed, F failed>
 - Acceptance criteria: <X/Y met>
+- Scope notes: <files changed, anything outside scope, regression invariants preserved>
 - Notes: <implementation decisions within scope>
+
+*Authored by Developer*
 ```

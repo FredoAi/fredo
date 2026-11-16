@@ -729,3 +729,311 @@
 ### #2892 testing round 1 — result
 
 - [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2917 extension — the solid interior + richer vocabulary must NOT change existing behavior
+
+> Issue #2917 adds an additive interior fill layer and audits/extends the status vocabulary. These
+> invariants MUST hold after the slice — any FAIL is a regression. Run alongside R-1..R-57 and the
+> companion F-116..F-125. **Verification policy: live.** G-136 note: the fill layer is ADDITIVE, so the
+> frozen-geometry rows stay in force unchanged (only the 58 base rects are pinned, not the total node
+> count).
+
+## R-58 — Existing state fingerprints + consumer timing unchanged
+
+- [ ] R-58: Drive `idle`/`talk`/`teleport-out`/`teleport-in`; probe the wrapper `data-state`,
+      `#fredo-expression` overlay rect set, computed `animationName`; timestamp a same-window teleport.
+  **Expected:** the pre-#2917 fingerprints for the four states are unchanged (same overlay rect sets +
+      same wrapper motion); teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `ANIM_DURATION`
+      unchanged; the 250 ms click discriminator, the joke, and TicTacToe still work. The fill layer
+      does not hijack an existing state's overlay selector or rect set. Reference R-19/R-33 + F-118.
+  - **Edge:** a new status must not shadow an existing `#fredo-expression[data-state=…]` selector; the
+    fill must not be inserted between the base rects and the overlay in paint order.
+
+## R-59 — Frozen 58-rect geometry + additive fill
+
+- [ ] R-59: Read the 58 base rects in every state (old + new) and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm the fill is a separate additive layer.
+  **Expected:** the 58 base rects are byte-identical across ALL states; the shared geometry suite
+      (`fredoAvatarGeometry.test.ts`) passes UNMODIFIED; the fill is additive (a separate layer/group),
+      never a geometry edit, and never removes a base rect. Reference R-20/#2850 R-10 + F-122.
+  - **Edge:** a fill implemented by mutating `FREDO_AVATAR_SOURCE_RECTS` or the expansion math is a
+    FAIL; the `fredoAvatarSizes.test.ts` suite passes unmodified.
+
+## R-60 — Joke / TicTacToe / bubble / presence / persisted keys untouched
+
+- [ ] R-60: Single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click teleport
+      (same + cross-window); toggle the companion ON/OFF; let a short idle auto-return fire; drive the
+      reply surface; read `Fredo_companion_visible` / `Fredo_companion_idle_timeout` and confirm `isAway`
+      is not persisted.
+  **Expected:** R-1..R-5, R-13, R-21, R-33..R-49, R-53..R-57 still hold — the 240×120/grown reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. The vocabulary change adds no new
+      persisted key and mutates none.
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-status; an auto-return at the idle
+    deadline.
+
+## R-61 — Reduced-motion behavior preserved (no opacity:0, no strobe)
+
+- [ ] R-61: Inspect + assert the reduced-motion rules for the fill and every state; run the static-CSS
+      and product-unit pins (the live media-query flip is a named G-053 blocker). Confirm the launcher
+      idle mascot's reduced-motion rule still resolves to a static, fully-visible figure.
+  **Expected:** under `prefers-reduced-motion: reduce` motion is suppressed while the distinguishing
+      frame stays legible — never `opacity:0`, never a strobe (WCAG 2.3.1); the pre-existing idle
+      bob/glow suppression and teleport crossfade are unchanged; the figure stays 80×100 and fully
+      opaque. Reference R-19/#2850 F-19 + F-122.
+  - **Edge:** the fill must not introduce a new animated element that bypasses the reduced-motion
+    block; a `!important`-free rule that loses specificity to the fill is a FAIL.
+
+## R-62 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-62: Static-grep the changed avatar + companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); build exit 0; suite green without weakening any assertion
+      (refreshed ones owned per G-125). Reference R-23/R-45/R-57 + F-124.
+  - **Edge:** the fill layer must not add a per-frame computation or a mount-time state write; the
+    pre-existing `motion() is deprecated` WARN is exempt.
+
+### #2917 testing round 1 — result
+
+- [ ] _(pending — the Tester records the round verdict + per-row evidence here; do not pre-fill)_
+
+---
+
+## #2918 extension — the structured-reply slice must not disturb the companion (G-136)
+
+> Issue #2918 constrains the companion reply through `response_format` and adds a model-declared
+> status input. The reply SURFACE, the skill/tool path, the gesture set, the presence lifecycle and
+> the persisted keys are NON-GOALS. R-1..R-62 remain in force; the #2917 rows (R-58..R-62) and the
+> frozen-geometry pins stay in force. Run alongside `llama-setup` (the probe) and `fredo-cli`.
+> **Verification policy: live.** Sanctioned levers = LV1 (real managed `llama-server` via the MCP
+> bridge), LV2 (synthetic `llm-token`/`llm-error`/`llm-done` injection), LV3 (the existing probe),
+> LV4 (pure unit pins).
+
+## R-63 — The skill/tool path and its deterministic reply copy are unchanged
+
+- [ ] R-63: Drive a skill-aware generation (`open Mission Monitor` and `open NotARealApp`) from the
+      companion while the structured reply path is enabled; capture the real `llm-skill-call` payload
+      on its channel and read the settled reply copy + window counts; re-run the EXISTING
+      `probe_companion_skills` and read its `tools` sub-report.
+  **Expected:** the skill mechanism (the `tools` offer + `llm-skill-call`) still works and is NOT
+      replaced or bypassed by the structured reply contract; the exact copy matrix is unchanged
+      (`Opening Mission Monitor` / `I couldn't find "NotARealApp"`), zero spurious windows; the probe's
+      `tools` sub-report is unaffected. The skill path never renders raw JSON (reference #2893
+      F-99/F-100/F-105). A response_format change that disables or duplicates the tool offer is a FAIL.
+  - **Edge:** a skill selection in the same turn as a structured reply object; the probe re-run with
+    both sub-reports present; a skill turn while the reply object is malformed.
+
+## R-64 — Pinned per-state `data-state` behavior + the 58-rect/overlay invariants unchanged
+
+- [ ] R-64: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the #2917 states and read the wrapper
+      `data-state`, the `#fredo-expression[data-state=…]` overlay rect set, and the 58 base rects
+      (diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`); run the existing companion pins
+      (`FredoCompanion.devMode.test.tsx`, `FredoCompanion.seatTeleport.test.tsx`,
+      `FredoCompanion.crossWindow.test.tsx`, `skillSettle.test.tsx`, the resolver/geometry suites).
+  **Expected:** the pre-#2918 per-state fingerprints are unchanged for every state that carries no
+      model status; the 58 base rects stay byte-identical in every state; the existing pins pass
+      UNMODIFIED (a pin that must change for the new status input is named per G-125, never silently
+      weakened); teleport timing (`~400 ms` out / `~400 ms` + `~50 ms` settle) and `ANIM_DURATION`
+      are unchanged.
+  - **Edge:** a model status driven mid-status; a status-free turn after a status-bearing one; the
+    resolver's `modelStatus` seam must not reorder the existing priority comparison.
+
+## R-65 — Presence / persisted keys / gesture set / reply-surface contracts untouched
+
+- [ ] R-65: Toggle the companion ON/OFF and away; single-click joke; double-click TicTacToe (250 ms
+      discriminator); Ctrl+right-click teleport (same + cross-window); drive the #2883/#2886 reply
+      surface (growth/scroll/never-cover); read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`
+      and confirm `isAway` is not persisted; let a short idle auto-return fire.
+  **Expected:** R-33..R-49 / R-53..R-62 still hold — the 240×120 base / grown+scroll reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. The structured-reply slice adds NO
+      persisted key and mutates none; the reply surface renders only the reply text (no markup).
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-generation; an auto-return at the
+    idle deadline; a malformed object mid-generation (F-128) must not perturb the presence lifecycle.
+
+### #2918 testing round 1 (spec/2918 @ cb06fb24) — result
+
+Verdict: **FAIL** — one blocking defect (R-63, the plan's Top Risk materialised). Q-1/Q-2/Q-3/Q-5/Q-6/Q-7/Q-8 pass; Q-4 cap-OFF render UNVERIFIED (G-053 named blocker).
+
+- **R-63 FAIL (live).** Combining `tools` + `response_format: json_schema` on the pinned `llama-server` (Gemma-4 E2B IT QAT) **suppresses the native tool call**. `llm_chat_with_status(offerSkills:true)` with `open Mission Monitor` → `llm-token` "Opening Mission Monitor now." + `llm-status` `working` + `llm-done`, **NO `llm-skill-call`**, app not opened — 3/3 (incl. an explicit "Use the open_app tool…" prompt). Control: shipped `llm_chat_with_skills` with the same messages → `llm-skill-call {"skill":"open_app","arguments":{"app":"Mission Monitor"}}` + `Mission Monitor` opens — 2/2. Repro is in the `## Tests Runs (round 1)` comment on #2918. Route per plan: loop back to Phase 2 (Architect), do not ship a skills regression.
+- **R-64 PASS (live).** Per-state fingerprints for status-free states unchanged: `idle` (58 base rects, no `#fredo-expression`), `thinking` (streaming), `joking` (first token), `teleport-out`/`teleport-in`, `working` (10.5 s under a skill-pending beat). The `modelStatus` seam is only fed at the settle hold; the resolver priority order and `ANIM_DURATION` are unchanged.
+- **R-65 PASS (live + static).** Reply surface/chrome (`fredo-reply-surface`), the 240×120 base bubble, the 208×268 game card untouched; presence/persisted keys unchanged; no new persisted key (the status is ephemeral per-turn display state). `Fredo_companion_visible`/`Fredo_companion_idle_timeout` still read; teleport timing unchanged (`teleport-out` ~420 ms observed).
+
+### #2918 testing round 2 (spec/2918 @ c94dd722) — result
+
+Verdict: **FAIL** — the ST-6 fix CLEARS R-63; one new blocking defect (a teleport during the status hold leaves the model status stuck — F-134 in `functional.md`).
+
+- **R-63 PASS (live, CLEARED).** `llm_chat_with_status({offerSkills:true})` with `open Mission Monitor` now emits `llm-skill-call {"skill":"open_app","arguments":{"app":"Mission Monitor"}}` (t=610 ms) then exactly one `llm-done`, **zero `llm-status`**, zero prose; Mission Monitor opens. Re-confirmed through the real typed dispatch path (`askActiveCompanion`) and the dictation-shaped audio body. The shipped `llm_chat_with_skills` control still emits the same selection 2/2. The tools bodies on the status path carry NO `response_format` (pin `the_tools_bodies_on_the_status_path_carry_no_response_format`, `status.rs:1088`).
+- **R-64 PASS (live).** Status-free state fingerprints unchanged: `idle` (no `#fredo-expression`), `thinking` (pre-first-token), `joking` (first token), `teleport-out`/`teleport-in`, `working` (flow-owned at a skill selection). The resolver priority order and `ANIM_DURATION` are unchanged.
+- **R-65 PASS (live + static).** Reply surface/chrome, bubble geometry, presence/persisted keys unchanged; teleport timing unchanged. **RESIDUAL (NEW, F-134):** a teleport mid-hold cancels the release timer without clearing `settledModelStatus`, so the avatar sticks in the reply status (and the bubble stays) after the teleport — a `no state sticks` regression introduced by the #2918 settle hold.
+
+### #2918 testing round 3 (spec/2918 @ 15e1be50) — result
+
+Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on every hold-cancelling path; the F-134 residual is CLEARED.
+
+- **R-63 PASS (live, re-confirmed).** Typed skill turn `askActiveCompanion('open Mission Monitor')` → `llm-skill-call {"skill":"open_app","arguments":{"app":"Mission Monitor"}}` (t=842 ms) + exactly one `llm-done`, **zero `llm-status`**, app opened (`[mission-monitor] auto-fit … 6 nodes`). The shipped `llm_chat_with_skills` control emits the same selection. The tools bodies on the status path carry NO `response_format` (pin `the_tools_bodies_on_the_status_path_carry_no_response_format`, `status.rs:1088`).
+- **R-64 PASS (live).** Status-free state fingerprints unchanged: `idle` (no `#fredo-expression`), `thinking`, `joking`, `teleport-out`/`teleport-in`, `working`. The resolver priority order and `ANIM_DURATION` are unchanged.
+- **R-65 PASS (live + static).** Reply surface/chrome, bubble geometry, presence/persisted keys unchanged; teleport timing unchanged. **F-134 residual CLEARED:** a teleport mid-hold now ends `happy → teleport-out → teleport-in → idle` and the reply bubble clears; post-settle samples at +5/+13/+20/+27 s are `idle`/`playful` only (no re-asserted model status). Round-3 commit `df42538` touches only `CompanionEntity.tsx` + its `__tests__` file (frontend, entity-local).
+
+---
+
+## #2922 extension — the body-wide interior fill must NOT disturb the shipped avatar/companion contracts
+
+> Issue #2922 extends the ADDITIVE interior fill (`#fredo-interior`, one `<path>`) from the head-only
+> `y 106–761` bands to the WHOLE body (`y ≈ 812–1234`). The fill stays ADDITIVE, so the frozen-geometry
+> rows stay in force unchanged (only the 58 BASE rects are pinned, never the total node count). R-1..R-65
+> above remain in force and run alongside the companion F-135..F-143 + launcher R-67..R-69.
+> **Verification policy: live.**
+
+## R-66 — Frozen 58 base rects + ONE `<path>` fill drawn first + the parity guard untouched
+
+- [ ] R-66: In EVERY state read the direct `<svg>` `<rect>` children and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; enumerate `#fredo-interior` (tag, document
+      order, `data-layer`); count `svg.querySelectorAll('rect')`; run `fredoAvatarGeometry.test.ts`
+      + `fredoAvatarInterior.test.tsx`.
+  **Expected:** the 58 base rects are byte-identical across ALL states on BOTH surfaces; the fill is
+      ONE `<path>` (never a `<rect>`) drawn BEFORE the base rects; the geometry suite passes
+      UNMODIFIED; a body band implemented by mutating `FREDO_AVATAR_SOURCE_RECTS`, the mirror math, or
+      the base-table count-parity guard is a FAIL. The interior band-count pin is the ONE expected
+      named refresh (G-125). Reference R-20/R-59 + #2917 R-58/R-59.
+
+## R-67 — Existing state fingerprints / overlay rect sets / timing unchanged
+
+- [ ] R-67: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the #2917/#2918 status states; probe the
+      wrapper `data-state`, `#fredo-expression[data-state=…]` rect sets and the consumer computed
+      `animationName`; timestamp a same-window teleport.
+  **Expected:** the pre-#2922 per-state fingerprints are unchanged (talk 2 / teleport-out 3 /
+      teleport-in 2 / thinking 6 / joking 4 / happy 8 / playful 4 / listening 3 / working 6 / error 6 /
+      greeting 12; `idle` = no overlay); `ANIM_DURATION` unchanged (idle 800 / talk 500 / out 400 /
+      in 400), teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `HAPPY_HOLD_MS 5000` /
+      `ERROR_HOLD_MS 8000` / `TALK_HOLD_MS 4000` / `WORKING_BEAT_MS 900` / `GREETING_BEAT_MS 1500`
+      unchanged; the 250 ms click discriminator, the joke and TicTacToe still work; a body band must
+      not shadow an existing overlay selector or be inserted between the base rects and the overlay.
+  - **Edge:** a state sampled mid-teleport; the fill must not reorder the overlay `g` relative to the
+    base rects. Reference R-19/R-33/R-58.
+
+## R-68 — Joke / TicTacToe / bubble / presence / persisted keys untouched
+
+- [ ] R-68: Single-click joke; double-click TicTacToe (250 ms discriminator); Ctrl+right-click
+      teleport (same + cross-window via `run-cli-terminal`); toggle the companion ON/OFF; let a short
+      idle auto-return fire; drive the reply surface; `open Mission Monitor` (skill) and
+      `open NotARealApp` (fail-closed); read `Fredo_companion_visible` / `Fredo_companion_idle_timeout`
+      and confirm `isAway` is not persisted.
+  **Expected:** R-1..R-5, R-33..R-49, R-53..R-65 still hold — the 240×120 base / grown+scroll reply,
+      the 208×268 game card, the `above > right > left` placement, the streaming cursor, the
+      joke/vision flows, the teleport timing, one-Fredo-at-home, the seat wrapper 80×100 + 16 px, and
+      the persisted keys/ranges are byte/behaviour-identical. A body band adds no persisted key and
+      mutates none.
+  - **Edge:** a status driven mid-joke/mid-stream; a teleport mid-status; an auto-return at the idle
+    deadline; the `error` hold must not be extended/shortened by the fill.
+
+## R-69 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-69: Static-grep the changed avatar + companion files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg in both windows; inspect the fill/state
+      code for effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); the body fill reads ONLY
+      `var(--fredo-avatar-interior)`; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      re-render loop (#523); build exit 0; suite green without weakening an assertion (refreshed ones
+      named per G-125). Reference R-7/R-23/R-45/R-57/R-62.
+  - **Edge:** the fill layer adds no per-frame computation and no mount-time state write; the
+      pre-existing `motion() is deprecated` WARN is exempt.
+
+---
+
+## #3099 extension — the published-surface slice must not change the shipped companion behaviour (G-136)
+
+> Issue #3099 turns the per-application companion skill into a projection of the TS command surface
+> (published registry), deletes `wireframe_catalog.rs` + `companionCatalog.parity.test.ts`, and
+> replaces the wireframe-only relay/hooks with one generic relay + one generic hook pair. The SHIPPED
+> companion behaviour, the presence lifecycle, the reply surface and the `open_app`/`close_app`/
+> `doom_mode` skills are NON-GOALS. R-1..R-69 remain in force. Run alongside
+> `.opencode/tests/wireframe/` (supersession block added for #3099) and
+> `.opencode/tests/companion-audio-skill-parity/`. **Verification policy: live.**
+> **BASELINE (ST-1 step 0, on the untouched tip — capture BEFORE any #3099 edit lands):** save the
+> verbatim offer order + declarations + `validate` error strings from `infrastructure/companion/skills.rs:536-618`
+> and `applications/llm_server/status.rs:1345-1437` into `.opencode/tmp/3099/baseline/pins.txt`, and
+> record both suites green.
+
+## R-70 — `open_app` / `close_app` / `doom_mode`: offer + validation zero drift
+
+- [ ] R-70: Run the durable pin **`static_skills_are_byte_identical_to_the_pre_change_baseline`**
+      (`tests/companion_manifest.rs`, asserting the first three rendered tools deep-equal
+      `fixture.staticOffer` + re-running the `validate` matrix), diff the declarations/validator
+      (`git diff main..HEAD -- apps/tauri/src-tauri/src/infrastructure/companion/skills.rs`), read the
+      rewritten pins, then dispatch each of the three skills live (valid + invalid).
+  **Expected:** the durable pin is the PRIMARY proof (it does not depend on reading a diff); the diff
+      shows ONLY the deleted `with_app_control_doom_and_wireframe` + its wireframe imports, with
+      `OPEN_APP_*` / `CLOSE_APP_*` / `DOOM_MODE_*` and `validate` byte-identical; offer order still
+      `open_app, close_app, doom_mode[, one per published surface]`; `{app:string}` required for
+      open/close, `{action:string}` for `doom_mode` (`enter`/`exit` domain enforced frontend-side);
+      the same validation errors (`missing required argument 'app'`, `unexpected argument 'force'`,
+      `argument 'action' must be a string`); live dispatch opens/closes/enters-exits exactly as before.
+  - **Edge:** a tree with NO published surface (three-skill offer); an audio turn (R-71); a publish that
+    lands between two turns must not perturb the three static skills; a mutated `fixture.staticOffer`
+    (drop/reorder/rename) MUST fail the pin.
+
+## R-71 — the ONE offer accessor still serves the typed AND the audio path
+
+- [ ] R-71: Read `companion_skill_registry(app)` call sites (`status.rs:726/795`, `skills.rs:427`,
+      `chat.rs:465`); run the rewritten `tests/voice_invariants.rs` scan.
+  **Expected:** every live offer site resolves the ONE accessor; the audio body's `tools` deep-equals
+      the typed body's `tools`; the rewritten scan is POSITIVE-CONTROLLED (it must SEE the builder /
+      accessor), so a scan matching nothing cannot pass; no second `SkillRegistry::with_*` construction
+      of a companion offer exists in production.
+  - **Edge:** a zero-surface registry; a publish between the typed and the audio request of one turn.
+
+## R-72 — the duplicate catalog and its owners are GONE (no second list)
+
+- [ ] R-72: Repo-wide checks.
+  **Expected:** `wireframe_catalog.rs` absent; no `mod wireframe_catalog` / `use …wireframe_catalog::`
+      anywhere; `companionCatalog.parity.test.ts`, `useWireframeSkill.ts` (+ test),
+      `useWireframeIntent.ts`, `actions/wireframeCompanion.ts`, `actions/wireframeReply.ts` (+ test)
+      absent with no dangling import (`pnpm build` + `cargo check` prove it); NO hand-copied action-id
+      list outside `wireframeActions.ts` and the ONE golden fixture; `with_app_control_doom_and_wireframe`
+      absent.
+  - **Edge:** a comment-only mention is acceptable; a live code path is not. A green `test:run` that
+    still EXECUTES one of the deleted suites is a FAIL.
+
+## R-73 — one bounded relay: 16 / oldest-first / per-`appId` take / no cross-app drain
+
+- [ ] R-73: Push 19 intents for `wireframe` with no consumer, then `app_command_intent_take('wireframe')`;
+      separately push 1 for `wireframe` + 1 for `mission-monitor` and take each.
+  **Expected:** 16 returned, first = the 4th pushed, last = the 19th (oldest evicted); each `take`
+      drains ONLY its `appId` and preserves the remainder in order; no intent is dropped silently
+      (every drained intent is answered with a result); nothing executes on the host.
+  - **Edge:** 100 pushes; an intent for an app with no hook (queues forever, bounded); the Wireframe
+    window closed then opened (drain-on-mount, exactly once).
+
+## R-74 — build gates, no new dependency, no `#[allow]`
+
+- [ ] R-74: Run the CI-parity command set (see the QA Plan) and diff the manifests.
+  **Expected:** `pnpm --filter @fredo/ui typecheck|build|test:run|contrast:gate` and
+      `pnpm --filter @fredo/tauri build:webview` exit 0; `cargo check --locked` +
+      `clippy --locked -- -D warnings` zero warnings and zero new `#[allow(...)]`; no new entry in
+      `package.json` / `apps/ui/package.json` / `pnpm-lock.yaml` / `Cargo.toml` / `Cargo.lock`;
+      `cargo nextest` absent locally ⇒ `cargo test --locked` with the substitution DISCLOSED and the
+      env `Down` (target-binary lock).
+  - **Edge:** the golden fixture is read by BOTH suites from ONE path (F-159).
+
+## R-75 — the Wireframe app itself is untouched
+
+- [ ] R-75: Open Wireframe and exercise: the 38 command ids, the 24-key root keymap
+      (`SELECT_KEYMAP_ORDER`), the four modes, `draftApp`'s deterministic script + `desktop` page
+      preset, and `wireframe.companion.listActions`'s retirement (it is NOT a command; the reserved
+      `listActions` answers from the manifest).
+  **Expected:** every command id and every key binding is unchanged; `draftApp` still performs
+      document.new → section(navbar) → heading text → card label; the list answer now comes from the
+      PUBLISHED registry read (`app_command_surfaces()`, host-side, no window) instead of the static
+      table; the Wireframe document store, file commands and canvas are byte/behaviour-identical.
+  - **Edge:** a command with a declared required arg reached from the TOOLBAR (not the companion) still
+      behaves as before (`fill` opens its prompt from the toolbar/hotkey); `wireframe.mode.draw.rect`
+      still arms the draw operator.

@@ -1,5 +1,11 @@
 # app-dock — Exploratory
 
+> **RETIRED by #2954 — DO NOT RUN against the post-#2954 build.** The persistent dock is REMOVED
+> (no `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close`); the open-apps surface moved
+> INTO the engaged launcher. Every row below is HISTORICAL (pre-#2954). The live probes now live in
+> `.opencode/tests/launcher/exploratory.md` `#2954 extension` (E-78..E-82). The relocated
+> `dock-arrange` is PRESERVED (see launcher R-71 / workspace-layout).
+
 > Unscripted edge/failure probes for the positionable dock surface (#2848). A confirmed finding here **promotes** to `functional.md` as a new `F-` row (keep the origin note). Run after the functional + smoke legs; drive everything live against `spec/2848` (MCP driver `com.fredo.app:9223`).
 
 ## E-1 — Rapid orientation flips under a maximized window

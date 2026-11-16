@@ -1,49 +1,114 @@
 # Fredo
 
-A desktop platform for working with AI coding agents, built with Tauri v2 (Rust backend) and React 19 (TypeScript).
+A desktop platform for working with AI coding agents — my approach to **Agentic UI**.
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](./LICENSE)
 [![CI](https://github.com/FredoAi/fredo/actions/workflows/validate.yml/badge.svg)](https://github.com/FredoAi/fredo/actions/workflows/validate.yml)
 
-![Fredo desktop home with companion](imgs/fredo-desktop.png)
+## Intro
 
-![Fredo apps — Mission Monitor, Query Viewer, Run CLI, Stepper Probe](imgs/fredo-apps.png)
+**Fredo is my approach to "Agentic UI".** It's a desktop platform (Tauri v2 on the Rust
+backend, React 19 + TypeScript on the frontend) for working with AI coding agents like
+OpenCode and Claude Code — not from a terminal, but from a native app where the agent and I
+are both present in the same place. It ingests agent telemetry and lifecycle events,
+normalizes them into typed, replayable rows, and renders them as reactive UI.
 
-![Mission Monitor session graph](imgs/mm-1.png)
+This is a **personal project.** I build and tinker with it because it's how I learn — it isn't
+a commercial product, there's no SLA or dedicated support, and it may be rough around the
+edges. The internals and APIs can change without notice. If it's useful to you, great;
+contributions are welcome, but expectations are modest and I work on it in spare time.
 
-![Mission Monitor delegation chain detail](imgs/mm-2.png)
+## Current situation
 
-![Mission Monitor subagent detail panel](imgs/mm-3.png)
+Fredo is my **playground** — the place where I learn and experiment with AI, agents, and
+agentic systems. Building it is the point.
 
-> **A personal project.** Fredo started as a personal tool I use to learn and experiment with AI —
-> building and tinkering with it is the point. It's not a commercial product and there's no SLA or
-> dedicated support. It may be rough around the edges, and the internals/APIs can change without
-> notice. If it's useful to you, great — contributions are welcome, but expectations are modest and
-> the maintainer works on it in spare time.
+- **Pre-1.0 and actively developed.** Things move, and they break.
+- **Windows-only installer**, cut through a deliberately owner-gated, manual release process.
+  On every other platform, build from source.
+- **Storage migration in progress.** A PostgreSQL storage engine is being wired in alongside
+  the default SQLite one; it's disabled by default and fails closed to SQLite.
+- **One known limitation:** with Mission Monitor open on a very large corpus under sustained
+  live agent traffic, the webview can intermittently saturate. The backend stays healthy; the
+  drain usually recovers.
+
+## Core concept / idea
+
+The idea behind Fredo is a **two-way Agentic UI**. Interaction can originate from the
+**agent → UI**, from the **human → UI**, and the **UI → both the human and the agent**. Both
+sides are participants — never one watching the other.
+
+- **Agent → UI.** Most agent interfaces are present-tense readouts: what the agent is saying
+  right now. Agent work is *durable* — it happens, it's persisted, you come back to it. So this
+  direction subscribes to what *happened*, as a typed row store that can be replayed.
+- **Human → UI.** You type to an agent, interrupt a running session, rename it, inspect a tool
+  call and act on what you see.
+- **UI → agent.** Those interruptions re-enter as rows, so the agent's view of the session
+  reflects what you just did. The UI speaks back to both of you.
+
+A small model running locally is meant to be the main interaction — the thing that sits between
+you and the UI and decides what gets shown and what responds. That's the direction the project
+is heading, and the part I spend the most time on.
+
+## How it works
+
+Agents feed Fredo through two paths: an OTLP plugin (OpenCode exports OpenTelemetry traces
+directly to the local receiver) and the `fredo emit` CLI. Both converge on one pipeline:
+
+```
+Agent (OTLP) ─┐
+              ├─→ raw persistence on receipt ─→ RTDB ingest classifier
+fredo emit  ──┘                                        │
+                                                       ▼
+                              typed rows (chat / tool-use / agent-session)
+                                                       │
+                                                       ▼
+                                  durable seq ─→ coalesced flush ─→ IPC
+                                                       │
+                                                       ▼
+                                       useEventRows ─→ reactive app UI
+```
+
+The frontend doesn't poll the backend. Every app **subscribes to a typed row query** and reacts
+to live patches; a persisted snapshot is replayed first, so late-joiners get the whole history,
+not a truncated log. Rows carry a stable identity and merge rather than scroll away.
+
+Everything is **local-first**: telemetry is collected by a local-only collector on
+`127.0.0.1`, and nothing leaves your machine.
 
 ## Features
 
-- **Desktop platform for AI coding agents** — work with agents like OpenCode and Claude Code from a native desktop app instead of a terminal.
-- **Agent adapters** — per-provider adapters and connectors (hooks, OTLP) normalize raw agent output into a canonical event stream.
-- **Event streaming** — a backend communication layer turns raw agent events into canonical events consumed by declarative, reactive frontend features.
-- **Mission monitoring** — a live delegation graph of agent sessions and nested subagents.
-- **Run CLI** — a `fredo` CLI for driving agents and emitting events from scripts.
-- **Theming** — light/dark themes with user-selectable accent colors across every surface.
+### Apps
 
-## Install for Users
+Every UI surface in Fredo is an **app** — an autonomous feature module that declares what it
+cares about and reacts to it. The built-in apps:
 
-Fredo ships a **Windows-only** installer through a deliberately owner-gated release pipeline (see
-[release-process.md](docs/release-process.md)). Releases are cut manually and every artifact must pass
-the full CI gate plus the maintainer's approval before it's published — nothing is released
-automatically. For now the easiest path for all platforms is to build from source:
+- **Home & Companion** — the navigation grid and a small local model with a personality you can
+  talk to by typing or by voice; it acts on the UI through a deliberately small, bounded skill set.
+- **Terminal** — multi-session PTY panes for `opencode`, `copilot`, and your own shell.
+- **Mission Monitor** — a live delegation graph of agent sessions and nested subagents, built
+  from the same rows.
+- **Workspace** — a customizable dockable/tileable layout, with a first-class keyboard and
+  hotkey contract (sequences, macros, per-app contexts).
+- **Setup** — OTel configuration and CLI detection.
+- **Theming** — light/dark themes with user-selectable accents across every surface.
 
-### Prerequisites
+### The agentic pipeline
 
-- [Rust toolchain ≥ 1.75](https://rustup.rs/)
-- [Tauri CLI v2](https://v2.tauri.app/reference/cli/): `cargo install tauri-cli --version "^2"`
-- Node.js ≥ 20, pnpm ≥ 8
+Fredo is **built by the pipeline it documents.** The repo carries a complete multi-agent
+development pipeline — a single orchestrator, a triage cluster that plans, a pool of developers,
+a tester, and an audit gate — driven by a state machine that owns *where we are*. Each agent
+reads its assignment, phase, and workload from that state instead of inferring it.
 
-### Build from source
+The part I most want to travel is the **state-machine context-injection methodology**: make the
+plumbing around a stochastic model deterministic, then inject that determinism back in as
+context. It's designed to be copied — point your own agent at
+[`docs/agentic-pipeline/`](docs/agentic-pipeline/README.md), let it read the roles, principles,
+and state machine, and have it set the whole thing up for your codebase.
+
+## Getting started
+
+Build from source:
 
 ```bash
 git clone https://github.com/FredoAi/fredo.git
@@ -52,46 +117,28 @@ pnpm install
 pnpm build:tauri
 ```
 
-## Development
+Common dev commands:
 
 ```bash
-# Start the Tauri desktop app (hot reload)
-pnpm dev:tauri
-
-# UI-only dev (browser, no Rust required)
-pnpm dev:ui
-
-# Build the UI library (type check + vite build)
-pnpm --filter @fredo/ui build
-
-# Rust build
+pnpm dev:tauri                              # desktop app (hot reload)
+pnpm dev:ui                                 # UI only, in a browser (no Rust)
+pnpm --filter @fredo/ui build               # type check + build the UI library
 cargo build --manifest-path apps/tauri/src-tauri/Cargo.toml
 ```
 
-### Apps
+Prerequisites (Rust ≥ 1.75, Tauri CLI v2, Node ≥ 20, pnpm ≥ 8, per-OS build deps) are in the
+[Setup Guide](docs/SETUP.md#prerequisites).
 
-| App | Description |
-|-----|-------------|
-| [`apps/tauri`](./apps/tauri) | Desktop app — Tauri 2 + Rust backend + React UI |
-| [`apps/ui`](./apps/ui) | Shared React UI library (`@fredo/ui`) |
-| [`apps/opencode-plugin`](./apps/opencode-plugin) | OpenCode plugin descriptor |
-| [`apps/code-sandbox`](./apps/code-sandbox) | Python code execution sandbox |
-
-Archived (kept for reference):
-- `apps/tools-mcp` — legacy Node.js MCP backend
-- `apps/browser-extension` — legacy Chrome extension
-
-### Documentation
+## Documentation
 
 | Document | Contents |
 |----------|----------|
-| [Architecture](docs/ARCHITECTURE.md) | Communication layer, adapters, FredoEvent system, IPC protocol, feature modules, integrations |
+| [Architecture](docs/ARCHITECTURE.md) | RTDB row pipeline, event flow, Rust module map, IPC protocol, feature modules |
+| [The agentic pipeline](docs/agentic-pipeline/README.md) | The methodology: roles, phases, artifacts, state machine, and why it's built this way |
 | [Setup Guide](docs/SETUP.md) | Prerequisites, install, dev commands, model download, OTLP config |
 | [CLI Guide](docs/CLI_GUIDE.md) | `fredo` CLI commands |
-| [Security](docs/SECURITY.md) | IPC, OTLP, capability security model |
-| [FAQ](docs/FAQ.md) | Common questions |
 
-Full index at [docs/README.md](docs/README.md).
+The full index is at [docs/README.md](docs/README.md).
 
 ## Contributing
 
@@ -99,6 +146,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ## License
 
-The code in this repository is dual-licensed under the [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE-2.0) licenses — choose whichever suits your project.
+The code in this repository is dual-licensed under the [MIT](LICENSE-MIT) and
+[Apache 2.0](LICENSE-APACHE-2.0) licenses — choose whichever suits your project.
 
-The Fredo name and logo are licensed CC-BY-NC-ND; projects derived from or building on Fredo must state they are not affiliated with the Fredo project.
+The Fredo name and logo are licensed CC-BY-NC-ND; projects derived from or building on Fredo
+must state they are not affiliated with the Fredo project.

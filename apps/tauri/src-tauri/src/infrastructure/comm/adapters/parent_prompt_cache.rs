@@ -41,6 +41,25 @@ pub fn req_1_cache_parent_prompt(
     map.insert(session_id.to_string(), prompt.to_string());
 }
 
+/// Requirement ID: REQ-3 (Spec #2933 ST-3R)
+///
+/// Read-only lookup of a session's cached prompt. Used by the classifier to
+/// re-carry an exchange's user prompt onto a Copilot continuation chat row
+/// (Copilot splits one user turn across two `chat` spans, and the continuation
+/// span's own `gen_ai.input.messages` carries no `user` message).
+///
+/// Returns `None` when the session has no cached prompt (the dispatch span has
+/// not been ingested yet) or the cached text is blank — the caller must then
+/// leave the row's content fields absent rather than fabricate a prompt.
+pub fn req_3_cached_prompt<'a>(
+    map: &'a HashMap<String, String>,
+    session_id: &str,
+) -> Option<&'a str> {
+    map.get(session_id)
+        .map(String::as_str)
+        .filter(|prompt| !prompt.trim().is_empty())
+}
+
 /// Requirement ID: REQ-2
 ///
 /// Inject the parent session's cached prompt as `instruction` into a subagent
@@ -132,6 +151,19 @@ mod parent_prompt_cache_tests {
         req_1_cache_parent_prompt(&mut map, "overflow", "overflow-prompt");
         assert!(map.len() <= MAX_PARENT_PROMPT_ENTRIES);
         assert!(map.contains_key("overflow"));
+    }
+
+    /// REQ-3 (Spec #2933 ST-3R): read-only cached-prompt lookup.
+    #[test]
+    fn test_req_3_cached_prompt_read_only_lookup() {
+        let mut map = HashMap::new();
+        req_1_cache_parent_prompt(&mut map, "session-1", "Exchange prompt");
+        assert_eq!(req_3_cached_prompt(&map, "session-1"), Some("Exchange prompt"));
+        // Unknown session → None (no fabrication).
+        assert_eq!(req_3_cached_prompt(&map, "session-unknown"), None);
+        // Blank cached text is treated as absent.
+        map.insert("blank".to_string(), "   ".to_string());
+        assert_eq!(req_3_cached_prompt(&map, "blank"), None);
     }
 
     /// REQ-2 AC-4: Subagent receives parent's cached prompt as instruction.

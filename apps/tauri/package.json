@@ -1,10 +1,10 @@
 {
   "name": "@fredo/tauri",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "dev:release": "tauri dev --release",
     "build": "tauri build",
     "dev:webview": "vite",

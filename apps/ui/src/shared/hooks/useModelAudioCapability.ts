@@ -7,9 +7,10 @@
  * read-only probe against the managed loopback `llama-server`) and exposes the
  * typed result. The probe is:
  *
- * - ENABLED-SCOPED: it runs only while the caller says capability matters
- *   (`voiceHandling === 'model'`); a disabled hook invokes nothing and drops the
- *   result so a stale verdict can never be shown for the local path.
+ * - ENABLED-SCOPED: it runs only while the caller says capability matters — since
+ *   Spec #2914 ST-3 there is a single model-audio path, so the caller gates on
+ *   `voiceEnabled` (never on a speech-handling mode, which no longer exists). A
+ *   disabled hook invokes nothing and drops the result.
  * - SINGLE-FLIGHT: concurrent probes coalesce, so a burst of re-renders can
  *   never stack requests.
  * - FAIL-CLOSED: a rejected invoke / absent command leaves `capability` null,
@@ -100,8 +101,8 @@ export function useModelAudioCapability(enabled: boolean): ModelAudioCapabilityP
   }, []);
 
   // Probe on the enable 0 -> 1 edge; drop the verdict (and invalidate an in-flight
-  // probe) when the capability stops mattering, so a stale model-audio verdict can
-  // never be shown on the local path.
+  // probe) when the capability stops mattering (voice disabled), so a stale
+  // model-audio verdict is never shown for a later session.
   useEffect(() => {
     enabledRef.current = enabled;
     if (enabled) {

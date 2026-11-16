@@ -105,3 +105,47 @@
 
 - **F-5 PASS.** `generate-dictation-phrase.mjs:14-23` read verbatim: "This is NOT recorded speech and is not intelligible. It is a deterministic synthetic waveform whose ONLY job is to be a valid 16 kHz mono 16-bit PCM WAV with non-zero signal at sample 0 … exercises the paced-feed / liveness path. The transcript-CONTENT claim is carried by the sanctioned synthetic `stt:transcript` lever … never by this file." No #2903 row scores an L4-fed turn as "opened an app" — the app-action lever is the in-repo synthetic `llm-skill-call` event.
 - **F-6 PASS (string env form).** `dev-env.ps1 -Action Down` then `-Action Up -Spec 2903 -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"` → "Injected env var FREDO_STT_FEED_WAV"; `stt_start` → `{started:true, deviceName:"stt-feed", sampleRate:16000}` (no `cpal` device); `stt_stop` → `phase:"processing"`; app responsive. UNSET control = the pre-restart legs on the virtual mic (`deviceName:"Micrófono (Iriun Webcam)"`, `sampleRate:48000`) ⇒ the fed observation is non-vacuous. The `-EnvVars @{…}` hashtable form remains broken (tooling gap).
+
+---
+
+## #2914 extension — the feed lever against the single-model-audio tip (the local mode is gone)
+
+> Issue #2914 deletes the on-device sherpa STT engine (and with it the local transcription branch of
+> the voice-handling reader). The capture-feed seam (`FREDO_STT_FEED_WAV`, defined in
+> `infrastructure/voice/capture.rs`) is a CAPTURE-source lever, not the recognizer, and fed
+> model-audio turns in #2897/#2903 — but the spec's "local branch of the reader" deletion may remove
+> it. Rows **F-7..F-9** decide that explicitly; a removed seam is a **NAMED BLOCKER** carried with the
+> unit/CI + `stt:state` residual, never a fabricated PASS (QA Discussion #2914-1).
+> **Verification policy: live.** The fixture/generator contract (F-1/F-2) and the UNSET-env control
+> (F-4) are unchanged and in force.
+
+- [ ] F-7 (#2914 support — the decider): **Does the feed seam survive and still feed model-audio?** Launch
+      with the string env form
+      `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 2914 -EnvVar
+      "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"`;
+      `stt_start` (model mode); read `stt_status`/`stt:state`; `stt_stop`; `stt_take_audio_clip`.
+  **Expected (seam retained):** the feed branch engages — `{deviceName:"stt-feed", sampleRate:16000}`, NO
+      `cpal` device — and the bounded clip returned is the fed fixture (1.6 s); the app stays responsive.
+      **Expected (seam removed):** the env var is ignored and the `cpal`/virtual path is used → record it
+      as a **NAMED BLOCKER** naming the deletion, with the residual = the `build_audio_request_body`
+      `input_audio` unit/CI pin + the live `stt:state` lifecycle; this row does NOT then PASS.
+  - **Edge:** a path containing spaces; a relative path; `dev-env` refusing the env var (tooling gap, not
+    a product FAIL); a stale fixture; the `-EnvVars @{…}` hashtable form (documented broken — use `-EnvVar`).
+
+- [ ] F-8 (#2914 support — the fixture contract is unchanged): **The committed fixture + its deterministic
+      generator still hold** (re-run F-1/F-2 on the #2914 tip).
+  **Expected:** `dictation-phrase-16k-mono.wav` byte-identical (SHA-256 `33c2f129…`), 16 kHz mono 16-bit
+      PCM, 25,600 samples / 1.6 s; the `>30 s` variant regenerates deterministically; the format pin in
+      `capture.rs` (if `capture.rs` survives) still accepts the file. A removed/changed `capture.rs` that
+      drops the fixture format pin is reported with expected-vs-actual (it breaks the over-limit lever).
+
+- [ ] F-9 (#2914 support — non-vacuous control): **UNSET-env control on the model-audio tip.** Run F-7's
+      `stt_start` WITHOUT `FREDO_STT_FEED_WAV` set.
+  **Expected:** the shipped `cpal`/virtual path is used (non-1.6 s, hold-length clip) so the fed observation
+      is non-vacuous; the control is NEVER scored as a product FAIL when the host has no physical mic.
+
+### #2914 run log — round 1 (`spec/2914 @ a5a882b9`, live)
+
+- **F-7 PASS — the seam SURVIVED.** `dev-env.ps1 -Action Up -Spec 2914 -EnvVar "FREDO_STT_FEED_WAV=C:\Code\fredo\.opencode\tests\voice-dictation\fixtures\dictation-phrase-16k-mono.wav"` → `stt_start` `{started:true, deviceName:"stt-feed", sampleRate:16000}` (no `cpal`); `stt_stop` → `{phase:"processing"}`; `stt_take_audio_clip` `{format:"wav", sampleRate:16000, durationMs:1600, truncated:false, base64Len:68328}` == the fed fixture; app responsive.
+- **F-8 PASS.** Committed fixture SHA-256 `33c2f129d17a555b9faad66e21eab5c8069712c8836cc8d363e97c1555343428` (51,244 B, 16 kHz mono 16-bit, 25,600 samples) byte-identical after regeneration; `--seconds 31` → `dictation-31s-16k-mono.wav` 992,044 B / 496,000 samples / SHA-256 `06a192e647f4c2b1a273c0e4cbf6445e88a8865d021630d89c6006cf51f1cfa1`; `capture.rs` format pin still accepts the fixture.
+- **F-9 PASS (non-vacuous control).** UNSET env → `stt_start` `{deviceName:"Micrófono (Iriun Webcam)", sampleRate:48000}` and an 800 ms hold-length clip (≠ 1.6 s).

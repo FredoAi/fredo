@@ -1,22 +1,21 @@
-//! STT IPC wire types (`serde(rename_all = "camelCase")`).
+//! Voice IPC wire types (`serde(rename_all = "camelCase")`).
 //!
-//! The vocabulary the Companion settings UI, the launcher listening cue and the
-//! transcript stream client consume: the typed failure codes, the `stt_start`
-//! result, the `stt:transcript` / `stt:state` payloads, and the input-device
-//! enumeration returned by `stt_list_devices`.
+//! The vocabulary the Companion settings UI and the launcher listening cue
+//! consume: the typed failure codes, the `stt_start` result, the `stt:state`
+//! payload, and the input-device enumeration returned by `stt_list_devices`.
 
 use serde::Serialize;
 
-/// Typed STT failure vocabulary. Serialized as `noDevice`, `permissionDenied`,
-/// `modelMissing`, `modelCorrupt`, `engineStartFailed`, `alreadyListening`,
-/// `disabled`, `internal`, `modelAudioUnsupported`, `modelAudioUnavailable`.
+/// Typed voice failure vocabulary. Serialized as `noDevice`, `permissionDenied`,
+/// `engineStartFailed`, `alreadyListening`, `disabled`, `internal`,
+/// `modelAudioUnsupported`, `modelAudioUnavailable`. `engineStartFailed` is the
+/// capture-start timeout code (kept under its historical wire name for wire
+/// stability).
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum SttErrorCode {
     NoDevice,
     PermissionDenied,
-    ModelMissing,
-    ModelCorrupt,
     EngineStartFailed,
     AlreadyListening,
     Disabled,
@@ -30,8 +29,8 @@ pub enum SttErrorCode {
 /// #2897 ST-2 (REQ-6) — the DECIDED per-input ceiling, in milliseconds, that the
 /// captured model-audio clip is bounded by. SINGLE SOURCE: the session derives
 /// its sample cap from this, AUTO-STOPS capture when the ceiling is reached
-/// (ST-5), and reports it back on every model-audio `stt:state` (`limitMs`) and
-/// on every clip (`limitMs`) — the UI never hardcodes a duration.
+/// (ST-5), and reports it back on every `stt:state` (`limitMs`) and on every clip
+/// (`limitMs`) — the UI never hardcodes a duration.
 ///
 /// DECIDED at 30 s (#2897 round 2, R2-2): REQ-6 bounds the clip to the model's
 /// supported per-input length, and the cited source capability documents ~30 s
@@ -45,9 +44,9 @@ pub enum SttErrorCode {
 /// AC4 (it would also require a new over-bound fixture + changed limit copy).
 pub const MAX_AUDIO_CLIP_MS: u64 = 30_000;
 
-/// #2897 ST-2 — the model-audio session phase on the wire. `None` on every
-/// legacy / `'local'` path. `stopped` / `error` are deliberately NOT wire
-/// values: the UI derives them from `listening:false` + `code`.
+/// #2897 ST-2 — the model-audio session phase on the wire. `stopped` / `error`
+/// are deliberately NOT wire values: the UI derives them from `listening:false`
+/// + `code`.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum SttPhaseWire {
@@ -66,24 +65,9 @@ pub struct SttStartResult {
     pub code: Option<SttErrorCode>,
     pub detail: Option<String>,
     pub device_name: Option<String>,
-    /// The DEVICE rate; the engine is fed [`super::engine::ENGINE_SAMPLE_RATE`].
+    /// The DEVICE rate; capture resamples to
+    /// [`super::capture::AUDIO_SAMPLE_RATE`].
     pub sample_rate: Option<u32>,
-}
-
-/// One `stt:transcript` payload. `text` is the CUMULATIVE text of the CURRENT
-/// segment; `isFinal` is true on endpoint (segment closed).
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct SttTranscriptEvent {
-    pub session_id: String,
-    /// Monotonic per session; every emitted partial/final strictly increases it.
-    pub revision: u64,
-    /// Increments on each endpoint.
-    pub segment_id: u32,
-    pub text: String,
-    pub is_final: bool,
-    /// Last `accept_waveform` → this emit, in milliseconds.
-    pub latency_ms: u64,
 }
 
 /// One `stt:state` payload.
@@ -96,24 +80,18 @@ pub struct SttStateEvent {
     /// `"launcher"` | `"companion"` (echoed from `stt_start`).
     pub origin: Option<String>,
     /// Milliseconds from the `stt_start` receipt to capture-live; `None` on the
-    /// error/idle paths (the two ST-1 observables for R-1/R-4).
+    /// error/idle paths (the two observables for R-1/R-4).
     pub ready_ms: Option<u64>,
-    /// True iff the engine was RESIDENT (warm) when this session started.
-    /// Never optimistic: `false` until the engine genuinely sits in the slot.
-    pub engine_resident: bool,
-    /// #2897 ST-2 — the model-audio phase (`capturing` / `processing`), or `None`
-    /// on every legacy / `'local'` path. ADDITIVE.
+    /// #2897 ST-2 — the model-audio phase (`capturing` / `processing`).
     pub phase: Option<SttPhaseWire>,
     /// #2897 ST-2 (REQ-6) — `Some(true)` iff the capture auto-stopped at
-    /// [`MAX_AUDIO_CLIP_MS`], `Some(false)` on a manual model-audio stop, `None`
-    /// on every other path. ADDITIVE.
+    /// [`MAX_AUDIO_CLIP_MS`], `Some(false)` on a manual stop, `None` on the
+    /// cancel/error/idle paths.
     pub limit_reached: Option<bool>,
     /// #2897 ST-5 (REQ-6) — the pinned per-input ceiling ([`MAX_AUDIO_CLIP_MS`])
-    /// this model-audio session is bounded by, in milliseconds. `Some` on every
-    /// model-audio path (`capturing`, `processing`, the at-ceiling auto-stop) so
-    /// the launcher's countdown and limit copy read the ONE backend constant
-    /// instead of hardcoding a duration; `None` on every legacy / `'local'`
-    /// path. ADDITIVE.
+    /// this session is bounded by, in milliseconds. `Some` on every live/terminal
+    /// session path so the launcher's countdown and limit copy read the ONE
+    /// backend constant instead of hardcoding a duration; `None` off a session.
     pub limit_ms: Option<u64>,
 }
 
@@ -127,7 +105,7 @@ pub struct SttAudioClip {
     pub base64: String,
     /// Always `"wav"`.
     pub format: String,
-    /// Always [`super::engine::ENGINE_SAMPLE_RATE`] (16 000).
+    /// Always [`super::capture::AUDIO_SAMPLE_RATE`] (16 000).
     pub sample_rate: u32,
     /// Captured audio duration, derived from the sample count.
     pub duration_ms: u64,
@@ -140,7 +118,7 @@ pub struct SttAudioClip {
 }
 
 /// Result of `stt_take_audio_clip`: the taken clip, or `clip: None` when no
-/// model-audio session has committed one (never taken / cancel / already taken).
+/// session has committed one (never taken / cancel / already taken).
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SttAudioClipResult {
@@ -231,48 +209,6 @@ impl SttAudioCapability {
     }
 }
 
-/// Result of `stt_warm` (ST-1). `warmed:true` is reported ONLY once the engine
-/// is genuinely resident — never optimistically, and never while a load is in
-/// flight.
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct SttWarmResult {
-    /// True iff the engine is resident and ready (idempotent success).
-    pub warmed: bool,
-    /// `modelMissing` | `modelCorrupt` | `engineStartFailed` | `disabled` |
-    /// `internal` — `None` on success.
-    pub code: Option<SttErrorCode>,
-    pub detail: Option<String>,
-    /// The warm's own duration (its load attempt → residency). `None` when this
-    /// call joined an already-completed warm, found the engine already resident,
-    /// or was a no-op (disabled / not resident-able). This is the B10/B11
-    /// observable — the launch residual is measured, never assumed.
-    pub warm_ms: Option<u64>,
-}
-
-impl SttWarmResult {
-    /// The engine is genuinely in the resident slot. `warm_ms` is `Some(ms)`
-    /// only for the call that performed the load.
-    pub(crate) fn resident(warm_ms: Option<u64>) -> Self {
-        Self {
-            warmed: true,
-            code: None,
-            detail: None,
-            warm_ms,
-        }
-    }
-
-    /// The warm did not reach residency: typed failure, honest `warmed:false`.
-    pub(crate) fn failed(error: &VoiceError) -> Self {
-        Self {
-            warmed: false,
-            code: Some(error.code),
-            detail: Some(error.detail.clone()),
-            warm_ms: None,
-        }
-    }
-}
-
 /// One enumerable input device for the Companion settings picker.
 ///
 /// `id` is the stable selector: `cpal` exposes no device GUID, so **`id` IS the
@@ -303,8 +239,8 @@ pub struct SttDevicesResult {
     pub code: Option<SttErrorCode>,
 }
 
-/// Internal typed error carried from capture/engine/session to the command
-/// boundary. Never surfaced as a panic.
+/// Internal typed error carried from capture/session to the command boundary.
+/// Never surfaced as a panic.
 #[derive(Clone, Debug)]
 pub struct VoiceError {
     pub code: SttErrorCode,
@@ -340,14 +276,6 @@ impl VoiceError {
 
     pub fn permission_denied(detail: impl Into<String>) -> Self {
         Self::new(SttErrorCode::PermissionDenied, detail)
-    }
-
-    pub fn model_missing(detail: impl Into<String>) -> Self {
-        Self::new(SttErrorCode::ModelMissing, detail)
-    }
-
-    pub fn model_corrupt(detail: impl Into<String>) -> Self {
-        Self::new(SttErrorCode::ModelCorrupt, detail)
     }
 
     pub fn engine_start_failed(detail: impl Into<String>) -> Self {
@@ -444,44 +372,16 @@ mod tests {
         assert!(result.sample_rate.is_none());
     }
 
-    /// ST-1: the warm result crosses IPC as camelCase; `warmMs` is present only
-    /// for the call that performed the load, and a failure carries the typed
-    /// code + detail with an honest `warmed:false`.
+    /// The `stt:state` payload serializes as camelCase and carries no removed
+    /// engine-residency field (the engine no longer exists).
     #[test]
-    fn warm_result_serializes_as_camel_case_with_the_typed_failure() {
-        let success = SttWarmResult::resident(Some(1234));
-        let json = serde_json::to_value(&success).expect("serialize warm result");
-        assert_eq!(json["warmed"], true);
-        assert_eq!(json["code"], serde_json::Value::Null);
-        assert_eq!(json["detail"], serde_json::Value::Null);
-        assert_eq!(json["warmMs"], 1234);
-
-        // Joined / already-resident / no-op: warmed, but no load of its own.
-        let joined = SttWarmResult::resident(None);
-        let json = serde_json::to_value(&joined).expect("serialize joined warm result");
-        assert_eq!(json["warmed"], true);
-        assert_eq!(json["warmMs"], serde_json::Value::Null);
-
-        let failure = SttWarmResult::failed(&VoiceError::model_missing("tokens.txt is missing"));
-        let json = serde_json::to_value(&failure).expect("serialize failed warm result");
-        assert_eq!(json["warmed"], false);
-        assert_eq!(json["code"], "modelMissing");
-        assert_eq!(json["detail"], "tokens.txt is missing");
-        assert_eq!(json["warmMs"], serde_json::Value::Null);
-    }
-
-    /// ST-1: the two new `stt:state` observables are ADDITIVE — the shipped
-    /// field names are unchanged and the timing fields serialize as camelCase.
-    /// #2897 ST-2 adds `phase` / `limitReached` additively to the same payload.
-    #[test]
-    fn state_event_carries_the_additive_timing_observables() {
+    fn state_event_carries_the_timing_observables_without_engine_residency() {
         let event = SttStateEvent {
             listening: true,
             code: None,
             detail: None,
             origin: Some("launcher".to_string()),
             ready_ms: Some(42),
-            engine_resident: true,
             phase: None,
             limit_reached: None,
             limit_ms: None,
@@ -491,11 +391,11 @@ mod tests {
         assert_eq!(json["origin"], "launcher");
         assert_eq!(json["code"], serde_json::Value::Null);
         assert_eq!(json["readyMs"], 42);
-        assert_eq!(json["engineResident"], true);
         assert!(json.get("ready_ms").is_none());
-        assert!(json.get("engine_resident").is_none());
-        // #2897 ST-2/#2897 ST-5 — the additive trio is present and null on a
-        // local session.
+        assert!(
+            json.get("engineResident").is_none(),
+            "the removed engineResident field must not reappear: {json}"
+        );
         assert_eq!(json["phase"], serde_json::Value::Null);
         assert_eq!(json["limitReached"], serde_json::Value::Null);
         assert_eq!(json["limitMs"], serde_json::Value::Null);
@@ -512,7 +412,6 @@ mod tests {
             detail: None,
             origin: Some("launcher".to_string()),
             ready_ms: Some(9),
-            engine_resident: false,
             phase: Some(SttPhaseWire::Capturing),
             limit_reached: None,
             limit_ms: Some(MAX_AUDIO_CLIP_MS),
@@ -530,7 +429,6 @@ mod tests {
             detail: None,
             origin: Some("launcher".to_string()),
             ready_ms: None,
-            engine_resident: false,
             phase: Some(SttPhaseWire::Processing),
             limit_reached: Some(true),
             limit_ms: Some(MAX_AUDIO_CLIP_MS),
@@ -541,7 +439,7 @@ mod tests {
         assert_eq!(json["limitReached"], true);
         assert_eq!(json["limitMs"], MAX_AUDIO_CLIP_MS);
 
-        // A manual model-audio stop reports an explicit (not null) false.
+        // A manual stop reports an explicit (not null) false.
         assert_eq!(
             serde_json::to_value(SttPhaseWire::Processing).expect("serialize phase"),
             "processing"
@@ -560,7 +458,7 @@ mod tests {
         let clip = SttAudioClip {
             base64: "UklGRg==".to_string(),
             format: "wav".to_string(),
-            sample_rate: super::super::engine::ENGINE_SAMPLE_RATE as u32,
+            sample_rate: super::super::capture::AUDIO_SAMPLE_RATE,
             duration_ms: 1_600,
             limit_ms: MAX_AUDIO_CLIP_MS,
             at_limit: false,
@@ -594,8 +492,8 @@ mod tests {
         assert_eq!(json["clip"], serde_json::Value::Null);
     }
 
-    /// #2897 ST-2/ST-6 — the two new failure variants keep their exact camelCase
-    /// wire names.
+    /// The model-audio failure variants keep their exact camelCase wire names,
+    /// and the capture-start timeout keeps `engineStartFailed` (wire stability).
     #[test]
     fn model_audio_error_codes_are_pinned_to_their_wire_names() {
         assert_eq!(
@@ -606,11 +504,17 @@ mod tests {
             serde_json::to_string(&SttErrorCode::ModelAudioUnavailable).expect("serialize"),
             "\"modelAudioUnavailable\""
         );
+        assert_eq!(
+            serde_json::to_string(&SttErrorCode::EngineStartFailed).expect("serialize"),
+            "\"engineStartFailed\""
+        );
 
         let unsupported = VoiceError::model_audio_unsupported("the model has no audio encoder");
         assert_eq!(unsupported.code, SttErrorCode::ModelAudioUnsupported);
         let unavailable = VoiceError::model_audio_unavailable("the model server is not running");
         assert_eq!(unavailable.code, SttErrorCode::ModelAudioUnavailable);
+        let timeout = VoiceError::engine_start_failed("timed out while starting the capture");
+        assert_eq!(timeout.code, SttErrorCode::EngineStartFailed);
     }
 
     /// #2897 ST-6 (REQ-7) — the capability wire vocabulary is the closed

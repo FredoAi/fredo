@@ -10,7 +10,7 @@
 //! - The vocabulary here is deliberately mechanism-neutral: a skill is declared
 //!   as `name` / `description` / `parameters` and nothing more. The nouns of any
 //!   particular wire format belong to the mechanism adapter (ST-5), never here.
-//! - It imports no UI or feature module, performs **no execution** and does no
+//! - It imports no UI or application module, performs **no execution** and does no
 //!   window work: [`validate`] only checks a model-selected call against the
 //!   registry; execution is bound by the caller (ST-5).
 //!
@@ -27,7 +27,7 @@ pub const OPEN_APP_ARGUMENT: &str = "app";
 
 /// The capability sentence offered for `open_app` (mechanism-neutral).
 pub const OPEN_APP_DESCRIPTION: &str =
-    "Open a Fredo desktop app/feature by the name the user said. Use ONLY for an explicit open request.";
+    "Open a Fredo desktop app/application by the name the user said. Use ONLY for an explicit open request.";
 
 /// The declared input contract for `open_app`: exactly one required, non-empty
 /// string argument (`app`) — no other argument is declared, so extra arguments
@@ -50,7 +50,7 @@ pub const CLOSE_APP_ARGUMENT: &str = "app";
 
 /// The capability sentence offered for `close_app` (mechanism-neutral).
 pub const CLOSE_APP_DESCRIPTION: &str =
-    "Close an open Fredo desktop app/feature by the name the user said. Use ONLY for an explicit close request.";
+    "Close an open Fredo desktop app/application by the name the user said. Use ONLY for an explicit close request.";
 
 /// The declared input contract for `close_app`: exactly one required, non-empty
 /// string argument (`app`) — byte-for-byte the SAME shape as
@@ -60,6 +60,38 @@ pub fn close_app_parameters() -> Value {
         "type": "object",
         "properties": { "app": { "type": "string" } },
         "required": ["app"]
+    })
+}
+
+/// The name of the third registered companion skill (Spec #2970, ST-4): the
+/// secret Doom Mode toggle, offered to the MODEL only (never rendered to a user).
+pub const DOOM_MODE_SKILL: &str = "doom_mode";
+
+/// The single `doom_mode` argument carrying the requested action.
+pub const DOOM_MODE_ACTION_ARG: &str = "action";
+
+/// The `doom_mode` action that enters the mode.
+pub const DOOM_MODE_ENTER: &str = "enter";
+
+/// The `doom_mode` action that leaves the mode.
+pub const DOOM_MODE_EXIT: &str = "exit";
+
+/// The capability sentence offered for `doom_mode` (mechanism-neutral). It is the
+/// wake-phrase guard: the phrase is model-interpreted (there is no STT
+/// transcript), so this description is what keeps the skill from firing on an
+/// unrelated phrase.
+pub const DOOM_MODE_DESCRIPTION: &str =
+    "Use ONLY when the user explicitly asks Fredo to enter or leave Doom Mode.";
+
+/// The declared input contract for `doom_mode`: exactly one required, non-empty
+/// string argument (`action`). The `enter`/`exit` value domain is enforced by the
+/// frontend dispatcher (ST-5), which owns execution; this registry declares only
+/// the mechanism-neutral wire shape.
+pub fn doom_mode_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "action": { "type": "string" } },
+        "required": ["action"]
     })
 }
 
@@ -138,6 +170,22 @@ impl SkillRegistry {
             CLOSE_APP_SKILL,
             CLOSE_APP_DESCRIPTION,
             close_app_parameters(),
+        ));
+        registry
+    }
+
+    /// The Doom Mode registry: the shipped app-control pair PLUS the secret
+    /// `doom_mode` skill (Spec #2970, ST-4). Offer order is `open_app`,
+    /// `close_app`, `doom_mode`.
+    ///
+    /// Additive: [`Self::with_app_control`] keeps its shipped two-skill
+    /// declaration (and its pins) untouched.
+    pub fn with_app_control_and_doom() -> Self {
+        let mut registry = Self::with_app_control();
+        registry.register(CompanionSkill::new(
+            DOOM_MODE_SKILL,
+            DOOM_MODE_DESCRIPTION,
+            doom_mode_parameters(),
         ));
         registry
     }
@@ -386,6 +434,218 @@ mod tests {
             Err(SkillValidationError::UnknownSkill(
                 "open_the_pod_bay".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn with_app_control_and_doom_registers_open_app_close_app_doom_mode_in_order() {
+        let registry = SkillRegistry::with_app_control_and_doom();
+        assert_eq!(registry.len(), 3);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL, DOOM_MODE_SKILL],
+            "offer order is open_app, close_app, doom_mode"
+        );
+
+        let doom = registry.get(DOOM_MODE_SKILL).expect("registered under its name");
+        assert_eq!(doom.description, DOOM_MODE_DESCRIPTION);
+        assert_eq!(doom.parameters["type"], "object");
+        assert_eq!(doom.parameters["required"], json!(["action"]));
+        assert_eq!(doom.parameters["properties"]["action"]["type"], "string");
+
+        // The shipped constructors are untouched by the addition (their pins).
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+        assert_eq!(SkillRegistry::with_app_control().len(), 2);
+    }
+
+    #[test]
+    fn doom_mode_validates_the_enter_and_exit_actions_through_the_shared_rule() {
+        let registry = SkillRegistry::with_app_control_and_doom();
+        for action in [DOOM_MODE_ENTER, DOOM_MODE_EXIT] {
+            let invocation = validate(&registry, DOOM_MODE_SKILL, &json!({ "action": action }))
+                .expect("a declared non-empty action is valid");
+            assert_eq!(invocation.skill, DOOM_MODE_SKILL);
+            assert_eq!(invocation.arguments, json!({ "action": action }));
+        }
+
+        // Fail-closed shapes match the ONE shared validation rule.
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({})),
+            Err(SkillValidationError::MissingArgument("action".to_string()))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": "   " })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": 42 })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must be a string".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, DOOM_MODE_SKILL, &json!({ "action": "enter", "force": true })),
+            Err(SkillValidationError::InvalidArgument(
+                "unexpected argument 'force'".to_string()
+            ))
+        );
+
+        // Not offered by the shipped app-control registry (additive only).
+        assert_eq!(
+            validate(
+                &SkillRegistry::with_app_control(),
+                DOOM_MODE_SKILL,
+                &json!({ "action": "enter" })
+            ),
+            Err(SkillValidationError::UnknownSkill(DOOM_MODE_SKILL.to_string()))
+        );
+    }
+
+    #[test]
+    fn doom_mode_binding_names_are_pinned() {
+        assert_eq!(DOOM_MODE_SKILL, "doom_mode");
+        assert_eq!(DOOM_MODE_ACTION_ARG, "action");
+        assert_eq!(DOOM_MODE_ENTER, "enter");
+        assert_eq!(DOOM_MODE_EXIT, "exit");
+    }
+
+    /// Spec #3099 ST-4 — the generated offer replaces the deleted hand-written
+    /// `wireframe` constructor: the static three come first (byte-identical) and
+    /// ONE generated skill per published surface follows.
+    #[test]
+    fn the_generated_registry_keeps_the_static_three_first_then_one_skill_per_surface() {
+        use super::super::surface_registry::{
+            build_companion_skill_registry, CompanionCommandManifest, CompanionSurfaceManifest,
+        };
+
+        let surface = CompanionSurfaceManifest {
+            app_id: "wireframe".to_string(),
+            app_name: "Wireframe".to_string(),
+            skill_name: "wireframe".to_string(),
+            description: "Create or edit a wireframe.".to_string(),
+            list_label: None,
+            commands: vec![CompanionCommandManifest {
+                id: "wireframe.add.text".to_string(),
+                label: "Text".to_string(),
+                description: "Add a text element".to_string(),
+                risk: None,
+                args: Vec::new(),
+                aliases: Vec::new(),
+            }],
+        };
+        let registry = build_companion_skill_registry(&[surface]);
+        assert_eq!(registry.len(), 4);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL, DOOM_MODE_SKILL, "wireframe"],
+            "the static three lead, then one generated skill per surface"
+        );
+
+        // The shipped static declarations are untouched.
+        assert_eq!(
+            registry.get(OPEN_APP_SKILL).map(|skill| skill.description.as_str()),
+            Some(OPEN_APP_DESCRIPTION)
+        );
+        assert_eq!(
+            registry.get(CLOSE_APP_SKILL).map(|skill| skill.description.as_str()),
+            Some(CLOSE_APP_DESCRIPTION)
+        );
+        assert_eq!(
+            registry.get(DOOM_MODE_SKILL).map(|skill| skill.description.as_str()),
+            Some(DOOM_MODE_DESCRIPTION)
+        );
+
+        let generated = registry.get("wireframe").expect("generated under its app id");
+        assert_eq!(
+            generated.description,
+            "Create or edit a wireframe. Actions: wireframe.add.text, listActions."
+        );
+        assert_eq!(generated.parameters["required"], json!(["action"]));
+        assert_eq!(
+            generated.parameters["properties"]["action"]["enum"],
+            json!(["wireframe.add.text", "listActions"])
+        );
+        assert_eq!(
+            generated.parameters["properties"]["arguments"],
+            json!({ "type": "object" })
+        );
+
+        // The shipped constructors are untouched by the addition.
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+        assert_eq!(SkillRegistry::with_app_control().len(), 2);
+        assert_eq!(SkillRegistry::with_app_control_and_doom().len(), 3);
+        assert_eq!(
+            validate(
+                &SkillRegistry::with_app_control_and_doom(),
+                "wireframe",
+                &json!({ "action": "wireframe.add.text" })
+            ),
+            Err(SkillValidationError::UnknownSkill("wireframe".to_string())),
+            "a generated skill exists only in a registry built from its surface"
+        );
+    }
+
+    #[test]
+    fn a_generated_skill_validates_the_declared_action_and_fails_closed_otherwise() {
+        use super::super::surface_registry::{
+            build_companion_skill_registry, CompanionCommandManifest, CompanionSurfaceManifest,
+        };
+
+        let registry = build_companion_skill_registry(&[CompanionSurfaceManifest {
+            app_id: "wireframe".to_string(),
+            app_name: "Wireframe".to_string(),
+            skill_name: "wireframe".to_string(),
+            description: "Create or edit a wireframe.".to_string(),
+            list_label: None,
+            commands: vec![CompanionCommandManifest {
+                id: "wireframe.add.text".to_string(),
+                label: "Text".to_string(),
+                description: "Add a text element".to_string(),
+                risk: None,
+                args: Vec::new(),
+                aliases: Vec::new(),
+            }],
+        }]);
+
+        let ok = validate(
+            &registry,
+            "wireframe",
+            &json!({ "action": "wireframe.add.text", "arguments": { "fill": "accent" } }),
+        )
+        .expect("a declared action plus the open arguments object is valid");
+        assert_eq!(ok.skill, "wireframe");
+        assert_eq!(ok.arguments["arguments"]["fill"], "accent");
+
+        assert_eq!(
+            validate(&registry, "wireframe", &json!({})),
+            Err(SkillValidationError::MissingArgument("action".to_string()))
+        );
+        assert_eq!(
+            validate(&registry, "wireframe", &json!({ "action": "   " })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must not be empty".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(&registry, "wireframe", &json!({ "action": 7 })),
+            Err(SkillValidationError::InvalidArgument(
+                "argument 'action' must be a string".to_string()
+            ))
+        );
+        assert_eq!(
+            validate(
+                &registry,
+                "wireframe",
+                &json!({ "action": "wireframe.add.text", "force": true })
+            ),
+            Err(SkillValidationError::InvalidArgument(
+                "unexpected argument 'force'".to_string()
+            )),
+            "an undeclared argument key fails closed"
         );
     }
 

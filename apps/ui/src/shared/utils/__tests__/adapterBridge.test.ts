@@ -29,6 +29,7 @@ describe('adapterBridge', () => {
     adapterBridge.setLlmChatWithImage(undefined as any);
     adapterBridge.setLlmChatWithSkills(undefined);
     adapterBridge.setLlmChatWithAudio(undefined);
+    adapterBridge.setLlmChatWithStatus(undefined);
     vi.clearAllMocks();
   });
 
@@ -309,6 +310,110 @@ describe('adapterBridge', () => {
       expect(warnSpy).toHaveBeenCalledWith(
         '[adapterBridge] llmChatWithAudio called before adapter registered',
       );
+      expect(onDone).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+  });
+
+  // #2918 ST-3 — the structured-status forwarding path.
+  describe('setLlmChatWithStatus', () => {
+    it('forwards messages + options + the status channel and completes the caller', async () => {
+      const onToken = vi.fn();
+      const onDone = vi.fn();
+      const onStatus = vi.fn();
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _options: { offerSkills: boolean; audioBase64?: string },
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onStatus: (status: string) => void,
+        ) => {
+          _onToken('reply-token');
+          _onStatus('joking');
+          _onDone();
+        },
+      );
+      adapterBridge.setLlmChatWithStatus(mockChat);
+
+      const messages = createMockMessages();
+      const options = { offerSkills: true };
+      await adapterBridge.llmChatWithStatus(messages, options, onToken, onDone, onStatus);
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      expect(mockChat).toHaveBeenCalledWith(messages, options, onToken, onDone, onStatus);
+      expect(onToken).toHaveBeenCalledWith('reply-token');
+      expect(onStatus).toHaveBeenCalledWith('joking');
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('forwards the additive onSkillCall channel, then onError, only when supplied', async () => {
+      const onDone = vi.fn();
+      const onStatus = vi.fn();
+      const onSkillCall = vi.fn();
+      const onError = vi.fn();
+      const call: LlmSkillCall = { skill: 'open_app', arguments: { app: 'Settings' } };
+      const mockChat = vi.fn(
+        async (
+          _messages: LlmMessage[],
+          _options: { offerSkills: boolean; audioBase64?: string },
+          _onToken: (token: string) => void,
+          _onDone: () => void,
+          _onStatus: (status: string) => void,
+          _onSkillCall?: (c: LlmSkillCall) => void,
+          _onError?: (message: string) => void,
+        ) => {
+          _onSkillCall?.(call);
+          _onDone();
+        },
+      );
+      adapterBridge.setLlmChatWithStatus(mockChat);
+
+      const messages = createMockMessages();
+      const options = { offerSkills: true, audioBase64: 'QUJD' };
+      await adapterBridge.llmChatWithStatus(
+        messages,
+        options,
+        vi.fn(),
+        onDone,
+        onStatus,
+        onSkillCall,
+        onError,
+      );
+
+      expect(mockChat).toHaveBeenCalledWith(
+        messages,
+        options,
+        expect.anything(),
+        onDone,
+        onStatus,
+        onSkillCall,
+        onError,
+      );
+      expect(onSkillCall).toHaveBeenCalledWith(call);
+      // The optional error channel is forwarded only when supplied (mirrors llmChat).
+      expect(onError).not.toHaveBeenCalled();
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it('unregistered — warns, never synthesizes a status, and still completes', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const onDone = vi.fn();
+      const onStatus = vi.fn();
+
+      await adapterBridge.llmChatWithStatus(
+        createMockMessages(),
+        { offerSkills: false },
+        vi.fn(),
+        onDone,
+        onStatus,
+      );
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[adapterBridge] llmChatWithStatus called before adapter registered',
+      );
+      // R-7 — the bridge forwards only what the backend emits; it never invents one.
+      expect(onStatus).not.toHaveBeenCalled();
       expect(onDone).toHaveBeenCalledTimes(1);
       warnSpy.mockRestore();
     });

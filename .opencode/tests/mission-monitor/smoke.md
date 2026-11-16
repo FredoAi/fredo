@@ -37,3 +37,22 @@
 - [x] S-14 (PASS round 3): with a canonical `fredo emit` mutation the declared table watch delivers `featureBatch` and the projected row appears (disposable-DB re-drive).
 - [x] S-15 (PASS round 3): a session renders its Chat node on selection; declared-table `remove` re-fits the canvas (`auto-fit … epoch` console lines).
 - [x] S-16 (PASS round 3): a full cold restart serves the 31 stored sessions immediately (`backfill_done=1`; no backfill re-drain in the log; only `persisted declared tables re-materialized tables=1`).
+
+## Mission Monitor multi-CLI quick path (Spec #2945)
+
+- [x] S-17 (PASS 2026-09-25 #2945 round 1): MM opened from the launcher ("Mission Monitor"); the session list rendered its usual entries (list + `Sessions` drawer chrome unchanged) with no `Error:`/`Uncaught`/`Maximum update depth exceeded` in the webview console.
+- [x] S-18 (PASS 2026-09-25 #2945 round 1): with a live OpenCode session + a Copilot split-turn fixture in one store, every row showed a non-blank CLI chip (`◈OpenCode`, `◆GitHub Copilot`, `?Unknown CLI`); selecting the Copilot session rendered chat node + `── TOOLS (1) ──` + `── RESPONSE ──` at the same structural detail as OpenCode. `telemetry_spans` + `chat_rows` cross-checked at the same instant.
+- [x] S-19 (PASS 2026-09-25 #2945 round 1): the selected session's header chip matched its list row (`◈OpenCode` / `◆GitHub Copilot`); a `provider = unknown` session showed the explicit `?Unknown CLI` fallback (non-blank, dashed warning border) and was never presented as OpenCode.
+- [x] S-20 (PASS 2026-09-25 #2945 round 1): `pnpm --filter @fredo/ui build` clean (2594 modules, zero TS errors); the Rust rollup/registry was touched → `cargo check --locked` + `cargo clippy --locked -- -D warnings` + `cargo test --locked` (950 lib + integration) all green.
+
+## Mission Monitor migrated-store quick path (Slice 3, #2976)
+
+- [ ] **S-21:** Boot PG-selected on the migrated store, open Mission Monitor from the launcher — the
+  session list + graph canvas render with no `Error:` / `Uncaught` / `Maximum update depth exceeded`
+  in the webview console; `storage_engine_status.engine == "postgres"`.
+- [ ] **S-22:** With a live OpenCode session AND a Copilot session in one store, select each — chat
+  node + `── TOOLS (N) ──` + tokens render at the same structural detail as the pre-migration
+  baseline; cross-check `telemetry_spans` + the migrated row tables at the same instant (F-54/S-10).
+- [ ] **S-23:** `pnpm --filter @fredo/ui build` clean (zero TS errors); `cargo check --locked` +
+  `cargo clippy --locked -- -D warnings` + `cargo test --locked` all green from
+  `apps/tauri/src-tauri/` (a full dev-env Down first if the running `fredo.exe` locks the test binary).

@@ -10,41 +10,56 @@
  * the store's `closeWindow`/`focusWindow` actions (never breaking the
  * open/close/update/focus/re-entrancy contract).
  *
+ * Spec #2924 ST-2: full-bleed is the default-open state (the kernel default in
+ * `windowStore`); this frame renders the `100%/100%` rect when maximized and a
+ * container-derived CENTERED float (no cascade) when floating. The float math
+ * lives in `windowGeometry.ts`; the pre-maximize float is restored via
+ * `savedGeomRef` for a window that was floated, and recomputed as the centered
+ * default for a window that opened full-bleed (never floated). The content
+ * region is FLUSH — features own their interior spacing (REQ-6/REQ-10).
+ *
  * Token-native (AC3): every color is a Chakra semantic token
  * (`bg.surface`, `border.default`, `accent.default`) or a `tint()` color-mix.
  * No hardcoded hex/rgba and no `var(--x)NN` alpha-append — see `chrome.css`
  * for the non-color layout/pointer concerns.
  */
 
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { Box } from '@chakra-ui/react';
 import { closeWindow, focusWindow } from './windowStore';
 import { WindowChrome } from './WindowChrome';
+import {
+  beginZoneDrag,
+  cancelZoneDrag,
+  endZoneDrag,
+  updateZoneDragPointer,
+  useZoneLayout,
+} from './zoneLayoutStore';
+import { matchesZoneChord } from './zoneLayout';
+import { useWindowTraversal } from './useWindowActions';
 import type { WindowEntry } from './windowTypes';
+import {
+  clampToWorkspace,
+  resolveFloatGeometry,
+  MIN_HEIGHT,
+  MIN_WIDTH,
+  type Geometry,
+  type WorkspaceSize,
+} from './windowGeometry';
 import { tint } from '../utils/colorTint';
 import './chrome.css';
 
-const DEFAULT_WIDTH = 480;
-const DEFAULT_HEIGHT = 320;
-const MIN_WIDTH = 320;
-const MIN_HEIGHT = 200;
-const CASCADE = 16;
-const BASE = 48;
-const GESTURE_INSET = 24; // keeps at least 24px of a floating window on screen
-
 type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
-
-interface Geometry {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
 
 interface WindowFrameProps {
   window: WindowEntry;
-  /** Cascade offset base for the initial float position (render order). */
-  stackIndex: number;
 }
 
 const GRIP_CLASS: Record<ResizeDir, string> = {
@@ -71,17 +86,21 @@ const GRIP_STYLE: Record<ResizeDir, CSSProperties> = {
 
 const GRIP_DIRS: ResizeDir[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
+export function WindowFrame({ window: win }: WindowFrameProps) {
+  // Spec #2946 ST-10 — arm keyboard window traversal while a window is rendered
+  // (idempotent + reference-counted; releases when the last frame unmounts).
+  useWindowTraversal();
 
-export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
-  const [geom, setGeom] = useState<Geometry>(() => ({
-    x: BASE + stackIndex * CASCADE,
-    y: BASE + stackIndex * CASCADE,
-    width: DEFAULT_WIDTH,
-    height: DEFAULT_HEIGHT,
-  }));
+  // Spec #2980 ST-5 — the chord-drag snap gesture reads the zone configuration
+  // (`enabled`/`activeLayoutId`/`chord`) plus the live transient drag state. The
+  // snapshot ref is stable until a real store mutation, so this subscription
+  // cannot loop (AGENTS.md #523).
+  const zoneLayout = useZoneLayout();
+
+  // Deterministic seed mirroring `resolveFloatGeometry(null)` (DEFAULT at 0,0)
+  // for jsdom / pre-layout; the measured, CENTERED float is resolved in the
+  // mount layout effect below (REQ-8 — no cascade offset).
+  const [geom, setGeom] = useState<Geometry>(() => resolveFloatGeometry(null));
   const geomRef = useRef(geom);
   geomRef.current = geom;
 
@@ -95,6 +114,10 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
   const isMax = win.isMaximized;
   const hidden = win.isMinimized;
 
+  // ST-5 — the transient snap-gesture flag (owned by the zone store) marks the
+  // frame being dragged; it is never set when the drag is not eligible (R-3.3).
+  const zoneDragging = zoneLayout.dragActive && zoneLayout.dragWindowId === win.id;
+
   // Cancel any in-flight gesture/rAF when the window unmounts (close).
   useEffect(() => {
     return () => {
@@ -102,6 +125,26 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
       gestureCleanupRef.current?.();
     };
   }, []);
+
+  // Resolve the container-derived CENTERED float once the workspace is
+  // measurable (REQ-8) — cascade-free. Guarded so a later drag/resize can never
+  // be clobbered; a window that opened full-bleed keeps this as its restore
+  // target until it is floated.
+  const geometryInitializedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (geometryInitializedRef.current) return;
+    const workspace = measureWorkspace();
+    if (!workspace) return;
+    geometryInitializedRef.current = true;
+    setGeom(resolveFloatGeometry(workspace));
+  }, []);
+
+  /** Measured workspace (the WindowManager container) or null when un-laid-out. */
+  function measureWorkspace(): WorkspaceSize | null {
+    const rect = surfaceRef.current?.parentElement?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return { width: rect.width, height: rect.height };
+  }
 
   function scheduleGeom(next: Geometry) {
     pendingGeomRef.current = next;
@@ -124,21 +167,94 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
     focusIfNeeded();
   }
 
+  /**
+   * Spec #2980 ST-5 — whether this pointer-down enters the zone-drag snap
+   * gesture. The activation chord is modifier-only and read from the POINTER
+   * event's modifier flags (never a keydown listener), matched through the
+   * shared `matchesZoneChord` rule (platform-neutral `primary`).
+   */
+  function isZoneDragEligible(e: ReactPointerEvent): boolean {
+    return (
+      zoneLayout.enabled &&
+      zoneLayout.activeLayoutId !== null &&
+      matchesZoneChord(zoneLayout.chord, {
+        alt: e.altKey,
+        ctrl: e.ctrlKey,
+        meta: e.metaKey,
+        shift: e.shiftKey,
+      })
+    );
+  }
+
+  /**
+   * Spec #2980 ST-5 — the chord-drag snap gesture (R-3.1/R-3.2/R-3.4). The
+   * window's float GEOMETRY is never touched: the store tracks the pointer,
+   * resolves the zone under it, and commits the assignment on release. A
+   * window-level Escape cancels without any geometry change. Every listener
+   * lives only for the gesture and is removed on release/cancel/unmount.
+   */
+  function startZoneDrag() {
+    beginZoneDrag(win.id);
+
+    const onMove = (ev: PointerEvent) => {
+      updateZoneDragPointer(ev.clientX, ev.clientY);
+    };
+    const onUp = () => {
+      teardownZoneDrag();
+      endZoneDrag(true);
+    };
+    const onEscape = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      teardownZoneDrag();
+      cancelZoneDrag();
+    };
+    const teardownZoneDrag = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('keydown', onEscape);
+      gestureCleanupRef.current = null;
+    };
+
+    // Unmount mid-gesture removes the listeners and clears the transient drag so
+    // an orphaned overlay is impossible.
+    gestureCleanupRef.current = () => {
+      teardownZoneDrag();
+      cancelZoneDrag();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('keydown', onEscape);
+  }
+
   function handleHeaderPointerDown(e: ReactPointerEvent) {
-    if (e.button !== 0 || isMax) return;
+    if (e.button !== 0) return;
+
+    // ST-5 — enter the zone path BEFORE the float-drag guards, so the snap
+    // gesture also works on the default full-bleed window. When not eligible the
+    // shipped float drag below runs exactly as today (R-3.3).
+    if (isZoneDragEligible(e)) {
+      e.preventDefault();
+      startZoneDrag();
+      return;
+    }
+
+    if (isMax) return;
     e.preventDefault();
     const startX = e.clientX;
     const startY = e.clientY;
     const orig = geomRef.current;
-    const container = surfaceRef.current?.parentElement;
-    const containerWidth = container?.getBoundingClientRect().width ?? orig.width;
-    const minX = GESTURE_INSET - orig.width;
-    const maxX = containerWidth - GESTURE_INSET;
+    const workspace = measureWorkspace();
 
     const onMove = (ev: PointerEvent) => {
-      const nextX = clamp(orig.x + (ev.clientX - startX), minX, maxX);
-      const nextY = Math.max(0, orig.y + (ev.clientY - startY));
-      scheduleGeom({ ...orig, x: nextX, y: nextY });
+      const next = clampToWorkspace(
+        {
+          ...orig,
+          x: orig.x + (ev.clientX - startX),
+          y: orig.y + (ev.clientY - startY),
+        },
+        workspace,
+      );
+      scheduleGeom(next);
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -155,6 +271,11 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
 
   function toggleMaximize() {
     if (win.isMaximized) {
+      // Restore: the pre-maximize float when the window was floated, else the
+      // container-derived centered default (REQ-8) — never a cascade offset.
+      const restored = savedGeomRef.current ?? resolveFloatGeometry(measureWorkspace());
+      savedGeomRef.current = null;
+      setGeom(restored);
       focusWindow(win.id, { maximize: false });
     } else {
       savedGeomRef.current = geomRef.current;
@@ -216,6 +337,11 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
       ref={surfaceRef}
       role="group"
       aria-label={win.title}
+      data-testid={`window-frame-${win.id}`}
+      data-fredo-app-id={win.id}
+      data-focused={win.focused ? 'true' : 'false'}
+      data-focused-window={win.focused ? 'true' : undefined}
+      data-zone-drag={zoneDragging ? 'true' : undefined}
       position="absolute"
       display={hidden ? 'none' : 'flex'}
       flexDirection="column"
@@ -245,11 +371,11 @@ export function WindowFrame({ window: win, stackIndex }: WindowFrameProps) {
       />
 
       <Box
+        data-testid={`window-content-${win.id}`}
         flex="1"
         minHeight="0"
         overflow="auto"
         bg="bg.surface"
-        p="4"
         tabIndex={-1}
         color="fg.default"
       >

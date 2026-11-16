@@ -710,3 +710,300 @@
 
 - **R-62 PASS (live).** Model: dot + `launcher-command-model-listening-chip`(`Fredo is listening`) + Stop(`Stop listening`) + Cancel(`Cancel dictation`) + `release Space to finish` placeholder, hint chip suppressed (the #2904 REQ-3 relocation). Local: same dot + `launcher-command-listening-chip`(`Listening`) + Stop + Cancel + `Listening…` placeholder + `release Space to finish` hint chip (UNCHANGED). Search interaction intact: `zz` filtered `#fredo-launcher-grid` to 0 tiles, hint read `↵ send to Fredo` (the #2882 whole-query rule), `Escape` hid the grid while the bar stayed mounted/focused; `stt_stop` (local) → placeholder `search or command`, `listening:false`.
 - **R-63 PASS (live).** Static greps 0 literals / 0 alpha-append; console error-level empty across every leg; command-bar `y` stable per state (the only shift is the pre-existing below-bar status row); seat wrapper `offsetWidth 80`/`offsetHeight 100`/`margin-bottom 16px`; field 48px; no scrollbar/h-scroll at 900×600. Evidence: `.opencode/tmp/2904/tests-runs.md` / `## Tests Runs (round 1)`.
+
+---
+
+## #2917 extension — the additive fill must NOT change the launcher
+
+> Issue #2917 adds an additive interior fill layer to the shared avatar. The launcher hosts only the
+> RESTING figure, so these invariants MUST hold — any FAIL is a regression. Run alongside R-1..R-63 and
+> the launcher F-108..F-112. **Verification policy: live.** G-136 note: only the 58 base rects are pinned
+> (the fill is an ADDITIONAL layer), so the frozen-geometry rows stay in force unchanged.
+
+## R-64 — Launcher resting avatar: frozen 58 rects + no duplicate geometry
+
+- [ ] R-64: Read the launcher seat avatar's 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm no second base-rect table exists outside
+      `shared/components/fredo-avatar/`; confirm the resting render carries no expression overlay.
+  **Expected:** the 58 base rects are byte-identical to the shared source (and to the companion's); no
+      duplicate geometry table; `shapeRendering="crispEdges"`; single accent fill
+      `color="var(--accent-primary)"` + `fill="currentColor"`; `aria-hidden`. Reference R-22/R-27/R-30
+      + launcher F-110.
+  - **Edge:** the fill must be additive (a separate layer/group), never a mutation of
+    `FREDO_AVATAR_SOURCE_RECTS` or the expansion math; the geometry suite passes UNMODIFIED.
+
+## R-65 — Launcher shell layout / seat geometry unchanged (no CLS)
+
+- [ ] R-65: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` with the
+      companion OFF / ON-at-home / ON-away and after an idle auto-return, at the default size and
+      900×600.
+  **Expected:** the wrapper stays exactly 80×100 + 16 px; the command-bar `y` is constant within ±1 px
+      in every state; no new scrollbar/overflow/clip. The fill layer does not participate in the
+      launcher column's layout. Reference R-35/R-48/R-59 + launcher F-111.
+  - **Edge:** a resize mid-idle must not shift the bar or the seat; the resting DOM identity holds for
+    the idle frame (transform:0).
+
+## R-66 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-66: Static-grep the changed launcher + avatar files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; no re-render loop (#523); build exit 0; suite green without weakening any assertion
+      (refreshed ones named per G-125). Reference R-31/R-49/R-63 + launcher F-111.
+  - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
+    WARN is exempt.
+
+---
+
+## #2922 extension — the body-wide fill must NOT change the launcher (G-136)
+
+> Issue #2922 extends the ADDITIVE interior fill from the head to the WHOLE body. The launcher hosts
+> the RESTING figure (`.fredo-avatar-idle`, or the interactive companion seat when ON), so these
+> invariants MUST hold — any FAIL is a regression. Run alongside launcher R-1..R-66 + F-113..F-117 and
+> the companion #2922 rows (F-135..F-143 / R-66..R-69). Only the 58 BASE rects are pinned (the fill is
+> an ADDITIONAL layer). **Verification policy: live.**
+
+## R-67 — Launcher resting avatar: frozen 58 rects + ONE `<path>` fill drawn first
+
+- [ ] R-67: Read the seat mascot's 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm one `<path id="fredo-interior">` (never a
+      `<rect>`) drawn BEFORE the base rects; confirm no second base-rect table outside
+      `shared/components/fredo-avatar/`; confirm `idle` carries no expression overlay.
+  **Expected:** 58 base rects byte-identical to the shared source (and to the companion's); no
+      duplicate geometry table; `shapeRendering="crispEdges"`; single accent
+      `color="var(--accent-primary)"` + `fill="currentColor"`; `aria-hidden`. The fill is additive —
+      never a mutation of `FREDO_AVATAR_SOURCE_RECTS` or the expansion math; the geometry suite passes
+      UNMODIFIED. Reference R-22/R-27/R-30/R-64 + launcher F-115.
+
+## R-68 — Launcher shell layout / seat geometry unchanged (no CLS)
+
+- [ ] R-68: Measure the command-bar `getBoundingClientRect().y`, the seat-slot WRAPPER
+      `offsetWidth`/`offsetHeight`/`margin-bottom`, and `scrollHeight` vs `clientHeight` with the
+      companion OFF / ON-at-home / ON-away and after an idle auto-return, at the default size and
+      900×600.
+  **Expected:** the wrapper stays exactly 80×100 + 16 px; the command-bar `y` is constant within ±1 px
+      in every state; no new scrollbar/overflow/clip; the fill layer does not participate in the
+      launcher column's layout. Reference R-35/R-48/R-59/R-65 + launcher F-116.
+  - **Edge:** a resize mid-idle must not shift the bar or the seat; the resting DOM identity holds for
+    the idle frame (transform:0).
+
+## R-69 — Token-native / console clean / no re-render loop / build gates
+
+- [ ] R-69: Static-grep the changed launcher + avatar files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` /
+      `hsla(` / `var(--x)NN`; read the console after every leg; inspect the fill/state code for
+      effect/memo deps on array `.length`/fresh refs; run `pnpm --filter @fredo/ui build` +
+      `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); the seat body fill reads ONLY
+      `var(--fredo-avatar-interior)`; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; no
+      re-render loop (#523); build exit 0; suite green without weakening an assertion (the interior
+      band-count refresh is the one expected named refresh, G-125). Reference R-31/R-49/R-63/R-66.
+  - **Edge:** open/close churn around the animating mascot; the pre-existing `motion() is deprecated`
+    WARN is exempt.
+
+---
+
+## #2954 extension — the open-apps row must NOT disturb the launcher (G-136)
+
+> Issue #2954 moves the open-apps surface into the engaged launcher and removes the persistent dock.
+> These invariants MUST hold — any FAIL is a regression. Run alongside R-1..R-69 and launcher
+> F-118..F-125. **Verification policy: live.** G-136 note: the dock rows in `.opencode/tests/app-dock/`
+> are RETIRED (the feature is removed); the `dock-arrange` binding is PRESERVED (relocated to the
+> launcher) for #2949 AC1.
+
+## R-70 — Continuous-state: no persistent open-apps chrome; row absent at rest and with 0 windows (G-123)
+
+- [ ] R-70: On a clean desktop with ≥1 window open, do NOT engage: assert
+      `[data-testid="launcher-open-apps"]`, `[data-testid="app-dock"]`, `[data-dock-entry]`,
+      `[data-dock-item]`, `.dock-close` are all `count 0`; probe the left + bottom edges and re-scan.
+      Then close all windows, engage, and re-assert the row is absent (no empty box).
+  **Expected:** no persistent open-apps chrome in ANY state; the row renders only when engaged with
+      ≥1 window. ST-5 owns this continuous-state pin. Reference F-118/F-119.
+
+## R-71 — `dock-arrange` preserved (relocated into the launcher); #2949 AC1 does not regress
+
+- [ ] R-71: with ≥1 window open and 0 tiled panes, locate `[data-testid="dock-arrange"]`
+      (`aria-label="Arrange windows"`), click it, and verify the open windows tile into
+      `[data-testid="workspace-pane-<windowId>"]` (the #2949 AC1 behavior). Assert
+      `[data-testid="app-dock"]` is `count 0`.
+  **Expected:** the arrange entry is present and dispatches `arrangeOpenWindows()` from its NEW
+      launcher host; the testid is deliberately preserved so `.opencode/tests/workspace-layout`
+      stays bound. Reference `.opencode/tests/workspace-layout/functional.md` F-1/F-22.
+  - **Edge:** the launcher disengages when the panes are created; the control is discoverable at 0
+    panes (the workspace-arrange toolbar is still gated on an existing pane, `WindowManager.tsx:184`).
+
+## R-72 — Removed hooks absent; the launcher keyboard contract is unchanged
+
+- [ ] R-72: assert `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close` /
+      `dock-position-settings` are `count 0` in every state; with the engaged grid, drive arrows
+      (↑↓←→), `Home`/`End`, `Enter`/`Space`; confirm the empty-grid no-op and the hint-row hiding; then
+      Tab to the open-apps row.
+  **Expected:** the grid nav/roving/Enter/Space behavior is byte-for-byte the #2808/#2882 contract; the
+      open-apps row carries no `role="gridcell"` and is NOT in the roving order (Tab may reach its
+      buttons). Reference R-7/R-33/R-40.
+  - **Edge:** a query that filters the grid to zero while the row still lists open windows; Enter on
+    the bar (smart-Enter) unchanged.
+
+## R-73 — (retired by #3009) bottom-inset selector
+
+> **#3009 supersedes (OBSOLETE).** The bottom-inset measurement module and the keyboard-bar /
+> overlay surfaces this row referenced were removed by #3009; the always-on hotkey bar now pins
+> flush to `bottom:0` with a single constant. Retained as the historical record.
+
+- [ ] R-73: **RETIRED — do not run on `spec/3009`.** Reference F-118/R-5.
+
+## R-74 — Window kernel read-only; token-native; no re-render loop; build gates
+
+- [ ] R-74: git-diff scope `windowStore.ts`/`windowTypes.ts`/`window-system/*` (must be empty);
+      static-grep the new row/helper files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `var(--x)NN`;
+      read the console after every leg; run `pnpm --filter @fredo/ui build` + `test:run`.
+  **Expected:** the kernel is untouched (the row dispatches only `focusWindow`/`closeWindow`); no
+      cross-feature import; ZERO colour literals / no alpha-append; no `Error:`/`Uncaught`/`Maximum
+      update depth exceeded`; no effect/memo on array `.length`/fresh refs (#523); build exit 0.
+  - **Edge:** open/close churn; the pre-existing `motion() is deprecated` WARN is exempt.
+
+---
+
+## #3120 extension — the navigation-grounded launcher must NOT change the shipped launcher (G-136)
+
+> Issue #3120 adds the context header, the grouped navigation palette, the confirmation, the
+> undo route and `/ Ask`. Nothing is retired: the shipped launcher shell, the legacy `>` hotkey
+> action palette, Ctrl+Space, the smart-Enter/busy/wrap/dictation contracts and the seat geometry
+> remain IN FORCE. Run alongside R-1..R-74 and the `navigation` / `wireframe-navigation` suites.
+> **Verification policy: live.** Legacy-drive: the no-surface app is Mission Monitor (no registered
+> navigation host).
+
+## R-75 — the legacy `>` action palette is byte-identical for an app with no navigation host
+
+- [ ] R-75: Focus Mission Monitor → `Ctrl+Space` → `>` and a plain query; also `>` + a term that
+      matches a hotkey action.
+  **Expected:** the results region renders the shipped `LauncherActionList` (`launcher-action-entry`,
+  `launcher-action-tier`, `launcher-action-binding`, `launcher-action-unbound`, `launcher-action-empty`)
+  with the shipped props; Enter calls `runHotkeyAction(actionId,'palette')` and the action's own
+  side effect fires; NO `launcher-palette-list`, NO `launcher-context`, NO
+  `launcher-palette-announcer` (UI/UX §7's legacy invariant 1-3). Reference F-127/R-80.
+  - **Edge:** a no-surface app while Wireframe is open behind; `>` then clearing back to a plain
+    query (the source switches back, no orphan container); an unbound action row.
+
+## R-76 — the shipped launcher shell is untouched (grid, Ctrl+Space, focus, seat geometry)
+
+- [ ] R-76: With and without the Wireframe host, re-run the shipped quick paths: Ctrl+Space
+      show+focus (never close, never listen), the grid filter + arrow nav + empty-grid no-op, the
+      hint row, ESC idle/close with focus restore, the seat-slot wrapper `offsetWidth`/`offsetHeight`
+      = 80/100 + `margin-bottom:16px`, and the command-bar `y` within ±1 px across states.
+  **Expected:** byte-for-byte the shipped outcomes (F-16..F-20, R-7, R-35, R-45..R-48, R-52, R-70..R-72);
+  the context header adds height BELOW the bar only, so the reply band's `barrierTop` and the
+  bar `y` are unchanged. Reference UI/UX §2.8.
+  - **Edge:** engaged + open-apps row present; 900×600; companion ON/OFF/away.
+
+## R-77 — dictation holds and the no-transcript rule are unchanged
+
+- [ ] R-77: Hold Space on the focused EMPTY bar with voice enabled; release; then check the bar
+      text path and the listening cues.
+  **Expected:** the shipped hold/tap/space-safety contract holds (R-41/R-50/R-51/R-60); the
+  shipped listening cues are NOT re-animated or re-copied by P6; the voice turn still sends the
+  audio clip as its input with no transcript state added (`useVoiceDictation.ts`,
+  `CompanionEntity`). Reference R-62.
+  - **Edge:** voice disabled mid-hold; a live capture + `>` Enter (dispatches nothing — D6).
+
+## R-78 — keyboard/pointer human intents keep the shipped no-confirm behaviour
+
+- [ ] R-78: In Wireframe select one element (L3), enter the Edit place (`e`), then press `x`
+      (`wireframe.element.delete`, a **destructive** verb) on the keyboard channel.
+  **Expected:** NO `launcher-confirmation` dialog; the delete applies immediately with exactly one
+  journal entry — the host policy gates only `launcher|voice|agent` channels (§3.2). The keyboard
+  adapter and the rail/trail/map are behaviour-identical to P5.
+  - **Edge:** the same verb from the launcher palette DOES confirm (F-141); the rail's delete/undo
+    affordances unchanged.
+
+## R-79 — the refreshed attribution pins are updated, never deleted or weakened
+
+- [ ] R-79: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/journal.test.ts
+      shared/navigation/__tests__/dispatch.test.ts shared/navigation/ui/__tests__/host.test.ts`.
+  **Expected:** the four P3/P4 `actor:'system'` assertions named in A1
+      (`journal.test.ts` + its siblings) now assert the requester-actor rule (§3.10) with the SAME
+      specificity (a companion-channel undo → `human`; a system undo → `system`); no assertion was
+      removed or loosened; the shipped undo COPY (`Nothing to undo.`, `navUndoMessage`, the five
+      `NON_UNDOABLE_CONSEQUENCES`) is unchanged. Reference F-147.
+  - **Edge:** a test renamed/relocated must be named in `## Tests Runs` (G-125); a deleted pin is a
+    FAIL of this row.
+
+## R-80 — the no-surface launcher DOM carries none of the P6 surfaces
+
+- [ ] R-80: Snapshot the launcher DOM over Mission Monitor (resting + engaged + `>`), then over
+      Wireframe.
+  **Expected:** over a no-surface app the DOM has NO `launcher-context`, NO
+      `launcher-palette-announcer` (so no extra live region), NO `launcher-palette-list`, NO
+      `launcher-response`, NO confirmation node — the set differs from the Wireframe case ONLY by
+      the P6 nodes; every shipped node/testid is present and identical.
+  - **Edge:** an app with no registered navigation host; the minimised-Wireframe state (falls back).
+
+## R-81 — the published manifest keeps every declared surface (no app loses its skill)
+
+- [ ] R-81: On boot with Wireframe registered, read the published manifest (the Rust
+      `app_command_surfaces` return) and run the companion skill list.
+  **Expected:** every retained application that declares a published navigation surface appears
+      with its shipped commands; Wireframe appears from the NAVIGATION declaration (49 verbs +
+      `journal.undo`); no app is dropped, duplicated or renamed; the `skillName` = `appId` identity
+      holds; `listActions` remains the single reserved id. Reference F-136/F-137.
+  - **Edge:** two surfaces with the same `appId` (first-wins); a surface whose commands all lack a
+    description (still published, empty list). After P8 there is no legacy projection path.
+
+## R-81 note — P8 supersedes "legacy surface" wording
+
+> #3122 deletes the legacy command-surface projection. This row's observable is unchanged ("no
+> retained app loses its published skill"); the source is now the navigation declaration only.
+> The exact boot set is asserted by `retainedApplicationSet.test.ts`.
+
+## R-82 — `/ Ask` enablement does not disturb the rail/map parity
+
+- [ ] R-82: With Wireframe focused, read the rail (rows, breadcrumb, `more…`, map affordance) and
+      open the `?` map; compare with the P4/P5 behaviour.
+  **Expected:** only the Ask affordance's state changed (`aria-disabled` omitted, reason node gone,
+      tooltip `Ask (k)`); every other rail row/ordering/breadcrumb/`more…`/map behaviour is
+      unchanged; the map overlay still opens/closes with its own Esc/focus contract. Reference
+      `wireframe-navigation` regression + `navigation` R-rows; UI/UX §2.7.
+  - **Edge:** the map open while the launcher is closed/open; the rail's Ask pressed twice.
+
+## R-83 — token-native, console clean, no re-render loop after the P6 slice
+
+- [ ] R-83: Static-grep the changed launcher/navigation files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
+      `rgb(` / `hsla(` / `var(--x)NN`; read `tauri_read_logs(source="console")` after every leg;
+      inspect the new state derivation for effect/memo deps.
+  **Expected:** ZERO colour literals / no alpha-append (#2770); no `Error:`/`Uncaught`/`Maximum
+      update depth exceeded` (the pre-existing `motion() is deprecated` WARN exempt); the context
+      header derives via `useMemo` over primitives (`activeAppId` + host epoch), never an effect +
+      `setState` (#523); no polling.
+  - **Edge:** theme switch mid-palette; resize churn; open/close churn.
+
+## R-84 — build and suite gates stay green
+
+- [ ] R-84: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; `cargo check`
+      (from `apps/tauri/src-tauri/`).
+  **Expected:** build exit 0 with zero TS errors; the full suite green; `cargo check` with zero
+      warnings; no assertion weakened (the refreshed pins are named per G-125). Reference NFR-3.
+  - **Edge:** a pre-existing unrelated failure named with its `main` baseline; a skipped test is
+    not a pass.
+
+## R-85 — still ONE keydown listener, still element-scoped
+
+- [ ] R-85: Count `document` keydown listeners before/after opening the launcher and focusing
+      Wireframe; then press `c`, `ArrowRight` in the Wireframe window and `Ctrl+K` in the launcher.
+  **Expected:** the `document` keydown listener count is unchanged (the launcher's existing shell
+      handler was extended, no new `document` listener); the Wireframe adapter remains
+      element-scoped to its mount (a stroke typed into the launcher bar never reaches the engine);
+      the launcher's `Ctrl+K` never runs a hotkey action.
+  - **Edge:** both surfaces mounted at once; the launcher open while Wireframe is behind; rapid
+    focus changes between them.
+
+## R-86 — the confirmation store is inert without a launcher
+
+- [ ] R-86: Drive a destructive verb from the keyboard (no launcher mounted) and from a relay while
+      the launcher is closed.
+  **Expected:** `requestLauncherConfirmation` resolves `false` immediately when no launcher surface
+      is mounted → `canceled-confirmation`, nothing applied, no journal entry, no console error; the
+      keyboard path still uses the shipped host `confirm` (true). Reference R-78/F-143.
+  - **Edge:** the launcher opening mid-request (a stale promise must not resolve later); two
+    requests in flight (E-84).

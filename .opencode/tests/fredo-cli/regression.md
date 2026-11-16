@@ -42,6 +42,24 @@
     (`{"type":"open_app","identity":…}`) did not disturb the row pipeline (subsequent emits still
     classify). Wire shape for `emit` unchanged (same clap args, same JSON).
 
+## R-4 — Existing commands unchanged by `open-terminal` (additive only)
+
+- [ ] R-4: Diff `fredo --help` against the pre-spec binary output; run `fredo emit --event-type chat
+      --session-id e2e-2935-cli` and `fredo setup --check`.
+  **Expected:** the ONLY added lines are the new open-Terminal subcommand (+ its flags); `emit`/`setup`
+      behavior unchanged; `emit` still returns `{"queued":true}` and classifies into `chat_rows`
+      (`telemetry-query`); no command removed/renamed.
+  - **Edge:** app DOWN for `emit` → exit 2; unknown flag → clap exit 2.
+
+## R-5 — IPC wire compatibility + `open-app` unaffected
+
+- [ ] R-5: Run `fredo open-app mission-monitor` (still opens Mission Monitor, exit 0) and verify the
+      `CliCommand` wire shape for existing commands is unchanged; then run the new open-Terminal
+      command and re-run an `emit` to confirm the row pipeline still ingests.
+  **Expected:** the new command adds its own `CliCommand` variant without altering existing variants;
+      `open-app` still opens/focuses one window; the row pipeline still ingests (`chat_rows` grows).
+  - **Edge:** `open-app` re-invoke focuses the same window; interleave `emit` + `open-terminal`.
+
 ### #2893 testing round 2 (spec/2893 @ 223279d3) — results
 
 - **R-1 PASS.** App DOWN: `fredo emit --event-type chat --session-id e2e-2893-r2-down` → exit **2**

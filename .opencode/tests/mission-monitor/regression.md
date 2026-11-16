@@ -45,7 +45,7 @@
 
 ## Must NOT change (regression invariants) — Spec #2795
 
-- [ ] R-14 (AC-1, INVERTED from #2791): The #2791 explanatory ghost state is REMOVED — "No graph content for this session" is NEVER rendered, and no empty-diagram placeholder replaces it. (Supersedes + inverts the #2791 positive R-1/F-2/F-3/F-4/E-2 which asserted the explanatory state.)
+- [ ] R-14 (AC-1, INVERTED from #2791): The #2791 explanatory ghost state is REMOVED — "No graph content for this session" is NEVER rendered, and no empty-graph placeholder replaces it. (Supersedes + inverts the #2791 positive R-1/F-2/F-3/F-4/E-2 which asserted the explanatory state.)
 - [ ] R-15 (AC-2/AC-3, shared truth): A normal session (landed rows + rendered nodes) still renders its graph with the pre-fix node layout/colors/edges; session-list qualification and graph-node emission share ONE rule — no listed session renders zero nodes once its rows have landed, and no unlisted-but-landed session renders ≥1 node.
 - [ ] R-16 (AC-3): Telemetry ingestion, storage, and tool-outcome classification are unchanged; the RTDB row path (`useEventRows`) is the only row source; no v1 hydration / fallback extraction reintroduced.
 - [ ] R-17 (AC-4, transient + no-hidden): A just-started session whose rows are still landing still appears and resolves to content (legitimate transient preserved, G-074); a session rendering ≥1 node is NEVER dropped; only a user-deleted session is not listed (anti-resurrection, REQ-3).
@@ -148,3 +148,117 @@
 - The new generic-layer suite `.opencode/tests/realtime-data/` — its REQ-1..REQ-5 legs are the layer's own regression asset.
 - Perf legs F-17..F-24 / N-10..N-15 (#2835) — re-run the first-render and sustained legs; F-38/F-39 extend them for #2896.
 - This spec's functional suite: `functional.md` F-25..F-40 + N-16..N-19.
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2933 — Copilot CLI capture, provider coexistence)
+
+> The Mission Monitor must render a captured GitHub Copilot CLI session from the canonical rows with **no feature-specific change** — it is the first row-consuming feature the new provider must reach (AC1 success metric). The existing OpenCode rendering must be unchanged. Run on every testing phase that touches mission-monitor or the row pipeline.
+
+## Must NOT change (regression invariants) — Spec #2933
+
+- [x] R-45 (Copilot session renders without feature changes — AC1): a captured Copilot session (`provider = copilot_cli` rows in `chat_rows`/`tool_use_rows`/`agent_session_rows`) is listed and rendered by Mission Monitor (session identity, chat node, tool section) with **zero mission-monitor code changes**. Read via `useEventRows`; capture the DOM + screenshot.
+  - **FAIL (round 1, 2026-09-24, `spec/2933 @ 69ce5850`).** Session identity + chat node render (PASS halves): the real Copilot session `3736fe04-c91c-4948-983e-6882af63c5a8` is listed ("`<current_datetime>2026-09-24T09:51:59.4…`") and selected; session token bar shows INPUT 20,425 / OUTPUT 53 / TOTAL 20,478 / TOTAL MESSAGES 2; one chat node `agent-3736fe04-…_3` renders `mai-code-1.1-flash` with RESPONSE `fredo-copilot-2933-sentinel` and INPUT 10,241 / OUTPUT 14. **Missing: the `── TOOLS (N) ──` section and the `── USER ──` prompt (`USER` renders `—`).**
+  - **Expected:** for a prompt-plus-tool Copilot exchange, Mission Monitor renders the chat node with the user prompt and the embedded `── TOOLS (N) ──` section (as the OpenCode baseline does for an equivalent exchange).
+  - **Actual:** both are absent. Root cause (deterministic, code-cited): real Copilot splits one user turn across TWO `chat` spans — call 1 carries `gen_ai.input.messages` (the user text) + a `tool_call` output (no text → `agent_reply` empty) → `chatRowStatus = complete` + empty reply → `isTransitionalTurn` suppresses its node (`rowDerivation.ts:224-239`); call 2 carries only the tool response + the assistant text → the visible node (id `…_3`) has `userMessage = null`. The tool span lies INSIDE call 1's window but its anchor resolution (`resolveChildAnchor`/`resolveCompanionEmission`, `rowDerivation.ts:316-361`) requires the same-exchange reply to carry the SAME non-empty `userMessage` — call 2 does not → the tool item is not emitted. OpenCode never exhibits this because each of its chat spans re-emits the FULL accumulated `gen_ai.input.messages`, so its reply row carries the user message.
+  - **Repro (deterministic, no quota):** `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/tmp/2933/copilot-turn-split.fixture.json` (session `e2e-copilotsplit2933`, chat spans `…_2` user-text + tool-call / `…_4` tool-response + assistant-text, `execute_tool view` `…_3` inside `…_2`'s window) → graph renders exactly ONE node `agent-e2e-copilotsplit2933_4` with `USER —`, RESPONSE `fredo-copilot-2933-sentinel`, and no `TOOLS` section. Also reproduces with the real CLI drive (`3736fe04-…`) and with the committed ST-5 fixture (`e2e-copilot2933`).
+  - **Rows are all present and correct** (`chat_rows` `…_2`/`…_3`, `tool_use_rows` `…_1` = `view`, `agent_session_rows` `…_4`; all `provider = copilot_cli`) — this is a rendering/linking gap, not a capture gap. That is why `copilot-capture` F-1..F-11 and R-1..R-5 are PASS while this consumer assertion fails.
+  - Evidence: task-panel frame https://github.com/user-attachments/assets/e62e732b-4175-4929-a9ec-b91febae5e2b (real session, USER `—`, no TOOLS) and the deterministic repro https://github.com/user-attachments/assets/f1bd00be-eee2-416a-a6e5-73c07e3d3484 ; OpenCode baseline (USER + `── TOOLS (N) ──` present) https://github.com/user-attachments/assets/b122d065-5cdf-4b4f-bdc7-97346c6bb2e5 .
+  - **PASS (round 2, 2026-09-24, `spec/2933 @ c96ab4dd` — ST-3R capture-side carry; consumer untouched).** Deterministic replay of the committed split-turn producer (`bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-turn-split.fixture.json`, session `e2e-copilotsplit2933`): Mission Monitor lists the session ("Read hello.txt and reply with i…") and the selected graph renders the single continuation node `agent-e2e-copilotsplit2933_4` (`gpt-4o`) with **`── USER ──` = "Read hello.txt and reply with its exact contents."** AND **`── TOOLS (1) ──`** (item `view`, outcome dot, `10ms`), plus `── RESPONSE ──` = `fredo-copilot-2933-sentinel` and TOKEN USAGE INPUT 10,241 / OUTPUT 14 / TOTAL 10,255. Session token bar INPUT 20,425 / OUTPUT 53 / TOTAL 20,478 / TOTAL MESSAGES 2. Both round-1 symptoms (`USER —`, missing `TOOLS`) are resolved. Rows agree: `chat_rows …_2` and `…_4` both carry the prompt, `…_4` the sentinel reply; `tool_use_rows …_3` `view` success; all `provider = copilot_cli`. Live delivery of the continuation (`fredo-stream-event` insert for `…_4`) patch = `{agentReply: "fredo-copilot-2933-sentinel", provider: "copilot_cli", promptTokens: 10241, userMessage: "Read hello.txt and reply with its exact contents."}`, terminal envelope `replayCompleteQueryId` == the registered queryId. No `apps/ui/` file in the spec diff (`git diff --stat origin/main HEAD`) — zero mission-monitor code changes. Frame: [Copilot split-turn chat node — USER prompt + `── TOOLS (1) ──`](https://github.com/user-attachments/assets/78c063ed-999e-41b8-a1a7-55c6da837ee7) ; OpenCode baseline unchanged: [OpenCode agent node — USER + THINKING + `── TOOLS (7) ──`](https://github.com/user-attachments/assets/505d9de3-920a-4660-b968-9a2b5b5bac8a) .
+- [x] R-46 (OpenCode rendering unchanged — AC5): existing OpenCode sessions render the same session list, graph nodes, edges, colors and layout as the pre-spec baseline (same corpus). Adding a second provider must not alter node/edge derivation.
+  - **PASS (2026-09-24, live).** No `apps/ui/` file is touched by the spec diff (`git diff --stat origin/main HEAD`). The same corpus rendered unchanged: the OpenCode session `ses_f358e9c58ffeCnb7iL44S7rR1s` showed its usual node sets, incl. `agent-…_13` with `USER` + `THINKING` + `── TOOLS (11) ──` + RESPONSE and the SubagentNodes' `INSTRUCTION`/`── TOOLS (38) ──`/`── TOOLS (72) ──` sections (DOM text) — identical to the baseline captured this run.
+- [x] R-47 (no provider cross-contamination in derivation): a Copilot session and an OpenCode session in one store are never merged into one list entry / graph; no row's `provider` flips; provider-scoped filtering (if added to the panel) never hides OpenCode rows for an unfiltered view.
+  - **PASS.** Live provider census (one store): `open_code` 1742/2297/51, `copilot_cli` 13/7/7, `unknown` 70/239/6 — no flip; the Copilot sessions (`e2e-copilot*`, `3736fe04-…`, `76cc4361-…`) and the OpenCode sessions were listed as separate entries; no provider filter exists in the panel (none added).
+- [x] R-48 (contract-trust + no re-render loop): the panel consumes projected row fields directly (no `??` fallback / multi-path extraction added for Copilot, #568); no new `.length`/object-ref `useEffect`/`useMemo` deps; no `Maximum update depth exceeded` after a Copilot session's rows land.
+  - **PASS.** No panel code changed; console clean after Copilot rows landed and after subscription start/stop (N-5/S-2).
+- [x] R-49 (#523/#509 compositing unchanged): row-level compositing (first-wins stamp, re-key never removes rows, child rows composite under the parent carrying `parentSessionId`/`compositedChildSessionId`) and the `build`/`plan` internal-session exclusion are unchanged by Copilot capture.
+  - **PASS.** No change to the relationship registry / compositing path (diff touches only the provider-scoped `invoke_agent` promotion + `copilot_cli` token guards); the OpenCode subagent/compositing rendering in the same corpus is unchanged (R-46 evidence).
+
+## Overlapping prior-feature suites (Spec #2933)
+
+- This spec's capture suite: `.opencode/tests/copilot-capture/` (functional F-1..F-11 + N-1..N-7, regression CR-1..CR-11, smoke S-1..S-12).
+- `rtdb-provider-attribution` R-1..R-9 — provider vocabulary/resolution the Copilot rows use.
+- Unaffected mission-monitor legs above run as-is (graph/list/tool-detail/latency invariants).
+
+---
+
+# Mission Monitor — Regression Baseline (Spec #2945 — every supported agent CLI in one view, each labeled with its CLI)
+
+> Adding a second CLI's sessions to the list and a per-session CLI label must NOT change any existing OpenCode rendering or any mission-monitor behavior. Every invariant below is a FAIL if the spec branch changes it. Run on every testing phase that touches mission-monitor or the row pipeline.
+
+## Must NOT change (regression invariants) — Spec #2945
+
+- [x] R-50 (AC-4, **PASS 2026-09-25 #2945 round 1**): the live OpenCode session rendered its usual list entry + graph node (`build · deepseek-v4.1-flash`, `── USER ──`, `── TOOLS (1) ──` bash 281ms, `── RESPONSE ──` = `finished`, TOKEN USAGE INPUT 0 / CACHE 24,704 / OUTPUT 2 / TOTAL 24,706, "$0.0001") and the session token bar (INPUT 24,690 / CACHE 28,288 / OUTPUT 2 / TOTAL 53,242). Same sections/labels/token rows as the pre-spec OpenCode baseline. Frame: [OpenCode unchanged](https://github.com/user-attachments/assets/eaeaf957-2d64-494a-9480-bb8b5c5805d9).
+- [x] R-51 (AC-4, **PASS 2026-09-25 #2945 round 1**): renamed the live OpenCode session to `OC-2945-LIVE-RENAME` (real keyboard flow); the row re-rendered the new name with its `◈OpenCode` chip intact and `aria-label="OC-2945-LIVE-RENAME"` (row name semantics unchanged, #2748). Deleted the contaminated Copilot duplicate session via the row delete control → row removed AND durable tombstone `feature_data_tombstones` `sessions|["e2e-copilotsplit2945"]`; declared table 4→3 rows; the remaining Copilot session's name unchanged.
+- [x] R-52 (no session merge/cross-contamination, **PASS 2026-09-25 #2945 round 1**): the one store listed OpenCode + Copilot + unknown sessions as 4 distinct rows (no merge); `chat_rows` provider census showed no flip (`open_code`/`copilot_cli`/`unknown` remained per-session); no provider filter exists in the panel.
+- [x] R-53 (provider attribution contract unchanged, **PASS 2026-09-25 #2945 round 1**): `resolve_provider_token` (`rtdb/attrs.rs`) is untouched; live `chat_rows.provider` values `open_code`/`copilot_cli`/`unknown` matched `service.name` (`fredo-opencode-plugin` / `copilot-cli` / absent). The label reads the row's `provider`, never `telemetry_spans.provider` (no UI span query). New `session_rollup.rs` unit tests pin the copy-only pick.
+- [x] R-54 (contract-trust, **PASS 2026-09-25 #2945 round 1**): the UI reads the projected typed `provider` directly (`rollupRowToSession`: `asString(row.provider) ?? null`); no `??` fallback chain / multi-path lookup / text filtering / v1 hydration reintroduced. The single legitimate fallback is the closed `Unknown CLI` mapping in `lib/cliLabel.ts` (REQ-3), which uses `hasOwnProperty` (no prototype leak).
+- [x] R-55 (list qualification unchanged, **PASS 2026-09-25 #2945 round 1**): `sessionRollupQualifies` (`useSessionHistory.ts:46-54`) matches the backend `qualifies` (`session_rollup.rs:356-359`); every listed session rendered ≥1 node at the same instant; the live plain-shell session (0 canonical rows) was not listed (F-51). No predicate change in the diff.
+- [x] R-56 (ingest/classification + row-store semantics unchanged, **PASS 2026-09-25 #2945 round 1**): the spec diff touches only `feature_data/session_rollup.rs` (Rust) + UI label files; `cargo test --locked` 950 lib + integration suites green (ingest/merge/flush/backfill/copilot-capture all green); live `telemetry_spans`/row shapes matched the fixtures (no reclassification).
+- [x] R-57 (#523 compositing + #509 subagent filter unchanged, **PASS 2026-09-25 #2945 round 1**): no change to `rtdb/ingest.rs`; `copilot_capture_tests` (incl. `internal_build_plan_agents_are_excluded_from_relationships`) + `relationship_registration_copies_child_rows_under_the_parent_key` green; the `build`/`plan` internal sessions stayed excluded (no spurious nodes observed).
+- [x] R-58 (no re-render loop, #523, **PASS 2026-09-25 #2945 round 1**): console clean after select/switch/rename/delete/theme (only pre-existing `motion()` WARN + auto-fit DEBUG + the tester's synthetic-open probe WARN); `useSessionHistory` derives on `epoch` + the stable map, no `.length`/newly-created-object deps.
+- [x] R-59 (theming + no cross-feature imports, **PASS 2026-09-25 #2945 round 1**): `CliLabel.tsx` uses `var(--text-primary)`/`var(--accent-primary)`/`var(--accent-secondary)`/`var(--border-color)`/`var(--card-hover-bg)`/`var(--status-warning)` + `tint()` (`color-mix`) only — computed inline style carries no hex/rgba and no `var(--x)NN`. New files live in `features/mission-monitor/`; no cross-feature import added.
+- [x] R-60 (list first-paint/latency unchanged, **PASS 2026-09-25 #2945 round 1**): Δ mount→first row 28.2–35.0 ms (median ≈29.8 ms) — well inside #2896 A-14 (≤250 ms absolute; ≤200 ms floor-bound); the label is a projected row field read on the existing first round-trip (N-24). No new round-trip or scan.
+
+## Overlapping prior-feature suites (Spec #2945)
+
+- This spec's functional suite: `.opencode/tests/mission-monitor/functional.md` F-46..F-53 and N-23..N-26.
+- `.opencode/tests/copilot-capture/` — the capture-side suite that produces the Copilot rows this spec consumes (incl. the split-turn producer); run its regression legs unchanged.
+- `.opencode/tests/rtdb-provider-attribution/` — the `provider` column + `resolve_provider_token` the CLI label depends on; run R-1..R-9 unchanged.
+- `mission-monitor` R-45..R-49 (#2933 Copilot provider coexistence) — run as the direct precedence for this spec's AC-1/AC-2/AC-4.
+- `mission-monitor` R-33..R-44 (#2896 feature-owned realtime data layer) — run the unaffected legs; the label must not regress first-paint/list behavior.
+
+---
+
+# Mission Monitor — Regression Baseline (Slice 3, #2976 — RtdbStore + SpanStore on the shared PostgreSQL pool)
+
+> The store swap occurs BEHIND an unchanged row contract — Mission Monitor must render exactly as it did
+> before, from rows now served by PostgreSQL. Every invariant below is a FAIL if the spec branch changes
+> it. Run on every testing phase that touches mission-monitor, the row pipeline, or the store layer.
+
+## Must NOT change (regression invariants) — Slice 3 (#2976)
+
+- [ ] **R-61 (CRITICAL PRESERVATION CONTRACT — RTDB row-pipeline semantics unchanged):** the ~30 ms
+  write-behind queue + bounded LRU cache (cache cap 10,000 / queue 4,096 / non-blocking `try_send` /
+  60-min prune), the merge/seq semantics (`insert` spread-merge, `update` seq-guarded stale-patch drop,
+  `remove` only retention eviction, durable seq `COALESCE(MAX(seq),0)`), the `telemetry_spans`
+  read-only stance, and `EventBus.emit_row_delivery_batch` as the ONLY emission path are all unchanged;
+  rows cross IPC only as `RowDeliveryBatch` on `"fredo-stream-event"`; `useEventRows(eventType, args,
+  options)` is unchanged. Cross-check `rtdb/cache.rs:47-54` constants + the wire types.
+  **Edge / FAIL:** any changed constant, a blocking enqueue, a re-key/update emitting remove, a direct
+  `app_handle.emit()`, a new event type/payload field.
+
+- [ ] **R-62 (dual-provider rendering on the migrated store — mandate, F-54):** after the store swap,
+  Mission Monitor still lists live agent sessions and renders chat / tools / tokens / graph for an
+  OpenCode session AND a Copilot session at one instant, from rows served by PostgreSQL — identical
+  structural detail to the pre-migration baseline; zero mission-monitor code change required. Cross-check
+  `telemetry_spans` + the migrated `*_rows` tables at the same instant.
+  **Edge / FAIL:** a blank/partial panel while rows exist; only one provider rendering; a stale SQLite
+  fallback serving the rows.
+
+- [ ] **R-63 (ingest/classification + NFR-6 unchanged):** the IngestClassifier's rows and the shared
+  `rtdb/attrs.rs` extract implementation (live classifier + canonical backfill) are unchanged by the
+  store swap — no reclassification, no second extraction path; provider semantic-convention keys
+  (`gen_ai.*`) unchanged.
+  **Edge / FAIL:** a duplicated extraction path; a row shape/field change; a provider token flip.
+
+- [ ] **R-64 (contract-trust + no new fallback):** the panel consumes the projected single-path row
+  fields — no `??` fallback chains / multi-path lookups / v1 hydration reintroduced (#568 cleanup not
+  regressed). The store swap adds no frontend extraction path.
+  **Edge / FAIL:** a defensive fallback added while chasing a store migration symptom.
+
+- [ ] **R-65 (no re-render loop, #523):** epoch-based recomputation preserved; no `.length` /
+  newly-created object-ref `useEffect`/`useMemo` deps; no `Maximum update depth exceeded` after the
+  migrated store starts serving.
+
+## Overlapping prior-feature suites (Slice 3, #2976)
+
+- `.opencode/tests/postgres-stores/` — this slice's own suite (functional F-21..F-39, regression
+  R-19..R-27, smoke S-9..S-12); inherits the slice-2 pool/seam suite.
+- `.opencode/tests/postgres-lifecycle/` — the supervisor the pool builds on; run its regression legs.
+- `mission-monitor` F-46..F-53 / N-23..N-26 (#2945 multi-CLI) — run the unaffected legs; the migrated
+  store must not change the multi-CLI list/label behavior.
+- `.opencode/tests/copilot-capture/` — the Copilot split-turn producer F-54 consumes; run its
+  regression legs.
+- `.opencode/tests/realtime-data/` — the feature-owned realtime data layer over the row store.
+- This spec's functional suite: `functional.md` F-54 + N-27.

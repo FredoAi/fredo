@@ -1,0 +1,1992 @@
+//! Bounded control of the managed embedded-PostgreSQL server (Spec #2974, ST-1).
+//!
+//! This is the guaranteed-teardown primitive: every control/start/readiness/stop
+//! wait carries a finite wall-clock cap, the graceful stop falls back to
+//! `taskkill /PID <pid> /T /F` on expiry, and the RAII [`Drop`] hard-kills a
+//! surviving postmaster on the normal, error, and panic-unwind paths.
+//!
+//! # G-263 SAFETY (named failure mode: #2948's ~11 h `pg.stop()`)
+//!
+//! * `Settings::timeout` is ALWAYS `Some(PG_CONTROL_TIMEOUT)` — never `None`.
+//! * EVERY blocking await routes through [`run_bounded`]; there is no bare
+//!   `.await` on a server wait.
+//! * [`PgRuntime::stop_bounded`] runs a synchronous watchdog thread that
+//!   hard-kills the postmaster PID tree if the graceful `pg.stop()` has not
+//!   signalled within the bound, then re-checks `postmaster.pid` as a backstop.
+//! * [`Drop`] hard-kills the postmaster tree unless the runtime was stopped.
+//!
+//! The mechanism is ported from spike #2964 (`harness.rs` / `supervisor.rs`) —
+//! it is NOT a dependency on the spike crate (no cross-crate reference).
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Context, Result};
+use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
+use sqlx::Connection as _;
+
+use super::acquisition::{PgAcquisitionMode, PG_VERSION};
+use super::config::PgSupervisorConfig;
+use super::{
+    PG_BOOTSTRAP_DATABASE, PG_CONNECT_TIMEOUT, PG_CONTROL_TIMEOUT, PG_DATABASE,
+    PG_MAINTENANCE_DATABASE, PG_READY_BOUND, PG_SETUP_BOUND, PG_START_BOUND, PG_SUPERUSER,
+};
+
+/// The pinned, EXACT PostgreSQL version requirement (`=18.6.0`). `LazyLock`
+/// mirrors the crate's own `V18` static; the literal is compile-time known, so
+/// the `expect` cannot fire in a shipped build. Exactness is what removes the
+/// crate's per-boot `get_version()` network round-trip.
+pub(crate) static PG_VERSION_REQ: LazyLock<VersionReq> = LazyLock::new(|| {
+    VersionReq::parse(&format!("={PG_VERSION}"))
+        .expect("the pinned PostgreSQL version requirement must parse")
+});
+
+/// Marker line that makes the [`PgRuntime::apply_server_knobs`] overlay
+/// idempotent (never appended twice).
+const PG_KNOB_MARKER: &str = "# fredo server-memory knobs (Spec #2975)";
+
+/// Render the canonical Fredo overlay block: a blank separator line, the
+/// [`PG_KNOB_MARKER`] line, then one `name = value` line per
+/// [`super::PG_SERVER_KNOBS`] entry — exactly what a fresh append writes.
+fn render_knob_block() -> String {
+    let mut block = String::new();
+    block.push('\n');
+    block.push_str(PG_KNOB_MARKER);
+    block.push('\n');
+    for (name, value) in super::PG_SERVER_KNOBS {
+        block.push_str(name);
+        block.push_str(" = ");
+        block.push_str(value);
+        block.push('\n');
+    }
+    block
+}
+
+/// Whether `line` is one of Fredo's rendered overlay `key = value` lines (a
+/// non-blank, non-comment line carrying `=`). Used to find the END of the marked
+/// block so trailing non-overlay content is never consumed.
+fn is_knob_value_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && !trimmed.starts_with('#') && trimmed.contains('=')
+}
+
+/// Locate the Fredo overlay block in `existing`: the byte range covering the
+/// [`PG_KNOB_MARKER`] line plus the contiguous `key = value` lines that follow
+/// it. `None` when the marker is absent.
+fn overlay_block_range(existing: &str) -> Option<std::ops::Range<usize>> {
+    let marker_at = existing.find(PG_KNOB_MARKER)?;
+    let mut cursor = existing[marker_at..]
+        .find('\n')
+        .map(|offset| marker_at + offset + 1)
+        .unwrap_or(existing.len());
+    let mut end = cursor;
+    while cursor < existing.len() {
+        let line_end = existing[cursor..]
+            .find('\n')
+            .map(|offset| cursor + offset + 1)
+            .unwrap_or(existing.len());
+        if !is_knob_value_line(&existing[cursor..line_end]) {
+            break;
+        }
+        end = line_end;
+        cursor = line_end;
+    }
+    Some(marker_at..end)
+}
+
+/// Reconcile the Fredo server-knob overlay in `existing` against the CURRENT
+/// [`super::PG_SERVER_KNOBS`]. Returns `None` when the marked block is already
+/// current (a byte-identical no-op); otherwise the full new file contents.
+///
+/// * marker absent ⇒ append the freshly-rendered block (fresh-cluster path);
+/// * marker present ⇒ supersede the marked block in place, keeping all content
+///   before and after it — the apply-to-existing mechanism (Spec #3028).
+fn reconcile_knob_overlay(existing: &str) -> Option<String> {
+    let block = render_knob_block();
+    let Some(range) = overlay_block_range(existing) else {
+        let mut updated = String::with_capacity(existing.len() + block.len());
+        updated.push_str(existing);
+        updated.push_str(&block);
+        return Some(updated);
+    };
+
+    // Drop the '\n' that separated the stale block from its predecessor: the
+    // freshly-rendered block carries its own leading '\n', so re-inserting it at
+    // the same offset is byte-identical when the block is already current.
+    let prefix_end = existing[..range.start].rfind('\n').unwrap_or(0);
+    let mut updated = String::with_capacity(existing.len() + block.len());
+    updated.push_str(&existing[..prefix_end]);
+    updated.push_str(&block);
+    updated.push_str(&existing[range.end..]);
+
+    (updated != existing).then_some(updated)
+}
+
+/// Atomically replace `path` with `contents` via a sibling temp file + rename
+/// (same directory ⇒ same volume, so the rename is an atomic replace on
+/// Windows). A failure is returned so the caller maps it to the existing
+/// `("knobs", error)` fail-closed stage.
+fn write_atomically(path: &Path, contents: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("postgresql.conf");
+    let tmp = parent.join(format!(".{file_name}.fredo-{}.tmp", std::process::id()));
+    std::fs::write(&tmp, contents)
+        .with_context(|| format!("writing the temp overlay {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("atomically replacing {}", path.display()))?;
+    Ok(())
+}
+
+/// **Q-17 log-destination mechanism (Spec #2978 S4, REQ-3.2).** The crate
+/// (`postgresql_embedded` 0.21) owns the postmaster spawn, so Fredo cannot apply
+/// `CREATE_NO_WINDOW`/stdout redirection at the spawn boundary (the
+/// `applications/llm_server/process.rs` pattern). The crate DOES expose its server
+/// configuration surface — [`Settings::configuration`] ("Server configuration
+/// options", a `HashMap<String, String>`) — so the postmaster's own
+/// `logging_collector` is pointed at `<data_dir>/log/postgres.log`, the exact
+/// path [`crate::applications::pg_supervisor::state::pg_server_log_tail`] reads.
+///
+/// `log_directory = 'log'` is resolved by PostgreSQL relative to the data
+/// directory, so the collector writes `<data_dir>/log/postgres.log`. Rotation is
+/// disabled (`log_rotation_age`/`log_rotation_size = 0`) so the filename is
+/// stable and the tail never races a renamed file.
+pub const PG_LOG_COLLECTOR_CONFIG: &[(&str, &str)] = &[
+    ("logging_collector", "on"),
+    ("log_directory", "log"),
+    ("log_filename", "postgres.log"),
+    ("log_rotation_age", "0"),
+    ("log_rotation_size", "0"),
+    ("log_truncate_on_rotation", "off"),
+];
+
+/// **Documented deviation (Q-17, AC3.1 — no console flash).** The crate 0.21
+/// `Settings` surface (verified against the crate's public rustdoc at
+/// implementation time: fields `data_dir`, `installation_dir`, `host`, `port`,
+/// `username`, `password`, `temporary`, `timeout`, `configuration`,
+/// `trust_installation_dir`, `socket_dir`, `releases_url`, `version`) exposes a
+/// server-configuration hook but NO process-creation-flag hook. Therefore the
+/// console window of the crate-spawned postmaster CANNOT be suppressed from
+/// Fredo code today, and on a Windows GUI launch a brief console flash remains
+/// possible. This is the plan's named deviation branch (AC3.1 is the gate that
+/// forces resolution — a crate hook or a wrapper — before ship); it is recorded
+/// here rather than silently shipped. The log-destination half (AC3.2) IS
+/// implemented via [`PG_LOG_COLLECTOR_CONFIG`], and the server's own logging
+/// collector captures the postmaster output regardless of the console.
+pub const PG_CONSOLE_FLASH_DEVIATION: &str =
+    "postgresql_embedded 0.21 exposes no spawn creation-flag hook; the crate-spawned \
+     postmaster console cannot be suppressed from Fredo code (Q-17/AC3.1 documented deviation)";
+
+/// Kill primitive seam used by the teardown paths; defaults to [`kill_pid_tree`].
+/// Injectable in tests so teardown can be proven without spawning a server.
+pub type KillTreeFn = fn(u32);
+
+/// Graceful-stop primitive seam (**FS-2**), mirroring [`KillTreeFn`]: it takes
+/// the crate handle and returns the graceful-stop future. Defaults to
+/// [`pg_stop_with_env_hook`]; injectable so the expiry → hard-kill branch of
+/// [`PgRuntime::stop_bounded`] is provable WITHOUT a real server.
+pub type StopFn =
+    for<'a> fn(&'a mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+/// Default graceful stop: honour the **FS-3** [`super::PG_STOP_HANG_ENV`] hook
+/// (sleep the requested, capped duration) then call the real
+/// `PostgreSQL::stop()`. With the env unset the hook is a no-op, so behaviour is
+/// byte-identical to the pre-seam path.
+fn pg_stop_with_env_hook(
+    pg: &mut PostgreSQL,
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+    Box::pin(async move {
+        if let Some(hang) = super::stop_hang_duration() {
+            tokio::time::sleep(hang).await;
+        }
+        pg.stop().await?;
+        Ok(())
+    })
+}
+
+/// Hard-kill a process and its children (`taskkill /PID <pid> /T /F` on Windows;
+/// a no-op on other platforms, which this Windows-first slice does not support).
+pub fn kill_pid_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Bound a future to `bound` wall-clock time, mapping expiry to a structured
+/// error. EVERY blocking wait in this module goes through here (G-263); a bare
+/// `.await` on a server wait is a defect.
+pub async fn run_bounded<T, F>(bound: Duration, what: &'static str, fut: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match tokio::time::timeout(bound, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("{what} exceeded its {bound:?} wall-clock bound")),
+    }
+}
+
+/// Bounded poll of a synchronous predicate, sleeping `poll` between tests.
+/// Returns `true` on the first success, `false` once `bound` elapses.
+pub async fn wait_until<F: Fn() -> bool>(pred: F, bound: Duration, poll: Duration) -> bool {
+    let deadline = Instant::now() + bound;
+    loop {
+        if pred() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// How a bounded stop finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// The graceful `pg.stop()` completed within the bound.
+    Graceful { elapsed_ms: u128 },
+    /// The graceful stop expired and the PID tree was hard-killed.
+    HardKilled { elapsed_ms: u128 },
+}
+
+/// Read the postmaster PID from `<data_dir>/postmaster.pid` (first line).
+pub fn read_postmaster_pid(data_dir: &Path) -> Option<u32> {
+    let contents = std::fs::read_to_string(data_dir.join("postmaster.pid")).ok()?;
+    contents.lines().next()?.trim().parse::<u32>().ok()
+}
+
+/// The query PostgreSQL evaluates to produce the ESCAPED `ALTER USER … PASSWORD`
+/// statement literal (Spec #3022 round-2). A utility statement cannot take a bind
+/// parameter (`ALTER USER … PASSWORD $1` is a syntax error), so the literal must
+/// be built into the statement text first. `%L` applies PostgreSQL's canonical
+/// literal quoting, so a password containing `'` or `\` is safe. The password is
+/// bound here (never interpolated) and is NEVER logged.
+pub const ALTER_PASSWORD_STATEMENT_SQL: &str =
+    "SELECT format('ALTER USER postgres PASSWORD %L', $1)";
+
+/// Run `ALTER USER postgres PASSWORD <literal>` over an existing connection. The
+/// literal is produced by the SERVER (`format('%L', $1)`) so `'`/`\` are escaped
+/// correctly; the resulting statement carries no bind placeholder. Shared by
+/// [`PgRuntime::change_password`] and the Spec #3022 ST-4 R-1.3 compensating
+/// revert. Bounded by the caller.
+pub(crate) async fn alter_password_on_connection(
+    connection: &mut sqlx::PgConnection,
+    new_password: &str,
+) -> Result<()> {
+    let statement: String = sqlx::query_scalar(ALTER_PASSWORD_STATEMENT_SQL)
+        .bind(new_password)
+        .fetch_one(&mut *connection)
+        .await
+        .context("building the ALTER USER postgres PASSWORD statement")?;
+    sqlx::query(&statement)
+        .execute(&mut *connection)
+        .await
+        .context("running ALTER USER postgres PASSWORD")?;
+    Ok(())
+}
+
+// ── Database identity migration (Spec #3036, Option (b)) ─────────────────────
+
+/// The one-time database-identity decision, derived purely from the live
+/// `pg_database` catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DatabaseIdentityPlan {
+    /// The application database already reads [`super::PG_DATABASE`] — a re-run
+    /// is a byte-identical no-op (R-2c/R-4b).
+    Noop,
+    /// The bootstrap database is still named [`super::PG_BOOTSTRAP_DATABASE`];
+    /// rename it to [`super::PG_DATABASE`] (R-2a/R-2b).
+    Rename,
+}
+
+/// The pure idempotence rule: `db_fredo` present ⇒ [`DatabaseIdentityPlan::Noop`];
+/// otherwise, when `db_postgres` is present, [`DatabaseIdentityPlan::Rename`].
+/// Neither name present is an anomalous (unreachable after `initdb`) state and is
+/// treated as `Noop` — the caller's readiness gate then fails closed. Pure so the
+/// contract is unit-testable without a live server (G-222).
+pub fn plan_database_migration(db_postgres: bool, db_fredo: bool) -> DatabaseIdentityPlan {
+    if db_fredo || !db_postgres {
+        DatabaseIdentityPlan::Noop
+    } else {
+        DatabaseIdentityPlan::Rename
+    }
+}
+
+/// The idempotence read: does the catalog hold a database with this name? A pure
+/// `pg_database` lookup — never DDL, never a connect.
+pub const DATABASE_EXISTS_SQL: &str = "SELECT COUNT(*) FROM pg_database WHERE datname = $1";
+
+/// The defensive terminate of any lingering backend on the SOURCE database. A
+/// no-op in the normal pre-pool window (the cluster has just started); present so
+/// an open legacy session cannot block the rename.
+pub const TERMINATE_SOURCE_BACKENDS_SQL: &str =
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()";
+
+/// The catalog-only rename DDL (R-2a). `ALTER DATABASE … RENAME TO` keeps the
+/// database's OID and its `base/<oid>` files — no data copy, no orphaning — and
+/// is ONE atomic statement (crash-recoverable). Identifiers cannot be bind
+/// parameters; the two names are compile-time constants (never user input).
+pub fn rename_database_statement() -> String {
+    format!("ALTER DATABASE {PG_BOOTSTRAP_DATABASE} RENAME TO {PG_DATABASE}")
+}
+
+/// Owns the embedded server. Constructed before `setup`, dropped last.
+pub struct PgRuntime {
+    pg: PostgreSQL,
+    data_dir: PathBuf,
+    /// The caller's PRISTINE installation dir (pre-version-suffix). This is the
+    /// SAME path `build_settings` puts on `settings.installation_dir`, so the
+    /// verified archive is extracted exactly where the crate looks for `bin/`.
+    install_dir: PathBuf,
+    stopped: bool,
+    kill: KillTreeFn,
+    stop: StopFn,
+}
+
+/// Apply the acquisition-mode settings to `settings` (Spec #3076 ST-2).
+///
+/// Sets `trust_installation_dir = true` and the EXACT
+/// [`PG_VERSION_REQ`] IFF [`super::acquisition::trusted_install_path_enabled`]
+/// says the trusted install path is active. Pure, infallible, mode-injectable, so
+/// BOTH branches are unit-testable on one build (G-402).
+///
+/// **Load-bearing ordering (G-404):** this MUST run BEFORE `PostgreSQL::new`.
+/// The constructor is what appends the version suffix to `installation_dir` when
+/// the requirement is exact and the dir is not trusted; setting trust afterwards
+/// would leave `installation_dir` version-suffixed while `installed_dir()`
+/// returns that same suffixed path, so `binary_dir()` would point at a directory
+/// Fredo never populated.
+pub(crate) fn apply_acquisition_mode(settings: &mut Settings, mode: PgAcquisitionMode) {
+    if super::acquisition::trusted_install_path_enabled(mode) {
+        settings.trust_installation_dir = true;
+        settings.version = (*PG_VERSION_REQ).clone();
+    }
+}
+
+/// The ONE place `Settings` is assembled (Spec #3076 ST-2). Every constructor
+/// funnels through here, and [`apply_acquisition_mode`] runs BEFORE the caller's
+/// `PostgreSQL::new` (G-404).
+fn build_settings(
+    data_dir: &Path,
+    install_dir: &Path,
+    password: String,
+    port: u16,
+    log_min_messages: Option<&str>,
+) -> Settings {
+    let mut settings = Settings::new();
+    settings.data_dir = data_dir.to_path_buf();
+    settings.installation_dir = install_dir.to_path_buf();
+    // Ephemeral loopback by default: `port = 0` requests an OS-assigned port,
+    // so no fixed-port collision is possible with OTLP 4317/4318 or the MCP
+    // 9223. A pinned port (ST-2 `with_config`) overrides this.
+    settings.port = port;
+    settings.temporary = false;
+    settings.password = password;
+    // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
+    // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
+    settings.timeout = Some(PG_CONTROL_TIMEOUT);
+    // Q-17 (S4): point the crate-spawned postmaster's logging collector at
+    // `<data_dir>/log/postgres.log` through the crate's server-configuration
+    // hook. This is the surface `pg_server_log_tail` reads (REQ-3.2).
+    for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+        settings
+            .configuration
+            .insert(key.to_string(), value.to_string());
+    }
+    // ST-2 hardening (Spec #3022 round-2): force English/ASCII server
+    // messages with the `C` locale, so a server message always decodes as
+    // UTF-8 — the drift readiness error otherwise surfaced a non-UTF-8
+    // placeholder. Applied to the assembled settings for every path.
+    settings
+        .configuration
+        .insert("lc_messages".to_string(), "C".to_string());
+    // ST-2 (#3022, R-3.2/R-4): the config-selected log verbosity is the
+    // PostgreSQL `log_min_messages` server value, applied alongside the
+    // collector configuration so the restart honours it.
+    if let Some(log_min_messages) = log_min_messages {
+        settings
+            .configuration
+            .insert("log_min_messages".to_string(), log_min_messages.to_string());
+    }
+    // Q-17: surface the documented console-flash deviation on the live boot
+    // path (the crate exposes no creation-flag hook), so it is recorded in
+    // the app log rather than silently shipped (AC3.1 gate).
+    tracing::warn!(
+        target: "fredo::pg_supervisor",
+        deviation = PG_CONSOLE_FLASH_DEVIATION,
+        "embedded-PostgreSQL Q-17 deviation recorded"
+    );
+    // NOTE: `settings.username` is intentionally left at the crate default
+    // ("postgres") — see the spike's empirically verified finding: the field
+    // only builds `url()`, while `initdb` still creates the `postgres`
+    // superuser, so overriding it yields a URL whose user does not exist.
+    //
+    // Spec #3036: the ROLE is unchanged (`PG_SUPERUSER`); only the DATABASE is
+    // Fredo-named. Pin that the crate default username IS the recorded role so
+    // the URL user and the recorded decision can never silently diverge.
+    debug_assert_eq!(
+        settings.username, PG_SUPERUSER,
+        "the crate default username must equal PG_SUPERUSER (the role is not renamed)"
+    );
+    // Spec #3076 ST-2: trust + exact pin ONLY on the trusted install path
+    // (runtime-download on Windows x86_64). The bundled path is untouched.
+    apply_acquisition_mode(&mut settings, super::acquisition::ACQUISITION_MODE);
+    settings
+}
+
+impl PgRuntime {
+    /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`, or
+    /// the **FS-1** [`super::PG_DATA_DIR_ENV`] override when set; install dir
+    /// `<app>/postgres-install`) using the production kill primitive.
+    pub fn new(app_data_dir: &Path, password: String) -> Self {
+        Self::with_kill(app_data_dir, password, kill_pid_tree)
+    }
+
+    /// Build a runtime with an injected kill primitive (test seam). The data dir
+    /// honours the FS-1 override; the install dir resolves through the shared
+    /// [`super::resolve_install_dir`] rule, so the **G-275** `FREDO_PG_INSTALL_DIR`
+    /// override (Spec #2978 S2) can never make the extraction dir and the archive
+    /// staging dir diverge.
+    pub fn with_kill(app_data_dir: &Path, password: String, kill: KillTreeFn) -> Self {
+        Self::with_dirs(
+            &super::resolve_data_dir(app_data_dir),
+            &super::resolve_install_dir(app_data_dir),
+            password,
+            kill,
+            pg_stop_with_env_hook,
+        )
+    }
+
+    /// Build a runtime rooted at EXPLICIT data/install dirs (Spec #2992 ST-5).
+    ///
+    /// The headless `fredo ingest` daemon resolves the CLI-flag > env > default
+    /// precedence itself (G-296) and therefore passes the resolved PostgreSQL data
+    /// and distribution dirs explicitly instead of mutating the process
+    /// environment (the #2989 `set_var` failure). Every other setting — the
+    /// ephemeral loopback port, the finite control timeout, the Q-17 log config,
+    /// and the FS-3 stop-hang seam — is identical to [`Self::with_kill`].
+    pub fn with_paths(data_dir: &Path, install_dir: &Path, password: String) -> Self {
+        Self::with_dirs(
+            data_dir,
+            install_dir,
+            password,
+            kill_pid_tree,
+            pg_stop_with_env_hook,
+        )
+    }
+
+    /// Build a runtime honouring the persisted supervisor config (Spec #3022,
+    /// ST-2).
+    ///
+    /// `settings.port` becomes the pinned port from the config (`None` ⇒ `0`,
+    /// ephemeral OS-assigned — e.g. a headless cluster or a default install), and
+    /// the config's log verbosity is applied as the PostgreSQL `log_min_messages`
+    /// server value alongside the Q-17 log-collector configuration. Every other
+    /// setting — the finite control timeout, the loopback host, the log
+    /// destination, and the FS-3 stop-hang seam — is identical to
+    /// [`Self::with_paths`], so an unset config keeps the default path
+    /// byte-identical.
+    pub fn with_config(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        config: &PgSupervisorConfig,
+    ) -> Self {
+        Self::assemble(
+            data_dir,
+            install_dir,
+            password,
+            kill_pid_tree,
+            pg_stop_with_env_hook,
+            config.port.unwrap_or(0),
+            Some(config.log_verbosity.pg_value()),
+        )
+    }
+
+    /// Full constructor with explicit data/install dirs and BOTH injectable seams
+    /// (**FS-1**/**FS-2**). Private: [`Self::new`]/[`Self::with_kill`] are the
+    /// production and retained seams; the unit tests reach it as a child module.
+    fn with_dirs(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        kill: KillTreeFn,
+        stop: StopFn,
+    ) -> Self {
+        Self::assemble(data_dir, install_dir, password, kill, stop, 0, None)
+    }
+
+    /// Assemble a runtime from explicit dirs, seams, bind `port`, and an optional
+    /// `log_min_messages` override. [`Self::with_dirs`] passes the default
+    /// ephemeral `port = 0` and no verbosity override, so its settings are
+    /// byte-identical to the pre-ST-2 path; [`Self::with_config`] passes the
+    /// persisted config's port + verbosity.
+    fn assemble(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        kill: KillTreeFn,
+        stop: StopFn,
+        port: u16,
+        log_min_messages: Option<&str>,
+    ) -> Self {
+        let data_dir = data_dir.to_path_buf();
+        let install_dir = install_dir.to_path_buf();
+        let settings = build_settings(
+            &data_dir,
+            &install_dir,
+            password,
+            port,
+            log_min_messages,
+        );
+        Self {
+            pg: PostgreSQL::new(settings),
+            data_dir,
+            install_dir,
+            stopped: false,
+            kill,
+            stop,
+        }
+    }
+
+    /// The AC3 induction seam (cfg(test) only, no production surface): builds the
+    /// SAME settings via [`build_settings`] + [`apply_acquisition_mode`], then
+    /// overrides `settings.releases_url` BEFORE `PostgreSQL::new`, so any crate
+    /// fetch would land on the test's loopback probe instead of GitHub.
+    #[cfg(test)]
+    fn with_test_releases_url(
+        data_dir: &Path,
+        install_dir: &Path,
+        password: String,
+        releases_url: String,
+    ) -> Self {
+        let data_dir = data_dir.to_path_buf();
+        let install_dir = install_dir.to_path_buf();
+        let mut settings = build_settings(&data_dir, &install_dir, password, 0, None);
+        settings.releases_url = releases_url;
+        Self {
+            pg: PostgreSQL::new(settings),
+            data_dir,
+            install_dir,
+            stopped: false,
+            kill: kill_pid_tree,
+            stop: pg_stop_with_env_hook,
+        }
+    }
+
+    /// The resolved PostgreSQL data directory.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// The connection URL the readiness probe (and later slices' pools) must use
+    /// — authoritative because the bound ephemeral port lives in these settings.
+    ///
+    /// Addresses the Fredo application database ([`super::PG_DATABASE`]) with the
+    /// unchanged bootstrap superuser role ([`super::PG_SUPERUSER`]); the role
+    /// literal stays `postgres` (Spec #3036, Option (b)).
+    pub fn connection_url(&self) -> String {
+        self.pg.settings().url(PG_DATABASE)
+    }
+
+    /// The maintenance connection URL (Spec #3036): the SAME settings as
+    /// [`Self::connection_url`] but addressing
+    /// [`super::PG_MAINTENANCE_DATABASE`] (`template1`) — the connectable
+    /// database [`Self::migrate_database_identity`] runs the rename FROM.
+    pub fn maintenance_connection_url(&self) -> String {
+        self.pg.settings().url(PG_MAINTENANCE_DATABASE)
+    }
+
+    /// The port the server is bound to; `0` before `start()` requests an
+    /// ephemeral OS-assigned port, after which the crate resolves it here.
+    pub fn port(&self) -> u16 {
+        self.pg.settings().port
+    }
+
+    /// The postmaster PID read from `postmaster.pid`, or `None` if absent.
+    pub fn postmaster_pid(&self) -> Option<u32> {
+        read_postmaster_pid(&self.data_dir)
+    }
+
+    /// Bounded `setup()`: materialise the trusted install (runtime-download),
+    /// then the crate's install/initdb leg.
+    ///
+    /// Spec #3076 ST-2: on the trusted install path THIS is the single choke
+    /// point every owner path reaches (GUI boot, config-apply restart, headless
+    /// `fredo ingest`). [`super::acquisition::ensure_verified_install`] acquires
+    /// and extracts the archive Fredo itself SHA-256-verified — or short-circuits
+    /// when the marker is current — BEFORE the crate's `setup()`, because a
+    /// trusted install dir makes `installed_dir()` return `Some` unconditionally
+    /// (the crate will not create the tree for us). The crate performs no
+    /// download on this path.
+    pub async fn setup(&mut self) -> Result<()> {
+        if super::acquisition::trusted_install_path_enabled(super::acquisition::ACQUISITION_MODE) {
+            super::acquisition::ensure_verified_install(&self.install_dir)
+                .await
+                .context("preparing the SHA-256-verified PostgreSQL distribution")?;
+        }
+        let pg = &mut self.pg;
+        run_bounded(PG_SETUP_BOUND, "pg.setup", async move {
+            pg.setup().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+    }
+
+    /// Reconcile the [`super::PG_SERVER_KNOBS`] overlay into
+    /// `<data_dir>/postgresql.conf` (REQ-5/EARS-5.1; Spec #3028). Called after
+    /// `setup()` (which creates the file via `initdb`) and before `start()`.
+    ///
+    /// The overlay is a marked block: the [`PG_KNOB_MARKER`] line followed by one
+    /// `name = value` line per knob. Reconciliation:
+    ///
+    /// * marker absent (fresh cluster) ⇒ append the freshly-rendered block;
+    /// * marked block already current ⇒ byte-identical no-op (idempotent);
+    /// * marked block stale (an existing cluster whose overlay still pins an old
+    ///   value, e.g. `max_connections = 8`) ⇒ **supersede** the marked block in
+    ///   place via an atomic temp-file + rename rewrite — the apply-to-existing
+    ///   mechanism. No data-dir reset, no data loss: only the overlay block is
+    ///   rewritten, before the server starts.
+    ///
+    /// PostgreSQL applies later settings last, so the overlay wins over the
+    /// `initdb` defaults; the live values are verified with `SHOW` by ST-7/QA.
+    ///
+    /// **FS-5** (Spec #2975 ST-7, AC5): when [`super::PG_SKIP_SERVER_KNOBS_ENV`]
+    /// is set, this is a no-op, so the managed server starts UNTUNED — the
+    /// live-drivable "before" leg. Inert when unset (default byte-identical).
+    pub fn apply_server_knobs(&self) -> Result<()> {
+        if super::skip_server_knobs() {
+            return Ok(());
+        }
+        let path = self.data_dir.join("postgresql.conf");
+        let existing = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        match reconcile_knob_overlay(&existing) {
+            // Already current: leave the file untouched (byte-identical no-op).
+            None => Ok(()),
+            Some(updated) => write_atomically(&path, &updated).with_context(|| {
+                format!("superseding the server-memory knobs in {}", path.display())
+            }),
+        }
+    }
+
+    /// Bounded `start()`; returns the postmaster PID once it has been written.
+    pub async fn start(&mut self) -> Result<u32> {
+        // ST-2 (#3022) injectable fault seam: a forced failure returns BEFORE
+        // spawning a server, so the config-apply restart's fail-closed branch
+        // (pinned-port collision → prior config retained) is drivable in-repo
+        // without a real cluster. Inert when the lever is unset.
+        if super::force_start_fail() {
+            return Err(anyhow!(
+                "FREDO_PG_FORCE_START_FAIL is set: forced start failure (test seam)"
+            ));
+        }
+        let pg = &mut self.pg;
+        run_bounded(PG_START_BOUND, "pg.start", async move {
+            pg.start().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await?;
+        self.postmaster_pid()
+            .context("postmaster.pid is missing after a successful pg.start()")
+    }
+
+    /// Bounded readiness probe: a real `sqlx` client connect on the crate URL,
+    /// each attempt capped by `PG_CONNECT_TIMEOUT`, the whole poll wrapped in
+    /// `run_bounded(PG_READY_BOUND + 2 s)`. This proves the exact URL/credentials
+    /// later slices' pools will use — deliberately not the crate's `is_ready`.
+    ///
+    /// **ST-1** (Spec #3067) injectable fault seam: when
+    /// [`super::PG_FORCE_AUTH_MISMATCH_ENV`] is set, this returns a
+    /// credential-rejection error (`SQLSTATE 28P01`) so the supervisor's
+    /// `Failed`/`AuthMismatch` recovery path is live-drivable in ONE app launch.
+    /// The lever is **persistent** — read on EVERY call (deliberate: a reset under
+    /// it re-probes and still fails). Inert when unset — the default probe is
+    /// byte-identical.
+    pub async fn probe_ready(&self) -> Result<()> {
+        if super::force_auth_mismatch() {
+            return Err(anyhow!(
+                "password authentication failed for user \"postgres\" (SQLSTATE 28P01)"
+            ));
+        }
+        let url = self.connection_url();
+        run_bounded(
+            PG_READY_BOUND + Duration::from_secs(2),
+            "readiness poll",
+            async move {
+                let deadline = Instant::now() + PG_READY_BOUND;
+                loop {
+                    let error = match tokio::time::timeout(
+                        PG_CONNECT_TIMEOUT,
+                        sqlx::PgConnection::connect(&url),
+                    )
+                    .await
+                    {
+                        Ok(Ok(connection)) => {
+                            drop(connection);
+                            return Ok(());
+                        }
+                        Ok(Err(error)) => anyhow::Error::from(error),
+                        Err(_) => {
+                            anyhow!("connect attempt exceeded its {PG_CONNECT_TIMEOUT:?} bound")
+                        }
+                    };
+                    if Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            },
+        )
+        .await
+    }
+
+    /// One-time database-identity migration (Spec #3036, R-2a..R-2c, R-4).
+    ///
+    /// Connects to [`super::PG_MAINTENANCE_DATABASE`] (`template1`), reads the
+    /// `pg_database` catalog, and — iff the bootstrap database is still named
+    /// [`super::PG_BOOTSTRAP_DATABASE`] and the Fredo database is absent — runs
+    /// the catalog-only [`rename_database_statement`]
+    /// (`ALTER DATABASE postgres RENAME TO fredo`). Because the rename is
+    /// OID-keyed, the migration preserves every existing table and row (no data
+    /// copy, no orphaning) and is ONE atomic statement (crash-recoverable: a
+    /// crash leaves EITHER the legacy name with all rows OR the renamed name with
+    /// all rows). Idempotent: a second call over an already-migrated cluster is a
+    /// pure read — no DDL, no error.
+    ///
+    /// Called between [`Self::start`] and [`Self::probe_ready`] on every owner
+    /// path, so no pool ever connects before the database is named `fredo`.
+    ///
+    /// Bounded by [`PG_CONTROL_TIMEOUT`] (G-263). The
+    /// `FREDO_PG_FORCE_DB_MIGRATION_FAIL` seam fails closed AFTER detection and
+    /// BEFORE any DDL (G-275), inert when unset. Any error is mapped by the
+    /// caller to the named `database` stage.
+    pub async fn migrate_database_identity(&self) -> Result<()> {
+        let maintenance_url = self.maintenance_connection_url();
+        let rename = rename_database_statement();
+        run_bounded(PG_CONTROL_TIMEOUT, "pg.migrate_database_identity", async move {
+            let mut connection = sqlx::PgConnection::connect(&maintenance_url)
+                .await
+                .context("connecting to the maintenance database for the identity migration")?;
+            let db_fredo: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("reading the fredo database from the catalog")?;
+            let db_postgres: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("reading the bootstrap database from the catalog")?;
+            let plan = plan_database_migration(db_postgres > 0, db_fredo > 0);
+            if plan == DatabaseIdentityPlan::Noop {
+                return Ok(());
+            }
+            if super::force_db_migration_fail() {
+                return Err(anyhow!(
+                    "FREDO_PG_FORCE_DB_MIGRATION_FAIL is set: forced database-migration failure (test seam)"
+                ));
+            }
+            // Defensive: terminate any lingering backend on the SOURCE database so
+            // the rename cannot be blocked (a no-op in the normal pre-pool window).
+            sqlx::query(TERMINATE_SOURCE_BACKENDS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .execute(&mut connection)
+                .await
+                .context("terminating lingering bootstrap-database backends")?;
+            sqlx::query(&rename)
+                .execute(&mut connection)
+                .await
+                .context("renaming the bootstrap database to the Fredo database")?;
+            // Verify the rename converged: fredo present AND postgres absent.
+            let fredo_after: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("verifying the Fredo database exists")?;
+            let postgres_after: i64 = sqlx::query_scalar(DATABASE_EXISTS_SQL)
+                .bind(PG_BOOTSTRAP_DATABASE)
+                .fetch_one(&mut connection)
+                .await
+                .context("verifying the bootstrap database is gone")?;
+            if fredo_after != 1 || postgres_after != 0 {
+                return Err(anyhow!(
+                    "database-identity migration verification failed: {PG_DATABASE}={fredo_after}, {PG_BOOTSTRAP_DATABASE}={postgres_after}"
+                ));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Change the `postgres` superuser password IN PLACE (Spec #3022, ST-2,
+    /// R-1.1).
+    ///
+    /// Connects with the CURRENT credential — the URL this runtime was built with,
+    /// i.e. the process's stored password — and runs
+    /// `ALTER USER postgres PASSWORD <literal>`. The literal is produced by the
+    /// SERVER via [`ALTER_PASSWORD_STATEMENT_SQL`] (`format('%L', $1)`), because a
+    /// utility statement cannot take a bind parameter (`PASSWORD $1` is a syntax
+    /// error). `%L` applies PostgreSQL's canonical quoting, so a password
+    /// containing `'` or `\` is safe. The password is NEVER logged. No re-init and
+    /// no data loss: the data dir is untouched.
+    ///
+    /// Bounded by [`PG_CONTROL_TIMEOUT`] (G-263) so a wedged server cannot hang
+    /// the caller.
+    pub async fn change_password(&self, new_password: &str) -> Result<()> {
+        let url = self.connection_url();
+        run_bounded(PG_CONTROL_TIMEOUT, "pg.change_password", async move {
+            let mut connection = sqlx::PgConnection::connect(&url)
+                .await
+                .context("connecting to change the postgres password")?;
+            alter_password_on_connection(&mut connection, new_password).await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+    }
+
+    /// Bounded graceful stop with a guaranteed hard-kill fallback (G-263).
+    ///
+    /// A synchronous watchdog thread hard-kills the postmaster PID tree if the
+    /// graceful stop has not signalled within `bound` — defence against a
+    /// `pg.stop()` that blocks the async task and would otherwise defeat
+    /// `tokio::time::timeout`. A surviving `postmaster.pid` after the attempt is
+    /// a final backstop hard-kill. `stopped` is set on every path.
+    pub async fn stop_bounded(&mut self, bound: Duration) -> StopOutcome {
+        if self.stopped {
+            return StopOutcome::Graceful { elapsed_ms: 0 };
+        }
+        let started = Instant::now();
+        let pid = self.postmaster_pid();
+        let kill = self.kill;
+        let hard_killed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&hard_killed);
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if done_rx.recv_timeout(bound).is_err() {
+                if let Some(pid) = pid {
+                    kill(pid);
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+
+        // FS-2: the graceful attempt goes through the injectable `StopFn` so a
+        // hung stop can be induced deterministically (unit) and live (FS-3),
+        // while the synchronous watchdog above still hard-kills on expiry.
+        let stop = self.stop;
+        let pg = &mut self.pg;
+        let _ = run_bounded(bound, "pg.stop", async {
+            stop(pg).await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await;
+
+        let _ = done_tx.send(());
+        let _ = watchdog.join();
+
+        // Backstop: a still-present `postmaster.pid` means a postmaster survived
+        // the graceful attempt — hard-kill its tree so no orphan is left behind.
+        if let Some(pid) = self.postmaster_pid() {
+            kill(pid);
+            hard_killed.store(true, Ordering::SeqCst);
+        }
+
+        self.stopped = true;
+        let elapsed_ms = started.elapsed().as_millis();
+        if hard_killed.load(Ordering::SeqCst) {
+            StopOutcome::HardKilled { elapsed_ms }
+        } else {
+            StopOutcome::Graceful { elapsed_ms }
+        }
+    }
+}
+
+impl Drop for PgRuntime {
+    fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        // Panic / early-return path: no async work is allowed here — hard-kill
+        // the postmaster PID tree directly so no orphan survives.
+        if let Some(pid) = self.postmaster_pid() {
+            (self.kill)(pid);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::applications::pg_supervisor::config::{PgLogVerbosity, PgSupervisorConfig};
+    use crate::applications::pg_supervisor::{
+        force_start_fail, skip_server_knobs, PG_DATA_SUBDIR, PG_FORCE_START_FAIL_ENV,
+        PG_SERVER_KNOBS, PG_SKIP_SERVER_KNOBS_ENV,
+    };
+    use std::sync::Mutex;
+
+    static KILLS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    static KILL_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes every test that sets the **FS-5** knob-skip env var (a
+    /// process-global) against the tests that call `apply_server_knobs`, so the
+    /// overlay assertions are deterministic under any suite order (G-222).
+    static KNOB_ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// Serializes the test that sets the **ST-2** forced-start-failure env var (a
+    /// process-global), so the `start()` seam is deterministic (G-222).
+    static START_FAIL_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Restores the ST-2 forced-start-failure lever to unset on drop (even on a
+    /// panic).
+    struct StartFailEnvGuard;
+
+    impl Drop for StartFailEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(PG_FORCE_START_FAIL_ENV);
+        }
+    }
+
+    /// Restores the FS-5 lever to unset on drop (even on a panic).
+    struct KnobEnvGuard;
+
+    impl Drop for KnobEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        }
+    }
+
+    fn record_kill(pid: u32) {
+        KILLS.lock().expect("kill recorder").push(pid);
+    }
+
+    fn recorded_kills() -> Vec<u32> {
+        KILLS.lock().expect("kill recorder").clone()
+    }
+
+    /// A graceful-stop seam that never completes — the exact #2948 hang, made
+    /// deterministic for the bounded-watchdog test (the hang is bounded by
+    /// `run_bounded` + the synchronous watchdog, never awaited unbounded).
+    fn hang_stop(_pg: &mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(std::future::pending::<Result<()>>())
+    }
+
+    /// Build a runtime with the recording kill seam and a seeded
+    /// `postmaster.pid`, so teardown paths are observable without a server.
+    fn seeded_runtime(app_data_dir: &Path, pid: u32) -> PgRuntime {
+        let data_dir = app_data_dir.join(PG_DATA_SUBDIR);
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(data_dir.join("postmaster.pid"), format!("{pid}\n")).expect("write pid");
+        PgRuntime::with_kill(app_data_dir, "test-password".to_string(), record_kill)
+    }
+
+    #[tokio::test]
+    async fn run_bounded_errors_fast_on_an_unbounded_wait() {
+        let started = Instant::now();
+        let result: Result<()> = run_bounded(
+            Duration::from_millis(50),
+            "pending",
+            std::future::pending::<Result<()>>(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a never-completing future must be bounded into an error"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the 50 ms bound must fire well under 5 s"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_bounded_passes_through_a_completed_value() {
+        let result: Result<u32> = run_bounded(Duration::from_secs(1), "ok", async { Ok(7) }).await;
+        assert_eq!(result.expect("completed value passes through"), 7);
+    }
+
+    #[tokio::test]
+    async fn control_timeout_is_some_and_port_is_requested_ephemeral() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        assert_eq!(
+            runtime.port(),
+            0,
+            "port 0 must request an OS-assigned ephemeral port"
+        );
+        assert_eq!(
+            runtime.pg.settings().timeout,
+            Some(PG_CONTROL_TIMEOUT),
+            "Settings::timeout must never be None (the #2948 stop hang)"
+        );
+        let expected = dir.path().join(PG_DATA_SUBDIR);
+        assert_eq!(runtime.data_dir(), expected.as_path());
+    }
+
+    // ── Spec #3076 ST-2: ONE trusted install path ────────────────────────────
+
+    /// A loopback TCP endpoint that counts accepted connections — the AC3
+    /// fetch probe. It is a REAL listener (the test drives one connection as a
+    /// positive control) so the later zero is a measured absence.
+    struct LoopbackFetchProbe {
+        address: std::net::SocketAddr,
+        connections: Arc<std::sync::atomic::AtomicUsize>,
+        shutdown: Arc<AtomicBool>,
+    }
+
+    impl LoopbackFetchProbe {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind probe");
+            let address = listener.local_addr().expect("probe address");
+            let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let counter = Arc::clone(&connections);
+            let stop = Arc::clone(&shutdown);
+            let listener = listener.try_clone().expect("clone probe listener");
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { break };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                    if stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+            });
+            Self {
+                address,
+                connections,
+                shutdown,
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/", self.address)
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+
+        fn reset(&self) {
+            self.connections.store(0, Ordering::SeqCst);
+        }
+
+        /// One deliberate connection (the positive control).
+        fn touch(&self) {
+            let _ = std::net::TcpStream::connect(self.address);
+        }
+    }
+
+    impl Drop for LoopbackFetchProbe {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(self.address);
+        }
+    }
+
+    /// `relative path -> bytes` for every file under `root` (the byte-identity
+    /// snapshot the AC3 assertions compare).
+    fn snapshot_tree(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        fn walk(
+            root: &Path,
+            current: &Path,
+            into: &mut std::collections::BTreeMap<String, Vec<u8>>,
+        ) {
+            let Ok(entries) = std::fs::read_dir(current) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    walk(root, &path, into);
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                into.insert(relative, bytes);
+            }
+        }
+        let mut snapshot = std::collections::BTreeMap::new();
+        walk(root, root, &mut snapshot);
+        snapshot
+    }
+
+    #[test]
+    fn trusted_install_path_is_runtime_download_and_windows_x86_64_only() {
+        use crate::applications::pg_supervisor::acquisition::{
+            trusted_install_path_enabled, PgAcquisitionMode, TRUSTED_INSTALL_ENABLED,
+        };
+
+        assert_eq!(
+            TRUSTED_INSTALL_ENABLED,
+            cfg!(all(target_os = "windows", target_arch = "x86_64")),
+            "the trusted install path is compile-time-gated to Windows x86_64"
+        );
+        assert_eq!(
+            trusted_install_path_enabled(PgAcquisitionMode::RuntimeDownload),
+            TRUSTED_INSTALL_ENABLED,
+            "runtime-download is the trusted path wherever it is implemented"
+        );
+        assert!(
+            !trusted_install_path_enabled(PgAcquisitionMode::Bundled),
+            "bundled must never take the trusted install path"
+        );
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            assert!(TRUSTED_INSTALL_ENABLED);
+            assert!(trusted_install_path_enabled(PgAcquisitionMode::RuntimeDownload));
+        }
+    }
+
+    #[test]
+    fn runtime_download_settings_trust_the_install_dir_and_pin_the_exact_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        let runtime = PgRuntime::with_paths(&data_dir, &install_dir, "pw".to_string());
+        let settings = runtime.pg.settings();
+
+        assert!(settings.trust_installation_dir, "the install dir must be trusted");
+        assert_eq!(settings.version.to_string(), "=18.6.0");
+        assert_eq!(
+            settings.installation_dir, install_dir,
+            "trust applied BEFORE PostgreSQL::new ⇒ no version-suffixed dir"
+        );
+        assert_eq!(settings.binary_dir(), install_dir.join("bin"));
+    }
+
+    #[test]
+    fn bundled_mode_settings_leave_the_crate_install_inference_untouched() {
+        use crate::applications::pg_supervisor::acquisition::PgAcquisitionMode;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        let mut settings = build_settings(&data_dir, &install_dir, "pw".to_string(), 0, None);
+        // Reset to the crate defaults the BUNDLED branch must preserve, so the
+        // bundled branch is exercised in this (default runtime-download) build.
+        settings.trust_installation_dir = false;
+        settings.version = VersionReq::STAR;
+        let before = settings.clone();
+
+        apply_acquisition_mode(&mut settings, PgAcquisitionMode::Bundled);
+
+        assert!(!settings.trust_installation_dir);
+        assert_eq!(settings.version.to_string(), "*");
+        assert_eq!(
+            settings, before,
+            "the bundled path must change NO Settings field (byte-for-byte unchanged)"
+        );
+    }
+
+    #[test]
+    fn pinned_version_req_is_the_exact_pinned_release() {
+        use postgresql_embedded::Version;
+
+        assert_eq!(PG_VERSION_REQ.to_string(), "=18.6.0");
+        assert_eq!(
+            PG_VERSION_REQ.to_string(),
+            format!("={PG_VERSION}"),
+            "the requirement can never diverge from the pinned PG_VERSION"
+        );
+        assert!(PG_VERSION_REQ.matches(&Version::new(18, 6, 0)));
+        assert!(!PG_VERSION_REQ.matches(&Version::new(18, 6, 1)));
+        assert!(!PG_VERSION_REQ.matches(&Version::new(18, 7, 0)));
+    }
+
+    /// AC3 (Spec #3076): with a CURRENT pre-seeded trusted install (the R-1a
+    /// idempotence path) and the crate's release URL pointed at a loopback probe,
+    /// `setup()` completes with ZERO probe connections — the crate's
+    /// `install()`/`get_archive` path is unreachable — and the seeded tree is
+    /// byte-identical afterwards.
+    #[tokio::test]
+    async fn setup_never_reaches_the_crate_install_path_and_makes_no_fetch() {
+        use crate::applications::pg_supervisor::acquisition::{
+            effective_pin, PG_ARCHIVE_ENV_LOCK, PG_ARCHIVE_SUBDIR, PG_VERSION,
+        };
+        use crate::applications::pg_supervisor::extraction::seed_trusted_install;
+
+        let _lock = PG_ARCHIVE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pin = effective_pin();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("postgres-install");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        seed_trusted_install(&install_dir, &pin).expect("seed a current trusted install");
+        // `is_initialized()` is true, so the crate's `initialize()` is skipped.
+        std::fs::write(data_dir.join("postgresql.conf"), "# initialized\n")
+            .expect("seed postgresql.conf");
+        let seeded_before = snapshot_tree(&install_dir);
+
+        let probe = LoopbackFetchProbe::start();
+        assert_eq!(probe.connections(), 0, "a fresh probe has no connections");
+        probe.touch();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while probe.connections() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            probe.connections(),
+            1,
+            "positive control: the probe must observe a real connection (a \
+             vacuous zero would prove nothing)"
+        );
+        probe.reset();
+        assert_eq!(probe.connections(), 0);
+
+        let mut runtime = PgRuntime::with_test_releases_url(
+            &data_dir,
+            &install_dir,
+            "pw".to_string(),
+            probe.url(),
+        );
+        runtime
+            .setup()
+            .await
+            .expect("setup must succeed offline on a current trusted install");
+
+        assert_eq!(
+            probe.connections(),
+            0,
+            "the crate must make no version/archive request"
+        );
+        assert!(
+            !install_dir.join(PG_ARCHIVE_SUBDIR).exists(),
+            "the marker short-circuited ensure_verified_install (no acquisition)"
+        );
+        assert!(!install_dir.join("lib").exists(), "no extraction ran");
+        assert!(!install_dir.join("share").exists(), "no extraction ran");
+        assert!(
+            !install_dir.join(PG_VERSION).exists(),
+            "no version-suffixed crate install dir was created"
+        );
+        assert_eq!(
+            snapshot_tree(&install_dir),
+            seeded_before,
+            "the seeded bin/ sentinels and marker are byte-identical"
+        );
+
+        let settings = runtime.pg.settings();
+        assert!(settings.trust_installation_dir);
+        assert_eq!(settings.installation_dir, install_dir);
+        assert_eq!(settings.version.to_string(), "=18.6.0");
+        assert_eq!(settings.binary_dir(), install_dir.join("bin"));
+    }
+
+    /// ST-1 (#3036, R-2d): the pool URL addresses the Fredo application database
+    /// (`fredo`) with the unchanged `postgres` user; the old `/postgres` end-path
+    /// is gone.
+    #[test]
+    fn connection_url_addresses_the_fredo_database_with_the_postgres_user() {
+        use crate::applications::pg_supervisor::{PG_BOOTSTRAP_DATABASE, PG_SUPERUSER};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        let url = runtime.connection_url();
+        assert!(
+            url.ends_with(&format!("/{PG_DATABASE}")),
+            "the pool URL must end /{PG_DATABASE}: {url}"
+        );
+        assert!(
+            !url.ends_with(&format!("/{PG_BOOTSTRAP_DATABASE}")),
+            "the old /{PG_BOOTSTRAP_DATABASE} end-path must be gone: {url}"
+        );
+        assert!(
+            url.starts_with(&format!("postgresql://{PG_SUPERUSER}:")),
+            "the URL user must stay {PG_SUPERUSER}: {url}"
+        );
+    }
+
+    /// ST-1 (#3036): the maintenance URL the rename runs FROM addresses
+    /// `template1` — connectable, and it survives the rename.
+    #[test]
+    fn maintenance_connection_url_addresses_the_maintenance_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = PgRuntime::new(dir.path(), "pw".to_string());
+        let url = runtime.maintenance_connection_url();
+        assert!(
+            url.ends_with(&format!("/{PG_MAINTENANCE_DATABASE}")),
+            "the maintenance URL must end /{PG_MAINTENANCE_DATABASE}: {url}"
+        );
+    }
+
+    /// ST-1 (#3036, R-2c/R-4b): the idempotence rule is pure and total — `fredo`
+    /// present ⇒ Noop; bootstrap-only ⇒ Rename; `fredo` always wins.
+    #[test]
+    fn plan_database_migration_is_pure_and_total() {
+        use DatabaseIdentityPlan::{Noop, Rename};
+        assert_eq!(
+            plan_database_migration(true, false),
+            Rename,
+            "a legacy bootstrap database must be renamed"
+        );
+        assert_eq!(
+            plan_database_migration(false, true),
+            Noop,
+            "an already-migrated cluster is a no-op"
+        );
+        assert_eq!(
+            plan_database_migration(true, true),
+            Noop,
+            "fredo present wins over a lingering source"
+        );
+        assert_eq!(
+            plan_database_migration(false, false),
+            Noop,
+            "neither present (unreachable after initdb) is a no-op; readiness fails closed"
+        );
+    }
+
+    /// ST-1 (#3036, R-2a): the rename DDL is the pinned catalog-only literal and
+    /// names NO role (the role rename is declined).
+    #[test]
+    fn rename_database_statement_pins_the_catalog_only_ddl_literal() {
+        assert_eq!(
+            rename_database_statement(),
+            "ALTER DATABASE postgres RENAME TO fredo"
+        );
+        assert!(
+            !rename_database_statement().contains("ROLE"),
+            "the migration must never rename a role"
+        );
+    }
+
+    /// ST-1 (#3036, R-2c): the detection/idempotence read is a pure `pg_database`
+    /// lookup by bind parameter — no DDL.
+    #[test]
+    fn database_exists_read_is_a_pure_catalog_lookup_by_bind() {
+        assert!(DATABASE_EXISTS_SQL.contains("pg_database"));
+        assert!(DATABASE_EXISTS_SQL.contains("datname = $1"));
+        for keyword in ["ALTER", "CREATE", "DROP", "DELETE", "INSERT", "UPDATE"] {
+            assert!(
+                !DATABASE_EXISTS_SQL.to_uppercase().contains(keyword),
+                "the detection read must stay DDL/DML-free, found {keyword}"
+            );
+        }
+    }
+
+    /// S4 / REQ-3.2 (Q-17): the crate settings point the postmaster's logging
+    /// collector at `<data_dir>/log/postgres.log` — the path the read-only tail
+    /// reads — and the console-flash deviation is recorded (the crate exposes no
+    /// creation-flag hook).
+    #[test]
+    fn settings_route_the_postmaster_log_to_the_data_dir_log_path() {
+        // Explicit dirs (not the FS-1 resolver) so the assertion is independent
+        // of any sibling test's process-global env state (G-222).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-log");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        let configuration = &runtime.pg.settings().configuration;
+        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+            assert_eq!(
+                configuration.get(key).map(String::as_str),
+                Some(value),
+                "server configuration must set {key} = {value}"
+            );
+        }
+        // The path rule the tail reads and the config writes must agree.
+        assert_eq!(
+            crate::applications::pg_supervisor::pg_log_path(runtime.data_dir()),
+            data_dir.join("log").join("postgres.log")
+        );
+        assert!(
+            !PG_CONSOLE_FLASH_DEVIATION.is_empty(),
+            "the Q-17 console-flash deviation must be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_hard_kills_the_postmaster_tree_on_panic_unwind() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _runtime = seeded_runtime(&app_data_dir, 4242);
+            panic!("induced panic: RAII Drop must still run during unwind");
+        }));
+
+        assert!(outcome.is_err(), "the induced panic must unwind");
+        assert_eq!(recorded_kills(), vec![4242]);
+    }
+
+    #[tokio::test]
+    async fn teardown_runs_on_an_error_return() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+
+        fn work(app_data_dir: &Path) -> Result<()> {
+            let _runtime = seeded_runtime(app_data_dir, 5150);
+            // Return early with an error before any bounded stop — `Drop` must
+            // still tear the postmaster down.
+            anyhow::bail!("induced error before stop")
+        }
+
+        assert!(work(&app_data_dir).is_err());
+        assert_eq!(recorded_kills(), vec![5150]);
+    }
+
+    #[tokio::test]
+    async fn drop_does_not_kill_after_a_bounded_stop() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_data_dir = dir.path().to_path_buf();
+        let mut runtime = seeded_runtime(&app_data_dir, 6060);
+        runtime.stopped = true;
+        drop(runtime);
+        assert!(
+            recorded_kills().is_empty(),
+            "an already-stopped runtime must not be killed again"
+        );
+    }
+
+    /// FS-2 / F-4: a graceful stop that never completes must be bounded and
+    /// hard-killed — exactly the AC2 expiry → hard-kill branch, no real server.
+    #[tokio::test]
+    async fn stop_bounded_hard_kills_when_graceful_stop_hangs() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::write(data_dir.join("postmaster.pid"), "7373\n").expect("write pid");
+
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        let started = Instant::now();
+        let outcome = runtime.stop_bounded(Duration::from_millis(50)).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome, StopOutcome::HardKilled { .. }),
+            "a hung graceful stop must fall back to HardKilled, got {outcome:?}"
+        );
+        assert!(
+            recorded_kills().contains(&7373),
+            "the watchdog/backstop must hard-kill the seeded postmaster PID, saw {:?}",
+            recorded_kills()
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the 50 ms bound must fire well under 5 s, took {elapsed:?}"
+        );
+    }
+
+    /// A graceful-stop seam that completes immediately (the normal path).
+    fn noop_stop(_pg: &mut PostgreSQL) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// ST-6 / REQ-6/EARS-6.1 (G-263): the NORMAL exit path is graceful, bounded,
+    /// and does not hard-kill — `stop_bounded` returns `Graceful` within its
+    /// bound when no postmaster survives the graceful stop. Together with the
+    /// hang/panic/error tests this closes the teardown-on-every-exit-path set.
+    #[tokio::test]
+    async fn stop_bounded_reports_graceful_within_bound_when_no_postmaster_survives() {
+        let _guard = KILL_LOCK.lock().expect("serialize recorder tests");
+        KILLS.lock().expect("kill recorder").clear();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-empty");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+
+        let started = Instant::now();
+        let outcome = runtime.stop_bounded(Duration::from_millis(200)).await;
+
+        assert!(
+            matches!(outcome, StopOutcome::Graceful { .. }),
+            "a completed graceful stop with no surviving postmaster must be Graceful, got {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the 200 ms bound must fire well under 5 s, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            recorded_kills().is_empty(),
+            "the graceful path must not hard-kill anything, saw {:?}",
+            recorded_kills()
+        );
+    }
+
+    /// ST-2 / REQ-5/EARS-5.1: the overlay is appended exactly once and carries
+    /// every declared server-memory knob.
+    #[test]
+    fn apply_server_knobs_appends_the_overlay_once() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        std::fs::write(&conf, "# initdb defaults\n").expect("seed postgresql.conf");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        runtime.apply_server_knobs().expect("append the overlay");
+
+        let first = std::fs::read_to_string(&conf).expect("read conf");
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                first.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{first}"
+            );
+        }
+
+        // Idempotent: a second call must not append a duplicate overlay.
+        runtime.apply_server_knobs().expect("second call is a no-op");
+        let second = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(first, second, "the overlay must be appended exactly once");
+    }
+
+    /// ST-2 (#3028): the overlay reconcile is pure and total — absent ⇒ append,
+    /// current ⇒ byte-identical no-op, stale ⇒ supersede (converge on the
+    /// canonical form).
+    #[test]
+    fn reconcile_knob_overlay_appends_noops_and_supersedes() {
+        // marker absent ⇒ append the rendered block
+        let appended = reconcile_knob_overlay("# initdb defaults\n").expect("append");
+        assert!(appended.starts_with("# initdb defaults\n"));
+        assert!(appended.contains(PG_KNOB_MARKER));
+        assert_eq!(appended.matches(PG_KNOB_MARKER).count(), 1);
+
+        // already current ⇒ byte-identical no-op
+        assert!(
+            reconcile_knob_overlay(&appended).is_none(),
+            "a current overlay must be a no-op"
+        );
+
+        // stale value ⇒ supersede and converge on the canonical form
+        let stale = appended.replace("max_connections = 12", "max_connections = 8");
+        let superseded = reconcile_knob_overlay(&stale).expect("supersede");
+        assert_eq!(
+            superseded, appended,
+            "supersede must converge on the canonical overlay"
+        );
+        assert!(!superseded.contains("max_connections = 8"));
+    }
+
+    /// ST-2 (#3028): an existing (v1) overlay that still pins
+    /// `max_connections = 8` is SUPERSEDED, not shadowed — after a single apply
+    /// there is exactly one uncommented `max_connections = 12` and no `= 8` line,
+    /// with no duplicate marker block and no data-dir reset.
+    #[test]
+    fn apply_server_knobs_supersedes_a_stale_existing_overlay() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-v1");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        // A v1 cluster: the overlay was appended with the old max_connections = 8.
+        let v1 = format!(
+            "# initdb defaults\n\n{PG_KNOB_MARKER}\n\
+             shared_buffers = 32MB\n\
+             work_mem = 4MB\n\
+             maintenance_work_mem = 32MB\n\
+             max_connections = 8\n\
+             synchronous_commit = off\n"
+        );
+        std::fs::write(&conf, &v1).expect("seed the v1 overlay");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        runtime.apply_server_knobs().expect("supersede the stale overlay");
+
+        let updated = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(
+            updated.matches("max_connections = 12").count(),
+            1,
+            "exactly one uncommented max_connections = 12:\n{updated}"
+        );
+        assert!(
+            !updated.contains("max_connections = 8"),
+            "the stale max_connections = 8 must be gone:\n{updated}"
+        );
+        assert_eq!(
+            updated.matches(PG_KNOB_MARKER).count(),
+            1,
+            "the marker block must not be duplicated:\n{updated}"
+        );
+        assert!(
+            updated.starts_with("# initdb defaults\n"),
+            "non-overlay content must be preserved:\n{updated}"
+        );
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                updated.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{updated}"
+            );
+        }
+
+        // Idempotent: a second apply over the reconciled overlay is byte-identical.
+        runtime.apply_server_knobs().expect("second call is a no-op");
+        let again = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(updated, again, "the reconciled overlay must be stable");
+    }
+
+    /// ST-2: a missing `postgresql.conf` is a clean error (bounded, no panic) —
+    /// `apply_server_knobs` must never take the app down.
+    #[test]
+    fn apply_server_knobs_errors_when_postgresql_conf_is_absent() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-no-conf");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+        assert!(runtime.apply_server_knobs().is_err());
+    }
+
+    /// ST-7 / FS-5 (AC5): the untuned-baseline lever. With the lever set,
+    /// `apply_server_knobs` is a clean no-op (`postgresql.conf` untouched); with
+    /// it unset, the overlay is appended exactly as before — so the AC5 "before"
+    /// (untuned) leg is live-drivable and the default is byte-identical.
+    #[test]
+    fn skip_server_knobs_lever_leaves_the_overlay_untuned_and_is_inert_when_unset() {
+        let _env_lock = KNOB_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        assert!(
+            !skip_server_knobs(),
+            "an unset lever must resolve to the tuned default"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-untuned");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let conf = data_dir.join("postgresql.conf");
+        let initdb_defaults = "# initdb defaults\n";
+        std::fs::write(&conf, initdb_defaults).expect("seed postgresql.conf");
+
+        let runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            hang_stop,
+        );
+
+        // Lever set: the server is left on the initdb defaults (the "before" leg).
+        std::env::set_var(PG_SKIP_SERVER_KNOBS_ENV, "1");
+        let _guard = KnobEnvGuard;
+        assert!(skip_server_knobs(), "the lever must read as set");
+        runtime
+            .apply_server_knobs()
+            .expect("a lever-set apply is a clean no-op");
+        let untuned = std::fs::read_to_string(&conf).expect("read conf");
+        assert_eq!(
+            untuned, initdb_defaults,
+            "the lever must leave postgresql.conf byte-identical"
+        );
+        assert!(
+            !untuned.contains(PG_KNOB_MARKER),
+            "no knob marker may be written while the lever is set"
+        );
+
+        // Lever cleared: the default tuned overlay returns (byte-identical path).
+        std::env::remove_var(PG_SKIP_SERVER_KNOBS_ENV);
+        assert!(!skip_server_knobs(), "clearing the lever restores tuned");
+        runtime
+            .apply_server_knobs()
+            .expect("the default path appends the overlay");
+        let tuned = std::fs::read_to_string(&conf).expect("read conf");
+        assert!(
+            tuned.contains(PG_KNOB_MARKER),
+            "with the lever unset the overlay must be appended again"
+        );
+        for (name, value) in PG_SERVER_KNOBS {
+            assert!(
+                tuned.contains(&format!("{name} = {value}")),
+                "missing knob {name} = {value} in:\n{tuned}"
+            );
+        }
+    }
+
+    /// ST-2 (#3022, R-3.1/R-3.2/R-4): `with_config` applies the pinned port and
+    /// the log verbosity as the PostgreSQL `log_min_messages` server value, while
+    /// every other setting (timeout, host, Q-17 collector config) is unchanged.
+    #[test]
+    fn with_config_pins_the_port_and_applies_the_log_verbosity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-cfg");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let config = PgSupervisorConfig {
+            port: Some(5433),
+            log_verbosity: PgLogVerbosity::Debug,
+        };
+        let runtime = PgRuntime::with_config(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            &config,
+        );
+        let settings = runtime.pg.settings();
+        assert_eq!(settings.port, 5433, "the pinned port must be applied");
+        assert_eq!(
+            settings
+                .configuration
+                .get("log_min_messages")
+                .map(String::as_str),
+            Some("debug1"),
+            "the verbosity must be applied as the PG log_min_messages value"
+        );
+        assert_eq!(
+            settings.timeout,
+            Some(PG_CONTROL_TIMEOUT),
+            "Settings::timeout must stay bounded (the #2948 stop hang)"
+        );
+        // The Q-17 collector config still applies alongside the verbosity.
+        for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
+            assert_eq!(
+                settings.configuration.get(key).map(String::as_str),
+                Some(value),
+                "the Q-17 collector config must be preserved for {key}"
+            );
+        }
+
+        // The host is unchanged relative to the default (unset-config) path — the
+        // config NEVER moves the bind off loopback (R-5.3).
+        let default_runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+        assert_eq!(
+            settings.host,
+            default_runtime.pg.settings().host,
+            "with_config must not change the bind host"
+        );
+    }
+
+    /// ST-2 non-goal: `with_config` with the default (unset) config is ephemeral
+    /// and the retained `with_dirs`/`with_paths` path injects NO verbosity
+    /// override, so the headless + test defaults stay byte-identical.
+    #[test]
+    fn with_config_defaults_to_ephemeral_and_the_unset_path_stays_verbosity_free() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-ephemeral");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+
+        let runtime = PgRuntime::with_config(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            &PgSupervisorConfig::default(),
+        );
+        assert_eq!(
+            runtime.pg.settings().port,
+            0,
+            "an absent pinned port must remain ephemeral (port 0)"
+        );
+        assert_eq!(
+            runtime
+                .pg
+                .settings()
+                .configuration
+                .get("log_min_messages")
+                .map(String::as_str),
+            Some("info"),
+            "the default verbosity must apply as the PG 'info' value"
+        );
+
+        // The retained constructors must NOT inject a verbosity override.
+        let default_runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+        assert_eq!(
+            default_runtime
+                .pg
+                .settings()
+                .configuration
+                .get("log_min_messages"),
+            None,
+            "the unset-config path must carry no log_min_messages override"
+        );
+        assert_eq!(default_runtime.pg.settings().port, 0);
+    }
+
+    /// ST-2 (#3022, AC3-negative): a set `FREDO_PG_FORCE_START_FAIL` makes
+    /// `start()` fail closed WITHOUT spawning a server; the lever is inert when
+    /// unset.
+    #[tokio::test]
+    async fn start_fails_closed_when_the_force_start_fail_lever_is_set() {
+        let _guard = START_FAIL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var(PG_FORCE_START_FAIL_ENV);
+        assert!(!force_start_fail(), "an unset lever must be inert");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("pgdata-forced-fail");
+        let install_dir = dir.path().join("pginstall");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        let mut runtime = PgRuntime::with_dirs(
+            &data_dir,
+            &install_dir,
+            "test-password".to_string(),
+            record_kill,
+            noop_stop,
+        );
+
+        std::env::set_var(PG_FORCE_START_FAIL_ENV, "1");
+        let _env = StartFailEnvGuard;
+        assert!(force_start_fail(), "the lever must read as set");
+
+        let result = runtime.start().await;
+        assert!(
+            result.is_err(),
+            "a set FREDO_PG_FORCE_START_FAIL must force start() to fail closed"
+        );
+    }
+
+    // ── ST-2 round-2 (#3022): escaped-literal password statement ─────────────
+
+    /// The `ALTER USER … PASSWORD` statement is built by the SERVER with `%L`
+    /// (PostgreSQL's canonical literal quoting) — NOT executed with a bind
+    /// parameter, because a utility statement rejects `PASSWORD $1` (the
+    /// pre-round-2 syntax error). The builder template must keep the `%L` form.
+    #[test]
+    fn alter_password_statement_builder_uses_the_percent_l_literal_form() {
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("format('ALTER USER postgres PASSWORD %L'"),
+            "the builder must delegate literal quoting to format('%L'): {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        assert!(
+            ALTER_PASSWORD_STATEMENT_SQL.contains("$1"),
+            "the new password is BOUND, never interpolated: {ALTER_PASSWORD_STATEMENT_SQL}"
+        );
+        // The broken round-1 form (`ALTER … PASSWORD $1` run as-is) must be gone.
+        assert!(
+            !ALTER_PASSWORD_STATEMENT_SQL.contains("PASSWORD $1"),
+            "the utility statement must not carry a bind placeholder"
+        );
+    }
+
+    /// Reference mirror of PostgreSQL's `format('%L', …)` literal quoting under
+    /// `standard_conforming_strings = on` (the managed server default): double
+    /// every `'`, leave `\` literal, wrap in single quotes. The production path
+    /// delegates this to the SERVER; this pure mirror lets the escaping CONTRACT
+    /// be unit-pinned without a live server (G-222).
+    fn reference_sql_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    /// A password containing `'` and `\` round-trips through the literal quoting:
+    /// escaping then decoding recovers the EXACT password, so the produced
+    /// statement is parseable and the credential is preserved (Spec #3022
+    /// round-2). Covers both `change_password` and the R-1.3 compensating revert
+    /// (they share [`alter_password_on_connection`]).
+    #[test]
+    fn escaped_password_literal_round_trips_quotes_and_backslashes() {
+        for password in ["a'b\\c", "''''", "\\\\", "plain", "quote'only", "back\\slash"] {
+            let literal = reference_sql_literal(password);
+            assert!(
+                literal.starts_with('\'') && literal.ends_with('\''),
+                "the literal must be a single-quoted SQL string: {literal:?}"
+            );
+            // Decode the literal back: strip the quotes and collapse doubled `'`.
+            let inner = &literal[1..literal.len() - 1];
+            let decoded = inner.replace("''", "'");
+            assert_eq!(decoded, password, "round-trip failed for {password:?}");
+        }
+        // The canonical form for a quote+backslash password: only `'` is doubled.
+        assert_eq!(reference_sql_literal("a'b\\c"), "'a''b\\c'");
+        // A `'` in the password is doubled so it cannot terminate the literal.
+        assert_eq!(reference_sql_literal("O'Brien"), "'O''Brien'");
+    }
+}

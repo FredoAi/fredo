@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md. Phase names are STATUS terms (backlog → planning → implementation → testing → audit → cleanup → done); the SI audit verdict is the gate between testing and cleanup, and cleanup is the teardown-only phase before done.",
+  "description": "Pipeline configuration for the Fredo agentic state machine. Single source of truth for phases, transitions, labels, and issue types. Loaded by .opencode/scripts/pipeline-state.rs. Contract: docs/agentic-pipeline/state-machine.md. Phase names are STATUS terms (backlog → planning → implementation → testing → audit → post-audit → cleanup → done); the SI audit verdict is the gate between testing and post-audit, post-audit is where the pipeline's self-improvement + the gate merge run, and cleanup is the teardown-only phase before done.",
 
   "phases": {
     "backlog": {
@@ -13,7 +13,7 @@
       "order": 1,
       "label": "planning",
       "exit_guard": "The implementation plan deliverable exists and is converged (`.opencode/tmp/<issue>/triage.md` carries all required sections + `## Convergence: agreed`) — the plan, not a GitHub Decision comment, is the planning artifact",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     },
     "implementation": {
       "order": 2,
@@ -30,20 +30,26 @@
     "audit": {
       "order": 4,
       "label": "audit",
-      "exit_guard": "Self-Improver verdict posted: success, or restart phase + improvement",
-      "owner": "self-improver"
+      "exit_guard": "Auditor verdict posted: success, or restart phase + improvement",
+      "owner": "auditor"
+    },
+    "post-audit": {
+      "order": 5,
+      "label": "post-audit",
+      "exit_guard": "The post-audit ran: the Curator recorded the durable lesson (record-improvement — a `pipeline.improvement` event), the specialists' pipeline edits AND the product docs are synced through ONE SPEC MAINT PR (`maint-pr` — a `maint/<N>` branch force-merged with `--admin`), and (on the success exit only) that PR MERGED. A restart exit does not require the merge",
+      "owner": "orchestrator"
     },
     "cleanup": {
-      "order": 5,
+      "order": 6,
       "label": "cleanup",
       "exit_guard": "Teardown complete: worktrees removed, stale branches pruned (spec/* kept as evidence), gitignored scratch cleaned, evidence retained, no leftover dirty state; then the feature is closed as done",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     },
     "done": {
-      "order": 6,
+      "order": 7,
       "label": "done",
       "exit_guard": "Feature closed, branches cleaned, human review initiated",
-      "owner": "self-improver"
+      "owner": "orchestrator"
     }
   },
 
@@ -54,12 +60,12 @@
     "implementation:planning": true,
     "testing:audit": true,
     "testing:implementation": true,
-    "done:planning": true,
-    "audit:backlog": true,
-    "audit:planning": true,
-    "audit:implementation": true,
-    "audit:testing": true,
-    "audit:cleanup": true
+    "audit:post-audit": true,
+    "post-audit:cleanup": true,
+    "post-audit:backlog": true,
+    "post-audit:planning": true,
+    "post-audit:implementation": true,
+    "post-audit:testing": true
   },
 
   "label_to_phase": {
@@ -70,6 +76,7 @@
     "ready-for-test": "implementation",
     "testing": "testing",
     "audit": "audit",
+    "post-audit": "post-audit",
     "cleanup": "cleanup",
     "done": "done"
   },
@@ -92,8 +99,9 @@
       "implementation": { "status": "Coding",    "option_id": "d1cb6829" },
       "testing":        { "status": "E2E",       "option_id": "07ac1d28" },
       "audit":          { "status": "Reviewing", "option_id": "df73e18b" },
+      "post-audit":     { "status": "Reviewing", "option_id": "df73e18b" },
       "cleanup":        { "status": "Reviewing", "option_id": "df73e18b" },
-      "done":           { "status": "Done",      "option_id": "98236657" },
+      "done":           { "status": "Reviewing", "option_id": "df73e18b" },
       "canceled":       { "status": "Done",      "option_id": "98236657" }
     }
   },
@@ -105,6 +113,10 @@
     "qa-expert":          { "playbook": "docs/agentic-pipeline/playbooks/qa-expert.md" },
     "developer":          { "playbook": "docs/agentic-pipeline/playbooks/developer.md" },
     "tester":             { "playbook": "docs/agentic-pipeline/playbooks/tester.md" },
-    "self-improver":      { "playbook": "docs/agentic-pipeline/playbooks/self-improver.md" }
+    "auditor":            { "playbook": "docs/agentic-pipeline/playbooks/auditor.md" },
+    "curator":            { "playbook": "docs/agentic-pipeline/playbooks/curator.md" },
+    "toolsmith":          { "playbook": "docs/agentic-pipeline/playbooks/toolsmith.md" },
+    "machinist":          { "playbook": "docs/agentic-pipeline/playbooks/machinist.md" },
+    "orchestrator":       { "playbook": "docs/agentic-pipeline/playbooks/orchestrator.md" }
   }
 }

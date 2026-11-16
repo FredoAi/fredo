@@ -1,0 +1,520 @@
+//! Embedded-PostgreSQL lifecycle supervisor (Spec #2974).
+//!
+//! Slice 1 of the mandated SQLite → embedded-PostgreSQL migration. This module
+//! owns the **bounded** managed-server lifecycle — nothing here migrates a store;
+//! persistence is unchanged while PostgreSQL is disabled (the default).
+//!
+//! The module is a **application** module (not `infrastructure/`) per AGENTS.md
+//! ("state belongs in the application module") and the direct precedent of
+//! `applications/llm_server/{state,process,commands}.rs` — the mechanism is ported,
+//! never imported (no cross-application imports).
+//!
+//! # G-263 SAFETY — the named failure mode
+//!
+//! The named failure mode is #2948's `pg.stop()` that blocked for **~11 h** when
+//! `Settings::timeout` was left `None`. The owning bound is closed in
+//! [`runtime`]: every control/start/readiness/stop wait carries a finite
+//! wall-clock timeout, [`runtime::PgRuntime::stop_bounded`] falls back to
+//! `taskkill /PID <pid> /T /F` on graceful-stop expiry, and teardown is
+//! guaranteed on normal return, error return, and panic unwind (RAII `Drop`).
+//! `Settings::timeout` is ALWAYS `Some(PG_CONTROL_TIMEOUT)`, never `None`.
+//!
+//! # Module tree
+//!
+//! `ST-1` creates this root and [`runtime`]; `ST-2` appends `sweep`/`lock`;
+//! `ST-3` appends `state` and wires `lib.rs` (the `requires:` chain sequences
+//! the shared-root appends so they are never concurrent). With the `lib.rs`
+//! wiring in place the module is live, so it carries NO `#![allow(dead_code)]`
+//! (AGENTS.md forbids a permanent suppression).
+//!
+//! Packaging slice #2978 appends: [`acquisition`] (S1/S2/S3 — build-time mode +
+//! SHA-pinned archive), the Q-17 postmaster-log configuration in [`runtime`] and
+//! the bounded log tail in [`state`] (S4). (S6's cutover release gate was deleted
+//! with the legacy one-shot migration subsystem, Spec #3005 ST-5.)
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+// ── SettingsStore `settings` KV keys (SettingsStore remains the single source of truth) ──
+
+/// PID marker for the managed postmaster (decimal; blank = cleared).
+pub const PG_PID_KEY: &str = "postgres_pid";
+
+// ── Paths ─────────────────────────────────────────────────────────────────────
+
+/// Image name the managed postmaster must report for the PID-reuse guard to
+/// treat a persisted PID as OUR server.
+pub const POSTGRES_IMAGE: &str = "postgres.exe";
+/// Data-directory subdirectory under the app data dir (`{app_data_dir}/postgres`).
+pub const PG_DATA_SUBDIR: &str = "postgres";
+/// Distribution-directory subdirectory under the app data dir.
+pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
+/// Exclusive data-dir lock filename under the lock dir.
+pub const PG_LOCK_FILENAME: &str = "postgres.lock";
+/// Supervisor-config JSON filename under the app-data dir (Spec #3022, ST-1):
+/// `<app_data_dir>/postgres-supervisor.json`. Declared here alongside the other
+/// path constants; [`config`] re-exports it as [`config::PG_CONFIG_FILENAME`] and
+/// owns the typed load/save.
+pub const PG_CONFIG_FILENAME: &str = "postgres-supervisor.json";
+/// **G-275/G-296** lock-directory override (Spec #2992 CU-1): when set
+/// (non-blank) the exclusive data-dir lock lives under this directory instead of
+/// `<app_data_dir>`. A caller-supplied value always WINS; the default applies
+/// only when the env is unset/blank, so the default lock path is byte-identical.
+pub const PG_LOCK_DIR_ENV: &str = "FREDO_PG_LOCK_DIR";
+/// Headless-ingest descriptor filename under the lock dir (Spec #2992 CU-1).
+pub const HEADLESS_DESCRIPTOR_FILENAME: &str = "headless-ingest.json";
+/// **G-296** descriptor-path override (Spec #2992 CU-1): when set (non-blank) the
+/// `fredo ingest` descriptor lives at this exact path instead of
+/// `<lock_dir>/<HEADLESS_DESCRIPTOR_FILENAME>`. Caller value wins; the default
+/// applies only when the env is unset/blank.
+pub const FREDO_INGEST_DESCRIPTOR_ENV: &str = "FREDO_INGEST_DESCRIPTOR";
+/// Image name a live headless `fredo ingest` daemon must report for the
+/// descriptor PID-reuse guard ([`descriptor::is_live`]) to treat the published
+/// PID as OUR daemon (mirrors [`POSTGRES_IMAGE`]).
+pub const FREDO_IMAGE: &str = "fredo.exe";
+/// Log subdirectory under the PostgreSQL data dir (`<data_dir>/log`). The
+/// postmaster's logging collector is pointed here through the crate's
+/// `Settings::configuration` hook (Spec #2978 S4 / Q-17), so this is the ONE
+/// directory [`state::pg_server_log_tail`] reads.
+pub const PG_LOG_SUBDIR: &str = "log";
+/// Postmaster log filename (`<data_dir>/log/postgres.log`); fixed by the
+/// `log_filename` server configuration so the tail path is deterministic.
+pub const PG_LOG_FILENAME: &str = "postgres.log";
+/// Ephemeral loopback bind host (never `0.0.0.0`).
+pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
+
+// ── Database identity (Spec #3036, Option (b)) ───────────────────────────────
+//
+// The human decision for #3036: the application DATABASE reads as Fredo's own
+// (`fredo`), while the bootstrap superuser ROLE stays `postgres` — the role
+// rename is DECLINED (`initdb` hard-codes it, and `postgresql_embedded` 0.21's
+// `settings.username` only builds `url()`). The one-time migration IS the
+// catalog-only rename `ALTER DATABASE postgres RENAME TO fredo`.
+
+/// The Fredo-named application database — the database every pool/attach/headless
+/// URL targets, and the destination of the one-time rename.
+pub const PG_DATABASE: &str = "fredo";
+/// `initdb`'s bootstrap superuser role — UNCHANGED (the role rename is declined;
+/// the URL user and `ALTER USER … PASSWORD` keep this literal).
+pub const PG_SUPERUSER: &str = "postgres";
+/// `initdb`'s default database — the `ALTER DATABASE … RENAME TO` SOURCE. On a
+/// fresh cluster it exists after `setup()` and is renamed to [`PG_DATABASE`]
+/// before the first pool connect; on an upgraded cluster it is the legacy name.
+pub const PG_BOOTSTRAP_DATABASE: &str = "postgres";
+/// The connectable maintenance database the rename runs FROM. `template1` is
+/// connectable (`template0` is not) and still exists AFTER the rename — so the
+/// migration never depends on a database literally named `postgres`.
+pub const PG_MAINTENANCE_DATABASE: &str = "template1";
+
+/// **G-275** injectable fault seam (Spec #3036): when set to a non-blank value
+/// other than `0`/`false`, [`runtime::PgRuntime::migrate_database_identity`] fails
+/// closed AFTER detection and BEFORE any DDL, so the fail-closed `database` stage
+/// is drivable in-repo without corrupting a cluster. Inert when unset — the
+/// default migration path is byte-identical.
+pub const PG_FORCE_DB_MIGRATION_FAIL_ENV: &str = "FREDO_PG_FORCE_DB_MIGRATION_FAIL";
+
+/// Resolve the **#3036** forced-database-migration-failure lever (mirrors
+/// [`force_start_fail`]): `true` when [`PG_FORCE_DB_MIGRATION_FAIL_ENV`] is set to
+/// a non-blank value other than `0`/`false`, else `false`. Inert by default.
+pub fn force_db_migration_fail() -> bool {
+    force_db_migration_fail_with(std::env::var(PG_FORCE_DB_MIGRATION_FAIL_ENV).ok().as_deref())
+}
+
+/// The pure forced-database-migration-failure rule, split out so the lever
+/// contract is unit-testable without mutating process-global environment state
+/// (G-222).
+fn force_db_migration_fail_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
+// ── Test hooks (Spec #2974 fix round: inert when unset — default behaviour is
+//    byte-identical to the slice-1 path) ───────────────────────────────────────
+
+/// **FS-1** test hook: when set (non-blank) the managed PostgreSQL data dir is
+/// this path instead of `<app_data_dir>/<PG_DATA_SUBDIR>`. The distribution
+/// (install) dir has its own override ([`PG_INSTALL_DIR_ENV`]); the lock
+/// directory has its own override ([`PG_LOCK_DIR_ENV`], default
+/// `<app_data_dir>`), so the exclusive lock keeps a stable location. Inert when
+/// unset.
+pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
+/// **G-275** induction seam (Spec #2978 S2): when set (non-blank) the managed
+/// PostgreSQL distribution/installation dir is this path instead of
+/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. Both the [`runtime::PgRuntime`] install
+/// dir and the [`acquisition`] archive staging dir resolve through
+/// [`resolve_install_dir`], so the override can never make them diverge. Inert
+/// when unset — the default path is byte-identical.
+pub const PG_INSTALL_DIR_ENV: &str = "FREDO_PG_INSTALL_DIR";
+/// **FS-3** test hook: when set to a positive millisecond count the graceful
+/// stop sleeps that long (capped at [`PG_CONTROL_TIMEOUT`]) before calling the
+/// real `pg.stop()`, so the bounded hard-kill watchdog in
+/// [`runtime::PgRuntime::stop_bounded`] is observable on a live quit. The hang
+/// is finitely bounded by that same watchdog (G-263). Inert when unset.
+pub const PG_STOP_HANG_ENV: &str = "FREDO_PG_STOP_HANG_MS";
+/// **FS-4** injectable fault seam (Spec #2975 ST-2): when set (non-blank) the
+/// shared PostgreSQL pool build is forced to fail at a named stage (`connect` |
+/// `schemaInit`; `1`/`true` => `connect`), so the fail-closed SQLite fallback is
+/// observable WITHOUT corrupting a real data dir (G-275). The value is parsed by
+/// [`crate::infrastructure::storage::engine::PgPoolStage::parse`]. Inert when
+/// unset — the default build is byte-identical to the un-forced path.
+pub const PG_POOL_FORCE_FAIL_ENV: &str = "FREDO_PG_POOL_FORCE_FAIL";
+/// **FS-5** test hook (Spec #2975 ST-7, AC5): when set to a non-blank,
+/// non-`0`/`false` value the managed PostgreSQL server is started WITHOUT the
+/// [`PG_SERVER_KNOBS`] overlay, so the **untuned** baseline (the AC5 "before"
+/// leg) is live-drivable in-repo (G-275). [`runtime::PgRuntime::apply_server_knobs`]
+/// becomes a no-op; the server runs on the `initdb` defaults. Inert when unset —
+/// the default path appends the overlay byte-identically.
+///
+/// NOTE: the overlay is guarded by `PG_KNOB_MARKER` idempotence, so an
+/// already-knobbed data dir is NOT un-knobbed. A FRESH `FREDO_PG_DATA_DIR`
+/// (initdb defaults) is required for the "before" measurement.
+pub const PG_SKIP_SERVER_KNOBS_ENV: &str = "FREDO_PG_SKIP_SERVER_KNOBS";
+/// **ST-2** injectable fault seam (Spec #3022): when set to a non-blank value
+/// other than `0`/`false`, [`runtime::PgRuntime::start`] fails closed WITHOUT
+/// spawning a server, so the config-apply restart-failure branch (pinned-port
+/// collision / prior-config retention, AC3-negative) is drivable in-repo without
+/// corrupting a real cluster (G-275). Inert when unset — the default start path
+/// is byte-identical.
+pub const PG_FORCE_START_FAIL_ENV: &str = "FREDO_PG_FORCE_START_FAIL";
+
+/// Resolve the **ST-2** forced-start-failure lever (mirrors [`skip_server_knobs`]):
+/// `true` when [`PG_FORCE_START_FAIL_ENV`] is set to a non-blank value other than
+/// `0`/`false`, else `false`. One shared rule so the restart orchestrator and
+/// [`runtime::PgRuntime::start`] agree; inert by default.
+pub fn force_start_fail() -> bool {
+    force_start_fail_with(std::env::var(PG_FORCE_START_FAIL_ENV).ok().as_deref())
+}
+
+/// The pure forced-start-failure rule, split out so the lever contract is
+/// unit-testable without mutating process-global environment state (G-222).
+fn force_start_fail_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
+/// **ST-1** (Spec #3067) injectable fault seam (mirrors [`PG_FORCE_START_FAIL_ENV`]):
+/// when set to a non-blank value other than `0`/`false`,
+/// [`runtime::PgRuntime::probe_ready`] returns a credential-rejection error
+/// (`SQLSTATE 28P01`) so the supervisor's `Failed`/`AuthMismatch` recovery path is
+/// live-drivable in ONE app launch — no two-launch credential drift needed. The
+/// text carries the marker [`state::classify_failure_text`] already recognises, so
+/// NO classifier change is required. The lever is **persistent** — read on EVERY
+/// `probe_ready` call (deliberate: a reset under it re-probes and still fails).
+/// Test-only; inert when unset — the default probe is byte-identical.
+pub const PG_FORCE_AUTH_MISMATCH_ENV: &str = "FREDO_PG_FORCE_AUTH_MISMATCH";
+
+/// Resolve the **ST-1** forced-auth-mismatch lever (mirrors [`force_start_fail`]):
+/// `true` when [`PG_FORCE_AUTH_MISMATCH_ENV`] is set to a non-blank value other
+/// than `0`/`false`, else `false`. Inert by default.
+pub fn force_auth_mismatch() -> bool {
+    force_auth_mismatch_with(std::env::var(PG_FORCE_AUTH_MISMATCH_ENV).ok().as_deref())
+}
+
+/// The pure forced-auth-mismatch rule, split out so the lever contract is
+/// unit-testable without mutating process-global environment state (G-222).
+fn force_auth_mismatch_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
+/// Resolve the **FS-5** untuned-baseline lever (mirrors [`stop_hang_duration`]):
+/// `true` when [`PG_SKIP_SERVER_KNOBS_ENV`] is set to a non-blank value other
+/// than `0`/`false`, else `false`. One shared rule so `apply_server_knobs` and
+/// any future status/telemetry read agree; inert by default.
+pub fn skip_server_knobs() -> bool {
+    match std::env::var(PG_SKIP_SERVER_KNOBS_ENV) {
+        Ok(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Resolve the managed data dir (**FS-1**): the non-blank [`PG_DATA_DIR_ENV`]
+/// override when set, else `<app_data_dir>/<PG_DATA_SUBDIR>`. One shared rule so
+/// the sweep, the [`runtime::PgRuntime`] settings, and the reported `data_dir`
+/// can never diverge.
+pub fn resolve_data_dir(app_data_dir: &Path) -> PathBuf {
+    match std::env::var(PG_DATA_DIR_ENV) {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.join(PG_DATA_SUBDIR),
+    }
+}
+
+/// Resolve the managed distribution/installation dir (Spec #2978 S2): the
+/// non-blank [`PG_INSTALL_DIR_ENV`] override when set, else
+/// `<app_data_dir>/<PG_INSTALL_SUBDIR>`. ONE shared rule so [`runtime::PgRuntime`],
+/// [`acquisition::acquire_pg_archive`], and [`extraction::extract_verified_archive`]
+/// can never diverge.
+pub fn resolve_install_dir(app_data_dir: &Path) -> PathBuf {
+    match std::env::var(PG_INSTALL_DIR_ENV) {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.join(PG_INSTALL_SUBDIR),
+    }
+}
+
+/// Resolve the exclusive-lock directory (Spec #2992 CU-1, G-275/G-296): the
+/// non-blank [`PG_LOCK_DIR_ENV`] override when set, else `app_data_dir` itself.
+/// The lock file is always `<lock_dir>/<PG_LOCK_FILENAME>`. A caller-supplied
+/// value always WINS; the default applies only when the env is unset/blank, so
+/// the default lock path is byte-identical to the pre-CU-1 path.
+pub fn resolve_lock_dir(app_data_dir: &Path) -> PathBuf {
+    resolve_lock_dir_with(std::env::var(PG_LOCK_DIR_ENV).ok().as_deref(), app_data_dir)
+}
+
+/// The pure lock-dir rule, split out so the caller-wins / default-only-when-blank
+/// contract is unit-testable without mutating process-global environment state
+/// (G-222).
+fn resolve_lock_dir_with(override_value: Option<&str>, app_data_dir: &Path) -> PathBuf {
+    match override_value {
+        Some(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
+        _ => app_data_dir.to_path_buf(),
+    }
+}
+
+/// `<data_dir>/log/postgres.log` — the ONE path rule for the postmaster log,
+/// shared by the crate settings that create it ([`runtime::PgRuntime`]) and the
+/// read-only tail ([`state::pg_server_log_tail`]), so the writer and the reader
+/// can never diverge.
+pub fn pg_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PG_LOG_SUBDIR).join(PG_LOG_FILENAME)
+}
+
+/// The **FS-3** stop-hang duration, capped at [`PG_CONTROL_TIMEOUT`]; `None` when
+/// [`PG_STOP_HANG_ENV`] is unset, blank, unparseable, or zero — so the default
+/// path is unchanged.
+pub fn stop_hang_duration() -> Option<Duration> {
+    let millis: u64 = std::env::var(PG_STOP_HANG_ENV).ok()?.trim().parse().ok()?;
+    (millis > 0).then(|| Duration::from_millis(millis).min(PG_CONTROL_TIMEOUT))
+}
+
+// ── Server memory knobs (Spec #2975 ST-2, REQ-5/EARS-5.1) ─────────────────────
+
+/// Server-memory knobs overlaid onto `<data_dir>/postgresql.conf` after `setup()`
+/// and before `start()` (ST-2), then verified live via `SHOW` (ST-7/QA).
+/// `max_connections = 12` is the policy value `PG_SERVER_MAX_CONNECTIONS`
+/// (Spec #3028) — strictly above the shared pool cap (`PG_POOL_MAX_CONNECTIONS`
+/// = 8) so a second client still connects while the pool holds its slots; the
+/// overlay is reconciled/superseded on an existing cluster by
+/// [`runtime::PgRuntime::apply_server_knobs`]. `synchronous_commit = off`
+/// replaces SQLite's `PRAGMA synchronous=NORMAL` (store-migration.md §3); the
+/// memory sizes are the desktop profile.
+pub const PG_SERVER_KNOBS: &[(&str, &str)] = &[
+    ("shared_buffers", "32MB"),
+    ("work_mem", "4MB"),
+    ("maintenance_work_mem", "32MB"),
+    ("max_connections", "12"),
+    ("synchronous_commit", "off"),
+];
+
+// ── Wall-clock bounds (G-263: every wait is finite; the #2948 `None` is banned) ─
+
+/// Bounds every `pg_ctl`-driven control command (download / initdb / start /
+/// stop). MUST be assigned to `Settings::timeout` as `Some(...)`, never `None`.
+pub const PG_CONTROL_TIMEOUT: Duration = Duration::from_secs(180);
+/// Bound around `PostgreSQL::setup()` (first run may download the archive).
+pub const PG_SETUP_BOUND: Duration = Duration::from_secs(600);
+/// Bound around `PostgreSQL::start()`.
+pub const PG_START_BOUND: Duration = Duration::from_secs(180);
+/// Readiness poll bound (spawn → first successful real-client connect).
+pub const PG_READY_BOUND: Duration = Duration::from_secs(60);
+/// Per-attempt TCP connect timeout for the readiness probe.
+pub const PG_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bound around the graceful `PostgreSQL::stop()` (the measured ~11 h hang).
+pub const PG_STOP_BOUND: Duration = Duration::from_secs(30);
+/// Bound the `RunEvent::Exit` hook will allow the graceful stop before hard-kill.
+pub const PG_EXIT_HOOK_BOUND: Duration = Duration::from_secs(5);
+/// Upper bound on how long to wait for a killed PID tree to disappear.
+pub const PG_DEATH_WAIT_BOUND: Duration = Duration::from_secs(20);
+/// **ST-4** (Spec #3022): the OUTER wall-clock cap on ONE config apply / database
+/// reset. The whole `stop → setup → knobs → start → readiness → pool rebuild →
+/// swap` restart leg is wrapped in this bound (over the existing inner bounds), so
+/// an apply can never hang the caller (G-263). 300 s.
+pub const PG_APPLY_BOUND: Duration = Duration::from_secs(300);
+
+pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
+pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
+pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
+pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
+pub mod endpoint; // ST-3 (#3029): the embedded-endpoint seam adapter (db_client)
+pub mod extraction; // ST-1 (#3076): Fredo-owned verified-archive extraction
+pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
+pub mod runtime; // ST-1
+pub mod sweep; // ST-2
+pub mod lock; // ST-2
+pub mod state; // ST-3
+
+// The supervisor entry points live in `state`; re-export the two `lib.rs`
+// wiring functions at the module root so `lib.rs` reads
+// `applications::pg_supervisor::{start_supervisor, stop_on_exit}`. The rest of the
+// public contract (`PgState`, `PgStatusView`, `PgSupervisorState`, `await_ready`,
+// `pg_supervisor_status`) is reached through `state::`.
+pub use state::{start_supervisor, stop_on_exit};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CU-1/ST-1 (G-296): the lock-dir rule honours a caller value and defaults
+    /// to `<app_data_dir>` only when the override is unset/blank. The pure helper
+    /// is tested so the contract is pinned without mutating process-global env.
+    #[test]
+    fn resolve_lock_dir_defaults_to_the_app_data_dir_and_honours_the_override() {
+        let app_data_dir = Path::new("C:/app-data");
+        assert_eq!(
+            resolve_lock_dir_with(None, app_data_dir),
+            app_data_dir.to_path_buf(),
+            "unset => the app data dir (byte-identical default)"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some(""), app_data_dir),
+            app_data_dir.to_path_buf(),
+            "empty is inert"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("   "), app_data_dir),
+            app_data_dir.to_path_buf(),
+            "blank is inert"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("C:/custom/lock"), app_data_dir),
+            PathBuf::from("C:/custom/lock"),
+            "a caller-supplied value WINS"
+        );
+        assert_eq!(
+            resolve_lock_dir_with(Some("  C:/custom/lock  "), app_data_dir),
+            PathBuf::from("C:/custom/lock"),
+            "the caller value is trimmed"
+        );
+    }
+
+    /// ST-1 (#3022): the config filename constant is the binding value, and the
+    /// seam env name matches the QA-facing contract.
+    #[test]
+    fn config_filename_and_seam_constants_match_the_contract() {
+        assert_eq!(PG_CONFIG_FILENAME, "postgres-supervisor.json");
+        assert_eq!(PG_FORCE_START_FAIL_ENV, "FREDO_PG_FORCE_START_FAIL");
+    }
+
+    /// ST-2 (#3022): the forced-start-failure lever is inert unless explicitly
+    /// set, and a `0`/`false` value leaves it off. The pure rule is tested so the
+    /// contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_start_fail_rule_is_inert_by_default_and_reads_the_lever() {
+        assert!(!force_start_fail_with(None), "unset is inert");
+        assert!(!force_start_fail_with(Some("")), "blank is inert");
+        assert!(!force_start_fail_with(Some("   ")), "blank is inert");
+        assert!(!force_start_fail_with(Some("0")), "0 is inert");
+        assert!(!force_start_fail_with(Some("false")), "false is inert");
+        assert!(!force_start_fail_with(Some("FALSE")), "false is case-insensitive");
+        assert!(force_start_fail_with(Some("1")));
+        assert!(force_start_fail_with(Some("true")));
+        assert!(force_start_fail_with(Some("yes")));
+    }
+
+    /// ST-1 (#3067): the forced-auth-mismatch lever is inert unless explicitly
+    /// set, and a `0`/`false` value leaves it off. The pure rule is tested so the
+    /// contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_auth_mismatch_rule_is_inert_by_default_and_reads_the_lever() {
+        assert_eq!(
+            PG_FORCE_AUTH_MISMATCH_ENV, "FREDO_PG_FORCE_AUTH_MISMATCH",
+            "the seam env name is the QA-facing contract"
+        );
+        assert!(!force_auth_mismatch_with(None), "unset is inert");
+        assert!(!force_auth_mismatch_with(Some("")), "blank is inert");
+        assert!(!force_auth_mismatch_with(Some("   ")), "blank is inert");
+        assert!(!force_auth_mismatch_with(Some("0")), "0 is inert");
+        assert!(!force_auth_mismatch_with(Some("false")), "false is inert");
+        assert!(
+            !force_auth_mismatch_with(Some("FALSE")),
+            "false is case-insensitive"
+        );
+        assert!(force_auth_mismatch_with(Some("1")));
+        assert!(force_auth_mismatch_with(Some("true")));
+        assert!(force_auth_mismatch_with(Some("yes")));
+    }
+
+    /// ST-1 (#3036): the database-identity constants pin the DECISION OF RECORD —
+    /// the application database is `fredo`, the bootstrap superuser ROLE / boot
+    /// database / maintenance database stay the unchanged literals.
+    #[test]
+    fn database_identity_constants_match_the_decision_of_record() {
+        assert_eq!(PG_DATABASE, "fredo", "the application database is fredo");
+        assert_eq!(PG_SUPERUSER, "postgres", "the superuser ROLE is unchanged");
+        assert_eq!(
+            PG_BOOTSTRAP_DATABASE, "postgres",
+            "initdb's bootstrap database is the rename SOURCE"
+        );
+        assert_eq!(
+            PG_MAINTENANCE_DATABASE, "template1",
+            "the rename connects to template1 (connectable, survives the rename)"
+        );
+    }
+
+    /// ST-1 (#3036): the forced-database-migration-failure lever is inert unless
+    /// explicitly set, and a `0`/`false` value leaves it off. The pure rule is
+    /// tested so the contract is pinned without mutating process-global env (G-222).
+    #[test]
+    fn force_db_migration_fail_rule_is_inert_by_default_and_reads_the_lever() {
+        assert_eq!(
+            PG_FORCE_DB_MIGRATION_FAIL_ENV, "FREDO_PG_FORCE_DB_MIGRATION_FAIL",
+            "the seam env name is the QA-facing contract"
+        );
+        assert!(!force_db_migration_fail_with(None), "unset is inert");
+        assert!(!force_db_migration_fail_with(Some("")), "blank is inert");
+        assert!(!force_db_migration_fail_with(Some("   ")), "blank is inert");
+        assert!(!force_db_migration_fail_with(Some("0")), "0 is inert");
+        assert!(!force_db_migration_fail_with(Some("false")), "false is inert");
+        assert!(
+            !force_db_migration_fail_with(Some("FALSE")),
+            "false is case-insensitive"
+        );
+        assert!(force_db_migration_fail_with(Some("1")));
+        assert!(force_db_migration_fail_with(Some("true")));
+        assert!(force_db_migration_fail_with(Some("yes")));
+    }
+
+    /// ST-2 (#3028): the rendered `PG_SERVER_KNOBS` `max_connections` string MUST
+    /// equal the policy constant `PG_SERVER_MAX_CONNECTIONS` and stay strictly
+    /// above the shared pool cap — the knob string and the policy cannot drift
+    /// (parsing the knob, not a doc comment).
+    #[test]
+    fn server_knobs_max_connections_matches_the_policy_and_exceeds_the_pool_cap() {
+        use crate::infrastructure::storage::engine::{
+            PG_POOL_MAX_CONNECTIONS, PG_SERVER_MAX_CONNECTIONS,
+        };
+        let value = PG_SERVER_KNOBS
+            .iter()
+            .find(|(name, _)| *name == "max_connections")
+            .map(|(_, value)| *value)
+            .expect("PG_SERVER_KNOBS declares max_connections");
+        let parsed: u32 = value
+            .parse()
+            .expect("max_connections must be a bare u32 literal");
+        assert_eq!(
+            parsed, PG_SERVER_MAX_CONNECTIONS,
+            "the knob string must equal PG_SERVER_MAX_CONNECTIONS"
+        );
+        assert!(
+            parsed > PG_POOL_MAX_CONNECTIONS,
+            "the server knob ({parsed}) must strictly exceed the pool cap ({PG_POOL_MAX_CONNECTIONS})"
+        );
+    }
+}

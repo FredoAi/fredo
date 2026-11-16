@@ -7,8 +7,11 @@ use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
+use commands::doom_export::{DoomArgs, DoomCommand};
 use commands::emit::EmitArgs;
+use commands::ingest::IngestArgs;
 use commands::open_app::OpenAppArgs;
+use commands::open_terminal::OpenTerminalArgs;
 use commands::setup::SetupArgs;
 
 /// fredo — infrastructure AI CLI
@@ -30,6 +33,23 @@ pub enum Commands {
     Setup(SetupArgs),
     /// Open a Fredo app window by stable id or display name
     OpenApp(OpenAppArgs),
+    /// Open the Terminal window, optionally starting a CLI in a folder
+    OpenTerminal(OpenTerminalArgs),
+    /// Doom Mode maintenance commands (local only; no egress)
+    Doom(DoomArgs),
+    /// Run the headless ingest daemon (embedded PostgreSQL + OTLP receivers)
+    ///
+    /// Owns the embedded PostgreSQL cluster (shared data dir + shared
+    /// control-plane credential) and serves OTLP/gRPC 127.0.0.1:4317 and
+    /// OTLP/HTTP 127.0.0.1:4318, feeding every received span through the existing
+    /// row pipeline. Runs until SIGINT, the --shutdown-file appears, or --run-ms
+    /// elapses; every teardown is bounded.
+    ///
+    /// Exit codes:
+    ///   0  graceful shutdown
+    ///   1  fail-fast (the data-dir lock is held, or startup failed)
+    ///   2  reserved (app-not-running)
+    Ingest(IngestArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -41,42 +61,48 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 async fn run_async(cli: Cli) -> Result<()> {
-    // Setup commands run locally without requiring the app to be running
-    if let Commands::Setup(ref args) = cli.command {
-        return commands::setup::run_setup(args).await;
-    }
+    // Setup and Ingest run locally without requiring the app to be running. Both
+    // are handled BEFORE the IPC dispatch: Setup is a bounded one-shot; Ingest is
+    // a long-lived daemon that owns its own embedded cluster and receivers.
+    match cli.command {
+        Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
+        Commands::Ingest(args) => {
+            return crate::applications::pg_supervisor::headless::run_ingest_daemon(args).await;
+        }
+        other => {
+            let ipc_cmd = build_ipc_command(other);
+            let response = send_cli_command(&ipc_cmd).await?;
 
-    let ipc_cmd = build_ipc_command(cli.command);
-    let response = send_cli_command(&ipc_cmd).await?;
-
-    match exit_code_for_response(response.as_ref()) {
-        0 => {
-            if let Some(resp) = response {
-                match resp.data {
-                    Some(data) => println!("{}", serde_json::to_string_pretty(&data)?),
-                    None => println!("ok"),
+            match exit_code_for_response(response.as_ref()) {
+                0 => {
+                    if let Some(resp) = response {
+                        match resp.data {
+                            Some(data) => println!("{}", serde_json::to_string_pretty(&data)?),
+                            None => println!("ok"),
+                        }
+                    }
+                }
+                1 => {
+                    // Machine-readable failure data (e.g. the app-open outcome) goes to
+                    // stdout; the human-readable message stays on the log line.
+                    if let Some(data) = response.as_ref().and_then(|resp| resp.data.clone()) {
+                        println!("{}", serde_json::to_string_pretty(&data)?);
+                    }
+                    let message = response
+                        .as_ref()
+                        .and_then(|resp| resp.message.clone())
+                        .unwrap_or_else(|| "unknown error".to_string());
+                    tracing::error!(target: "fredo::cli", message = %message, "CLI error response");
+                    std::process::exit(1);
+                }
+                _ => {
+                    if std::io::stderr().is_terminal() {
+                        tracing::error!(target: "fredo::cli", "IPC socket not found");
+                        tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
+                    }
+                    std::process::exit(2);
                 }
             }
-        }
-        1 => {
-            // Machine-readable failure data (e.g. the app-open outcome) goes to
-            // stdout; the human-readable message stays on the log line.
-            if let Some(data) = response.as_ref().and_then(|resp| resp.data.clone()) {
-                println!("{}", serde_json::to_string_pretty(&data)?);
-            }
-            let message = response
-                .as_ref()
-                .and_then(|resp| resp.message.clone())
-                .unwrap_or_else(|| "unknown error".to_string());
-            tracing::error!(target: "fredo::cli", message = %message, "CLI error response");
-            std::process::exit(1);
-        }
-        _ => {
-            if std::io::stderr().is_terminal() {
-                tracing::error!(target: "fredo::cli", "IPC socket not found");
-                tracing::info!(target: "fredo::cli", "Tip: run `fredo` to launch the desktop app.");
-            }
-            std::process::exit(2);
         }
     }
 
@@ -94,6 +120,19 @@ pub fn exit_code_for_response(response: Option<&CliResponse>) -> i32 {
     }
 }
 
+/// The process exit code for a clap parse failure: `0` for `--help` /
+/// `--version` (a successful, informative request), `1` for a malformed
+/// invocation (`invalid-argument`) — NEVER clap's default `2`, which this CLI
+/// reserves for app-not-running (R-3.3 / R-4.4).
+pub fn exit_code_for_parse_error(kind: clap::error::ErrorKind) -> i32 {
+    match kind {
+        clap::error::ErrorKind::DisplayHelp
+        | clap::error::ErrorKind::DisplayVersion
+        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => 0,
+        _ => 1,
+    }
+}
+
 fn build_ipc_command(cmd: Commands) -> CliCommand {
     match cmd {
         Commands::Emit(args) => {
@@ -108,9 +147,23 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::OpenApp(args) => CliCommand::OpenApp {
             identity: args.identity,
         },
+        Commands::OpenTerminal(args) => CliCommand::OpenTerminal {
+            cli: args.cli,
+            work_dir: args.dir,
+        },
+        Commands::Doom(args) => match args.command {
+            DoomCommand::ExportDataset(export) => CliCommand::DoomExportDataset {
+                format: Some(export.format.as_str().to_string()),
+                out: export.out,
+            },
+        },
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
             unreachable!("Setup command should be handled before IPC dispatch")
+        }
+        Commands::Ingest(_) => {
+            // The headless daemon is handled locally in run_async, not via IPC.
+            unreachable!("Ingest command should be handled before IPC dispatch")
         }
     }
 }
@@ -184,6 +237,7 @@ mod tests {
         let mut root = Cli::command();
         let help = root.render_long_help().to_string();
         assert!(help.contains("open-app"), "`fredo --help` must list open-app:\n{help}");
+        assert!(help.contains("open-terminal"), "`fredo --help` must list open-terminal:\n{help}");
         assert!(help.contains("emit"), "`fredo --help` must keep listing emit:\n{help}");
         assert!(help.contains("setup"), "`fredo --help` must keep listing setup:\n{help}");
 
@@ -195,6 +249,149 @@ mod tests {
             sub_help.contains("IDENTITY"),
             "`fredo open-app --help` must name the identity argument:\n{sub_help}"
         );
+
+        let terminal = root
+            .find_subcommand_mut("open-terminal")
+            .expect("open-terminal is a registered subcommand");
+        let terminal_help = terminal.render_long_help().to_string();
+        assert!(
+            terminal_help.contains("--cli"),
+            "`fredo open-terminal --help` must name --cli:\n{terminal_help}"
+        );
+        assert!(
+            terminal_help.contains("--dir"),
+            "`fredo open-terminal --help` must name --dir:\n{terminal_help}"
+        );
+        // ST-2a / F-81: the advertised value set includes the plain-shell type.
+        assert!(
+            terminal_help.contains("shell|opencode|copilot"),
+            "`fredo open-terminal --help` must advertise the `shell` value:\n{terminal_help}"
+        );
+    }
+
+    #[test]
+    fn build_ipc_command_open_terminal_maps_cli_and_dir() {
+        let cmd = Commands::OpenTerminal(commands::open_terminal::OpenTerminalArgs {
+            cli: Some("copilot".into()),
+            dir: Some(r"C:\Code\fredo".into()),
+        });
+        match build_ipc_command(cmd) {
+            CliCommand::OpenTerminal { cli, work_dir } => {
+                assert_eq!(cli.as_deref(), Some("copilot"));
+                assert_eq!(work_dir.as_deref(), Some(r"C:\Code\fredo"));
+            }
+            other => panic!("expected CliCommand::OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_terminal_subcommand_parses_free_form_values() {
+        // Free-form `Option<String>`s: an unknown CLI and a bogus dir parse
+        // cleanly so the RUNNING APP (not clap) decides the outcome (R-3.4).
+        let cli = Cli::try_parse_from([
+            "fredo",
+            "open-terminal",
+            "--cli",
+            "bogus",
+            "--dir",
+            r"C:\no-such-dir",
+        ])
+        .expect("free-form values parse as one invocation");
+        match cli.command {
+            Commands::OpenTerminal(args) => {
+                assert_eq!(args.cli.as_deref(), Some("bogus"));
+                assert_eq!(args.dir.as_deref(), Some(r"C:\no-such-dir"));
+            }
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_terminal_subcommand_accepts_no_args() {
+        let cli = Cli::try_parse_from(["fredo", "open-terminal"]).expect("no-arg form parses");
+        match cli.command {
+            Commands::OpenTerminal(args) => {
+                assert!(args.cli.is_none());
+                assert!(args.dir.is_none());
+            }
+            other => panic!("expected OpenTerminal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_code_for_parse_error_never_returns_clap_default_two() {
+        use clap::error::ErrorKind;
+        // Help / version are successful, informative requests.
+        assert_eq!(exit_code_for_parse_error(ErrorKind::DisplayHelp), 0);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::DisplayVersion), 0);
+        // A malformed invocation is `invalid-argument` — exit 1, never 2.
+        assert_eq!(exit_code_for_parse_error(ErrorKind::UnknownArgument), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::InvalidValue), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::MissingSubcommand), 1);
+        assert_eq!(exit_code_for_parse_error(ErrorKind::ArgumentConflict), 1);
+    }
+
+    /// ST-5 / F-14 (G-254): `fredo ingest --help` names EVERY flag, its default,
+    /// and documents exit codes 0/1/2 — the declared help is the shipped surface.
+    #[test]
+    fn cli_help_lists_ingest_and_names_every_flag_default_and_exit_code() {
+        use clap::CommandFactory;
+
+        let mut root = Cli::command();
+        let help = root.render_long_help().to_string();
+        assert!(help.contains("ingest"), "`fredo --help` must list ingest:\n{help}");
+
+        let sub = root
+            .find_subcommand_mut("ingest")
+            .expect("ingest is a registered subcommand");
+        let sub_help = sub.render_long_help().to_string();
+        for flag in [
+            "--data-dir",
+            "--pg-data-dir",
+            "--lock-dir",
+            "--grpc-port",
+            "--http-port",
+            "--run-ms",
+            "--shutdown-file",
+        ] {
+            assert!(
+                sub_help.contains(flag),
+                "`fredo ingest --help` must name {flag}:\n{sub_help}"
+            );
+        }
+        for env_name in [
+            "FREDO_DATA_DIR",
+            "FREDO_PG_DATA_DIR",
+            "FREDO_PG_LOCK_DIR",
+            "FREDO_INGEST_GRPC_PORT",
+            "FREDO_INGEST_HTTP_PORT",
+            "FREDO_INGEST_RUN_MS",
+            "FREDO_INGEST_SHUTDOWN_FILE",
+        ] {
+            assert!(
+                sub_help.contains(env_name),
+                "`fredo ingest --help` must name {env_name}:\n{sub_help}"
+            );
+        }
+        assert!(sub_help.contains("4317"), "must name the gRPC default:\n{sub_help}");
+        assert!(sub_help.contains("4318"), "must name the HTTP default:\n{sub_help}");
+        assert!(sub_help.contains("Exit codes"), "must document exit codes:\n{sub_help}");
+        assert!(sub_help.contains("0  graceful shutdown"), "{sub_help}");
+        assert!(sub_help.contains("1  fail-fast"), "{sub_help}");
+        assert!(sub_help.contains("2  reserved"), "{sub_help}");
+    }
+
+    #[test]
+    fn a_malformed_open_terminal_invocation_is_a_parse_error_exit_one() {
+        // `--cli` with no value is clap's own parse error (the app never sees
+        // it): main.rs turns that into `invalid-argument` / exit 1.
+        let err = Cli::try_parse_from(["fredo", "open-terminal", "--cli"])
+            .expect_err("a missing value is a parse error");
+        assert_eq!(exit_code_for_parse_error(err.kind()), 1);
+
+        let unknown = Cli::try_parse_from(["fredo", "open-terminal", "--bogus-flag"])
+            .expect_err("an unknown flag is a parse error");
+        assert_eq!(exit_code_for_parse_error(unknown.kind()), 1);
     }
 
     #[test]
@@ -220,5 +417,99 @@ mod tests {
         assert_eq!(exit_code_for_response(Some(&failed)), 1);
 
         assert_eq!(exit_code_for_response(None), 2);
+    }
+
+    /// ST-5 (R-4): `fredo doom export-dataset --format <fmt> --out <path>` builds
+    /// the `export_doom_dataset` IPC payload — the format token and the out path
+    /// map through unchanged, for every value in the declared value set.
+    #[test]
+    fn build_ipc_command_doom_export_dataset_maps_format_and_out() {
+        for token in ["raw", "sft", "dpo"] {
+            let cli = Cli::try_parse_from([
+                "fredo",
+                "doom",
+                "export-dataset",
+                "--format",
+                token,
+                "--out",
+                "copy.jsonl",
+            ])
+            .unwrap_or_else(|e| panic!("--format {token} must parse: {e}"));
+            match build_ipc_command(cli.command) {
+                CliCommand::DoomExportDataset { format, out } => {
+                    assert_eq!(format.as_deref(), Some(token), "--format {token} payload");
+                    assert_eq!(out.as_deref(), Some("copy.jsonl"), "--out payload");
+                }
+                other => panic!("expected DoomExportDataset, got {other:?}"),
+            }
+        }
+    }
+
+    /// ST-5 (R-4): `--format` defaults to `raw` and `--out` is optional (the
+    /// server then writes to `<dataset_dir>/exports/`).
+    #[test]
+    fn doom_export_dataset_defaults_to_raw_with_no_out() {
+        let cli =
+            Cli::try_parse_from(["fredo", "doom", "export-dataset"]).expect("default form parses");
+        match build_ipc_command(cli.command) {
+            CliCommand::DoomExportDataset { format, out } => {
+                assert_eq!(format.as_deref(), Some("raw"));
+                assert!(out.is_none());
+            }
+            other => panic!("expected DoomExportDataset, got {other:?}"),
+        }
+    }
+
+    /// ST-5 (G-254): an unknown `--format` is rejected by clap (exit 1), never
+    /// forwarded to the app and never mistaken for app-not-running (exit 2).
+    #[test]
+    fn doom_export_dataset_rejects_an_invalid_format() {
+        let err = Cli::try_parse_from(["fredo", "doom", "export-dataset", "--format", "bogus"])
+            .expect_err("an invalid --format is a parse error");
+        assert_eq!(exit_code_for_parse_error(err.kind()), 1);
+    }
+
+    /// ST-5 (G-254): the declared help names `doom` / `export-dataset`, both
+    /// flags, the `raw` default, and the FULL format value set — the shipped help
+    /// is part of the shipped surface.
+    #[test]
+    fn cli_help_lists_doom_export_dataset_and_its_value_set() {
+        use clap::CommandFactory;
+
+        let mut root = Cli::command();
+        let help = root.render_long_help().to_string();
+        assert!(help.contains("doom"), "`fredo --help` must list doom:\n{help}");
+
+        let doom = root
+            .find_subcommand_mut("doom")
+            .expect("doom is a registered subcommand");
+        let doom_help = doom.render_long_help().to_string();
+        assert!(
+            doom_help.contains("export-dataset"),
+            "`fredo doom --help` must list export-dataset:\n{doom_help}"
+        );
+
+        let export = doom
+            .find_subcommand_mut("export-dataset")
+            .expect("export-dataset is a registered subcommand");
+        let export_help = export.render_long_help().to_string();
+        assert!(
+            export_help.contains("--format"),
+            "`fredo doom export-dataset --help` must name --format:\n{export_help}"
+        );
+        assert!(
+            export_help.contains("--out"),
+            "`fredo doom export-dataset --help` must name --out:\n{export_help}"
+        );
+        for value in ["raw", "sft", "dpo"] {
+            assert!(
+                export_help.contains(value),
+                "`fredo doom export-dataset --help` must advertise {value}:\n{export_help}"
+            );
+        }
+        assert!(
+            export_help.contains("[default: raw]"),
+            "`fredo doom export-dataset --help` must name the raw default:\n{export_help}"
+        );
     }
 }

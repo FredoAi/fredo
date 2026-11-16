@@ -11,6 +11,10 @@ import { ThemeProvider } from './app/providers/ThemeProvider';
 import { CompanionProvider } from './shared/contexts/CompanionContext';
 import { FredoCompanion } from './shared/components/companion';
 import { Router } from './app/routes/Router';
+// Spec #3122 ST-2 — the ONE navigation shell provider: installs the global chord
+// dispatcher and renders the ONE navigation announcer. Mounted here so BOTH
+// webviews (main and `?view=terminal`) run exactly one navigation keyboard runtime.
+import { NavigationProvider } from './shared/navigation/ui';
 import { DevAdapter } from './app/adapters/DevAdapter';
 import { TauriAdapter } from './app/adapters/TauriAdapter';
 import { adapterBridge } from './shared/utils/adapterBridge';
@@ -29,6 +33,10 @@ adapterBridge.setLlmChatWithSkills(adapter.llmChatWithSkills?.bind(adapter));
 // #2897 ST-3 (REQ-5) — the model-audio path is optional on HostAdapter; in-repo
 // adapters implement it, so this is always registered in practice.
 adapterBridge.setLlmChatWithAudio(adapter.llmChatWithAudio?.bind(adapter));
+// #2918 ST-3 — the structured-status path is optional on HostAdapter; in-repo
+// adapters (TauriAdapter/DevAdapter) implement it, so this is always registered
+// in practice.
+adapterBridge.setLlmChatWithStatus(adapter.llmChatWithStatus?.bind(adapter));
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -38,8 +46,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <AppProvider adapter={adapter}>
             <CompanionProvider>
               <ReactFlowProvider>
-                <Router />
-                <Toaster />
+                <NavigationProvider>
+                  <Router />
+                  <Toaster />
+                </NavigationProvider>
               </ReactFlowProvider>
               <FredoCompanion />
             </CompanionProvider>

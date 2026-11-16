@@ -2,7 +2,7 @@
  * Capability interfaces — TypeScript mirror of `src-tauri/src/runtime/capability.rs`.
  *
  * These interfaces declare what transport surfaces a feature may expose.
- * `FredoFeatureClass` is the concrete implementation of `DesktopCapable` for
+ * `FredoApplicationClass` is the concrete implementation of `DesktopCapable` for
  * all grid features — implementing this interface is implicit via the class contract.
  *
  * Adding a new transport (e.g. MCP) means implementing `McpCapable` on the feature
@@ -11,7 +11,7 @@
 
 /**
  * A feature that renders in the desktop UI.
- * Implemented concretely by `FredoFeatureClass`.
+ * Implemented concretely by `FredoApplicationClass`.
  */
 export interface DesktopCapable {
   readonly id: string;

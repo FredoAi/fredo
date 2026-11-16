@@ -1,6 +1,6 @@
 {
     "$schema": "https://opencode.ai/config.json",
-    "instructions": [],
+    "instructions": ["docs/ENGINEERING_RULES.md"],
     "agent": {
         "product-owner": {
             "description":  "Clarifies requirements, creates backlog issues, dispatches the Self-Improver (orchestrator). Use when a human requests work. Outputs a backlog issue.",
@@ -50,8 +50,12 @@
                 },
                 "task": {
                     "*": "deny",
-                    "self-improver": "allow"
-                }
+                    "orchestrator": "allow"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
             }
         },
         "software-architect": {
@@ -85,7 +89,6 @@
                     "gh pr view*": "allow",
                     "gh pr list*": "allow",
                     "gh pr checks*": "allow",
-                    "sqlite3*": "allow",
                     "* \u0026\u0026 *": "deny",
                     "*&*": "deny",
                     "*;*": "deny",
@@ -94,8 +97,15 @@
                     "*|*": "deny",
                     "* || *": "deny",
                     "* ; *": "deny",
-                    "* | *": "deny"
-                }
+                    "* | *": "deny",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny",
+                "~/.cargo/registry/src/**": "allow"
+            }
             }
         },
         "ui-ux-expert": {
@@ -114,7 +124,7 @@
                 "webfetch": "allow",
                 "glob": "allow",
                 "grep": "allow",
-                "chakra_ui_*": "allow",
+                "chakra-ui_*": "allow",
                 "reactbits_*": "allow",
                 "task": "deny",
                 "question": "deny",
@@ -144,7 +154,11 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
             }
         },
         "qa-expert": {
@@ -180,7 +194,6 @@
                     "gh pr view*": "allow",
                     "gh pr list*": "allow",
                     "gh pr checks*": "allow",
-                    "sqlite3*": "allow",
                     "* \u0026\u0026 *": "deny",
                     "*&*": "deny",
                     "*;*": "deny",
@@ -190,7 +203,11 @@
                     "* || *": "deny",
                     "* ; *": "deny",
                     "* | *": "deny"
-                }
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
             }
         },
         "developer": {
@@ -208,8 +225,8 @@
                 "task": "deny",
                 "question": "deny",
                 "tauri_*": "deny",
-                "chakra_ui_*": "allow",
                 "reactbits_*": "deny",
+                "chakra-ui_*": "allow",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -309,9 +326,27 @@
                     "* | *": "deny",
                     "git rm*": "allow",
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
-                    "sqlite3 -readonly*": "allow",
-                    "git checkout -- *": "allow"
-                }
+                    "git checkout -- *": "allow",
+                    "copilot*": "allow",
+                    "gh run view*": "allow",
+                    "git worktree list*": "allow",
+                    "git rev-parse*": "allow",
+                    "powershell -File scripts/doom/*": "allow",
+                    "git clone*": "allow",
+                    "*restful-doom*": "allow",
+                    "Remove-Item scripts/doom/*": "allow",
+                    "git apply*": "allow",
+                    "Test-Path*": "allow",
+                    "git worktree add*": "allow",
+                    "git worktree remove*": "allow",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny",
+                "~/.cargo/registry/src/**": "allow"
+            }
             }
         },
         "tester": {
@@ -331,8 +366,8 @@
                 "task": "deny",
                 "question": "deny",
                 "tauri_*": "allow",
-                "chakra_ui_*": "deny",
                 "reactbits_*": "deny",
+                "chakra-ui_*": "deny",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -358,12 +393,10 @@
                     "git fetch*": "allow",
                     "git remote*": "allow",
                     "powershell -File .opencode/scripts/dev-env.ps1*": "allow",
-                    "powershell -File .opencode/scripts/clean-fredo-db.ps1*": "allow",
                     "powershell -File .opencode/scripts/test-scripts.ps1*": "allow",
                     "powershell -File .opencode/scripts/wait-telemetry.ps1*": "allow",
                     "powershell -File .opencode/scripts/process-hygiene.ps1*": "allow",
                     "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*": "allow",
-                    "sqlite3 -readonly*": "allow",
                     "git checkout*": "allow",
                     "git add*": "allow",
                     "git commit*": "allow",
@@ -382,15 +415,6 @@
                     "Set-Content .opencode/*": "allow",
                     "*..*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*": "allow",
-                    "* \u0026\u0026 *": "deny",
-                    "*&*": "deny",
-                    "*;*": "deny",
-                    "*&&*": "deny",
-                    "*||*": "deny",
-                    "*|*": "deny",
-                    "* || *": "deny",
-                    "* ; *": "deny",
-                    "* | *": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*gh *": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*git push*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*git merge*": "deny",
@@ -401,34 +425,183 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
-                    "git checkout -- *": "allow"
-                }
+                    "git checkout -- *": "allow",
+                    "cargo check*": "allow",
+                    "cargo clippy*": "allow",
+                    "cargo test*": "allow",
+                    "copilot*": "allow",
+                    "powershell -File .opencode/scripts/run-exitcode.ps1*": "allow",
+                    "cargo build*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny",
+                    "cargo run*": "allow",
+                    "gh run view*": "allow",
+                    "powershell -File scripts/doom/*": "allow",
+                    "*restful-doom*": "allow",
+                    "tasklist*": "allow",
+                    "taskkill*": "allow",
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
+                    "powershell -File .opencode/tmp/*": "allow",
+                    "git worktree add*": "allow",
+                    "git worktree remove*": "allow",
+                    "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny",
+                "~/AppData/Roaming/com.fredo.app/**": "allow",
+                "~/AppData/Local/com.fredo.app/**": "allow",
+                "~/.config/opencode/plugins/**": "allow",
+                "~/.cargo/registry/src/**": "allow"
+            }
             }
         },
-        "self-improver": {
-            "description": "Orchestrates the agentic pipeline AND audits every issue: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), developer pool, and tester; assembles/generates work via the state machine (transition side-effects); posts the audit verdict (success or restart phase) and improves the pipeline's root causes on restart. Also the documentation owner: syncs product docs (ARCHITECTURE.md, CLI_GUIDE.md, SETUP.md, SECURITY.md, FAQ.md) at the gate. The SI NEVER researches code and carries no telemetry/observability scope - code research (source, spans, telemetry, profiling) belongs to the Software Architect. Dispatched by the Product Owner after intake.",
+        "machinist": {
+            "description": "Machine owner. Keeps the state machine honest (fixes/hardens pipeline-state.rs, pipeline.json, state-machine.md — every edit passes test-scripts.ps1, never rewrites the record), owns the agent permission/sandbox map and the public-repo hardening actions, and owns the pipeline's measurement instrumentation. Dispatched when the machine, a sandbox rule, or the metrics need work.",
             "mode": "subagent",
             "model": "commandcode/deepseek/deepseek-v4.1-flash",
             "reasoningEffort": "high",
-            "prompt": "{file:.opencode/agents/self-improver.md}",
+            "prompt": "{file:.opencode/agents/machinist.md}",
             "permission": {
-                "edit": "allow",
+                "edit": {
+                        "*": "deny",
+                        ".opencode/tmp/**": "allow",
+                        ".opencode/scripts/pipeline-state.rs": "allow",
+                        ".opencode/pipeline.json": "allow",
+                        ".opencode/skills/pipeline-state/**": "allow",
+                        "docs/agentic-pipeline/state-machine.md": "allow",
+                        ".opencode/scripts/test-scripts.ps1": "allow"
+                },
                 "read": "allow",
                 "webfetch": "allow",
                 "glob": "allow",
                 "grep": "allow",
-                "task": {
-                    "*": "deny",
-                    "software-architect": "allow",
-                    "ui-ux-expert": "allow",
-                    "qa-expert": "allow",
-                    "developer": "allow",
-                    "tester": "allow"
-                },
+                "task": "deny",
                 "question": "deny",
-                "tauri_*": "deny",
-                "chakra_ui_*": "deny",
-                "reactbits_*": "deny",
+                "doom_loop": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "powershell -File .opencode/scripts/test-scripts.ps1*": "allow",
+                    "gh issue view*": "allow",
+                    "gh issue list*": "allow",
+                    "gh pr view*": "allow",
+                    "gh pr list*": "allow",
+                    "gh pr checks*": "allow",
+                    "git log*": "allow",
+                    "git status*": "allow",
+                    "git diff*": "allow",
+                    "git branch*": "allow",
+                    "git show*": "allow",
+                    "git fetch*": "allow",
+                    "git remote*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
+            }
+        },
+        "toolsmith": {
+            "description": "Reusable-capability owner. Authors the skills and scripts the pipeline agents use (each script ships with the skill that documents it — principle 9) and the tooling library that replaces ad-hoc agent scripts. Never ships a capability that writes and executes arbitrary code. Dispatched by the orchestrator when a tooling gap is found.",
+            "mode": "subagent",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
+            "reasoningEffort": "high",
+            "prompt": "{file:.opencode/agents/toolsmith.md}",
+            "permission": {
+                "edit": {
+                        "*": "deny",
+                        ".opencode/tmp/**": "allow",
+                        ".opencode/skills/**": "allow",
+                        ".opencode/scripts/**": "allow",
+                        ".opencode/scripts/pipeline-state.rs": "deny",
+                        ".opencode/tests/**": "allow"
+                },
+                "read": "allow",
+                "webfetch": "allow",
+                "glob": "allow",
+                "grep": "allow",
+                "task": "deny",
+                "question": "deny",
+                "doom_loop": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow",
+                    "skill-authoring": "allow",
+                    "dev-environment": "allow"
+                },
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "powershell -File .opencode/scripts/test-scripts.ps1*": "allow",
+                    "gh issue view*": "allow",
+                    "gh issue list*": "allow",
+                    "gh pr view*": "allow",
+                    "gh pr list*": "allow",
+                    "gh pr checks*": "allow",
+                    "git log*": "allow",
+                    "git status*": "allow",
+                    "git diff*": "allow",
+                    "git branch*": "allow",
+                    "git show*": "allow",
+                    "git fetch*": "allow",
+                    "git remote*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
+            }
+        },
+        "curator": {
+            "description": "Durable-lessons owner. Distills cross-spec lessons from failures into the pipeline's guardrails, playbooks, and references; persists and curates `### G-` guardrail records (dedup, retirement, effectiveness tracking); routes a root cause to the right lever. Improves the pipeline, never the product. Dispatched by the orchestrator after an audit restart.",
+            "mode": "subagent",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
+            "reasoningEffort": "high",
+            "prompt": "{file:.opencode/agents/curator.md}",
+            "permission": {
+                "edit": {
+                        "*": "deny",
+                        ".opencode/tmp/**": "allow",
+                        "docs/agentic-pipeline/**": "allow",
+                        "docs/agentic-pipeline/principles.md": "deny"
+                },
+                "read": "allow",
+                "webfetch": "allow",
+                "glob": "allow",
+                "grep": "allow",
+                "task": "deny",
+                "question": "deny",
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
@@ -450,9 +623,127 @@
                     "git show*": "allow",
                     "git fetch*": "allow",
                     "git remote*": "allow",
-                    "sqlite3*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
+            }
+        },
+        "auditor": {
+            "description": "Independent verification gate. Runs the integrity gate, reads the audit bundle, re-derives every acceptance-criterion verdict from the recorded evidence, rejects false PASS and unbacked UNVERIFIED rows, and posts the success-or-restart verdict (phase + root cause + reason) through the state machine. Read-only. Dispatched by the orchestrator at the audit phase.",
+            "mode": "subagent",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
+            "reasoningEffort": "high",
+            "prompt": "{file:.opencode/agents/auditor.md}",
+            "permission": {
+                "edit": {
+                        "*": "deny",
+                        ".opencode/tmp/**": "allow"
+                },
+                "read": "allow",
+                "webfetch": "allow",
+                "glob": "allow",
+                "grep": "allow",
+                "task": "deny",
+                "question": "deny",
+                "doom_loop": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow"
+                },
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "gh issue list*": "allow",
+                    "gh pr view*": "allow",
+                    "gh pr list*": "allow",
+                    "gh pr checks*": "allow",
+                    "git log*": "allow",
+                    "git status*": "allow",
+                    "git diff*": "allow",
+                    "git branch*": "allow",
+                    "git show*": "allow",
+                    "git fetch*": "allow",
+                    "git remote*": "allow",
+                    "* \u0026\u0026 *": "deny",
+                    "*&*": "deny",
+                    "*;*": "deny",
+                    "*&&*": "deny",
+                    "*||*": "deny",
+                    "*|*": "deny",
+                    "* || *": "deny",
+                    "* ; *": "deny",
+                    "* | *": "deny"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
+            }
+        },
+        "orchestrator": {
+            "description": "Orchestrates the agentic pipeline end-to-end: dispatches the triage cluster (software-architect, ui-ux-expert, qa-expert), the developer pool, the tester, and the specialist roles (auditor, curator, toolsmith, machinist); runs the transitions, staffing, blockers, and teardown; runs the gate doc-sync. Owns the whole flow, including restarts. Never researches code. Dispatched by the Product Owner after intake.",
+            "mode": "subagent",
+            "model": "commandcode/deepseek/deepseek-v4.1-flash",
+            "reasoningEffort": "high",
+            "prompt": "{file:.opencode/agents/orchestrator.md}",
+            "permission": {
+                "edit": "allow",
+                "read": "allow",
+                "webfetch": "allow",
+                "glob": "allow",
+                "grep": "allow",
+                "task": {
+                    "*": "deny",
+                    "software-architect": "allow",
+                    "ui-ux-expert": "allow",
+                    "qa-expert": "allow",
+                    "developer": "allow",
+                    "tester": "allow",
+                    "auditor": "allow",
+                    "curator": "allow",
+                    "toolsmith": "allow",
+                    "machinist": "allow"
+                },
+                "question": "deny",
+                "tauri_*": "deny",
+                "reactbits_*": "deny",
+                "chakra-ui_*": "deny",
+                "doom_loop": "allow",
+                "skill": {
+                    "*": "deny",
+                    "pipeline-state": "allow",
+                    "retro-analysis": "allow",
+                    "dev-environment": "allow",
+                    "doc-sync": "allow"
+                },
+                "bash": {
+                    "*": "deny",
+                    "rust-script .opencode/scripts/pipeline-state.rs*": "allow",
+                    "gh issue view*": "allow",
+                    "gh issue list*": "allow",
+                    "gh pr view*": "allow",
+                    "gh pr list*": "allow",
+                    "gh pr checks*": "allow",
+                    "git log*": "allow",
+                    "git status*": "allow",
+                    "git diff*": "allow",
+                    "git branch*": "allow",
+                    "git show*": "allow",
+                    "git fetch*": "allow",
+                    "git remote*": "allow",
                     "powershell -File .opencode/scripts/dev-env.ps1*": "allow",
-                    "powershell -File .opencode/scripts/clean-fredo-db.ps1*": "allow",
                     "powershell -File .opencode/scripts/test-scripts.ps1*": "allow",
                     "git add*": "allow",
                     "git commit*": "allow",
@@ -464,7 +755,7 @@
                     "git push origin --prune*": "deny",
                     "git push origin main*": "deny",
                     "git push origin master*": "deny",
-                    "git push origin main": "allow",
+                    "git push origin main": "deny",
                     "git push origin main:*": "deny",
                     "git push origin +main*": "deny",
                     "git push origin +master*": "deny",
@@ -525,7 +816,37 @@
                     "$env:OPENCODE_ENABLE_TELEMETRY*Remove-Item*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Set-Content*": "deny",
                     "$env:OPENCODE_ENABLE_TELEMETRY*Copy-Item*": "deny",
-                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny"
+                    "$env:OPENCODE_ENABLE_TELEMETRY*New-Item*": "deny",
+                    "gh run view*": "allow",
+                    "powershell -File .opencode/scripts/check-sqlite-retired.ps1*": "allow",
+                    "Remove-Item .git/index.lock*": "allow"
+                },
+                "external_directory": {
+                "~/.local/share/opencode/**": "deny",
+                "*": "deny"
+            }
+            }
+        }
+    },
+    "provider": {
+        "opencode-go": {
+            "models": {
+                "deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash",
+                    "attachment": true,
+                    "modalities": {
+                        "input": [
+                            "text",
+                            "image"
+                        ],
+                        "output": [
+                            "text"
+                        ]
+                    },
+                    "reasoning": true,
+                    "options": {
+                        "reasoningEffort": "high"
+                    }
                 }
             }
         }
@@ -536,7 +857,7 @@
             "command": [
                 "npx",
                 "-y",
-                "@chakra-ui/react-mcp"
+                "@chakra-ui/react-mcp@2.1.1"
             ],
             "enabled": true
         },
@@ -545,7 +866,7 @@
             "command": [
                 "npx",
                 "-y",
-                "reactbits-dev-mcp-server"
+                "reactbits-dev-mcp-server@1.1.2"
             ],
             "enabled": true
         },
@@ -554,10 +875,14 @@
             "command": [
                 "npx",
                 "-y",
-                "@hypothesi/tauri-mcp-server"
+                "@hypothesi/tauri-mcp-server@0.13.2"
             ],
             "enabled": true
         }
     },
-    "subagent_depth": 5
+    "subagent_depth": 5,
+    "compaction": {
+        "auto": true,
+        "buffer": 200000
+    }
 }

@@ -111,7 +111,7 @@ Numbered steps for fragile work; principles for judgment work (match to fragilit
 Input → output pairs showing expected style and detail.
 
 ## Resources (navigation — one level deep only)
-- Advanced API details: see [reference.md](reference.md)
+- Advanced API details: see [docs/agentic-pipeline/playbooks/references.md](../docs/agentic-pipeline/playbooks/references.md)
 - Validation: run `python scripts/validate.py`
 ```
 

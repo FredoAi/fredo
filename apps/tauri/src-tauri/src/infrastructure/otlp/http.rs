@@ -19,7 +19,7 @@ use axum::{
     Router,
 };
 use prost::Message;
-use tauri::{AppHandle, Manager};
+use std::time::Instant;
 
 use opentelemetry_proto::tonic::collector::{
     logs::v1::ExportLogsServiceRequest,
@@ -28,16 +28,25 @@ use opentelemetry_proto::tonic::collector::{
 };
 
 use crate::infrastructure::comm::event::Transport;
-use crate::infrastructure::rtdb::ingest::IngestClassifierState;
+use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
 use crate::infrastructure::otlp::grpc::{otlp_logs_to_records, otlp_metrics_to_points};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
-use crate::infrastructure::storage::span_store::SpanStore;
+use crate::infrastructure::otlp::ReceiverContext;
+
+/// R-5 (Spec #3067): per-site back-off gating the HTTP OTLP persist error
+/// emissions, so a fail-closed engine does not flood the log with identical
+/// insert-failure lines. Spans, metrics, and logs keep distinct keys.
+static OTLP_SPANS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_METRICS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
+static OTLP_LOGS_BACKOFF: ErrorBackoff = ErrorBackoff::new();
 
 /// Shared state for the OTLP HTTP server.
 #[derive(Clone)]
 struct OtlpState {
-    app: AppHandle,
+    ctx: std::sync::Arc<ReceiverContext>,
+    /// The loopback port this server is bound to (echoed by `/health`).
+    http_port: u16,
 }
 
 // ── Handler helpers ───────────────────────────────────────────────────────────
@@ -52,35 +61,56 @@ fn is_protobuf(headers: &HeaderMap) -> bool {
 
 /// R1/R5: persist every span in the export to `telemetry_spans` before and
 /// independent of delivery processing. Insert failure logs-and-continues (R11).
-fn persist_raw_spans(app: &AppHandle, request: &ExportTraceServiceRequest, transport: &str) {
-    let store = app.state::<std::sync::Arc<SpanStore>>();
+async fn persist_raw_spans(ctx: &ReceiverContext, request: &ExportTraceServiceRequest, transport: &str) {
+    let store = &ctx.span_store;
     let raw_spans = raw_spans_from_export(request, transport);
-    match store.insert_raw_spans(&raw_spans) {
-        Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted"),
-        Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "raw OTLP span insert failed"),
+    match store.insert_raw_spans(&raw_spans).await {
+        Ok(n) => {
+            tracing::info!(target: "fredo::otlp", inserted = n, "raw OTLP spans persisted");
+            OTLP_SPANS_BACKOFF.reset();
+        }
+        Err(e) => {
+            if let Some(suppressed) = OTLP_SPANS_BACKOFF.due(Instant::now()) {
+                tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "raw OTLP span insert failed");
+            }
+        }
     }
 }
 
 /// R2: persist OTLP metric points to `telemetry_metrics` (log-and-continue).
-fn persist_metrics(app: &AppHandle, request: &ExportMetricsServiceRequest) {
+async fn persist_metrics(ctx: &ReceiverContext, request: &ExportMetricsServiceRequest) {
     let points = otlp_metrics_to_points(request);
     if !points.is_empty() {
-        let store = app.state::<std::sync::Arc<SpanStore>>();
-        match store.insert_metrics(&points) {
-            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP metrics persisted"),
-            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP metrics insert failed"),
+        let store = &ctx.span_store;
+        match store.insert_metrics(&points).await {
+            Ok(n) => {
+                tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP metrics persisted");
+                OTLP_METRICS_BACKOFF.reset();
+            }
+            Err(e) => {
+                if let Some(suppressed) = OTLP_METRICS_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP HTTP metrics insert failed");
+                }
+            }
         }
     }
 }
 
 /// R2: persist OTLP log records to `telemetry_logs` (log-and-continue).
-fn persist_logs(app: &AppHandle, request: &ExportLogsServiceRequest) {
+async fn persist_logs(ctx: &ReceiverContext, request: &ExportLogsServiceRequest) {
     let records = otlp_logs_to_records(request);
     if !records.is_empty() {
-        let store = app.state::<std::sync::Arc<SpanStore>>();
-        match store.insert_logs(&records) {
-            Ok(n) => tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP log records persisted"),
-            Err(e) => tracing::error!(target: "fredo::otlp", error = %e, "OTLP HTTP log insert failed"),
+        let store = &ctx.span_store;
+        match store.insert_logs(&records).await {
+            Ok(n) => {
+                tracing::info!(target: "fredo::otlp", inserted = n, "OTLP HTTP log records persisted");
+                OTLP_LOGS_BACKOFF.reset();
+            }
+            Err(e) => {
+                if let Some(suppressed) = OTLP_LOGS_BACKOFF.due(Instant::now()) {
+                    tracing::error!(target: "fredo::otlp", error = %e, suppressed = suppressed, "OTLP HTTP log insert failed");
+                }
+            }
         }
     }
 }
@@ -92,7 +122,7 @@ async fn handle_traces(
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
-    let app = &state.app;
+    let ctx = &state.ctx;
     if is_protobuf(&headers) {
         // Protobuf OTLP — decode, persist raw, then classify into RTDB rows.
         match ExportTraceServiceRequest::decode(body) {
@@ -101,7 +131,7 @@ async fn handle_traces(
                 // Persisted transport keeps today's name (`otlp_grpc` —
                 // HTTP-protobuf traces are delivered tagged OtlpGrpc, the
                 // pre-existing quirk).
-                persist_raw_spans(app, &req, "otlp_grpc");
+                persist_raw_spans(ctx, &req, "otlp_grpc").await;
 
                 let json_value = serde_json::json!({
                     "resourceSpans": req.resource_spans
@@ -110,12 +140,23 @@ async fn handle_traces(
                 // classifier entry point as the gRPC receiver. Preserve the
                 // pre-existing quirk: HTTP-protobuf traces are tagged
                 // Transport::OtlpGrpc.
-                let classifier = app.state::<IngestClassifierState>();
-                let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value);
+                let classifier = &ctx.classifier;
+                let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &json_value).await;
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-protobuf export classified into RTDB rows");
                 StatusCode::OK
             }
-            Err(_e) => StatusCode::BAD_REQUEST,
+            Err(e) => {
+                // R-4.2 (Spec #2933 ST-7): a rejected trace body must leave a
+                // non-silent signal. Log-and-continue ONLY — the pre-existing
+                // 400 status is unchanged (no retry-storm contract change), and
+                // no classification runs for a body that did not decode.
+                tracing::warn!(
+                    target: "fredo::otlp",
+                    error = %e,
+                    "rejected OTLP/HTTP protobuf trace export — body failed to decode; export dropped, no rows classified"
+                );
+                StatusCode::BAD_REQUEST
+            }
         }
     } else {
         // JSON OTLP (standard OTLP/HTTP JSON or OpenCode's custom flat format)
@@ -125,19 +166,31 @@ async fn handle_traces(
                 // (camelCase OTLP JSON) when present. The OpenCode flat format
                 // (no envelope) skips raw persistence — classification still runs.
                 if let Ok(req) = serde_json::from_value::<ExportTraceServiceRequest>(val.clone()) {
-                    persist_raw_spans(app, &req, "otlp_http");
+                    persist_raw_spans(ctx, &req, "otlp_http").await;
                 } else {
                     tracing::debug!(target: "fredo::otlp", "non-envelope JSON trace payload — raw persistence skipped");
                 }
 
                 // R3: HTTP-JSON traces are tagged Transport::OtlpHttp.
                 let transport = Transport::OtlpHttp;
-                let classifier = app.state::<IngestClassifierState>();
-                let rows = classifier.ingest_otlp(transport, &val);
+                let classifier = &ctx.classifier;
+                let rows = classifier.ingest_otlp(transport, &val).await;
                 tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "HTTP-JSON export classified into RTDB rows");
                 StatusCode::OK
             }
-            Err(_) => StatusCode::OK,
+            Err(e) => {
+                // R-4.2 (Spec #2933 ST-7): the JSON arm previously returned 200
+                // with NO log — a partial/replayed/duplicated Copilot export
+                // that failed to parse vanished silently. Log-and-continue
+                // ONLY: the 200 status is unchanged (no retry-storm contract
+                // change), and no classification runs for an unparseable body.
+                tracing::warn!(
+                    target: "fredo::otlp",
+                    error = %e,
+                    "rejected OTLP/HTTP JSON trace export — body failed to parse; export dropped, no rows classified"
+                );
+                StatusCode::OK
+            }
         }
     }
 }
@@ -147,12 +200,12 @@ async fn handle_metrics(
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
-    let app = &state.app;
+    let ctx = &state.ctx;
     if is_protobuf(&headers) {
         match ExportMetricsServiceRequest::decode(body) {
             Ok(req) => {
                 // R2: persist all metric points to telemetry_metrics.
-                persist_metrics(app, &req);
+                persist_metrics(ctx, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::BAD_REQUEST,
@@ -161,7 +214,7 @@ async fn handle_metrics(
         // JSON OTLP metrics (standard OTLP/HTTP JSON envelope).
         match serde_json::from_slice::<ExportMetricsServiceRequest>(&body) {
             Ok(req) => {
-                persist_metrics(app, &req);
+                persist_metrics(ctx, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::OK,
@@ -174,12 +227,12 @@ async fn handle_logs(
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
-    let app = &state.app;
+    let ctx = &state.ctx;
     if is_protobuf(&headers) {
         match ExportLogsServiceRequest::decode(body) {
             Ok(req) => {
                 // R2: persist all log records to telemetry_logs.
-                persist_logs(app, &req);
+                persist_logs(ctx, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::BAD_REQUEST,
@@ -188,7 +241,7 @@ async fn handle_logs(
         // JSON OTLP logs (standard OTLP/HTTP JSON envelope).
         match serde_json::from_slice::<ExportLogsServiceRequest>(&body) {
             Ok(req) => {
-                persist_logs(app, &req);
+                persist_logs(ctx, &req).await;
                 StatusCode::OK
             }
             Err(_) => StatusCode::OK,
@@ -199,16 +252,27 @@ async fn handle_logs(
 // ── Health + test endpoints ───────────────────────────────────────────────────
 
 /// GET /health — confirms the HTTP receiver is up.
-async fn handle_health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok", "receiver": "fredo-otlp-http", "port": 4318 }))
+async fn handle_health(State(state): State<OtlpState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok", "receiver": "fredo-otlp-http", "port": state.http_port }))
 }
 
 // ── Server startup ────────────────────────────────────────────────────────────
 
-pub async fn start(app: AppHandle) -> anyhow::Result<()> {
-    let addr: std::net::SocketAddr = "127.0.0.1:4318".parse()?;
+/// The default loopback HTTP OTLP port (unchanged from the pre-#2992 receiver).
+pub const DEFAULT_HTTP_PORT: u16 = 4318;
 
-    let state = OtlpState { app };
+pub async fn start_with(ctx: std::sync::Arc<ReceiverContext>) -> anyhow::Result<()> {
+    start_with_on_port(ctx, DEFAULT_HTTP_PORT).await
+}
+
+/// Serve the HTTP receiver on an explicit loopback `port` (Spec #2992 ST-5).
+pub async fn start_with_on_port(
+    ctx: std::sync::Arc<ReceiverContext>,
+    port: u16,
+) -> anyhow::Result<()> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse()?;
+
+    let state = OtlpState { ctx, http_port: port };
 
     let router = Router::new()
         .route("/health",     get(handle_health))
@@ -345,6 +409,44 @@ mod tests {
         assert_eq!(spans[0].transport.as_deref(), Some("otlp_http"));
     }
 
+    #[test]
+    fn copilot_otlp_json_envelope_deserializes_for_raw_ingestion() {
+        // Spec #2933 ST-5: the `--copilot` injector POSTs this OTLP/HTTP JSON
+        // shape to `/v1/traces` (the transport the Copilot CLI ships). Pin that
+        // the receiver's `with-serde` deserializer accepts it — int64 fields
+        // are decimal STRINGS per the OTLP/JSON spec — and that the span maps
+        // through `raw_spans_from_export` with its session id derived from
+        // `gen_ai.conversation.id`.
+        let json = serde_json::json!({
+            "resourceSpans": [{
+                "resource": { "attributes": [
+                    { "key": "service.name", "value": { "stringValue": "copilot-cli" } },
+                    { "key": "service.version", "value": { "stringValue": "copilot-cli-fixture" } }
+                ]},
+                "scopeSpans": [{ "spans": [{
+                    "name": "invoke_agent copilot",
+                    "traceId": "0f0e0d0c0b0a09080706050403020100",
+                    "spanId": "0102030405060708",
+                    "startTimeUnixNano": "1700000000000000000",
+                    "endTimeUnixNano": "1700000000900000000",
+                    "attributes": [
+                        { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+                        { "key": "gen_ai.conversation.id", "value": { "stringValue": "ses_copilot2933" } },
+                        { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "12480" } }
+                    ]
+                }]}]
+            }]
+        });
+
+        let request: ExportTraceServiceRequest =
+            serde_json::from_value(json).expect("Copilot OTLP/JSON envelope must deserialize");
+        let spans = raw_spans_from_export(&request, "otlp_http");
+        assert_eq!(spans.len(), 1, "the Copilot session span must map");
+        assert_eq!(spans[0].span_name, "invoke_agent copilot");
+        assert_eq!(spans[0].session_id, "ses_copilot2933");
+        assert_eq!(spans[0].transport.as_deref(), Some("otlp_http"));
+    }
+
     // ── R2: HTTP metrics/logs decode + persist (conversion helpers) ──────────
 
     #[test]
@@ -430,5 +532,24 @@ mod tests {
         assert_eq!(records[0].message, "tool result failed");
         assert_eq!(records[0].session_id.as_deref(), Some("sess-log-http"));
         assert_eq!(records[0].trace_id.as_deref(), Some("abababababababababababababababab"));
+    }
+
+    // ── ST-3 (R-1): helpers consume ReceiverContext, no AppHandle ───────────
+
+    #[tokio::test]
+    async fn persist_raw_spans_consumes_receiver_context_without_apphandle() {
+        let ctx = crate::infrastructure::otlp::test_support::receiver_context();
+        let request = trace_export(vec![span_with(
+            "my.llm",
+            [0x11; 8],
+            [0x22; 16],
+            vec![kv(
+                "session.id",
+                any_value::Value::StringValue("sess-ctx-http".to_string()),
+            )],
+        )]);
+        // The context carries no AppHandle; the pending engine fails closed and
+        // the helper logs-and-continues (R11) without panicking.
+        persist_raw_spans(&ctx, &request, "otlp_http").await;
     }
 }

@@ -3,13 +3,13 @@
 //! This module is the single source of truth for the required GGUF model-file
 //! layout (`<models_dir>/<subdir>/<file>`), the pinned acquisition manifest, the
 //! honest on-disk classifier, and the "step is complete" aggregator. It is
-//! consumed by BOTH `features/setup` (acquisition / readiness) and
-//! `features/llm_server` (launch-config refusal via [`is_step_complete`] +
-//! [`missing_files`]), so the two features never import each other and the layout
+//! consumed by BOTH `applications/setup` (acquisition / readiness) and
+//! `applications/llm_server` (launch-config refusal via [`is_step_complete`] +
+//! [`missing_files`]), so the two applications never import each other and the layout
 //! cannot drift (NFR-6).
 //!
-//! Originally authored for #2856 in `features/setup/model_download_state.rs`;
-//! moved here by ST-9 so `features::setup::model_download_state` can re-export it
+//! Originally authored for #2856 in `applications/setup/model_download_state.rs`;
+//! moved here by ST-9 so `applications::setup::model_download_state` can re-export it
 //! with the #2856 download wire/behavior unchanged.
 //!
 //! **Verification contract (binding):** `present` is the exact byte-size gate
@@ -27,12 +27,12 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::infrastructure::storage::AppStore;
+use crate::infrastructure::storage::SettingsStore;
 
-/// AppStore key holding the user-configurable model base directory.
+/// SettingsStore key holding the user-configurable model base directory.
 pub const MODELS_DIR_KEY: &str = "models_dir";
 
-/// AppStore key holding an optional whole-manifest JSON override (#2856 test seam).
+/// SettingsStore key holding an optional whole-manifest JSON override (#2856 test seam).
 pub const MODEL_MANIFEST_PATH_KEY: &str = "model_manifest_path";
 
 /// Fixed disk layout subfolder for the QAT model set (distinct from the legacy
@@ -194,7 +194,7 @@ pub fn parse_manifest(json: &str) -> Result<ModelManifest> {
 }
 
 /// Resolve the manifest: an override JSON when supplied (non-blank), else the
-/// compiled default. `model_manifest_path` is the AppStore override key.
+/// compiled default. `model_manifest_path` is the SettingsStore override key.
 pub fn load_manifest(override_json: Option<&str>) -> Result<ModelManifest> {
     match override_json {
         Some(json) if !json.trim().is_empty() => parse_manifest(json),
@@ -209,7 +209,7 @@ pub fn models_subdir(models_dir: &Path, manifest: &ModelManifest) -> PathBuf {
 
 /// Absolute on-disk path for `spec` under `<models_dir>/<subdir>/<spec.path>`.
 ///
-/// THE shared path rule (`features/setup`'s downloader and `features/llm_server`'s
+/// THE shared path rule (`applications/setup`'s downloader and `applications/llm_server`'s
 /// launch-config resolver both derive from it — never re-implement the join).
 pub fn file_path(models_dir: &Path, manifest: &ModelManifest, spec: &ModelFileSpec) -> PathBuf {
     models_subdir(models_dir, manifest).join(&spec.path)
@@ -314,12 +314,12 @@ pub fn is_step_complete(models_dir: &Path, manifest: &ModelManifest) -> bool {
     !manifest.files.is_empty() && missing_files(models_dir, manifest).is_empty()
 }
 
-/// Resolve the configured `models_dir` from AppStore, falling back to
-/// `{home}/fredo-models`. Shared by BOTH features (one rule).
+/// Resolve the configured `models_dir` from SettingsStore, falling back to
+/// `{home}/fredo-models`. Shared by BOTH applications (one rule).
 pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
     let configured = app
-        .state::<Arc<AppStore>>()
-        .get(MODELS_DIR_KEY)
+        .state::<Arc<SettingsStore>>()
+        .cached_get(MODELS_DIR_KEY)
         .ok()
         .flatten();
     if let Some(dir) = configured {
@@ -334,13 +334,13 @@ pub fn resolve_models_dir(app: &AppHandle) -> PathBuf {
         .join("fredo-models")
 }
 
-/// Resolve the acquisition manifest: the AppStore `model_manifest_path` JSON
+/// Resolve the acquisition manifest: the SettingsStore `model_manifest_path` JSON
 /// override when present and valid, else the compiled [`default_manifest`].
 /// An invalid override never breaks the probe — it logs and falls back.
 pub fn resolve_manifest(app: &AppHandle) -> ModelManifest {
     let override_json = app
-        .state::<Arc<AppStore>>()
-        .get(MODEL_MANIFEST_PATH_KEY)
+        .state::<Arc<SettingsStore>>()
+        .cached_get(MODEL_MANIFEST_PATH_KEY)
         .ok()
         .flatten();
     match load_manifest(override_json.as_deref()) {
@@ -375,7 +375,7 @@ mod tests {
         );
     }
 
-    /// The shared path builder is the ONE rule both features resolve through.
+    /// The shared path builder is the ONE rule both applications resolve through.
     #[test]
     fn file_path_resolves_under_models_dir_and_the_shared_subdir() {
         let manifest = default_manifest();

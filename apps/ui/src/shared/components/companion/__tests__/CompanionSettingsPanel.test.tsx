@@ -1,17 +1,18 @@
 /**
- * Companion settings readiness gate + setup wizard (Spec #2855).
+ * Companion settings readiness gate + setup wizard (Spec #2855; one prerequisite
+ * since #3141 ST-6).
  *
  * Proves the observable contract without a Tauri host:
- *   1. fail-closed — a dev/absent host (`invoke → undefined`) renders ONLY the
- *      wizard, in the `error` state for each prerequisite, and NEVER the normal
- *      controls (no fabricated `installed`);
- *   2. partial readiness — one prerequisite installed / one missing keeps the
- *      wizard and never reads "complete"/renders controls;
- *   3. the install action invokes `install_llama_cpp`, then the re-probe flips
- *      both prerequisites to `installed` and the normal controls replace the
+ *   1. fail-closed — a dev/absent host (`invoke → undefined`) renders the wizard
+ *      in the `error` state for each step, and NEVER the normal controls (no
+ *      fabricated `installed`);
+ *   2. the model files are the ONLY provisioning prerequisite — no
+ *      `companion-step-llama-server` row, no install affordance, and the summary
+ *      banner carries the one-prerequisite story instead of an `n of m` count;
+ *   3. an in-session re-check flips readiness and the normal controls replace the
  *      wizard (AC-3/AC-4) — no reload;
- *   4. both prerequisites installed on first probe renders the normal controls
- *      and no wizard.
+ *   4. once the model files are installed the normal controls render (the ready
+ *      gate still requires a healthy engine).
  *
  * The backend is the source of truth — the test drives `adapterBridge.invoke`.
  */
@@ -26,32 +27,45 @@ import { CompanionSettingsPanel } from '@/shared/components/companion/CompanionS
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type {
   CompanionReadiness,
-  LlamaCppInstallResult,
+  LlamaServerStatus,
 } from '@/shared/components/companion/companionReadiness';
 
 const notReady: CompanionReadiness = {
   ready: false,
   prerequisites: [
-    { id: 'llamaServer', state: 'missing', detail: 'llama-server not found.', resolvedPath: null },
-    { id: 'modelFiles', state: 'missing', detail: '0 of 2 model files present.', resolvedPath: null },
+    { id: 'modelFiles', state: 'missing', detail: '0 of 3 model files present.', resolvedPath: null },
   ],
 };
 
-const llamaOnly: CompanionReadiness = {
-  ready: false,
+/** One backend prerequisite installed but no engine yet — the wizard stays. */
+const modelFilesOnly: CompanionReadiness = {
+  ready: true,
   prerequisites: [
-    { id: 'llamaServer', state: 'installed', detail: 'llama-server found.', resolvedPath: 'C:\\llama-server.exe' },
-    { id: 'modelFiles', state: 'missing', detail: '0 of 2 model files present.', resolvedPath: null },
+    { id: 'modelFiles', state: 'installed', detail: 'All required model files present.', resolvedPath: 'C:\\models' },
   ],
 };
 
 const bothInstalled: CompanionReadiness = {
   ready: true,
   prerequisites: [
-    { id: 'llamaServer', state: 'installed', detail: 'llama-server found.', resolvedPath: 'C:\\llama-server.exe' },
     { id: 'modelFiles', state: 'installed', detail: 'All required model files present.', resolvedPath: 'C:\\models' },
   ],
 };
+
+function status(overrides: Partial<LlamaServerStatus> = {}): LlamaServerStatus {
+  return {
+    running: false,
+    healthy: false,
+    port: null,
+    pid: null,
+    configPath: '',
+    logPath: '',
+    lastError: null,
+    backendMode: 'auto',
+    devices: [],
+    ...overrides,
+  };
+}
 
 function renderPanel() {
   return renderWithChakra(
@@ -90,8 +104,8 @@ afterEach(() => {
   adapterBridge.setInvoke(undefined as never);
 });
 
-describe('CompanionSettingsPanel readiness gate (#2855)', () => {
-  it('fails closed when invoke is unavailable: wizard only, every step error, no controls', async () => {
+describe('CompanionSettingsPanel readiness gate (#2855 / #3141)', () => {
+  it('fails closed when invoke is unavailable: wizard only, step error, no controls', async () => {
     adapterBridge.setInvoke(async () => undefined);
 
     renderPanel();
@@ -104,18 +118,21 @@ describe('CompanionSettingsPanel readiness gate (#2855)', () => {
     expect(screen.queryByTestId('companion-controls')).toBeNull();
     expect(screen.queryByText('Show Fredo Companion')).toBeNull();
 
-    // Both prerequisites are reported independently and honestly.
-    expect(screen.getByTestId('companion-step-llama-server')).toBeInTheDocument();
+    // The ONLY backend prerequisite is the model files (#3141) — the retired
+    // llama.cpp install row must not exist anywhere.
     expect(screen.getByTestId('companion-step-model-files')).toBeInTheDocument();
+    expect(screen.queryByTestId('companion-step-llama-server')).toBeNull();
     await waitFor(() => {
-      expect(screen.getByTestId('companion-step-llama-server')).toHaveAttribute('data-state', 'error');
+      expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'error');
     });
-    expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'error');
+    // No install affordance survives.
+    expect(screen.queryByText('Install llama.cpp')).toBeNull();
   });
 
-  it('partial readiness keeps the wizard and never reads complete', async () => {
+  it('shows the one-prerequisite banner (no `n of m` fraction) while the engine is not running', async () => {
     adapterBridge.setInvoke(async (command: string) => {
-      if (command === 'check_companion_readiness') return llamaOnly;
+      if (command === 'check_companion_readiness') return modelFilesOnly;
+      if (command === 'get_llama_server_status') return status();
       return undefined;
     });
 
@@ -123,28 +140,48 @@ describe('CompanionSettingsPanel readiness gate (#2855)', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('companion-setup-summary')).toHaveTextContent(
-        '1 of 2 prerequisites ready',
+        'Model files ready — nothing else to install',
       );
     });
+    // The retired fraction is GONE (both the copy and the `1/1` counter).
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('1 of 1');
+    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('prerequisites');
+
     expect(screen.queryByTestId('companion-controls')).toBeNull();
-    expect(screen.getByTestId('companion-step-llama-server')).toHaveAttribute('data-state', 'installed');
-    expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'missing');
-    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('complete');
+    // ModelFilesStepCard's own state vocabulary (`complete` once all 3 are present).
+    expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'complete');
+    // AC-25 recovery path: the backend control IS present below the wizard.
+    expect(screen.getByTestId('companion-backend-mode')).toBeInTheDocument();
   });
 
-  it('installs llama.cpp then swaps to the normal controls after the in-session re-check', async () => {
+  it('omits the backend control while the model files are missing (one decision: download)', async () => {
+    adapterBridge.setInvoke(async (command: string) => {
+      if (command === 'check_companion_readiness') return notReady;
+      if (command === 'get_llama_server_status') return status();
+      return undefined;
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('companion-setup-summary')).toHaveTextContent(
+        'Model files needed before the companion can run',
+      );
+    });
+    expect(screen.queryByTestId('companion-backend-mode')).toBeNull();
+    expect(screen.queryByTestId('companion-controls')).toBeNull();
+  });
+
+  it('swaps to the normal controls after the in-session re-check (no reload)', async () => {
     let current: CompanionReadiness = notReady;
+    let currentStatus = status();
     const invoke = vi.fn(async (command: string) => {
       if (command === 'check_companion_readiness') return current;
-      if (command === 'install_llama_cpp') {
+      if (command === 'get_llama_server_status') return currentStatus;
+      if (command === 'download_model') {
         current = bothInstalled;
-        const result: LlamaCppInstallResult = {
-          success: true,
-          output: 'Successfully installed',
-          error: null,
-          code: null,
-        };
-        return result;
+        currentStatus = status({ running: true, healthy: true, backend: 'cpu' });
+        return { success: true, files: [], output: 'done' };
       }
       return undefined;
     });
@@ -152,49 +189,52 @@ describe('CompanionSettingsPanel readiness gate (#2855)', () => {
 
     renderPanel();
 
-    const installButton = await screen.findByTestId('companion-step-llama-server-install');
-    fireEvent.click(installButton);
+    const downloadButton = await screen.findByTestId('companion-step-model-files-download');
+    fireEvent.click(downloadButton);
 
     await waitFor(() => {
       expect(screen.getByTestId('companion-controls')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('companion-setup-wizard')).toBeNull();
     expect(screen.getByText('Show Fredo Companion')).toBeInTheDocument();
-    expect(invoke).toHaveBeenCalledWith('install_llama_cpp', undefined);
+    expect(invoke).toHaveBeenCalledWith('download_model', undefined);
   });
 
-  it('shows an actionable error and stays not-set-up when the install fails', async () => {
+  it('shows an actionable error and stays not-set-up when the download fails', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return notReady;
-      if (command === 'install_llama_cpp') {
-        const result: LlamaCppInstallResult = {
+      if (command === 'get_llama_server_status') return status();
+      if (command === 'download_model') {
+        return {
           success: false,
-          output: '',
-          error: "Couldn't install llama.cpp — winget isn't available. Choose Re-check.",
-          code: 'wingetUnavailable',
+          error: 'No space left on device (ENOSPC)',
+          files: [],
         };
-        return result;
       }
       return undefined;
     });
 
     renderPanel();
 
-    fireEvent.click(await screen.findByTestId('companion-step-llama-server-install'));
+    fireEvent.click(await screen.findByTestId('companion-step-model-files-download'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('companion-step-llama-server')).toHaveAttribute('data-state', 'error');
+      expect(screen.getByTestId('companion-step-model-files')).toHaveAttribute('data-state', 'error');
     });
-    expect(screen.getByTestId('companion-step-llama-server')).toHaveTextContent("winget isn't available");
+    expect(screen.getByTestId('companion-step-model-files-status')).toHaveTextContent(
+      'Download failed',
+    );
     expect(screen.queryByTestId('companion-controls')).toBeNull();
-    expect(screen.getByTestId('companion-step-llama-server-retry')).toBeInTheDocument();
-    // The pane never reports completion on failure.
-    expect(screen.getByTestId('companion-setup-summary')).not.toHaveTextContent('complete');
+    // Recovery stays available: the download action is still offered.
+    expect(screen.getByTestId('companion-step-model-files-download')).toBeInTheDocument();
   });
 
-  it('renders the normal controls directly when both prerequisites are already installed', async () => {
+  it('renders the normal controls directly when the model files and engine are already ready', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'get_llama_server_status') {
+        return status({ running: true, healthy: true, backend: 'cpu' });
+      }
       return undefined;
     });
 
@@ -214,6 +254,9 @@ describe('CompanionSettingsPanel turn-on → canonical context (#2870 ST-1)', ()
   it('toggling the real Switch ON fires WELCOME_TEXT and leaves Fredo home', async () => {
     adapterBridge.setInvoke(async (command: string) => {
       if (command === 'check_companion_readiness') return bothInstalled;
+      if (command === 'get_llama_server_status') {
+        return status({ running: true, healthy: true, backend: 'cpu' });
+      }
       return undefined;
     });
 

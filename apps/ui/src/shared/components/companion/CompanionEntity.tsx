@@ -5,12 +5,14 @@ import { SpeechBubble } from './SpeechBubble';
 import { completeAvatarRect } from './replySurfaceLayout';
 import type { ReplyAvatarRect, ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
-import { AVATAR_SM, FredoAvatar } from '../fredo-avatar';
+import { AVATAR_SM, FredoAvatar, resolveCompanionAvatarState } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
 import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
+import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import './companion.css';
 import { adapterBridge } from '../../utils/adapterBridge';
-import type { LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
+import type { LlmChatWithStatusOptions, LlmMessage, LlmSkillCall } from '../../../app/adapters/HostAdapter';
+import { resolveReplyStatus } from './fredoReplyStatus';
 import { registerAppOpenReplyPusher } from './skillBridge';
 import type { AppOpenReply } from './appOpenReply';
 import { companionReplyErrorCopy } from './companionReadiness';
@@ -19,8 +21,29 @@ import {
   shouldAnnounceProtection,
   useReplyProtection,
 } from './replyProtection';
-import { createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
-import type { CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { buildCompanionTurnMessages, createCompanionSendQueue, resolveSendOutcome } from './companionDispatch';
+import type { CompanionAskOptions, CompanionSendQueue, CompanionSendResult } from './companionDispatch';
+import { CompanionComposer } from './CompanionComposer';
+import { REPLY_SURFACE_TESTID } from './SpeechBubble';
+import type { ReplyRect } from './replySurfaceLayout';
+import {
+  consumeCompanionComposerRequest,
+  peekCompanionComposerRequest,
+  subscribeCompanionComposerOpen,
+} from '../../companion/composerBridge';
+import type { CompanionComposerOpenRequest } from '../../companion/composerBridge';
+import {
+  resolveCompanionTargetApp,
+  resolveNamedAppMention,
+} from '../../companion/composerTarget';
+import type {
+  CompanionTargetFrame,
+  CompanionTurnTarget,
+  FredoAppRef,
+} from '../../companion/composerTarget';
+import { getApplications } from '../../../applications/applicationRegistry';
+import { getWindowSnapshot } from '../../window-system/windowStore';
+import { describeContext } from '../../navigation/ui/hostRegistry';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -53,6 +76,19 @@ const ERROR_HOLD_MS = 8000;
 // AC4 "no state sticks": any LLM-bound status (thinking/joking) that never
 // receives its first token / completion falls back to idle after this bound.
 const SAFETY_TIMEOUT_MS = 15000;
+
+// #2917 round 2 (FIX-1) — DISPLAY-ONLY minimum-visible window for the `working`
+// expression. The deterministic pushed skill reply can arrive in the SAME event
+// dispatch as the selection (RC-1), so without a bounded beat `working` would be
+// superseded before it ever paints. MUST stay < HAPPY_HOLD_MS (5000) and
+// < ERROR_HOLD_MS (8000).
+export const WORKING_BEAT_MS = 900;
+
+// #2917 round 3 (FIX-4r3) — DISPLAY-ONLY BOUNDED welcome beat: exactly the UI/UX
+// greeting wave (fredo-avatar.css:163 — 500 ms x 3). After it, the ambient message
+// renders the base `talk` expression (the pre-#2917 behaviour). MUST stay < the
+// shortest ambient window (4000 ms).
+export const GREETING_BEAT_MS = 1500;
 
 const JOKE_TOPICS = [
   'recursion', 'null pointers', 'git', 'CSS', 'regex', 'merge conflicts',
@@ -143,11 +179,18 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
  *   `{ outcome: 'rejected' }`       → not accepted (keep text)
  * This is the ONE dispatch path (G-149) — both surfaces register the same handle
  * into this registry; never add a second, surface-specific route.
+ *
+ * #3120 ST-3 — the launcher may pass the focused app's current `ContextEnvelope`;
+ * the entity prepends exactly one grounding `system` message to the SAME legacy
+ * persona + user turn (no transcript/history is added).
  */
-export function askActiveCompanion(text: string): CompanionSendResult | null {
+export function askActiveCompanion(
+  text: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.ask(text);
+  return entity.ask(text, options);
 }
 
 /**
@@ -161,11 +204,17 @@ export function askActiveCompanion(text: string): CompanionSendResult | null {
  *   `null`                       → no entity mounted in this window
  *   `{ outcome: 'dispatched' }`  → accepted, audio generation started
  *   `{ outcome: 'rejected' }`    → not accepted (a teleport owns the entity)
+ *
+ * #3120 ST-3 — `options.context` grounds the voice turn exactly like the typed
+ * one; the clip remains the turn's input (an empty user turn, no transcript).
  */
-export function askActiveCompanionWithAudio(clipBase64: string): CompanionSendResult | null {
+export function askActiveCompanionWithAudio(
+  clipBase64: string,
+  options?: CompanionAskOptions,
+): CompanionSendResult | null {
   const entity = activeCompanionEntity;
   if (!entity) return null;
-  return entity.askWithAudio(clipBase64);
+  return entity.askWithAudio(clipBase64, options);
 }
 
 /**
@@ -183,6 +232,77 @@ export function computeTeleportTarget(
     x: Math.max(0, Math.min(clientX - width / 2, window.innerWidth - width)),
     y: Math.max(0, Math.min(clientY - height / 2, window.innerHeight - height)),
   };
+}
+
+// ── #3120 (rework) ST-2 — composer target inputs ─────────────────────────────
+
+/** This webview's standalone app id (`?view=app&id=<appId>`), else `null`. */
+function readWindowAppId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('view') !== 'app') return null;
+  const id = params.get('id')?.trim();
+  return id ? id : null;
+}
+
+/** The registered applications as the pure matcher's narrow view. */
+function readAppRefs(): FredoAppRef[] {
+  return getApplications().map((application) => ({
+    id: application.id,
+    name: application.name,
+    showable: application.showable,
+  }));
+}
+
+function toTargetRect(rect: DOMRect): ReplyRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+/**
+ * In-window app frames, LOW z → HIGH z. The window kernel owns the z-order and
+ * the `[data-fredo-app-id]` root is the geometry source, so the pure resolver
+ * can pick the TOPMOST frame containing Fredo's landing point.
+ */
+function measureAppFrames(): CompanionTargetFrame[] {
+  if (typeof document === 'undefined') return [];
+  const entries = getWindowSnapshot()
+    .filter((entry) => !entry.isMinimized)
+    .slice()
+    .sort((a, b) => a.zIndex - b.zIndex);
+  const frames: CompanionTargetFrame[] = [];
+  for (const entry of entries) {
+    const escaped = entry.id.replace(/"/g, '\\"');
+    const el = document.querySelector<HTMLElement>(`[data-fredo-app-id="${escaped}"]`);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    frames.push({ appId: entry.id, rect: toTargetRect(rect) });
+  }
+  return frames;
+}
+
+/** The focused, non-minimized window in this webview (the resolver's last step). */
+function readFocusedAppId(): string | null {
+  const focused = getWindowSnapshot().find((entry) => entry.focused && !entry.isMinimized);
+  return focused?.id ?? null;
+}
+
+/** Two rects within the same sub-pixel tolerance (the state-write loop guard). */
+function nearRect(a: ReplyRect | null, b: ReplyRect | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    Math.abs(a.left - b.left) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.top - b.top) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.right - b.right) < AVATAR_RECT_EPSILON_PX &&
+    Math.abs(a.bottom - b.bottom) < AVATAR_RECT_EPSILON_PX
+  );
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -259,8 +379,10 @@ export interface CompanionEntityHandle {
    * #2892 ST-4 (REQ-5/REQ-6/REQ-7/REQ-8) — returns the typed acceptance result;
    * while a generation is in flight the persisted disposition decides between
    * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
+   * #3120 ST-3 — `options.context` prepends exactly one grounding `system` message
+   * (the current `ContextEnvelope`) before the legacy persona + user turn.
    */
-  ask: (text: string) => CompanionSendResult;
+  ask: (text: string, options?: CompanionAskOptions) => CompanionSendResult;
   /**
    * #2897 ST-3 (REQ-5) — model-audio turn: `clipBase64` is the captured 16 kHz
    * mono WAV from `stt_take_audio_clip`. Streams the reply on the SAME channels
@@ -268,8 +390,10 @@ export interface CompanionEntityHandle {
    * the audio turn cannot join the TEXT FIFO, an in-flight generation is
    * superseded via the same logical-interrupt path (the clip is never dropped).
    * `rejected` only when a teleport owns the entity.
+   * #3120 ST-3 — `options.context` grounds the audio turn too; the clip stays the
+   * turn's input (never a transcript).
    */
-  askWithAudio: (clipBase64: string) => CompanionSendResult;
+  askWithAudio: (clipBase64: string, options?: CompanionAskOptions) => CompanionSendResult;
 }
 
 export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntityProps>(
@@ -277,6 +401,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const {
       state, setState, teleport, hideMessage, notifyInteraction, setInUse,
       sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
+      composerOpen, openComposer, closeComposer, teleportSeq, composerRequestSeq,
     } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -358,27 +483,92 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [currentAnim, setCurrentAnim] = useState<FredoAvatarState>('idle');
     // animKey forces the wrapper to remount and restart the CSS animation cleanly
     const [animKey, setAnimKey] = useState(0);
+    // #2917 r3 (FIX-4r3) — the bounded ambient `greeting` beat. While TRUE the
+    // resolver's `ambientMessage` candidate is asserted; when the beat ends the
+    // SAME ambient message falls through to the base `talk` expression.
+    const [greetingBeatActive, setGreetingBeatActive] = useState(false);
 
     // #2854 — a status owned by the companion's local flow (thinking/joking/happy)
     // outranks the context `animState` sync. The flag is read inside effects/JSX
     // and never triggers a render, so it can not participate in a render loop.
     const flowOwnsExpressionRef = useRef(false);
+    // #2918 ST-5 — the raw model-declared status captured from the structured
+    // transport's `onStatus` channel for the CURRENT generation (the backend emits
+    // it BEFORE `llm-done`, and never on the skill / plain-fallback paths). It is
+    // turn-scoped display state: captured live, asserted ONLY at the success settle
+    // (never during the stream), and reset at the start of every generation so a
+    // previous turn's status can never leak into a fallback / skill / error turn
+    // (R-9).
+    const modelStatusRef = useRef<string | undefined>(undefined);
+    // The ASSERTED status — a member of the frozen `FREDO_AVATAR_STATES` (resolved
+    // through `resolveReplyStatus`), or `undefined` outside the success hold. A
+    // STATE (not just the ref) so the resolver's existing `modelStatus` input
+    // re-renders the expression at the settle and releases it on the hold.
+    const [settledModelStatus, setSettledModelStatus] = useState<FredoAvatarState | undefined>(undefined);
     // #2854 AC4 — bounded fallback to idle for LLM-bound statuses (watchdog).
     const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // #2854 — the joke's first REAL token promotes thinking -> joking exactly once.
     const firstTokenRef = useRef(false);
 
-    // #2854 — resting cadence: while truly at rest (no stream / game / message)
-    // the companion emits a bounded `playful` beat, then returns to idle, repeating.
-    const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
-    // The playful beat is a DERIVED display layer — it never mutates `currentAnim`,
-    // so a flow-owned thinking/joking/happy always wins and playful only tints idle.
-    const displayAnim: FredoAvatarState =
-      currentAnim === 'idle' && resting === 'playful' ? 'playful' : currentAnim;
-
+    // #2917 ST-4 — the live voice-capture signal (`useVoiceDictation().listening`
+    // / the #2877·#2897 capture session). It is app-global (the backend names the
+    // active capture session) and is a control-plane `stt:state` event — never an
+    // RTDB row — so it is the ONE additive signal the avatar selector needs for
+    // `listening`. Nothing else in the voice path changes.
+    const { listening: captureActive } = useVoiceDictation();
+    // Teleport ownership (declared above the resolver because the resolver reads
+    // it as the always-wins signal below).
     const isTeleportingRef = useRef(false);
     const pendingDestRef = useRef<{ x: number; y: number } | null>(null);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // #2917 r2 (FIX-1) — the `working` minimum-visible beat. `workingSinceRef`
+    // stamps when the entity OBSERVED the skill selection (`null` ⇒ never observed
+    // in this generation); `workingBeatTimerRef` owns the ONE pending
+    // beat→settle hand-off, cleared by `clearTimer` (and therefore on unmount) so
+    // it can never leak.
+    const workingBeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const workingSinceRef = useRef<number | null>(null);
+    // #2917 r3 (FIX-4r3) — the message-scoped `greeting` beat timer. Owned by the
+    // message-keyed effect + the unmount cleanup (NEVER `clearTimer` — that is
+    // generation-scoped and would strand `greetingBeatActive === true`).
+    const greetingBeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // #2854 — resting cadence: while truly at rest (no stream / game / message)
+    // the companion emits a bounded `playful` beat, then returns to idle, repeating.
+    const resting = useFredoRestingCadence(isStreaming || showTicTacToe || message != null);
+    // #2918 ST-5 (R-9) — the model status is admitted to the resolver ONLY while
+    // no lifecycle/transient trigger owns the expression: it is `undefined` during
+    // streaming, a teleport, a pending skill call, and live voice capture, and the
+    // error path never asserts it (it is only ever set at the success settle below).
+    // Pure render-time derivation — no effect, no timer, no fresh object.
+    const modelStatusForDisplay =
+      isStreaming || isTeleportingRef.current || skillPendingRef.current || captureActive
+        ? undefined
+        : settledModelStatus;
+    // #2917 ST-4 — the ONE mapping seam (`fredoAvatarResolver`): the flow-owned
+    // expression + the product signals resolve to the single expression state.
+    // The resting `playful` beat is a DERIVED display layer — it never mutates
+    // `currentAnim`, so a flow-owned working/error/happy/joking/thinking always
+    // wins and playful only tints idle. A teleport (`isTeleportingRef`) always
+    // wins. `errored` is deliberately NOT signalled here: `onError`/the non-success
+    // settle drive the flow to `error` directly, and the sticky
+    // `generationErroredRef` would otherwise latch the expression past the hold.
+    // #2918 ST-5 — `modelStatus` carries the model-declared status asserted at the
+    // success settle (default `happy`), allowlisted by `resolveReplyStatus` BEFORE
+    // this input so no non-emittable value can ever reach the DOM.
+    const displayAnim: FredoAvatarState = resolveCompanionAvatarState({
+      flow: currentAnim,
+      resting,
+      teleporting: isTeleportingRef.current,
+      streaming: isStreaming,
+      skillPending: skillPendingRef.current,
+      // #2917 r3 (FIX-4r3) — only the BOUNDED greeting beat asserts this
+      // candidate; after the beat the same message falls through to the base
+      // `talk` flow. The resolver stays pure/synchronous/time-free.
+      ambientMessage: message != null && greetingBeatActive,
+      captureActive,
+      modelStatus: modelStatusForDisplay,
+    });
+
     // The interactive avatar wrapper — its live layout box (offsetWidth/offsetHeight,
     // immune to CSS transforms) is the runtime source of truth for the click-target,
     // the teleport clamp, and the SpeechBubble anchor. Falls back to AVATAR_SM before
@@ -488,6 +678,99 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       avatarFrameRef.current = null;
     }, []);
 
+    // ── #3120 (rework) ST-2 — composer support ────────────────────────────────
+    // The viewport is an INPUT of the placement (resize re-derives it, never a
+    // poll). Equality-guarded so a sub-pixel resize never writes state (#523).
+    const [viewport, setViewport] = useState(() => ({
+      width: typeof window === 'undefined' ? 0 : window.innerWidth,
+      height: typeof window === 'undefined' ? 0 : window.innerHeight,
+    }));
+    useEffect(() => {
+      const onResize = () => {
+        setViewport((prev) =>
+          prev.width === window.innerWidth && prev.height === window.innerHeight
+            ? prev
+            : { width: window.innerWidth, height: window.innerHeight },
+        );
+      };
+      window.addEventListener('resize', onResize);
+      return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    // The visible SpeechBubble rect — the composer must never intersect it. The
+    // bubble repositions while a reply streams, so this is measured post-commit
+    // with the same epsilon guard (no state write when the box did not move).
+    const [avoidRect, setAvoidRect] = useState<ReplyRect | null>(null);
+    const avoidRectRef = useRef<ReplyRect | null>(null);
+    useLayoutEffect(() => {
+      if (!replyOnScreen || typeof document === 'undefined') {
+        if (avoidRectRef.current !== null) {
+          avoidRectRef.current = null;
+          setAvoidRect(null);
+        }
+        return;
+      }
+      const el = document.querySelector<HTMLElement>(`[data-testid="${REPLY_SURFACE_TESTID}"]`);
+      const next = el ? toTargetRect(el.getBoundingClientRect()) : null;
+      const normalized = next !== null && next.width > 0 && next.height > 0 ? next : null;
+      if (nearRect(avoidRectRef.current, normalized)) return;
+      avoidRectRef.current = normalized;
+      setAvoidRect(normalized);
+    });
+
+    // The app named by the most recent bridge request (the command bar's `Ask`).
+    // Retained across the not-hosted teleport: the entity mounts AFTER the request
+    // and reads the bridge's retained request so target resolution still honours it.
+    const requestedAppIdRef = useRef<string | null>(null);
+    // #3120 (rework) ST-2-R4 — ONE owner: only the OVERLAY applies an open request.
+    // The seat can never render the composer (`CompanionEntity.tsx` render gate), so
+    // having it "consume" the request was wrong-mount consumption. A retained request
+    // (published before this overlay mounted) is applied here once — resolving the
+    // target and then CONSUMING it from the bridge so no later mount re-reads it as
+    // if it were fresh. The settle-open itself stays with the seq effect below.
+    useEffect(() => {
+      if (surface !== 'overlay') return;
+      const applyRequest = (request: CompanionComposerOpenRequest) => {
+        requestedAppIdRef.current = request.appId ?? null;
+        openComposer();
+        consumeCompanionComposerRequest();
+      };
+      const retained = peekCompanionComposerRequest();
+      if (retained) {
+        requestedAppIdRef.current = retained.appId ?? null;
+        // Applied on mount (the late-mount target resolution) — consume so it is a
+        // one-shot hand-off, never a forever-live value a later mount could re-read.
+        consumeCompanionComposerRequest();
+      }
+      const unsubscribe = subscribeCompanionComposerOpen(applyRequest);
+      return unsubscribe;
+    }, [surface, openComposer]);
+
+    // #3120 (rework) ST-2-R4/R5 (R-3.1) — the ONE settle-open owner. Every
+    // relocation bumps `teleportSeq`; the surface that actually SETTLES owns the
+    // open. On a same-window seat→overlay teleport the seat unmounts in the same
+    // commit that `TELEPORT` lands (its timer cleanup would have killed the old
+    // open), and this overlay is the survivor — it arms the settle here.
+    //
+    // RULE (ST-2-R5, G-409): the open is keyed on the EFFECT RUN, never on a
+    // remembered "handled" sequence. React.StrictMode's dev replay runs cleanup
+    // (`clearTimeout`) then re-runs this effect, and the re-run MUST re-arm. A
+    // persistent handled-ref would survive the replay's cleanup and suppress the
+    // re-arm (the round-5 defect: the timer armed and was cleared in the same
+    // millisecond, then the early return skipped the arm → the composer never
+    // opened on the first seat→overlay teleport). Exactly one timer can be live
+    // because React runs the cleanup before every re-run, and `openComposer`
+    // (`CompanionContext.tsx:543-545`) + `surface` are stable, so dependency
+    // churn alone cannot re-arm for an already-settled seq.
+    useEffect(() => {
+      if (surface !== 'overlay') return;
+      if (teleportSeq === 0) return;
+      const settleTimer = setTimeout(() => {
+        openComposer();
+      }, ANIM_DURATION['teleport-in'] + 50);
+      return () => clearTimeout(settleTimer);
+    }, [surface, teleportSeq, openComposer]);
+
     // #2853 ST-3 (round 2): report CONTINUOUS use so the host idle gate suppresses
     // auto-return while Fredo is actively engaged — an open TicTacToe, an active
     // joke stream, or the talk hold. `isInUse` is intentionally NOT a dep (same
@@ -544,7 +827,37 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
     const clearTimer = useCallback(() => {
       if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      // #2917 r2 (FIX-1) — the beat timer is owned here too (the unmount cleanup
+      // calls this), and a superseded generation's observation stamp dies with it
+      // so a later skill push can never inherit a stale `workingSinceRef` (which
+      // would collapse the beat to zero length).
+      if (workingBeatTimerRef.current) { clearTimeout(workingBeatTimerRef.current); workingBeatTimerRef.current = null; }
+      workingSinceRef.current = null;
+      // #2918 ST-8 (R-9) — `clearTimer` is the ONE shared hold canceller (called by
+      // the teleport, leaveWindow, the interrupt, a new generation, unmount and the
+      // game). The hold owns BOTH the turn-scoped status release and the reply
+      // clear, so a canceller that cleared only the timer handles leaves a stale
+      // `settledModelStatus` the render gate re-admits with no timer left to
+      // release it (the round-2 post-teleport stick). Release the status and the
+      // flow ownership here. The deps stay `[]`: a `useState` setter + ref writes
+      // are stable, so there is no callback-identity churn / re-render-loop
+      // surface (AGENTS.md #523).
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
+      flowOwnsExpressionRef.current = false;
     }, []);
+
+    // #2918 ST-8 (R-9) — the ONE shipped hold REPLY clear (the exact block the
+    // success/error/watchdog holds run), extracted so every hold-cancelling path
+    // runs the SAME gate: `clearReplyOrDefer` keeps a reply that is being read
+    // until protection ends (the unchanged R-4 contract). A teleport calls it too,
+    // so a cancelled hold's bubble is never stranded on screen.
+    const clearHeldReply = useCallback(() => {
+      clearReplyOrDefer(() => {
+        setStreamingMessage(null);
+        hideMessage();
+      });
+    }, [clearReplyOrDefer, hideMessage]);
 
     const playAnim = useCallback((anim: FredoAvatarState) => {
       setCurrentAnim(anim);
@@ -567,6 +880,12 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
     }, []);
 
+    // #2917 r3 (FIX-4r3) — the greeting beat's single clear (same shape as
+    // `clearWatchdog`). The ref is nulled after clearing so a re-arm is clean.
+    const clearGreetingBeat = useCallback(() => {
+      if (greetingBeatTimerRef.current) { clearTimeout(greetingBeatTimerRef.current); greetingBeatTimerRef.current = null; }
+    }, []);
+
     const startWatchdog = useCallback(() => {
       clearWatchdog();
       watchdogRef.current = setTimeout(() => {
@@ -580,6 +899,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         skillPendingRef.current = false;
         setIsStreaming(false);
         flowOwnsExpressionRef.current = false;
+        // #2918 ST-5 (R-9) — the watchdog is a terminal path: release the
+        // turn-scoped model status so a stale hold can never survive it.
+        setSettledModelStatus(undefined);
         playAnim('idle');
         setState('idle');
         // #2883 ST-6 (R-4.1, the ONE hide gate) — a watchdog that comes due while
@@ -624,8 +946,36 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       }
     }, [animState, message, resting, playAnim]);
 
+    // #2917 r3 (FIX-4r3) — the BOUNDED welcome beat (message-keyed, NEVER
+    // generation-scoped). A message OPEN or REPLACE (welcome → guide) re-arms the
+    // beat; the message-clear de-asserts it. The resolver stays pure/synchronous
+    // and time-free, so the timer lives here — the consumer that owns every other
+    // timer. `greeting` is still suppressed by a live generation via the
+    // resolver's own `streaming` rule, so this effect need not read `isStreaming`.
+    // `setGreetingBeatActive(false)` on an already-false value is a React no-op.
+    useEffect(() => {
+      clearGreetingBeat();
+      if (message == null) {
+        setGreetingBeatActive(false);
+        return;
+      }
+      setGreetingBeatActive(true);
+      greetingBeatTimerRef.current = setTimeout(() => {
+        greetingBeatTimerRef.current = null;
+        setGreetingBeatActive(false);
+      }, GREETING_BEAT_MS);
+      return clearGreetingBeat;
+    }, [message, clearGreetingBeat]);
+
     // Teleport sequence (fully timer-driven)
     const startTeleportIn = useCallback((dest: { x: number; y: number }) => {
+      // #2918 ST-8 (R-9) — cancel any pending/orphaned hold BEFORE `timerRef` is
+      // overwritten below: the cross-window `arrive` entry never called
+      // `clearTimer`, so a pending reply hold would be orphaned (its release never
+      // runs) — this releases the turn-scoped status so the teleport is
+      // status-free. On the same-window out→in path this is an idempotent second
+      // call (the out timer has already fired).
+      clearTimer();
       teleport(dest.x, dest.y);
       setDisplayPos(dest);
       playAnim('teleport-in');
@@ -636,10 +986,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         playAnim('idle');
         setState('idle');
       }, ANIM_DURATION['teleport-in'] + 50);
-    }, [teleport, playAnim, setState]);
+    }, [clearTimer, teleport, playAnim, setState]);
 
     const startTeleportOut = useCallback((dest: { x: number; y: number }) => {
       clearTimer();
+      // #2918 ST-8 (R-9) — the cancelled hold's REPLY clear must still happen: the
+      // hold owns both the status release (`clearTimer`) and the bubble clear, so
+      // the teleport runs the ONE hide gate too (otherwise the reply is stranded
+      // on screen after the teleport).
+      clearHeldReply();
       isTeleportingRef.current = true;
       pendingDestRef.current = dest;
       playAnim('teleport-out');
@@ -648,7 +1003,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       timerRef.current = setTimeout(() => {
         startTeleportIn(dest);
       }, ANIM_DURATION['teleport-out'] + 50);
-    }, [playAnim, setState, startTeleportIn]);
+    }, [clearTimer, clearHeldReply, playAnim, setState, startTeleportIn]);
 
     // Cross-window arrival: the host queued the destination once this window
     // became active — play the in motion here.
@@ -723,6 +1078,11 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationTextRef.current = '';
       streamingTextRef.current = '💭 Thinking...';
       generationErroredRef.current = false;
+      // #2918 ST-5 — a NEW generation owns the turn-scoped model status: drop the
+      // previous turn's captured/asserted value (and release a hold whose timer
+      // `clearTimer()` just cancelled) so it can never leak into this turn (R-9).
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
       // #2893 ST-7 — reset the skill bookkeeping for THIS generation.
       generationUsesSkillsRef.current = withSkills;
       skillPendingRef.current = false;
@@ -769,6 +1129,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           setStreamingMessage(next);
       };
 
+      // #2918 ST-5 — capture the model-declared status. It is deliberately NOT
+      // asserted here: the stream window stays scripted (`thinking` → first-token
+      // `joking`), and the raw string is applied only at the success settle below,
+      // allowlisted through `resolveReplyStatus`. The backend emits it BEFORE
+      // `llm-done`; on the skill / plain-fallback paths it never arrives, so the
+      // ref stays `undefined` (the default `happy`).
+      const onStatus = (status: string) => {
+          if (gen !== generationRef.current) return;
+          modelStatusRef.current = status;
+      };
+
       const onDone = () => {
           // #2871 R-5.1 — a superseded generation's completion must not settle
           // the current one.
@@ -801,17 +1172,29 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           // completion rather than ~5 s later at the end of the happy hold. The
           // expression stays flow-owned, so the idle sync cannot clobber `happy`.
           setState('idle');
-          // #2854 R-3a — completion renders `happy` through the EXISTING 5 s hold
-          // (HAPPY_HOLD_MS; timing unchanged — only the expression changes), then
-          // returns to idle. `flowOwns` is released on that return.
+          // #2854 R-3a — completion renders the settled status through the EXISTING
+          // 5 s hold (HAPPY_HOLD_MS; timing unchanged), then returns to idle.
+          // `flowOwns` is released on that return.
+          // #2918 ST-5 — the success settle asserts the model-declared status
+          // (default `happy`, resolved + allowlisted by `resolveReplyStatus`) via
+          // the resolver's `modelStatus` input, with the FLOW at base `idle`. The
+          // resolver ranks a `happy` FLOW above `joking`/`thinking`/`playful`, so a
+          // `happy` flow would mask a lower-ranked model status; base `idle` lets
+          // the asserted status win. `resolveReplyStatus(undefined) === 'happy'`,
+          // so a turn with no `llm-status` renders byte-identically to the shipped
+          // `happy` settle.
           flowOwnsExpressionRef.current = true;
-          playFlowAnim('happy');
+          playFlowAnim('idle');
+          setSettledModelStatus(resolveReplyStatus(modelStatusRef.current));
           timerRef.current = setTimeout(() => {
             // #2892 ST-4 declared defect fix (REQ-7) — the same generation guard
             // the error hold below already has: a superseded generation's 5 s
             // timer must NEVER clear the NEW reply (interrupt / queue drain).
             if (gen !== generationRef.current) return;
             flowOwnsExpressionRef.current = false;
+            // #2918 ST-5 — release the asserted model status on the SAME shipped
+            // hold (no new timer): `undefined` → idle.
+            setSettledModelStatus(undefined);
             playAnim('idle');
             setState('idle');
             // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 5 s happy hold is
@@ -840,6 +1223,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           const readable = companionReplyErrorCopy(raw);
           isGeneratingRef.current = false;
           generationErroredRef.current = true;
+          // #2918 ST-5 (R-9) — the error path NEVER asserts a model status: drop
+          // any captured/asserted value so `error` can never be masked.
+          modelStatusRef.current = undefined;
+          setSettledModelStatus(undefined);
           clearWatchdog();
           setIsStreaming(false);
           // Both refs are assigned synchronously so the (follow-up) `onDone` and
@@ -848,13 +1235,22 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           generationTextRef.current = readable;
           setStreamingMessage(readable);
           if (announceGenerationRef.current) setA11yAnnouncement(readable);
-          flowOwnsExpressionRef.current = false;
-          playFlowAnim('idle');
+          // #2917 ST-4 — the typed error channel renders `error` (the V frown +
+          // down-brows in `--status.error` ink), flow-owned so the idle sync can
+          // never clobber it, and held for the UNCHANGED `ERROR_HOLD_MS`. The hold
+          // timer releases the flow ownership and returns the expression to idle.
+          flowOwnsExpressionRef.current = true;
+          playFlowAnim('error');
           setState('idle');
           timerRef.current = setTimeout(() => {
             // A newer generation (a subsequent send) owns the bubble now — the
             // stale error hold must never clear it.
             if (gen !== generationRef.current) return;
+            // #2917 ST-4 — release the error expression on the UNCHANGED hold.
+            // A teleport in flight owns the expression, so release ownership only
+            // (the teleport's own settle already returns to idle).
+            flowOwnsExpressionRef.current = false;
+            if (!isTeleportingRef.current) playAnim('idle');
             // #2883 ST-6 (R-4.1, the ONE hide gate) — the shipped 8 s error hold is
             // unchanged in VALUE; a reply being read when it comes due is kept, and
             // the clear runs when protection ends (fresh grace — R-4.2).
@@ -876,6 +1272,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (gen !== generationRef.current) return;
           if (generationSettledRef.current) return;
           skillPendingRef.current = true;
+          // #2917 ST-4 — a validated skill selection renders `working` (Fredo is
+          // DOING something) until a settle path or the watchdog supersedes it:
+          // `onDone`/the pushed reply set `happy`, `onError` sets `error`, and the
+          // watchdog returns to idle — each replaces this flow-owned expression.
+          playFlowAnim('working');
+          // #2917 r2 (FIX-1) — stamp WHEN the entity observed the selection so a
+          // same-dispatch pushed reply measures the bounded beat from here. `??=`
+          // so a push-first listener order (which already stamped) never re-opens
+          // the window. The settle owns the END of the beat — no timer here.
+          workingSinceRef.current ??= Date.now();
           // #2893 ST-9 (R-1.4) — the watchdog backstop MUST be armed while this
           // generation waits for the pushed deterministic reply. A content /
           // reasoning token that preceded the tool call already cleared the
@@ -888,24 +1294,20 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           if (watchdogRef.current === null) startWatchdog();
       };
 
-      if (audioBase64 !== undefined) {
-        // #2897 ST-3 (REQ-5) — the clip IS the turn's input: the last user
-        // message's content is replaced by the backend renderer with the single
-        // `input_audio` part. No transcript text is sent for this turn.
-        // #2903 ST-2 — the audio turn is SKILL-AWARE: the same validated
-        // `onSkillCall` channel the typed path uses is threaded through the
-        // additive trailing parameter, so a spoken selection marks this
-        // generation skill-pending and its settle is deferred to the pushed
-        // deterministic reply (raw tool-call JSON is never rendered).
-        console.log('[companion] calling adapterBridge.llmChatWithAudio');
-        adapterBridge.llmChatWithAudio(messages, audioBase64, onToken, onDone, onError, onSkillCall);
-      } else if (withSkills) {
-        console.log('[companion] calling adapterBridge.llmChatWithSkills');
-        adapterBridge.llmChatWithSkills(messages, onToken, onDone, onSkillCall, onError);
-      } else {
-        console.log('[companion] calling adapterBridge.llmChat');
-        adapterBridge.llmChat(messages, onToken, onDone, onError);
-      }
+      // #2918 ST-5 — ALL THREE entry points (the avatar-click joke, the bar's
+      // typed `ask`, and the dictation/audio turn) route through the ONE structured
+      // transport (`llmChatWithStatus`), which adds the `onStatus` channel on top of
+      // the shipped token/done/error/skill channels. `options.offerSkills` selects
+      // the shipped request shape (false for the joke, true for the skill-aware
+      // typed/audio turns) and `options.audioBase64` attaches the captured clip.
+      // The backend emits `llm-status` only on the structured path; on the skill and
+      // plain-capability-fallback paths `onStatus` is never called, so the captured
+      // status stays `undefined` (the default `happy`).
+      const options: LlmChatWithStatusOptions = audioBase64 !== undefined
+        ? { offerSkills: true, audioBase64 }
+        : { offerSkills: withSkills };
+      console.log('[companion] calling adapterBridge.llmChatWithStatus');
+      adapterBridge.llmChatWithStatus(messages, options, onToken, onDone, onStatus, onSkillCall, onError);
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection, clearTimer]);
 
     // #2892 ST-4 (REQ-5/REQ-6) — dequeue-then-dispatch, exactly once. Whatever
@@ -920,10 +1322,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (!next) { setQueuedSendCount(0); return; }
       setQueuedSendCount(queue.size());
       announceGenerationRef.current = true;
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: next.text },
-      ], true);
+      // #3120 ST-3 — the queued turn keeps its grounding envelope across the wait;
+      // a legacy send (absent key) rebuilds the byte-identical legacy pair.
+      runGeneration(
+        buildCompanionTurnMessages(
+          next.text,
+          FREDO_CHAT_PERSONA,
+          next.context !== undefined ? { context: next.context } : undefined,
+        ),
+        true,
+      );
     };
 
     // #2893 ST-7 — apply the deterministic app-open reply pushed by ST-6's
@@ -939,6 +1347,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationSettledRef.current = true;
       skillPendingRef.current = false;
       isGeneratingRef.current = false;
+      // #2918 ST-5 — the pushed-skill settle is a terminal path (the skill path
+      // never emits `llm-status`): release any turn-scoped model status.
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
       clearWatchdog();
       setIsStreaming(false);
       // Both refs assigned synchronously (same contract as the stream path).
@@ -947,32 +1359,62 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       setStreamingMessage(reply.text);
       if (announceGenerationRef.current) setA11yAnnouncement(reply.text);
       setState('idle');
-      if (reply.kind === 'success') {
-        flowOwnsExpressionRef.current = true;
-        playFlowAnim('happy');
-        timerRef.current = setTimeout(() => {
-          if (gen !== generationRef.current) return;
-          flowOwnsExpressionRef.current = false;
-          playAnim('idle');
-          setState('idle');
-          clearReplyOrDefer(() => {
-            setStreamingMessage(null);
-            hideMessage();
-          });
-        }, HAPPY_HOLD_MS);
-      } else {
-        flowOwnsExpressionRef.current = false;
-        playFlowAnim('idle');
-        timerRef.current = setTimeout(() => {
-          if (gen !== generationRef.current) return;
-          clearReplyOrDefer(() => {
-            setStreamingMessage(null);
-            hideMessage();
-          });
-        }, ERROR_HOLD_MS);
-      }
+      // #2917 ST-4 — the pushed-skill settle is flow-owned: the idle sync must
+      // never clobber the beat (or the settle expression it hands off to).
+      flowOwnsExpressionRef.current = true;
+
+      // #2917 r2 (FIX-1) — the deterministic push can arrive in the SAME event
+      // dispatch as the skill selection (RC-1), so `working` would otherwise be
+      // superseded before it ever paints. Render `working` for a bounded window
+      // first, then run the shipped settle block. The reply TEXT already landed
+      // synchronously above — only the expression is sequenced.
+      const alreadyWorking = workingSinceRef.current !== null;
+      const observedAt = workingSinceRef.current ?? Date.now();
+      workingSinceRef.current = observedAt;
+      if (!alreadyWorking) playFlowAnim('working');
+      const remaining = Math.max(0, WORKING_BEAT_MS - (Date.now() - observedAt));
+
+      // ONE owner of the beat→settle hand-off; cleared by `clearTimer`.
+      workingBeatTimerRef.current = setTimeout(() => {
+        workingBeatTimerRef.current = null;
+        // A queued/new generation supersedes the beat (the same generation guard
+        // the shipped settle blocks already carry).
+        if (gen !== generationRef.current) return;
+        workingSinceRef.current = null;
+        if (reply.kind === 'success') {
+          flowOwnsExpressionRef.current = true;
+          playFlowAnim('happy');
+          timerRef.current = setTimeout(() => {
+            if (gen !== generationRef.current) return;
+            flowOwnsExpressionRef.current = false;
+            playAnim('idle');
+            setState('idle');
+            clearReplyOrDefer(() => {
+              setStreamingMessage(null);
+              hideMessage();
+            });
+          }, HAPPY_HOLD_MS);
+        } else {
+          // #2917 ST-4 — a non-success pushed reply renders `error` (flow-owned,
+          // held for the UNCHANGED `ERROR_HOLD_MS`), exactly like the typed error
+          // channel — never a bare `idle` that reads as "nothing happened".
+          flowOwnsExpressionRef.current = true;
+          playFlowAnim('error');
+          timerRef.current = setTimeout(() => {
+            if (gen !== generationRef.current) return;
+            flowOwnsExpressionRef.current = false;
+            if (!isTeleportingRef.current) playAnim('idle');
+            clearReplyOrDefer(() => {
+              setStreamingMessage(null);
+              hideMessage();
+            });
+          }, ERROR_HOLD_MS);
+        }
+      }, remaining);
+
       // #2892 ST-4 (REQ-5) — the pushed-skill settle is a terminal path too:
-      // drain any send accepted while this generation was in flight.
+      // drain any send accepted while this generation was in flight (synchronous;
+      // a drained send supersedes the beat via the generation guard/clearTimer).
       drainSendQueueRef.current();
     }, [clearWatchdog, playFlowAnim, playAnim, setState, hideMessage, clearReplyOrDefer]);
 
@@ -999,7 +1441,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `open_app` selection is marked skill-pending and its settle is deferred until
     // the pushed deterministic reply lands (or the watchdog fires). The joke path
     // above stays on the unchanged `llmChat`.
-    const ask = useCallback((text: string): CompanionSendResult => {
+    const ask = useCallback((text: string, options?: CompanionAskOptions): CompanionSendResult => {
       // #2871 a11y — mark this generation as the bar-send path so it announces
       // "Message sent to Fredo" + the settled reply in the live region.
       announceGenerationRef.current = true;
@@ -1014,8 +1456,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         const queue = sendQueueRef.current;
         if (!queue) return { outcome: 'rejected' };
         // REQ-5/REQ-6 — accept and wait, visibly; the settle handlers drain the
-        // FIFO exactly once (synchronous dequeue before dispatch).
-        const result = queue.enqueue(text);
+        // FIFO exactly once (synchronous dequeue before dispatch). #3120 ST-3 —
+        // the grounding envelope rides along with the queued turn.
+        const result = queue.enqueue(text, options);
         setQueuedSendCount(queue.size());
         return result;
       }
@@ -1030,10 +1473,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: text },
-      ], true);
+      // #3120 ST-3 — the ONE message builder: a bounded context prepends exactly
+      // one grounding `system` message; without one this is the legacy pair.
+      runGeneration(buildCompanionTurnMessages(text, FREDO_CHAT_PERSONA, options), true);
       return { outcome: 'dispatched' };
     }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
@@ -1050,7 +1492,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // `generationUsesSkillsRef` gate in `applyAppOpenReply`. Starting it with
     // `false` (the #2897 shipped value) is exactly the reported bug: the push was
     // discarded and the bubble settled on prose that claimed the action.
-    const askWithAudio = useCallback((clipBase64: string): CompanionSendResult => {
+    const askWithAudio = useCallback((clipBase64: string, options?: CompanionAskOptions): CompanionSendResult => {
       announceGenerationRef.current = true;
       // A teleport owns the entity: there is no generation to stream into, so the
       // clip is not accepted (the caller keeps the clip rather than losing it).
@@ -1062,12 +1504,70 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         isGeneratingRef.current = false;
       }
 
-      runGeneration([
-        { role: 'system', content: FREDO_CHAT_PERSONA },
-        { role: 'user', content: '' },
-      ], true, clipBase64);
+      // #3120 ST-3 — grounding is orthogonal to the voice path: the SAME builder
+      // prepends the one system message, the user turn stays empty, and the clip
+      // remains the turn's input (the backend attaches the single `input_audio`
+      // part). No transcript is ever fabricated.
+      runGeneration(
+        buildCompanionTurnMessages('', FREDO_CHAT_PERSONA, options),
+        true,
+        clipBase64,
+      );
       return { outcome: 'dispatched' };
     }, [runGeneration, clearTimer]);
+
+    // ── #3120 (rework) ST-2 — the composer's turn target + submit ─────────────
+    // The default target is the app Fredo is in front of (requested → topmost
+    // frame at his landing point → this window's app → focused window → null);
+    // an explicitly named SHOWABLE app in the instruction overrides it.
+    const resolveBaseTargetApp = useCallback((): string | null => {
+      const point = avatarRect
+        ? {
+            x: avatarRect.left + avatarRect.width / 2,
+            y: avatarRect.top + avatarRect.height / 2,
+          }
+        : { x: displayPos.x + AVATAR_SM.width / 2, y: displayPos.y + AVATAR_SM.height / 2 };
+      return resolveCompanionTargetApp({
+        requestedAppId: requestedAppIdRef.current,
+        windowAppId: readWindowAppId(),
+        frames: measureAppFrames(),
+        point,
+        focusedAppId: readFocusedAppId(),
+      });
+    }, [avatarRect, displayPos.x, displayPos.y]);
+
+    const buildTurnTarget = useCallback(
+      (baseAppId: string | null, text: string): CompanionTurnTarget => {
+        const apps = readAppRefs();
+        const namedId = text.trim() === '' ? null : resolveNamedAppMention(text, apps);
+        const appId = namedId ?? baseAppId;
+        const appName = appId === null
+          ? null
+          : (apps.find((application) => application.id === appId)?.name ?? null);
+        return {
+          appId,
+          appName,
+          // The grounding envelope is built ON DEMAND for the resolved target; a
+          // turn for an unregistered app stays ungrounded (never a stale envelope).
+          envelope: appId === null ? null : describeContext(appId),
+          // Re-naming the SAME app is not an override (R-3.5).
+          explicit: namedId !== null && namedId !== baseAppId,
+        };
+      },
+      [],
+    );
+
+    const composerTarget: CompanionTurnTarget = composerOpen
+      ? buildTurnTarget(resolveBaseTargetApp(), '')
+      : { appId: null, appName: null, envelope: null, explicit: false };
+
+    const handleComposerSubmit = useCallback((text: string) => {
+      const resolved = buildTurnTarget(resolveBaseTargetApp(), text);
+      // The ONE dispatch funnel: the existing `ask` (skill-aware, same persona),
+      // grounded with `describeContext(targetApp)` when the app is registered.
+      // An ungrounded turn omits the option key entirely (never `undefined`).
+      ask(text, resolved.envelope ? { context: resolved.envelope } : undefined);
+    }, [ask, buildTurnTarget, resolveBaseTargetApp]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the
@@ -1101,6 +1601,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     useEffect(() => () => {
       clearTimer();
       clearWatchdog();
+      clearGreetingBeat();
     }, [clearWatchdog]);
 
     // ── Click / double-click on avatar ─────────────────────────────────────────
@@ -1240,6 +1741,14 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
                   notifyInteraction();
                   setIsStreaming(false);
                   clearWatchdog();
+                  // #2918 ST-8 (R-9) — cancel any pending reply hold before arming
+                  // the game's TALK_HOLD (the `timerRef` overwrite would otherwise
+                  // orphan a reply hold's release)…
+                  clearTimer();
+                  // …then re-assert the game's flow ownership, which `clearTimer`
+                  // just released, so the preserved game expression still owns the
+                  // wrapper. No other game behavior changes.
+                  flowOwnsExpressionRef.current = true;
                   // Preserved 4 s hold; the expression is whatever the flow set (a
                   // terminal outcome replaces this hold with `happy` via onOutcome).
                   timerRef.current = setTimeout(() => {
@@ -1295,6 +1804,23 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         >
           {a11yAnnouncement}
         </div>
+
+        {/* #3120 (rework) ST-2 — the ONE teleport-attached instruction box. It is
+            rendered ONLY on the hosting OVERLAY (the composer never mounts at the
+            home seat, in a non-hosting window, or while auto-hidden), and it sits
+            beside Fredo / the SpeechBubble by the pure placement decision. */}
+        {surface === 'overlay' && composerOpen ? (
+          <CompanionComposer
+            surface="overlay"
+            focusNonce={composerRequestSeq}
+            avatarRect={avatarRect}
+            avoidRect={avoidRect}
+            viewport={viewport}
+            target={composerTarget}
+            onSubmit={handleComposerSubmit}
+            onDismiss={closeComposer}
+          />
+        ) : null}
 
         {/* Interactive avatar wrapper — real click box is the avatar's layout
             width AND height (sm = 80 wide x 100 tall). The wrapper carries the

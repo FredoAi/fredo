@@ -28,7 +28,7 @@ Side Panel (App.svelte)
   ↓ browser.runtime.onMessage
   ↓ parseJSONData() validates structure
   ↓ Creates NodeElement and LinkElement instances
-  ↓ Renders ArchitectureDiagram component
+  ↓ Renders Architecture Diagram component
 ```
 
 ## Current Implementation Status
@@ -56,7 +56,7 @@ Side Panel (App.svelte)
 - Listens for `Fredo_DISPLAY` messages
 - Validates JSON structure (components, links arrays)
 - Creates diagram elements (NodeElement[], LinkElement[])
-- Renders ArchitectureDiagram with topology-based layout
+- Renders Architecture Diagram with topology-based layout
 - Shows animated idle state when waiting for data
 
 ### ⚠️ Partially Implemented (Marker Detection)
@@ -283,7 +283,7 @@ function parseJSONData(content: string) {
 - [x] JSON validation (`components` and `links` arrays)
 - [x] NodeElement creation from components
 - [x] LinkElement creation with source/target resolution
-- [x] ArchitectureDiagram rendering
+- [x] Architecture Diagram rendering
 - [x] Topology-based auto-layout
 - [x] Click-based tooltips with overflow detection
 - [x] Zoom/pan controls (wheel + buttons + drag)
@@ -356,7 +356,7 @@ apps/browser-extension/
 │   └── sidepanel/
 │       ├── App.svelte         # Message listener, parseJSONData(), idle state
 │       ├── components/
-│       │   ├── ArchitectureDiagram.svelte  # Main diagram with zoom/pan
+│       │   ├── Architecture Diagram.svelte  # Main diagram with zoom/pan
 │       │   └── ArchitectureNode.svelte     # Individual cards with tooltips
 │       └── lib/
 │           └── elements/

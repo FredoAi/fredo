@@ -30,39 +30,15 @@ export const VOICE_ENABLED_SETTING_KEY = 'Fredo_companion_voice_enabled';
 export const DEFAULT_VOICE_ENABLED = false;
 
 // ── Voice input preferences (#2877 ST-2) ─────────────────────────────────────
-// Two sibling preferences under Companion settings, persisted through the SAME
-// `usePersistedSetting` path as the enable switch. `voiceAutosend` is the SETTING
-// only — its dispatch (transcript → chat/launcher send) is #2878. `deviceId` is a
-// cpal device id (the device NAME string, `""` = system default) resolved by the
-// backend on the next session (R-3.2). Neither gates companion chat.
-
-export const VOICE_AUTOSEND_SETTING_KEY = 'Fredo_companion_voice_autosend';
-export const DEFAULT_VOICE_AUTOSEND = false;
+// `voiceDeviceId` is persisted through the SAME `usePersistedSetting` path as the
+// enable switch: a cpal device id (the device NAME string, `""` = system default)
+// resolved by the backend on the next session (R-3.2). It never gates companion
+// chat. Spec #2914 ST-8 removed the speech-handling key and the autosend
+// preference: there is exactly ONE voice mode (model audio, R-1/R-4) and the
+// surviving path produces no transcript to autosend.
 
 export const VOICE_DEVICE_ID_SETTING_KEY = 'Fredo_companion_voice_device_id';
 export const DEFAULT_VOICE_DEVICE_ID = '';
-
-// ── Speech handling (#2897 ST-1, persisted setting) ──────────────────────────
-// `Fredo_companion_voice_handling`, a CLOSED two-member set, DEFAULT 'local'
-// (behaviour parity with the shipped dictation on every existing install — an
-// absent/unknown key heals to 'local'). The backend reads the key on EVERY
-// `stt_start` (`infrastructure/voice/session.rs`), so a change applies to the
-// NEXT listen with no app restart; an in-flight session is never
-// retro-switched. The setting NEVER gates companion chat and never removes the
-// local engine.
-
-export type VoiceHandling = 'local' | 'model';
-
-export const VOICE_HANDLING_SETTING_KEY = 'Fredo_companion_voice_handling';
-export const DEFAULT_VOICE_HANDLING: VoiceHandling = 'local';
-
-/**
- * Parse a stored speech-handling mode. Anything that is not the exact `'model'`
- * literal (unknown/stale/cleared) heals to the default `'local'` — the closed
- * two-member set can never leave the app without the shipped local engine.
- */
-const parseVoiceHandling = (raw: string): VoiceHandling =>
-  raw === 'model' ? 'model' : DEFAULT_VOICE_HANDLING;
 
 // ── Send-during-reply disposition (#2892 ST-1, persisted setting) ────────────
 // `Fredo_companion_send_during_reply`, `'queue' | 'interrupt'`, DEFAULT 'queue'.
@@ -163,6 +139,16 @@ interface CompanionContextState {
   // is actively in use (open TicTacToe / active joke stream / talk hold). Host-
   // local and transient: never persisted, never broadcast.
   isInUse: boolean;
+  // #3120 (rework) ST-2 — the teleport-attached instruction box is open in THIS
+  // window's hosting surface. Transient: NEVER persisted, never broadcast.
+  composerOpen: boolean;
+  // #3120 (rework) ST-2-R4 — monotonic arrival/request identities. `teleportSeq`
+  // advances on EVERY relocation so the surface that actually SETTLES (the
+  // surviving overlay) can own the settle-open; `composerRequestSeq` advances on
+  // EVERY open request (including a repeat while already open) so focus follows
+  // each request rather than only the first mount. Transient, never persisted.
+  teleportSeq: number;
+  composerRequestSeq: number;
 }
 
 type CompanionAction =
@@ -180,6 +166,9 @@ type CompanionAction =
   | { type: 'CANCEL_AUTO_RETURN' }
   | { type: 'SET_HOSTING'; payload: boolean }
   | { type: 'SET_IN_USE'; payload: boolean }
+  // #3120 (rework) ST-2 — the ONE open/close pair for the instruction composer.
+  | { type: 'OPEN_COMPOSER' }
+  | { type: 'CLOSE_COMPOSER' }
   | { type: 'SYNC_PRESENCE'; payload: { visible?: boolean; autoHidden?: boolean; away?: boolean } };
 
 interface CompanionContextValue {
@@ -208,28 +197,12 @@ interface CompanionContextValue {
   voiceEnabled: boolean;
   setVoiceEnabled: (enabled: boolean) => void;
   /**
-   * #2877 ST-2: persisted autosend choice — `Fredo_companion_voice_autosend`
-   * (DEFAULT false). The SETTING lives here; honoring it (transcript dispatch) is
-   * #2878, out of this slice. Never a companion-chat gate.
-   */
-  voiceAutosend: boolean;
-  setVoiceAutosend: (enabled: boolean) => void;
-  /**
    * #2877 ST-2: persisted input-device selection —
    * `Fredo_companion_voice_device_id` (DEFAULT '' = system default). A cpal
    * device id (name); the backend resolves it on the next capture session (R-3.2).
    */
   voiceDeviceId: string;
   setVoiceDeviceId: (deviceId: string) => void;
-  /**
-   * #2897 ST-1 (REQ-1): persisted speech-handling mode
-   * (`Fredo_companion_voice_handling`, DEFAULT 'local'). `'local'` is the shipped
-   * on-device transcription; `'model'` hands the captured utterance to the
-   * locally-running companion model as the turn's input. Read by the backend on
-   * every `stt_start`, so a change applies to the next listen with no restart.
-   */
-  voiceHandling: VoiceHandling;
-  setVoiceHandling: (handling: VoiceHandling) => void;
   /**
    * #2892 ST-1 (REQ-9): persisted send-during-reply disposition
    * (`Fredo_companion_send_during_reply`, DEFAULT 'queue'). The SETTING lives
@@ -265,6 +238,26 @@ interface CompanionContextValue {
   setHosting: (hosting: boolean) => void;
   /** FredoCompanion reports continuous use (open game / active stream / talk). */
   setInUse: (inUse: boolean) => void;
+  /**
+   * #3120 (rework) ST-2 — the teleport-attached instruction box is open.
+   * Transient state owned by this provider; the entity/host write it, the
+   * composer reads it. NEVER persisted.
+   */
+  composerOpen: boolean;
+  openComposer: () => void;
+  closeComposer: () => void;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced on every `TELEPORT`. The hosting overlay
+   * keys its settle-open effect on it (the seat can never own — and lose — the
+   * timer, because a same-window teleport unmounts the seat in the same commit).
+   */
+  teleportSeq: number;
+  /**
+   * #3120 (rework) ST-2-R4 — advanced by EVERY `OPEN_COMPOSER` (including a
+   * repeat request while the box is already open). The composer re-focuses on
+   * each value, so a repeated `Ask` re-focuses instead of silently no-oping.
+   */
+  composerRequestSeq: number;
 }
 
 // ── Reducer ──────────────────────────────────────────────────────────────────
@@ -283,6 +276,9 @@ const initialState: CompanionContextState = {
   isAutoReturning: false,
   isHosting: false,
   isInUse: false,
+  composerOpen: false,
+  teleportSeq: 0,
+  composerRequestSeq: 0,
 };
 
 function reducer(state: CompanionContextState, action: CompanionAction): CompanionContextState {
@@ -298,14 +294,18 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       // companion is designated present again — without touching the persisted key.
       // #2870 ST-1: a role change also returns Fredo HOME (R-3 — OFF renders the
       // decorative mascot at the seat; ON renders the companion in place).
-      return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false };
+      return { ...state, isVisible: action.payload, isAway: false, isAutoHidden: false, isAutoReturning: false, composerOpen: false };
     case 'TELEPORT':
       // #2870 ST-1: the ONLY relocation mechanism — any teleport leaves the seat.
       // #2870 F-68: a relocation MUST clear any prior hide state so the relocated
       // Fredo is present at its new location. A stale `isAutoHidden` (left by a
       // prior idle auto-return) otherwise gates the away overlay off AND keeps the
       // host idle gate disarmed → zero Fredos, stuck until an OFF/ON toggle.
-      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false };
+      // #3120 (rework) ST-2: the composer is teleport-attached — it closes during
+      // flight and re-opens on the destination settle. ST-2-R4: the seq bump is
+      // the settle-open signal the SURVIVING overlay (not the unmounting seat)
+      // consumes.
+      return { ...state, position: action.payload, isAway: true, isAutoHidden: false, isAutoReturning: false, composerOpen: false, teleportSeq: state.teleportSeq + 1 };
     case 'MARK_AWAY':
       // #2870 ST-1: idempotent local away (cross-window leave).
       // #2870 F-68: clear any prior hide state on relocation too (idempotent when
@@ -317,13 +317,24 @@ function reducer(state: CompanionContextState, action: CompanionAction): Compani
       return state.isAutoReturning ? state : { ...state, isAutoReturning: true };
     case 'AUTO_RETURN_SETTLED':
       // #2870 ST-1: the idle auto-return is a RETURN to the home seat (R-3/R-5).
-      return { ...state, isAway: false, isAutoHidden: true, isAutoReturning: false };
+      return { ...state, isAway: false, isAutoHidden: true, isAutoReturning: false, composerOpen: false };
     case 'CANCEL_AUTO_RETURN':
       return state.isAutoReturning ? { ...state, isAutoReturning: false } : state;
     case 'SET_HOSTING':
       return state.isHosting === action.payload ? state : { ...state, isHosting: action.payload };
     case 'SET_IN_USE':
       return state.isInUse === action.payload ? state : { ...state, isInUse: action.payload };
+    case 'OPEN_COMPOSER':
+      // #3120 (rework) ST-2-R4: NOT a boolean latch — EVERY request is a new
+      // state (the seq advances even when already open) so a repeat `Ask`
+      // re-renders the composer and re-focuses its input.
+      return {
+        ...state,
+        composerOpen: true,
+        composerRequestSeq: state.composerRequestSeq + 1,
+      };
+    case 'CLOSE_COMPOSER':
+      return state.composerOpen ? { ...state, composerOpen: false } : state;
     case 'SYNC_PRESENCE': {
       // Remote presence: apply fields that were provided, always clear the local
       // in-flight return. Never persists (setVisible is the only persisted writer).
@@ -379,27 +390,12 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (r) => r === 'true',
   );
 
-  // #2877 ST-2 — the autosend preference (SETTING only; dispatch is #2878) and
-  // the selected input device ('' = system default). Same persistence path.
-  const [voiceAutosend, setVoiceAutosend] = usePersistedSetting<boolean>(
-    VOICE_AUTOSEND_SETTING_KEY, DEFAULT_VOICE_AUTOSEND,
-    (v) => String(v),
-    (r) => r === 'true',
-  );
-
+  // #2877 ST-2 — the selected input device ('' = system default). Same
+  // persistence path as the enable switch.
   const [voiceDeviceId, setVoiceDeviceId] = usePersistedSetting<string>(
     VOICE_DEVICE_ID_SETTING_KEY, DEFAULT_VOICE_DEVICE_ID,
     (v) => v,
     (r) => r,
-  );
-
-  // #2897 ST-1 (REQ-1) — persisted speech handling ('local' | 'model', DEFAULT
-  // 'local'). Same `usePersistedSetting` path; a stale/unknown stored value
-  // heals to 'local' via `parseVoiceHandling`.
-  const [voiceHandling, setVoiceHandlingValue] = usePersistedSetting<VoiceHandling>(
-    VOICE_HANDLING_SETTING_KEY, DEFAULT_VOICE_HANDLING,
-    (v) => v,
-    (r) => parseVoiceHandling(r),
   );
 
   // #2892 ST-1 (REQ-9) — persisted send-during-reply disposition. Same
@@ -542,6 +538,16 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     dispatch({ type: 'SET_IN_USE', payload: inUse });
   }, []);
 
+  // #3120 (rework) ST-2 — the instruction box open/close pair. Idempotent in the
+  // reducer (no state write when already in the requested state).
+  const openComposer = useCallback(() => {
+    dispatch({ type: 'OPEN_COMPOSER' });
+  }, []);
+
+  const closeComposer = useCallback(() => {
+    dispatch({ type: 'CLOSE_COMPOSER' });
+  }, []);
+
   const setIdleTimeoutSeconds = useCallback((s: number) => {
     setIdleTimeout(clampIdleTimeout(s));
   }, [setIdleTimeout]);
@@ -551,12 +557,6 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const setSendDuringReply = useCallback((d: CompanionSendDisposition) => {
     setSendDuringReplyValue(d === 'interrupt' ? 'interrupt' : DEFAULT_COMPANION_SEND_DURING_REPLY);
   }, [setSendDuringReplyValue]);
-
-  // #2897 ST-1 (REQ-1): persist the speech-handling mode; a non-mode value at
-  // runtime heals to the default (mirrors the load-time parse).
-  const setVoiceHandling = useCallback((handling: VoiceHandling) => {
-    setVoiceHandlingValue(handling === 'model' ? 'model' : DEFAULT_VOICE_HANDLING);
-  }, [setVoiceHandlingValue]);
 
   // #2892 ST-1 (REQ-10): persist the grace as a clamped integer ms.
   const setReplyLeaveGraceMs = useCallback((ms: number) => {
@@ -603,18 +603,20 @@ export const CompanionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
-    voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
-    voiceHandling, setVoiceHandling,
+    voiceDeviceId, setVoiceDeviceId,
     sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
     replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
+    composerOpen: state.composerOpen, openComposer, closeComposer,
+    teleportSeq: state.teleportSeq,
+    composerRequestSeq: state.composerRequestSeq,
   }), [
     state, setState, showMessage, hideMessage, setVisible, teleport, markAway,
     notifyInteraction, idleTimeoutSeconds, setIdleTimeoutSeconds,
     confirmAutoReturn, setHosting, setInUse, voiceEnabled, setVoiceEnabled,
-    voiceAutosend, setVoiceAutosend, voiceDeviceId, setVoiceDeviceId,
-    voiceHandling, setVoiceHandling,
+    voiceDeviceId, setVoiceDeviceId,
     sendDuringReply, setSendDuringReply, replyLeaveGraceMs, setReplyLeaveGraceMs,
     replyInFlight, setReplyInFlight, queuedSendCount, setQueuedSendCount,
+    openComposer, closeComposer,
   ]);
 
   return (

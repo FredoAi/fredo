@@ -105,6 +105,22 @@
   animation: fredo-playful-wobble 1.8s ease-in-out infinite;
 }
 
+/* ── #2917 ST-4 error: a ONE-SHOT whole-element shake (360 ms, fill forwards).
+      The expression silhouette (V frown + down-brows) is STATIC inside the
+      shared avatar — this wrapper shake is the state's only motion, and it is
+      expressed in CSS px (not SVG units) so it reads at every rendered size. ── */
+@keyframes fredo-error-shake {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-3px); }
+  50%  { transform: translateX(3px); }
+  75%  { transform: translateX(-2px); }
+  100% { transform: translateX(0); }
+}
+
+.fredo-companion-avatar[data-state='error'] {
+  animation: fredo-error-shake 360ms ease-in-out 1 forwards;
+}
+
 /* ── Reduced motion: idle bob/glow + talk pulse off; teleport degrades to a
       pure opacity crossfade (still ~400 ms — timing preserved); the mouth
       keyframe slows (fredo-avatar.css) but stays functional. The #2854 status
@@ -115,7 +131,8 @@
   .fredo-companion-avatar[data-state='thinking'],
   .fredo-companion-avatar[data-state='joking'],
   .fredo-companion-avatar[data-state='happy'],
-  .fredo-companion-avatar[data-state='playful'] {
+  .fredo-companion-avatar[data-state='playful'],
+  .fredo-companion-avatar[data-state='error'] {
     animation: none;
   }
 

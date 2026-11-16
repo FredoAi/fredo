@@ -215,6 +215,9 @@ beforeEach(() => {
   adapterBridge.setInvoke(devAdapter.invoke.bind(devAdapter));
   adapterBridge.setLlmChat(devAdapter.llmChat.bind(devAdapter));
   adapterBridge.setLlmChatWithImage(devAdapter.llmChatWithImage.bind(devAdapter));
+  // #2918 ST-5 — the structured-status transport is now the entity's ONE route
+  // (the DevAdapter twin streams the same mock reply and emits the fixed default).
+  adapterBridge.setLlmChatWithStatus(devAdapter.llmChatWithStatus.bind(devAdapter));
   adapterBridge.setListen(() => Promise.resolve(() => {}));
 });
 
@@ -303,8 +306,11 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
     expect(textEl.textContent?.startsWith(firstToken ?? '')).toBe(true);
 
     // Drain the 30 ms interval until DevAdapter calls onDone (streaming mark drops).
+    // #2918 ST-5 — the structured-status transport's DevAdapter twin emits the
+    // fixed status BEFORE completion through ONE `await`, so the flush is awaited
+    // (async act) to drain that microtask; the assertions are unchanged.
     for (let i = 0; i < 400; i += 1) {
-      act(() => {
+      await act(async () => {
         vi.advanceTimersByTime(30);
       });
       if (avatar(container).getAttribute('data-streaming') == null) break;

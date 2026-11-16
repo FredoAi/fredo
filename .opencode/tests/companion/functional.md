@@ -2167,3 +2167,1119 @@ clean.
 - **F-111 PASS (live, decisive).** Under `interrupt`, a real-keyboard send during a >1 s in-flight generation superseded it: the bubble settled EXACTLY `INTERRUPTED`, no queued indicator at any sample, and the superseded count tokens never appended. Screenshot `r2-ac6-interrupted.png`.
 - **F-112 PASS (live).** Full cold app restart (`dev-env.ps1 -Action Restart -Spec 2892`): Settings → Companion re-read `Interrupt and send now` + grace `10`; `localStorage`/`get_setting` both `interrupt`/`10000`.
 - **F-115 PASS (static/console).** Zero colour literals in the changed companion/launcher TSX; console clean (pre-existing `motion() is deprecated` WARN only).
+
+---
+
+## #2917 extension — solid Fredo + richer status vocabulary (companion seat)
+
+> Issue #2917 fills the avatar's hollow head interior + mouth void (additively) and audits/extends the
+> status vocabulary. Rows map 1:1 to the QA Plan in `.opencode/tmp/2917/triage.md` `## QA Expert`
+> (Q-1..Q-9). **Verification policy: live** — every row is judged on RENDERED output. A PASS built only
+> from source inspection, computed `animationName`, `data-state` presence or a keyframe existing is a
+> **FALSE PASS**. The mandatory live receipt is **F-125**.
+>
+> **Serving checkout:** `spec/2917` on a running Fredo desktop app (dev-env `Up -Spec 2917`, MCP driver
+> `com.fredo.app`). Screenshots → `.opencode/tmp/2917/e2e/`.
+>
+> **Rendered-delta metric (binding for F-119/F-121).** Crop the avatar to `offsetWidth × offsetHeight`
+> + 24 px halo; capture at `SAMPLE_CADENCE_MS = 100 ms` over `CAPTURE_WINDOW_MS = 2400 ms`; compute the
+> **DENSE full-frame per-pixel diff** (`T_CH = 8/255`, every pixel — no sparse grid); report
+> `delta_frac` / `delta_mean` + a 3-frame filmstrip (t0 / t0+1200 / t0+2400). Animation-property
+> presence is NEVER sufficient.
+
+## F-116 (Q-1 / REQ-1 / AC1) — Solid, theme-native interior on the companion seat
+
+- [ ] F-116: Companion ON at the home seat; in dark base, the `light-default` preset, and a changed
+      accent (Matrix), sample the head-interior + mouth-void pixels INSIDE the figure plus a same-frame
+      empty-surface control; read the fill layer's computed `fill`/`color`. Repeat on the launcher md
+      render.
+  **Expected:** the interior no longer shows the surface behind Fredo in ALL THREE conditions (the
+      sampled interior pixels resolve to the live accent, not the page/card background; contrast vs the
+      same-frame background ≥ 3:1 in both themes); the fill is an ADDITIVE layer (the 58 base rects stay
+      byte-identical); only `var(--accent-primary)`/`currentColor`/`tint()`.
+  - **Edge:** accent changed WHILE a state is active and mid-teleport; the fill must not extend outside
+    the head/mouth void; check sm 80×100 AND md 132×165.
+
+## F-117 (Q-1 / REQ-7 / NF) — Live fill recolor with no restart
+
+- [ ] F-117: With the avatar mounted (idle AND a non-idle state), switch dark → `light-default` and
+      change the accent via `select[aria-label="Theme presets"]` with NO reload; read the fill +
+      overlay computed colours before/after.
+  **Expected:** the filled interior AND every overlay re-tint to the live `--accent-primary` with no
+      restart and no stale colour; zero `var(--x)NN` alpha-append (#2770); the figure stays legible
+      against its background in both themes.
+  - **Edge:** change the accent MID-teleport and MID-stream; the fill must not flash the old token.
+
+## F-118 (Q-2 / REQ-2 / AC2) — Every existing expression stays legible over the fill
+
+- [ ] F-118: Force `talk`, `teleport-out`, `teleport-in`, `thinking`, `happy`, `playful`, `joking` and
+      `idle`; per state capture a still, probe `#fredo-expression[data-state=<s>]` rects and the fill
+      layer, and read the DOM paint order.
+  **Expected:** every distinguishing shape renders ON TOP of the fill and is visible (talk mouth toggle;
+      teleport-out closed-eye lines + streak; teleport-in sparkles; thinking dots + bubble trail; happy
+      arc + stars; playful smirk/brow/cheek star); each state is distinguishable at a glance from
+      `idle`, `talk` and every other state (vision/human filmstrip read at sm); the overlay `<g
+      id="fredo-expression">` is a SEPARATE conditional sibling painted AFTER the fill.
+  - **Edge (negative):** a `currentColor`-over-`currentColor` overlay invisible in principle (#2850
+    E-25 pattern) is a FAIL; no expression hidden, blended away, or drawn beneath the fill; probe at
+    80×100 sm.
+
+## F-119 (Q-3 / REQ-3 / AC3) — Per-state before→after audit table (dense metric)
+
+- [ ] F-119: For each of the 8 states capture the dense rendered-delta metric BEFORE (pre-change
+      checkout or the implementer's checked-in `before-*` artifacts) and AFTER (spec branch) with the
+      SAME recipe/constants; record a per-state audit row (legibility / perceptibility / distinctness /
+      reduced-motion correctness / shortfall / change).
+  **Expected:** the table is COMPLETE (8/8) and evidence-backed; each shortfalling state is named with
+      `delta_frac`/`delta_mean` before→after; every state clears its declared per-state floor AFTER; no
+      animation-property-only claim. Consumer behaviour/timing is unchanged (teleport out ≈400 ms /
+      in ≈400 ms + ~50 ms settle; joke/think/happy holds; resting cadence; idle watchdog bounds;
+      launcher idle DOM).
+  - **Edge:** a BEFORE capture unavailable ⇒ a checked-in `before-*` artifact + a named blocker (never a
+    fabricated before); a state left unchanged still carries an explicit "audited, no change needed"
+    verdict with its metric.
+
+## F-120 (Q-4 / REQ-4 / AC4a) — New states exposed via REAL triggers; static legibility
+
+- [ ] F-120: The FROZEN new-state set is `listening | working | error | greeting`. Force each via its
+      real product trigger (hold-Space on the bar → `listening`; a bar send selecting the `open_app`
+      skill, e.g. `open notepad` → `working`; `invoke('stop_llama_server')` + send → `error`; toggle the
+      companion ON → `greeting`). `success` is the audited `happy`; `waiting` is NOT a state (the #2892
+      queue indicator owns it).
+  **Expected:** `FredoAvatar` exposes the frozen set on the companion seat; each new state is (a)
+      visually distinct from `idle`, `talk` and every other state, (b) legible as a STATIC frame, (c)
+      theme-token-only, (d) clears its per-state dense-delta floor (F-121).
+  - **Edge:** a declared state with NO live trigger ⇒ BLOCKED-harness (a deterministic dev affordance is
+    required); never a static PASS. Distinctness re-checked at sm AND md.
+
+## F-121 (Q-5 / REQ-5 / AC4b) — New states perceptible on rendered output over time
+
+- [ ] F-121: Per new state capture the frame sequence (100 ms cadence / 2400 ms window / 24 px halo) and
+      compute the DENSE full-frame per-pixel diff; report `delta_frac`/`delta_mean` + a 3-frame
+      filmstrip per state.
+  **Expected:** each new state's `delta_frac` ≥ its declared floor (new-state floor ≥ 0.008) — i.e.
+      perceptible on RENDERED output over time; the filmstrip corroborates the vision/human read.
+  - **Edge (anti-patterns, never sufficient):** computed `animationName`/keyframe presence; `data-state`
+    being set; a static single frame; a sparse point-grid diff (aliases on thin/periodic paint).
+
+## F-122 (Q-6 / REQ-6 / AC5) — Frozen geometry + overlay separation + reduced-motion legibility
+
+- [ ] F-122: In EVERY state (existing + new) read the 58 base rects and diff against
+      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; read where whole-element motion lives; drive the
+      reduced-motion pass; probe `#fredo-expression` presence per state.
+  **Expected:** 58 base rects byte-identical in every state; the expression is a separate conditional
+      overlay `<g>`; whole-element motion stays on the CONSUMER wrapper (never inside `FredoAvatar`);
+      under reduced motion every distinguishing frame stays legible with NO `opacity:0` and NO strobe
+      (WCAG 2.3.1 — motion suppressed, shape retained).
+  - **Edge:** the driver cannot flip `prefers-reduced-motion` live (G-053) ⇒ named blocker + a
+    static-CSS/unit pin; a strobe (>3 flashes/s) or an `opacity:0` state is a FAIL; the geometry/sizes
+    suites pass UNMODIFIED.
+
+## F-123 (Q-6 / REQ-6 / AC5) — Existing per-state pins still pass
+
+- [ ] F-123: Run the companion pins — `FredoCompanion.devMode.test.tsx`,
+      `FredoCompanion.seatTeleport.test.tsx`, `FredoCompanion.crossWindow.test.tsx`,
+      `skillSettle.test.tsx` — and the launcher pins; confirm each still pins `data-state` per scenario.
+  **Expected:** all pass without weakening/deleting an assertion; `data-state` per scenario unchanged;
+      any intentionally refreshed pin is named per G-125.
+  - **Edge:** the fill layer must not add a node that breaks a `querySelector` pin; the overlay rect sets
+    asserted by the pins are unchanged for the pre-existing states.
+
+## F-124 (Q-8 / REQ-8 / NF) — Token purity, build, suite, console
+
+- [ ] F-124: Static-grep `apps/ui/src/shared/components/fredo-avatar/**` for `#[0-9a-fA-F]{3,8}` /
+      `rgba(` / `rgb(` / `hsla(` / `var(--x)NN`; read the console after EVERY leg; run
+      `pnpm --filter @fredo/ui build` + `pnpm --filter @fredo/ui test:run`.
+  **Expected:** ZERO true colour literals (comment issue-refs exempt) and no alpha-append; no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`; no re-render loop (#523); build exit 0 with
+      zero TS errors; the full suite green.
+  - **Edge:** a state forced mid-theme-switch; the pre-existing `motion() is deprecated` WARN is exempt.
+
+## F-125 (Q-9 / REQ-9 / LIVE) — Mandatory live telemetry + rendered-webview receipt
+
+- [ ] F-125: Same run as F-116..F-124: `fredo emit --event-type chat --session-id e2e-2917-chat` +
+      `--event-type tool_use --session-id e2e-2917-tool --tool-name read_file`; query `telemetry_spans` +
+      `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-state screenshots via
+      `upload-evidence --issue 2917`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered receipt.
+      **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+---
+
+## #2918 extension — model-driven status via a structured reply object
+
+> Issue #2918 obtains the WHOLE companion reply under a JSON-Schema-constrained `response_format`
+> contract (reply content + a model-declared status field), applies the parsed status to the
+> companion's user-visible state for that turn, and degrades safely when the object is
+> absent/unknown/unusable or the capability is unsupported. Rows map 1:1 to the QA Plan **Q-1..Q-8**
+> in `.opencode/tmp/2918/triage.md` `## QA Expert`. **Verification policy: live** — every AC is
+> judged on the RUNNING system; the mandatory live receipt is F-132. A static-only PASS is a
+> FALSE PASS.
+>
+> **Sanctioned levers (all in-repo / loopback — G-172/G-009):**
+> - **LV1** the real managed `llama-server` via the MCP bridge (`com.fredo.app`) + the real
+>   launcher/companion UI — the live structured generation.
+> - **LV2** deterministic synthetic injection on the REAL `llm-token` / `llm-error` / `llm-done`
+>   channel via `tauri_ipc_emit_event` — forces an exact object shape, token boundary, or status
+>   value on the channel the backend actually emits on.
+> - **LV3** the EXISTING read-only `probe_companion_skills` (`responseFormat` sub-report) — the
+>   capability source; no new detector.
+> - **LV4** the pure pins: `resolveCompanionAvatarState` + the reply-request builder + the object
+>   parser (in-repo unit tests).
+>
+> **Frozen hooks:** wrapper `.fredo-companion-avatar` `data-state`; `#fredo-expression[data-state=…]`;
+> `[data-testid="fredo-reply-surface"]`; `[data-testid="fredo-reply-scroll"]`;
+> `[data-testid="fredo-companion-live-region"]`; `[data-testid="fredo-game-bubble"]`;
+> `[data-testid="launcher-command-bar"]`/`"launcher-command-input"`. Vocabulary `FREDO_AVATAR_STATES`
+> (`apps/ui/src/shared/components/fredo-avatar/fredoAvatarStates.ts`); resolver
+> `apps/ui/src/shared/components/fredo-avatar/fredoAvatarResolver.ts` (`modelStatus` seam).
+> **Evidence renderability (G-104):** frames named WITHOUT image extensions in prose; a `.png`/`.jpeg`
+> token only on a line that also carries an `https://` URL; descriptive link labels.
+
+## F-126 (Q-1 / AC-1) — The reply is a structured contract and the model status drives the rendered state
+
+- [ ] F-126: (a) Drive TWO real managed-`llama-server` replies with different intent (the
+      Architect-bound forcing prompts, quoted verbatim); sample `.fredo-companion-avatar`
+      `data-state` + `#fredo-expression[data-state]` across each turn (≥5 samples + screenshots).
+      (b) Inject `{"reply":"…","status":"happy"}` then `{"reply":"…","status":"joking"}` then
+      `llm-done` on `llm-token` (LV2). (c) Inject an object with NO status. (d) Read the outgoing
+      request constraint (LV4 builder pin + the managed-server log).
+  **Expected:** the request is constrained by `response_format` (`type === "json_schema"`, schema
+      carrying reply content + ≥1 status field) and carries NO `tools`/`tool_choice` — a structured
+      contract, NOT a tool call. The parsed status is applied to the companion's user-visible state
+      for that turn: (a) the two real-intent replies render DIFFERENT `data-state` values (record
+      both; each ∈ `FREDO_AVATAR_STATES`); (b) `happy` vs `joking` render as different `data-state`
+      + a different `#fredo-expression[data-state]` overlay; (c) absent status → the Architect-bound
+      safe default (record its literal; ∈ `FREDO_AVATAR_STATES`). The status word never appears as
+      text in `[data-testid="fredo-reply-surface"]`.
+  - **Edge:** a status equal to a base state (`talk`/`idle`) still renders; two consecutive turns
+    with different statuses converge; a status equal to the current flow no-ops; a status arriving
+    on the last token still applies; a skill turn (R-63).
+
+## F-127 (Q-2 / AC-2 — RISKIEST) — No raw JSON at any frame; the reply renders progressively
+
+- [ ] F-127: (a) A real chatty/long reply — sample `[data-testid="fredo-reply-surface"]` text +
+      `data-streaming` at ~100 ms across the whole stream. (b) Split-token injection on `llm-token`:
+      emit the object across ≥3 events each breaking INSIDE a JSON token — `{"rep` / `ly":"Hello
+      there` / `","status":"happy"}` plus a variant splitting inside `status` — then `llm-done`;
+      capture the surface text per frame. (c) The settled view after `llm-done`.
+  **Expected:** NO sampled frame's visible surface text contains `{`, `}`, `"reply"`, `"status"`,
+      `json`, or a truncated fragment; the settled visible text === the reply string EXACTLY (no
+      markup, no quote-wrapper). Progressive: ≥3 distinct increasing text samples while still
+      arriving — OR, if the plan declares buffering, its declared time-to-first-text is MEASURED and
+      reported with the trade-off (no silent switch).
+  - **Edge:** a boundary exactly at `{"reply":"` and at `","status":"`; an empty reply string;
+    `<end_of_turn>`/`<start_of_turn>` still stripped; a reply whose PROSE contains the literal word
+    `json` (must render as prose); a unicode/emoji reply split mid-codepoint.
+
+## F-128 (Q-3 / AC-3) — Robust degradation; bounded retry; the complex scenario
+
+- [ ] F-128: (a) Empty content — emit `llm-token` with an empty/whitespace reply object, then
+      `llm-done`; count the re-request attempts over the turn. (b) Malformed — emit `not json at all`
+      and a truncated `{"reply":"half`. (c) Non-conforming — emit `{"status":"happy"}` (no reply),
+      `{"reply":123}` (wrong type), `{"reply":"x","status":"dancing"}` (non-member status; healing
+      is the parser's job, not the model's).
+      (d) **Complex scenario:** server healthy + structured output enabled, model returns an
+      empty/non-conforming object. (e) After each leg send the next message from the bar.
+  **Expected:** no raw output is ever shown; no broken turn; a plain reply (or a readable empty/error
+      line) + default status; empty content is retried a BOUNDED number of attempts then settles
+      (record the bound from source; assert attempts ≥1 AND ≤ bound); the fallback never hangs and
+      never double-settles (exactly ONE settle per turn, incl. the `llm-error` → `llm-done` pair);
+      the bar accepts the next send and a normal reply follows; console clean.
+  - **Edge:** an error mid-retry; `llm-error` + follow-up `llm-done`; a retry at the watchdog
+    boundary; empty after a valid turn; whitespace-only; two consecutive empty turns.
+
+## F-129 (Q-4 / AC-4) — Capability-gated fallback (existing probe; no new detector)
+
+- [ ] F-129: Re-run the EXISTING read-only `probe_companion_skills` and read `responseFormat.content`
+      / `error` / `terminated`; then with the capability reported unsupported drive a companion
+      reply. Static: grep that the gate consumes the EXISTING probe result and that no second
+      detector exists.
+  **Expected:** unsupported `response_format` → today's plain-text reply (progressive, no raw JSON) +
+      default status, with NO user-visible error (no error bubble, no raw backend string) and the
+      outgoing request carrying NO `response_format`; the gate reuses the existing probe mechanism
+      (no new detector); no regression to the pre-change reply experience.
+  - **Named blocker (G-053):** if the shipped managed server SUPPORTS `response_format`, the
+    capability-OFF RENDER leg is UNVERIFIED live — residual pin = the pure-gate unit pin (a verdict
+    with `responseFormat.error` selects the plain-text path) + the probe's recorded verdict. Never a
+    fabricated cap-off PASS; if the Architect exposes a deterministic in-repo seam to feed the gate a
+    synthesized verdict, this leg becomes fully live.
+  - **Edge:** probe in flight / `checking`; a probe that errors (server down) → fail-safe to plain
+    text with no error UI; the capability flipping between turns.
+
+## F-130 (Q-5 / AC-5) — Closed vocabulary heals; the prompt contract is literal
+
+- [ ] F-130: (a) Inject out-of-vocabulary statuses on the real channel — `"success"`, `"dancing"`,
+      `"IDLE"`, `""`, `123`, `null` — and sample `.fredo-companion-avatar` `data-state` across each
+      turn. (b) Read the prompt/system constant (LV4) and quote its lines. (c) Read
+      `FREDO_AVATAR_STATES`.
+  **Expected:** every out-of-vocabulary / absent value heals to the safe default; at EVERY sample the
+      wrapper `data-state` ∈ `FREDO_AVATAR_STATES` (an out-of-vocabulary `data-state` reaching the
+      DOM is a FAIL); the vocabulary is the frozen 12 (`success`/`waiting`/`reasoning` absent —
+      quote); the prompt contains the literal word `json` AND an example, and contains NO
+      free-text-JSON instruction (quote the lines).
+  - **Edge:** a status after the reply text; a mix of valid+invalid in one turn; a valid status in the
+    next turn after an invalid one; an integer/`null` status.
+
+## F-131 (Q-6 / Precedence) — The model status composes without masking an existing state's sole trigger (G-220)
+
+- [ ] F-131: (a) Inject a model status then drive a same-window teleport mid-turn; timestamp the
+      `data-state` sequence at ~50 ms. (b) Stream a turn with NO status and read the wrapper state.
+      (c) Inject a status-bearing object then emit `llm-error` followed by `llm-done`. (d) Drive the
+      #2917 flow-owned beats (a skill selection → `working`; a joke → `joking`; a settle → `happy`)
+      with a model status present.
+  **Expected:** (a) the sequence stays `idle → teleport-out → (hidden in transit) → teleport-in →
+      idle` at ~400 ms / ~+50 ms / ~400 ms; the model status NEVER appears during the teleport (a
+      teleport always wins); (b) `data-state="talk"` renders while streaming with no status — the
+      `talk` sole trigger stays REACHABLE; (c) `error` renders with no false `happy` (the model status
+      never masks the error path); (d) `working`/`happy`/`joking` still render per their triggers.
+  - **Edge:** a model status equal to `error`; a status at the settle boundary; a status during the
+    `happy` hold; a status during `working`.
+
+## F-132 (Q-7 / LIVE) — Mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-132: Same run as F-126..F-131: `fredo emit --event-type chat --session-id e2e-2918-chat` +
+      `--event-type tool_use --session-id e2e-2918-tool --tool-name read_file`; query
+      `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-case
+      frames via `upload-evidence --issue 2918`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered receipt.
+      **A static-only PASS with no live receipt is a FALSE PASS.**
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; never fabricate.
+
+## F-133 (Q-8 / NF) — Build, suite, console, token purity
+
+- [ ] F-133: `cargo check` + `cargo clippy --all-targets` (incl. test targets); `pnpm --filter
+      @fredo/ui build` + `pnpm --filter @fredo/ui test:run`; read the console after EVERY leg;
+      inspect the parser/gate/resolver code for effect/memo deps on array `.length`/fresh objects;
+      grep the changed files for `#[0-9a-fA-F]{3,8}`/`rgba(`/`rgb(`/`hsla(`/`var(--x)NN`.
+  **Expected:** zero Rust warnings incl. test targets; build exit 0 / zero TS errors; the full UI
+      suite green with no assertion weakened/deleted (a moved pin named per G-125); no
+      `Error:`/`Uncaught`/`Maximum update depth exceeded` in any leg/window; no re-render loop
+      (AGENTS.md #523); ZERO hardcoded colour literals / no alpha-append.
+  - **Edge:** a status forced mid-theme-switch; the pre-existing `motion() is deprecated` WARN is
+    exempt; a retry path that must not add a per-frame computation.
+
+### #2918 testing round 1 (spec/2918 @ cb06fb24) — results
+
+Verdict: **FAIL** — F-126..F-133 pass except the R-63 skill-path regression (see `regression.md`). The `## Tests Runs (round 1)` comment on #2918 carries the per-Q table + user-attachment frames.
+
+- **F-126 PASS (live).** (a) Two real managed-server replies: celebratory → settle `happy`; deliberating → settle `thinking` — DIFFERENT `data-state`, each ∈ `FREDO_AVATAR_STATES`, dense 50 ms trace across the turn + ~5 s hold (frames Q-1 turn-A/turn-B). (b) Injected `llm-status happy`→`happy`, `joking`→`joking` (real channel). (c) No-status turn → default `happy`. (d) Request: `response_format.type==="json_schema"`, name `fredo_reply`, `required:[reply,status]`, `additionalProperties:false`, closed 7-enum; tools-free variant pinned; the live model emitted only in-vocabulary statuses. No status word as reply text.
+- **F-127 PASS (live + LV4).** Live generations: 12–16 `llm-token` frames concatenate EXACTLY to the reply; no frame's surface text contained `{`/`"reply"`/`"status"`; ≥3 distinct increasing progressive samples. Prose containing braces + the literal word `json` renders verbatim. Split-boundary withholding pinned at the parser layer (the frontend is not a parser — raw `llm-token` LV2 injection cannot exercise it).
+- **F-128 PASS (with the recorded bound).** `not json at all` (the backend's `Plain` emission) → plain reply + default `happy`, exactly one settle, next turn usable. `STATUS_EMPTY_RETRY_MAX = 1` recorded from source; empty/`{`-bearing verdicts unit-pinned; the backend retry itself is not IPC-observable (named).
+- **F-129 UNVERIFIED (cap-OFF render) — G-053.** Shipped server SUPPORTS `response_format` (`companion_status_capability` `{supported:true,…}`), so the capability-OFF render leg cannot be driven live; residual = the pure predicate unit pin + the recorded probe verdict.
+- **F-130 PASS (live + quoted lines).** `dancing`/`nonsense`/`""`/`"123"`/`null`/`talk`/`error`/`teleport-out`/`greeting`→`happy`; `success`→`happy`; `funny`→`joking`; `IDLE`→`idle`; `playful`→`playful`. Every sampled `data-state` ∈ the frozen 12. Prompt quote + `FREDO_AVATAR_STATES` quote in the verdict.
+- **F-131 PASS (one plan-wording observation).** Teleport wins over a model status; `error` beats an injected `joking`; `working`/`happy`/`joking` flow-owned beats fire. The status-free reply stream renders `thinking`→`joking`, NOT `talk`; `talk` is the unranked base pass-through (ambient-message path) and is never masked — the QA row's "talk while streaming" recipe does not match the shipped lifecycle (flagged, not silently re-scoped).
+- **F-132 PASS (live receipt).** `telemetry_spans` 22,498, `max(ingested_at)` 2026-09-21T04:54:33.491Z; `chat_rows` e2e-2918-chat = 1; `tool_use_rows` e2e-2918-tool (`read_file`) = 1.
+- **F-133 PASS.** CI PR #2920 `rust-validate` + `ui-validate` pass; `pnpm --filter @fredo/ui build` exit 0 / zero TS errors; `pnpm --filter @fredo/ui test:run` 112 files / 1652 passed; console error-level empty after every leg; zero colour literals / no `var(--x)NN` in the changed UI files.
+
+## F-134 (Q-6(a), PROMOTED from #2918 round 2) — A teleport during the status hold must RELEASE the model status
+
+- [ ] F-134: Drive a typed prose turn (`askActiveCompanion('We shipped it — celebrate with me!')`), wait for the `llm-status` settle (e.g. `happy`) and, inside the 5 s hold, dispatch the same-window teleport (`window.dispatchEvent(new MouseEvent('mousedown', { button: 2, ctrlKey: true, clientX: 700, clientY: 500 }))`). Sample `.fredo-companion-avatar[data-state]` at 50 ms for ≥8 s and read the DOM at ≥10 s.
+  **Expected (R-9 + Q-6(a)):** `happy → teleport-out → teleport-in → idle`; the model status is released after the existing bounded hold and cannot persist past it.
+  **Actual (#2918 round 2, spec/2918 @ c94dd72 — FAIL, blocking):** `happy(4051 ms) → teleport-out(5059) → teleport-in(5503) → happy(5950) → …` — **no release to `idle`**; the DOM still read `data-state="happy"` / `#fredo-expression[data-state="happy"]` at 13.8 s, 26 s and 27 s post-settle. Control (no teleport): `happy(3814) → idle(8807)` = release at settle + 5 s.
+  **Root cause:** `startTeleportOut` (`CompanionEntity.tsx:757-767`) calls `clearTimer()` (`:625-633`), which cancels the hold timer that released the status (`setSettledModelStatus(undefined)`, `:958`) but does NOT reset `settledModelStatus`/`flowOwnsExpressionRef`; after the teleport ends the render gate (`:433-436`) re-admits the status and the resolver ranks it above the idle flow.
+  - **Edge:** teleport immediately at the settle boundary; teleport during the `joking` streaming window; a second teleport inside the (now stuck) hold; the same leak on the away-overlay surface.
+
+### #2918 testing round 2 (spec/2918 @ c94dd722) — results
+
+Verdict: **FAIL** — the ST-6 fix clears **R-63** (skills restored: `llm_chat_with_status({offerSkills:true})` now emits `llm-skill-call` and opens the app; exactly one `llm-done`, no `llm-status`). T1..T4, T5(b/c/d), T6 and Q-1/Q-2/Q-3/Q-5/Q-7/Q-8 re-pass; Q-4 keeps its named G-053 blocker. **F-134 (promoted, above) FAILS**: a teleport during the status hold leaves the settled model status stuck indefinitely (`happy → teleport-out → teleport-in → happy`, no `idle` at ≥27 s; control releases at settle + 5 s). The round-2 `## Tests Runs (round 2)` comment on #2918 carries the per-row table + user-attachment frames.
+
+### #2918 testing round 3 (spec/2918 @ 15e1be50) — results
+
+Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-cancelling path. **F-134 PASSES (was the round-2 blocker):**
+
+- **F-134 PASS (live).** Typed turn `askActiveCompanion('We shipped it — celebrate with me!')` → settle `happy` at 9529 ms; same-window teleport dispatched 1004 ms after the settle (teleportAt 10510). State trace `playful(4961) → thinking(6565) → joking(7761) → happy(9529) → teleport-out(10561) → idle(11010)`; a 20 ms trace confirmed `teleport-out → teleport-in → idle` (in-flight ~464/463 ms). Post-settle samples at +5 s / +13 s / +20 s / +27 s = `idle` throughout (∈ {idle, playful}); no `happy` after `teleport-in`; the reply bubble is cleared. Control (R2, no teleport): `happy(3625) → idle(8619)` = settle + ~5012 ms (the shipped `HAPPY_HOLD_MS`).
+- **R1 (teleport-after-settle release) / R2 (control) / R3 (skill-turn teleport) all PASS.** R3: `thinking → teleport-out → idle`; exactly one `llm-skill-call` + one `llm-done`, **zero `llm-status`**, reply bubble cleared.
+- **Re-confirmed green:** T1/R-63, T2/AC-1 (`happy` vs `working` distinct), T3, T4, T5(b-i) ambient `talk` (`greeting → talk` with no generation), T5(b-ii) `thinking → joking → settle`, T5(c) `error` beats an injected status, T5(d), T6, Q-1/Q-2/Q-3/Q-5/Q-7/Q-8. Q-4 keeps its named G-053 blocker; the T1 dictation-selection sub-leg keeps its named G-172/G-009 in-repo-fixture blocker.
+
+---
+
+## #2922 extension — the WHOLE body must render solid (revises #2917's head-only fill)
+
+> Issue #2922 revises #2917 (PR #2919): #2917 filled the head interior + mouth void ONLY
+> (`FREDO_AVATAR_INTERIOR_RECTS`, 9 bands, `y = 106…761`, `fredoAvatarGeometry.ts:184-194`); the BODY
+> (viewBox `y ≈ 812–1234`: bow tie 812–868, upper arms 824–911, inner arms 856–916, center buttons
+> 917–1027, lower arms 916–1061, hips 1009–1085, legs 1085–1201, feet 1201–1234) still renders
+> see-through. These rows own the companion surface (`.fredo-companion-avatar`); the launcher
+> decorative seat mascot lives in `.opencode/tests/launcher/` F-113..F-117 + R-67..R-69. Rows map 1:1
+> to the QA Plan `Q-1..Q-10` in `.opencode/tmp/2922/triage.md` `## QA Expert`.
+> **Verification policy: live** — every row is judged on RENDERED output; a source/attribute
+> assertion, a computed `animationName`, or a `data-state` presence is NEVER a PASS. The mandatory
+> live-policy receipt is **F-142**. **Serving checkout:** `spec/2922` on a running Fredo desktop app
+> (`dev-env.ps1 -Action Up -Spec 2922`, MCP driver `com.fredo.app`); screenshots →
+> `.opencode/tmp/2922/e2e/`. Reference images (read by EXACT path — a glob returning nothing is a
+> FALSE NEGATIVE): `.opencode/wireframes/fredo-avatar.png`, `.opencode/wireframes/avatar-guide.png`,
+> `.opencode/wireframes/fredo-avatar.html`.
+>
+> **BINDING body-solidity oracle (F-135 / F-138) — backdrop-contrast `seeThrough` over a
+> geometry-derived mask. REPLACES the round-1 `open`/`T_OPEN`/flood-fill `hole` oracle, which was
+> non-discriminating (it reported `holeCount == 0` on the BEFORE tip too — Q-10(b) was
+> unsatisfiable).** Freeze motion first
+> (`document.getAnimations().forEach(a => { a.currentTime = 0; a.pause(); })`) so A/D differ only by
+> the backdrop, then in ONE `execute_js` task capture lossless PNGs of the avatar crop
+> (`offsetWidth × offsetHeight` + 8 px halo, G-040 — never a transform-scaled rect):
+> - **A** = as rendered (backdrop `B0`).
+> - **D** = the SAME DOM with a solid probe inserted BEHIND the figure in the SAME stacking context:
+>   `parent = svg.offsetParent ?? svg.parentElement`; force `parent.style.position='relative'` if
+>   static; `probe` = absolute `inset:-10px`, `z-index:0`, `background:B1`, `pointer-events:none`;
+>   `parent.insertBefore(probe, svg)`; `svg.style.position='relative'; svg.style.zIndex='1'` — all
+>   restored after. `B1` = `#ffffff` on dark presets, `#000000` on `light-default`. `--body-bg` is
+>   NOT touched (the probe is a local element, not a token edit).
+> - **C** (the leak reference) = the SAME DOM over `B0` with only `#fredo-interior` hidden
+>   (`display='none'`; no reflow).
+> - Assert **token invariance**: `getComputedStyle(document.documentElement).getPropertyValue('--fredo-avatar-interior')`
+>   AND `getComputedStyle(document.querySelector('#fredo-interior')).fill` are byte-identical across
+>   A and D.
+> - **Mask `M`** = canvas-2D rasterisation at the capture scale (`scale = cropWidth/1014`, the same
+>   transform as the crop) of `union(58 base rects) ∪ union(17 interior bands)`, then **eroded
+>   `E = 2 rendered px`** to drop the antialias rim. **`M` is bound to the FROZEN intended-region
+>   constants committed in the harness, NEVER imported from the running app's module** (the BEFORE
+>   checkout ships 9 bands — a live import would shrink the mask and silently re-break the negative
+>   control). The authored negative space (inter-leg slit, armpit seams, shoulder/neck + neck-yoke,
+>   between-feet gap) lies OUTSIDE `M` by construction, so it can never false-positive and needs no
+>   `intendedOpenMask` oracle.
+> - **`seeThrough := { p ∈ M : maxChannel |A(p) − D(p)| > T }`, `T = 8`** (8-bit; lossless PNG).
+>   **PASS iff `seeThroughCount == 0`** per state × surface × theme. Report the per-sub-band counts
+>   (viewBox bands: bow tie 812–868 / upper arms 824–911 / inner arms 856–916 / buttons 917–1027 /
+>   lower arms 916–1061 / hips 1009–1085 / legs 1085–1201 / feet 1201–1234).
+> - **Corroborating leg:** run the SAME see-through test on the #2917-validated in-webview
+>   high-scale rasterisation (serialise the live `<svg>` with computed styles → canvas 2D at
+>   1014×1264, drawn over `B0` and `B1`; `M` rasterised at 1014×1264, `E = 6 units`, same `T`).
+>   Both legs must report 0.
+> - **`leak := { p ∈ N : maxChannel |A(p) − C(p)| > T }`, `T = 8`**, where `N` = the UI/UX-bound
+>   negative-space boxes (inter-leg slit `488,1097,38,104`; bow-tie notch `479,824,56,10`; armpit
+>   `333,824,24,87` + mirror `657,824,24,87`; shoulder/neck `0,765,343,60` + mirror `671,765,342,60`;
+>   neck yoke `344,794,326,30`; between-feet `459,1201,97,33`), inset **per box** by the binding
+>   NON-UNIFORM tuck rule **`inset = min(6, floor(w/4), floor(h/4))`** (guarded so `floor(h/4) >= 1`
+>   and `2×inset < min(w, h)` — a uniform 6 collapsed the bow-tie notch: `56×10` → height `10 − 12 =
+>   −2`, zero cells). Applied per box: every box takes inset 6 EXCEPT the bow-tie notch (inset 2), so
+>   the evaluated boxes are inter-leg slit `494,1103,26,92`; bow-tie notch `481,826,52,6`; armpit
+>   `339,830,12,75` + mirror `663,830,12,75`; shoulder/neck `6,771,331,48` + mirror `677,771,330,48`;
+>   neck yoke `350,800,314,18`; between-feet `465,1207,85,21`. Frame C hides only the fill, so the
+>   frozen base rects/overlays cancel out and only the fill's own pixels register. **PASS iff
+>   `leakCount == 0`.** No silhouette, no enclosure, no flood fill.
+> - **Do NOT probe the backlog's literal `x ≈ 460`** — that is the left inner leg's own left edge
+>   (`{460,1097,28,103}`; mirror 526) and lies OUTSIDE `N` once the binding per-box inset is applied.
+> **Both shipped surfaces are `sm` 80×100** (no surface renders `size="md"`; `AVATAR_MD` is only
+> exported) — the md 132×165 leg is a shared-component RTL pin only.
+> **State recipes (validated; G-220/G-223):** `idle` = rest; `greeting` = companion switch OFF→ON
+> (welcome ambient message), sample `t < GREETING_BEAT_MS = 1500` (`CompanionEntity.tsx:70,760-763`);
+> `talk` = the same turn-on at `1500 ms ≤ t < ~4000 ms` (`TALK_HOLD_MS`); `thinking` = bar
+> send/joke before the first token; `joking` = first token of a joke stream; `happy` = the completion
+> settle (`HAPPY_HOLD_MS = 5000`); `playful` = 12 s sustained rest (`useFredoRestingCadence`
+> delayMs 12000/holdMs 1800); `listening` = hold Space on the focused EMPTY bar (held `down` →
+> ≥300 ms → `up`); `working` = bar send **`open Mission Monitor`** (live `llm-skill-call` →
+> `working` for `WORKING_BEAT_MS = 900`); `error` = bar send **`open NotARealApp`** (non-success
+> pushed reply → `error`, `ERROR_HOLD_MS = 8000`) OR `invoke('stop_llama_server')` + a bar send
+> (typed `llm-error`); `teleport-out` = Ctrl+right-click; `teleport-in` = Ctrl+right-click INSIDE
+> `run-cli-terminal` (arrival). **`open notepad` is a STALE recipe (G-223)** — it exists only as a
+> unit-test fixture (`FredoCompanion.newStates.test.tsx:93`) and fails closed live.
+
+## F-135 (Q-1 / REQ-1 / AC1) — the companion body renders with no see-through interior in every state
+
+- [ ] F-135: Companion ON at the home seat. For EACH of the 12 states (recipes above; 50 ms in-page
+      recorder for `greeting`/`working`/`thinking`/`joking`) freeze motion, capture frames A + D
+      (+ C for the leak leg) and the lossless crop of `.fredo-companion-avatar` in dark base and
+      `light-default`; run the BINDING `seeThrough` metric over the mask `M` and each sub-band, and
+      the corroborating 1014×1264 leg. Repeat on the away-overlay surface (Ctrl+right-click) for
+      `idle`/`talk`. Screenshot every state.
+  **Expected:** `seeThroughCount == 0` for EVERY state × theme (all 12 states + the away-overlay
+      legs) — no mask pixel changes when the solid probe `B1` is inserted behind the figure; the R1
+      statement ("no surface behind the figure is visible through the torso, arms, legs or feet")
+      holds by the metric, not by source inspection. Report the per-sub-band `seeThroughCount` and
+      the token-invariance assertion (A vs D byte-identical). BOTH the native 80×100 leg AND the
+      1014×1264 corroborating leg must report 0.
+  - **Edge:** `greeting` (1500 ms) / `working` (900 ms) are sub-second — recorder only, never a
+      serial driver round-trip; a state sampled mid-bob is frozen first (`getAnimations` paused);
+      the accent changed mid-state; the theme whose tint is nearest the backdrop — report the
+      sensitivity margin `maxChannel |B1 − B0|`, which must be ≥ 180.
+
+## F-136 (Q-3 / REQ-2 / AC4) — all 12 states fill the body and the expression stays legible over it; idle has none
+
+- [ ] F-136: Force each of the 12 states; per state read `#fredo-expression[data-state=<s>]` (present
+      / absent), its rect x/y/width/height set, the DOM paint order (direct `<svg>` children), and
+      capture a still; also drive a teleport (out then in) mid-state.
+  **Expected:** the interior `<path>` is present (and covering the body — F-135) in EVERY state
+      including `idle`; every expression overlay renders LAST (after the fill and the base rects) and
+      stays legible over the filled body — the per-state overlay rect sets are UNCHANGED vs the
+      #2917/#2918 fingerprints (talk 2, teleport-out 3, teleport-in 2, thinking 6, joking 4, happy 8,
+      playful 4, listening 3, working 6, error 6, greeting 12); `idle` renders NO
+      `#fredo-expression`; the #2917 ink rule is unchanged (group `color="var(--accent-strong)"`, the
+      sole `error` override `var(--status.error)`, rects `fill="currentColor"`).
+  - **Edge (negative):** a distinguishing shape rendered same-colour-on-same-colour over the fill
+    (the #2850 E-25 / #2917 E-28 class) is a FAIL; a state whose overlay is drawn BENEATH the fill or
+    the base rects is a FAIL; a teleport mid-state must not merge two states in one sample.
+
+## F-137 (Q-4 / REQ-3 / AC3) — the body fill is token-native and re-tints live with no restart
+
+- [ ] F-137: Read `#fredo-interior`'s `fill` attribute + computed `fill`, and
+      `getComputedStyle(document.documentElement).getPropertyValue('--fredo-avatar-interior')` before
+      and after switching dark ↔ `light-default` and changing the accent via
+      `select[aria-label="Theme presets"]` (NO reload); re-sample the body pixels; static-grep the
+      changed files for `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` / `var\(--[a-z-]+\)[0-9a-fA-F]{2}`.
+  **Expected:** attribute `fill === "var(--fredo-avatar-interior)"`; the computed fill is a resolved
+      colour (never `none`/empty/transparent); the var AND the rendered body pixels re-tint on every
+      theme/accent change with zero code change and no reload (no stale colour, no flash of the old
+      token); ZERO hardcoded colour literals in the changed files (comment issue-refs exempt) and no
+      `var(--x)NN` alpha-append (#2770).
+  - **Edge:** the accent changed MID-state and MID-teleport; a near-background accent (report the
+    fill-vs-backdrop delta); the launcher surface must re-tint to the same token (launcher F-114).
+
+## F-138 (Q-5 / REQ-4 / AC1 leak) — no fill leaks past the silhouette (leg gap + shoulder notches stay background)
+
+- [ ] F-138: For each state × surface, evaluate `leakCount` over `N` (the UI/UX-bound negative-space
+      boxes, inset per box by the binding NON-UNIFORM tuck rule `inset = min(6, floor(w/4), floor(h/4))`
+      — every box 6 except the bow-tie notch 2) using frames A + C (C = `#fredo-interior`
+      `display:none` in the SAME task); screenshot each probe box; explicitly probe the inter-leg slit
+      centre (`x 507, y 1150`).
+  **Expected:** `leakCount == 0` in EVERY state — the inter-leg slit, the bow-tie notch, the armpit
+      seams, the shoulder/neck + neck-yoke notches and the between-feet gap show the PURE backdrop
+      (the fill never paints inside `N`); the `x 507, y 1150` probe reads the backdrop (correct), and
+      the `x 460, y 1150` probe reads the LEFT INNER LEG (outside `N`; a legitimate painted pixel,
+      NOT a leak — record it as the stale-example note). The A↔C delta is the fill's own pixels only
+      (the frozen base rects/overlays cancel).
+  - **Edge:** antialias edge bleed is absorbed by the per-box inset (the tuck rule — 6 units for every
+      box except the bow-tie notch's 2); a band tucked 1–6 units under the rim is intended per the
+      #2917 table rule; the box set is the UI/UX binding — a self-invented box set is not evidence.
+      No silhouette, enclosure or flood-fill oracle is used.
+
+## F-139 (Q-6 / REQ-5 / AC2) — frozen 58 base rects, ONE `<path>` fill drawn first, parity guard untouched
+
+- [ ] F-139: Per state read the direct `<svg>` `<rect>` children (base table) and diff x/y/width/height
+      against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; enumerate `#fredo-interior` (tag, its index
+      among the svg's direct children, `data-layer`, `d`); count `svg.querySelectorAll('rect')`; grep
+      for a second base-rect table outside `shared/components/fredo-avatar/`; run the shared geometry +
+      interior suites.
+  **Expected:** 58 base rects byte-identical (same values, same order) in EVERY state on BOTH surfaces;
+      the fill is exactly ONE `<path id="fredo-interior" data-layer="interior">` — never a `<rect>` —
+      and is drawn BEFORE the base rects (lower document order / first direct child); the base table and
+      its `expandFredoRects` count-parity guard are UNTOUCHED (keyed to the base table only); total
+      `querySelectorAll('rect')` == 58 + that state's overlay rect count (the AC's "58 rects" means the
+      BASE rects — the overlay legitimately adds rects inside `#fredo-expression`); no duplicate
+      geometry table; `fredoAvatarGeometry.test.ts` passes UNMODIFIED.
+  - **Edge:** a fill implemented by mutating `FREDO_AVATAR_SOURCE_RECTS` / the mirror math, a
+    `<rect>`-based fill, or a fill placed after the base rects = FAIL; the `toHaveLength(9)` interior
+    band pin (`fredoAvatarInterior.test.tsx:58`) is EXPECTED to be refreshed when body bands land —
+    the refreshed pin must be NAMED per G-125, never silently deleted or relaxed.
+
+## F-140 (Q-7 / AC5) — the fill is static; reduced motion keeps the figure legible; motion stays on the consumer wrapper
+
+- [ ] F-140: Across all 12 states read `getComputedStyle(#fredo-interior).animationName` / `transform`
+      and the consumer wrapper's computed `animationName`; grep `fredo-avatar.css` / `companion.css`
+      for a selector targeting `#fredo-interior` / `[data-layer="interior"]` and for the
+      `prefers-reduced-motion` block; run the reduced-motion static/unit pins.
+  **Expected:** the fill is STATIC in every state (`animation-name: none`, no transform transition on
+      the path) — the base figure never animates itself; whole-element motion stays on the CONSUMER
+      wrapper (`.fredo-companion-avatar[data-state=…]`, `companion.css:19-143`); under
+      `prefers-reduced-motion: reduce` every distinguishing frame stays legible — never `opacity:0`,
+      never a strobe (WCAG 2.3.1) — and any NEW keyframe is inside the existing reduced-motion block.
+  - **Edge (G-053):** the MCP driver CANNOT flip `matchMedia('(prefers-reduced-motion: reduce)')` live
+    (precedent #2850 F-19 / #2854 F-38 / #2870 r4 / #2917 F-122 / #2918 F-133). Record the live flip
+    as **UNVERIFIED-with-blocker** with the static-CSS read + the product-unit pins as the accepted
+    residual; NEVER present it as a live PASS.
+
+## F-141 (Q-8 / NF) — build, suite, console clean, no re-render loop, token purity
+
+- [ ] F-141: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; read
+      `tauri_read_logs(source="console")` after EVERY leg in `main` AND `run-cli-terminal`; inspect the
+      fill code for effect/memo deps on array `.length`/fresh objects; re-grep the changed files for
+      colour literals + `var(--x)NN`.
+  **Expected:** build exit 0 / zero TS errors; the full UI suite green with no assertion
+      weakened/deleted (the interior band-count refresh is the ONE expected named refresh, G-125);
+      no `Error:`/`Uncaught`/`Maximum update depth exceeded` in any window (the pre-existing
+      `motion() is deprecated` WARN exempt); no re-render loop (AGENTS.md #523); ZERO hardcoded colour
+      literals / no alpha-append.
+  - **Edge:** console read AFTER the interaction, not only at boot; a state forced mid-theme-switch.
+
+## F-142 (Q-9 / LIVE) — mandatory `telemetry_spans` + rendered-webview receipt
+
+- [ ] F-142: Same run as F-135..F-141: `fredo emit --event-type chat --session-id e2e-2922-chat` +
+      `--event-type tool_use --session-id e2e-2922-tool --tool-name read_file`; query `telemetry_spans`
+      + `chat_rows`/`tool_use_rows` (telemetry-query skill); upload the per-state body frames via
+      `upload-evidence --issue 2922`.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; both
+      injected markers classify under their session ids; every live row carries a rendered-webview
+      receipt. **A static-only PASS with no live receipt is a FALSE PASS.** Never fabricate a query.
+  - **Edge:** re-run on the tested tip (the branch may move); keep the emit + query output verbatim in
+    `## Tests Runs`. Test data: running `spec/2922` tip + the managed `llama-server` + `run-cli-terminal`
+    for the `teleport-in` leg; the tester's `## Tests Runs` draft must end with `*Authored by Tester*`.
+
+## F-143 (Q-10 / metric controls) — the harness must be able to fail: head positive control, BEFORE negative control, sensitivity
+
+- [ ] F-143: (a) POSITIVE — run the oracle over the already-solid HEAD ROI (`M ∩ y 106–761`, #2917)
+      on the AFTER tip in the same run; (b) NEGATIVE — materialise the pre-change checkout
+      (`dev-env.ps1 -Action Up -Spec 2922 -At 34f69dc`, the merge base of `spec/2922`) and run the
+      SAME oracle/constants for the body; (c) SENSITIVITY — report `maxChannel |B1 − B0|`; (d)
+      SELF-CONTROL — on the AFTER tip run the oracle with `C` as the "A" frame (optionally clip one
+      band per repeat); (e) INVARIANCE — the token/computed-fill equality of the A/D assertion.
+  **Expected:** (a) head `seeThroughCount == 0` (a non-zero head count means the harness is broken →
+      not a product verdict); (b) the BEFORE tip reports body `seeThroughCount > 0` AND ≥ 50 % of the
+      authored body-band pixel area in `M` (a zero here is INADMISSIBLE → report it and loop, never
+      record a PASS); (c) `maxChannel |B1 − B0| ≥ 180` (≫ `4×T = 32`); (d) the `C`-as-A frame
+      reports body `> 0` (proves the oracle detects absent fill without a second app instance);
+      (e) the A/D token equality holds. Produce a before→after per-sub-band `seeThroughCount` table
+      with distinct `before-*` / `after-*` frame names (G-134/G-135). The AFTER gate is an absolute
+      "no see-through" assertion — the BEFORE column is the metric control, not a PASS/FAIL column.
+  - **Edge:** a BEFORE capture that cannot be materialised ⇒ named blocker + the reported sensitivity
+      margin, never a fabricated before; a metric that reports 0 on the BEFORE tip (or in (d)) is
+      INADMISSIBLE — report it and loop, never record a PASS.
+
+---
+
+## #3099 extension — the companion consumes the published command surfaces (one source of truth)
+
+> Spec #3099 makes the companion's per-application skill a GENERATED projection of the application's
+> TypeScript command surface (published to the Rust registry at boot/registration), retires the
+> hand-maintained `wireframe_catalog.rs` + its parity test, and replaces the wireframe-only relay and
+> hooks with one generic relay + one generic hook pair. Rows F-144..F-163 map onto the QA Plan
+> (Q-1..Q-29) in `.opencode/tmp/3099/triage.md` `## QA Expert`.
+> **Verification policy: live** — AC1/AC2/AC4 are provable only on a running companion. Every live row
+> records which path it used: **PATH-A** (real managed `llama-server` turn) or **FALLBACK-F**
+> (`tauri_ipc_emit_event` on `llm-skill-call`) with the literal disclosure `model-turn not exercised`.
+> A static-only PASS is a FALSE PASS; the mandatory live receipt is F-162.
+> **Driving levers (no new seam):** `register_app_command_surfaces` / **`app_command_surfaces`**
+> (`APP_COMMAND_SURFACES_COMMAND` — the READ-ONLY registry view every row quotes) /
+> `app_command_intent*` via `tauri_webview_execute_js` → `window.__TAURI__.core.invoke(...)` (the MCP
+> bridge's `tauri_ipc_execute_command` supports only a subset — "Unsupported Tauri command" is NOT a
+> FAIL); `tauri_ipc_emit_event` for `llm-skill-call`; `location.reload()` to restore the real
+> published set (a re-publish UPSERTS the same `appId`, it never clears).
+> **Receipts per row:** `window.__EV` ({skill, done, err, intent, result}), the
+> `[data-testid="wireframe-root"]` dataset, `[data-testid="fredo-reply-surface"]` text,
+> `tauri_manage_window(action="list")`, one screenshot, `tauri_read_logs(source="console")`.
+> **Prerequisites:** spec-branch isolated env Up, companion ON at the seat, managed `llama-server`
+> healthy for PATH-A, Wireframe window CLOSED for F-148/F-150/F-152/F-157.
+
+## F-144 (Q-1 / R-1a + R-1c) — the manifest is a pure projection of the TS command surface
+
+- [ ] F-144: Run `apps/ui/src/shared/companion/__tests__/manifest.test.ts`; read
+      `buildCompanionManifest` + `collectCompanionManifest` + `companionActionIds`.
+  **Expected:** one surface per registered navigation declaration whose `companion` block is
+      declared (P8 deletes the legacy command-surface projection),
+      **de-duplicated by `appId` FIRST-WINS** (`registerApplication` can push one feature twice; the
+      builder collapses it — the host still rejects a duplicate `appId` inside ONE publish, F-161);
+      `commands` = the surface's command ids **in declaration order**; `appName = feature.name`,
+      `skillName = feature.id`; an application with no `companion` block contributes NOTHING.
+      **R-1c:** a command whose `description` is ABSENT or BLANK is NOT published, and `title` is
+      never promoted to a capability sentence; for the shipped Wireframe surface
+      `manifest.commands.length === wireframeCommandSurface.commands.length` (**ZERO exclusions** —
+      a missing sentence fails CI instead of silently vanishing). `companionActionIds(surface)` =
+      published ids then `listActions` (reserved, never a command); Wireframe is the only published
+      surface (`grep -rn 'companion:' apps/ui/src/applications` → wireframe only). No DOM/IPC/clock
+      access in the builder (pure).
+  - **Edge:** a zero-command surface (skipped by the Rust builder → no generated skill); a feature
+      registered twice (ONE surface, first registration wins); a command with `description:"   "` or
+      no `description` (excluded, and the zero-exclusion count assertion must then FAIL for the
+      shipped surface — that is the point); a blank SURFACE `description` must not be emitted (the
+      host would `Err` the publish — record the resolved rule).
+  - **Data:** `wireframeCommandSurface.ts:356-359` (38 command ids on the tip — 33 `toolbar:true`
+      table rows + 5 surface commands; ST-3 promotes `draftApp` in, so the published count after the
+      slice is manifest-derived — never hard-code it), `applicationRegistry.ts:24-30`.
+
+## F-145 (Q-2 / R-1b) — a publish is offered on the NEXT turn, no restart (live)
+
+- [ ] F-145: Companion ON. Install the `window.__EV` listener. Publish a probe Wireframe surface
+      (`commands:[{id:"wireframe.qa.probe.<nonce>",label:"QA probe <nonce>",description:"Temporary QA
+      probe",args:[]}]` — a NON-BLANK description is mandatory, R-1c + the host rule — surface
+      description directing the model to it) via
+      `__TAURI__.core.invoke('register_app_command_surfaces',{manifest})`, then confirm
+      `__TAURI__.core.invoke('app_command_surfaces')` returns it. Read the env manifest PID.
+      Then (PATH-A) send from `[data-testid="launcher-command-input"]`:
+      `Use the wireframe tool with action "wireframe.qa.probe.<nonce>".` — or (FALLBACK-F) emit
+      `{skill:"wireframe",arguments:{action:"wireframe.qa.probe.<nonce>",arguments:{}}}`.
+  **Expected (PATH-A):** **no TS edit and no reload were needed** — the dispatcher validates against
+      the PUBLISHED registry read, so the next turn's `llm-skill-call` carries `skill:"wireframe"` +
+      `action:"wireframe.qa.probe.<nonce>"` (a value the model cannot invent) and the hook does NOT
+      reject it as unknown; `__EV.done` delta = 1; the env-manifest `processes[].pid` is UNCHANGED (no
+      restart) and no source file changed. **(FALLBACK-F):** the same payload path is driven by the
+      emit; the row MUST state `model-turn not exercised` (offer-shape half covered by F-144 + the
+      Rust offer assertion in F-160).
+  - **Edge:** the model refuses to call it ⇒ re-prompt ONCE with the exact sentence and record the raw
+      transcript (a refusal is a FAIL of AC1's offer half, not "model non-determinism"); a
+      zero-command probe surface must produce NO generated skill AND the id must be unknown to the
+      dispatcher.
+
+## F-146 (Q-3 / R-1b + R-5b) — the offer is re-read per turn; a re-publish UPSERTS the app's entry
+
+- [ ] F-146: Repeat F-145 with `wireframe.qa.probe.<nonce2>` — no restart, no reload, no code change.
+  **Expected:** the second turn emits `<nonce2>`; the SAME app's re-publish **upserts its entry in
+      place** (insertion order kept, every other `appId` untouched), so `<nonce>` is GONE and
+      `<nonce2>` is offered — `invoke('app_command_surfaces')` shows exactly ONE `wireframe` surface
+      carrying only `<nonce2>`. Two distinct nonces in one un-restarted session prove the offer is
+      assembled per turn, never cached at boot (`run_tools_attempt` → `companion_skill_registry(app)`).
+  - **Edge:** publish while a turn is in flight (the in-flight turn keeps the offer it started with —
+      record which one the model saw); a publish that also touches another `appId` (that entry must
+      stay byte-identical).
+
+## F-147 (Q-4 / R-1) — literal "add a command to the TS surface" leg (opportunistic)
+
+- [ ] F-147: Only if the tester may write `apps/ui/**`: add
+      `{id:'wireframe.qa.probe.<nonce>', title:'QA probe', description:'Temporary QA probe', args:[],
+      run: () => runWireframeAction('wireframe.add.card')}`
+      to `wireframeCommandSurface.ts` (the `description` is MANDATORY — R-1c: a blank/absent one is
+      excluded from the manifest and the probe would never be offered), let the module reload, then
+      F-145's prompt.
+  **Expected:** the id is offered AND the command performs (`data-wireframe-element-count` +1,
+      `data-wireframe-stacking` gains one id), the reply names it, `git diff --name-only --
+      apps/tauri/src-tauri` is EMPTY (zero Rust edits), same app PID (no restart). Revert the file
+      afterwards (`git checkout -- …`) and confirm a clean `git status --short`.
+  - **Edge:** sandbox denies `apps/ui/**` ⇒ record `TS-surface edit leg not drivable (sandbox)` and
+      rely on F-144 (builder) + F-145 (publish→offer→turn). Never mark AC1 PASS from F-144 alone.
+
+## F-148 (Q-6 / R-2) — closed app + declared arguments opens, performs once, replies
+
+- [ ] F-148: Wireframe CLOSED. PATH-A prompt: `Create a wireframe for the Reporter app; the summary
+      is "visualize reports".` (or FALLBACK-F `{action:"wireframe.companion.draftApp",
+      arguments:{app_name:"Reporter",summary:"visualize reports"}}`).
+  **Expected:** exactly one `app-wireframe` window (no duplicate); `[data-testid="wireframe-root"]`
+      `data-wireframe-element-count="4"` (document.new → section/navbar → heading text `Reporter` →
+      card labeled `…reports`); `document.body` has NO `data-fredo-command-prompt` (no human prompt);
+      the reply is **VERBATIM** `` `Performed in Wireframe: <descriptions joined by ", ">.` `` —
+      comma-joined DESCRIPTIONS (never ids), ASCII quotes, TERMINAL PERIOD (UI/UX binding) — pushed
+      with `kind: 'success'` (happy beat); `__EV.done` delta = 1; console clean.
+  - **Edge:** app already open (no second window, no duplicate elements); `summary` omitted; the same
+      request twice in two turns (8 elements total — never 8 from ONE turn); a failing step stops the
+      script and the reply names only prior steps (still one sentence, one period).
+
+## F-149 (Q-7 / R-2) — exactly once with explicit arguments (geometry proof)
+
+- [ ] F-149: Wireframe CLOSED. Emit/prompt `action:"wireframe.element.create"` with
+      `arguments:{shape:"rect",x:120,y:140,width:300,height:180}`.
+  **Expected:** `data-wireframe-element-count` 0→**1** (2 would prove a double execute);
+      `data-wireframe-selection-type="shape"`, `-selection-shape="rect"`,
+      `-selection-geometry="120,140,300,180"` (`formatGeometry` = `x,y,w,h` 1dp,
+      `model/geometry.ts:67-74`); the reply names the action once.
+  - **Edge:** below-minimum rect (`width:2`) ⇒ `run` false ⇒ `noop` reply, count unchanged; a second
+      turn creates a SECOND element (per-turn execution, not per-session de-dup).
+
+## F-150 (Q-8 / R-2a) — intent broadcast before the listener is queued and drained once
+
+- [ ] F-150: Wireframe CLOSED. `invoke('app_command_intent',{requestId:'qa-f150',appId:'wireframe',
+      action:'wireframe.add.card',arguments:{}})`; then `invoke('app_command_intent_take',
+      {appId:'wireframe'})` WITHOUT opening the app; then open Wireframe normally.
+  **Expected:** `take` returns exactly `[qa-f150]` and a second `take` returns `[]` (host queue is
+      authoritative); after the editor mounts the card exists ONCE (`element-count` +1, never +2 — the
+      module-scoped handled-id ledger keeps it exactly-once).
+  - **Edge:** two intents before mount (both execute, in order); `take` for another `appId` must not
+      drain wireframe's; the window closed between intent and drain.
+
+## F-151 (Q-9 / R-2b) — no result within 10 s settles exactly one failure reply
+
+- [ ] F-151: Publish a synthetic surface for the real feature `mission-monitor` (no intent hook
+      mounted there) with command `mission-monitor.qa.timeout` (NON-BLANK description — R-1c + the
+      host rule); emit `{skill:"mission-monitor",arguments:{action:"mission-monitor.qa.timeout",
+      arguments:{}}}`; start a stopwatch and count replies.
+  **Expected:** Mission Monitor opens, nothing ever answers, and at **≤10 s** exactly ONE reply
+      `I couldn't do that in Mission Monitor. Nothing changed.` appears with `kind: 'failed'`
+      (below the 15 s watchdog); `__EV.done`/reply counts stay 1. A second reply, a hung bubble, or a
+      15 s watchdog fire is a FAIL.
+  - **Edge:** app already open; a re-upsert of the same `appId` mid-wait; two timeouts back-to-back
+      (each settles once, no cross-settle); the synthetic surface stays in the offer until the restore
+      `location.reload()` (expected, not a defect).
+
+## F-152 (Q-10 / R-3a) — unknown command id changes nothing and says so
+
+- [ ] F-152: Wireframe CLOSED. Emit `{skill:"wireframe",arguments:{action:"wireframe.qa.unknown.<nonce>",
+      arguments:{}}}`; confirm the id is absent from `invoke('app_command_surfaces')`.
+  **Expected:** reply EXACTLY `I don't know the Wireframe action "wireframe.qa.unknown.<nonce>".
+      Nothing changed.` with `kind: 'unknown'` (error beat, never a celebration); the HOST rejects —
+      `window.__EV.intent` receives NOTHING (no relay), NO `app-command-intent-result` exists, NO
+      window opens; exactly one reply.
+  - **Edge:** with the app OPEN the `wireframe-root` dataset is byte-identical before/after
+      (`element-count`, `stacking`, `dirty`, `document-path`, `page`, `selection-ids`); blank `action`
+      (`""`) ⇒ nothing-changed reply with no relay.
+
+## F-153 (Q-11 / R-3b + R-3d) — an undeclared argument key is rejected at BOTH layers
+
+- [ ] F-153: Open Wireframe, snapshot the dataset, emit `{action:"wireframe.add.text",
+      arguments:{bogus:1}}` (layer 1, host). Then BYPASS the hook:
+      `invoke('app_command_intent',{requestId:'qa-f153-l2',appId:'wireframe',
+      action:'wireframe.add.text',arguments:{bogus:1}})` (layer 2, app).
+  **Expected:** layer 1 — dataset UNCHANGED (identical `element-count`/`stacking`/`dirty`), NO window
+      if closed, NO `app-command-intent` emitted, reply `I couldn't do that in Wireframe. Nothing
+      changed.` (`kind: 'failed'`). Layer 2 (R-3d) — the app re-runs the SAME `validateCommandArgs`
+      inside `executeCommand` before `run`: `outcome:"Invalid"`, `performed:[]`, dataset still
+      unchanged (`run` never invoked — a bypassed relay cannot corrupt the document).
+  - **Edge:** app CLOSED for layer 1 (fail-closed ordering); an undeclared key on a no-arg command
+      (`wireframe.edit.undo`) at both layers; `arguments` a nested array.
+
+## F-154 (Q-12 / R-3b + R-3d) — a missing required declared argument changes nothing
+
+- [ ] F-154: Emit `{action:"wireframe.companion.draftApp", arguments:{}}` (`app_name` is required);
+      repeat via the direct `app_command_intent` bypass.
+  **Expected:** layer 1 — dataset unchanged (no document reset, count unchanged), NO window, NO
+      relay, nothing-changed reply (`kind: 'failed'`). Layer 2 — `outcome:"Invalid"`,
+      `performed:[]`, dataset unchanged. A 4-element draft is a FAIL at EITHER layer.
+  - **Edge:** `app_name:""` / `"   "` / `null` (blank and missing are distinct reasons, one reply
+      each); `summary` alone.
+
+## F-155 (Q-13 / R-3b + R-3d) — a non-string declared argument changes nothing
+
+- [ ] F-155: Emit `{action:"wireframe.element.create", arguments:{shape:42,x:120,y:140,width:300,
+      height:180}}`; repeat via the bypass.
+  **Expected:** layer 1 — dataset unchanged, NO window, NO relay, nothing-changed reply
+      (`kind: 'failed'`). Layer 2 — `outcome:"Invalid"`, `performed:[]`, dataset unchanged.
+  - **Edge:** `width:"abc"`; `x:null`; `arguments:[1,2]` or `"text"` ⇒ host step 5 (`not a plain
+    object`) ⇒ nothing-changed with NO relay; a non-object `arguments` at the SKILL level is still
+    rejected by Rust `validate` (`skills.rs:304-331`) ⇒ `llm-error` + `llm-done`, no `llm-skill-call`.
+
+## F-156 (Q-14 / R-3c) — an honest no-op is reported as nothing changed
+
+- [ ] F-156: With no selection, emit `{action:"wireframe.element.duplicate", arguments:{}}`
+      (`run` returns false — `wireframeActions.ts:444`, `:663-667`).
+  **Expected:** dataset unchanged; `outcome:"Noop"`; reply **VERBATIM** `I couldn't do that in
+      Wireframe. Nothing changed.` with `kind: 'failed'` (a no-op is never a success); never reported
+      as performed.
+  - **Edge:** `edit.redo` with an empty redo stack; `zoom.out` at the 10 % clamp; a `run` that THROWS
+      ⇒ `outcome:"Failed"` with the SAME nothing-changed reply (never a stack/raw string in the bubble).
+
+## F-157 (Q-15/Q-16 / R-4a/R-4b) — the action list is composed from the PUBLISHED registry, app closed
+
+- [ ] F-157: Wireframe CLOSED, emit `{skill:"wireframe",arguments:{action:"listActions"}}`; separately
+      read `invoke('app_command_surfaces')`. Repeat after publishing a surface with
+      `listLabel:"Wireframe capabilities"`, and after publishing one with `listLabel` absent.
+  **Expected:** the reply is **VERBATIM** the shipped format
+      `` `Wireframe actions: <id> — <description>; <id> — <description>; …` `` (default
+      `<appName> actions`) or `Wireframe capabilities: …` (override) — every published id in
+      declaration order, each with a NON-EMPTY description, `; ` join, U+2014 em dash, **NO trailing
+      period** — pushed with `kind: 'success'`. The text must equal what the `app_command_surfaces()`
+      READ yields (D12: never a local rebuild — a probe-published command appears/disappears in the
+      list exactly as the read shows). `listActions` itself is not listed; NO window opens;
+      `__EV.intent` empty (no relay, no app mount).
+  - **Edge:** app already open (same text, still no relay); a one-command surface; an empty
+    `listLabel` (treat as absent — a bare `: <id>` prefix is a finding); a `listLabel` ending in `:`
+    (no doubled colon); a publish landing between two list requests (the next list reflects the upsert).
+
+## F-158 (Q-17 / R-5b) — a removed id is rejected on the next turn (UPSERT)
+
+- [ ] F-158: Publish v1 of the wireframe surface INCLUDING `<probe>` (F-145); then re-publish the SAME
+      `appId` with a SMALLER command list that omits `<probe>` (two real ids + descriptions); emit
+      `<probe>` again (and, PATH-A, ask once).
+  **Expected:** the re-publish UPSERTS the wireframe entry IN PLACE (order preserved, every other
+      `appId` byte-identical); `invoke('app_command_surfaces')` shows the smaller list with `<probe>`
+      absent; the id is then rejected — reply `I don't know the Wireframe action "<probe>". Nothing
+      changed.` (`kind:'unknown'`), NO window, NO relay; a PATH-A turn does not offer it. No union of
+      stale ids.
+  - **Edge:** **`{surfaces: []}` is a NO-OP, never a clear** — assert `app_command_surfaces()` is
+    byte-identical before/after such a publish. **Whole-surface removal is OUT OF SCOPE this slice**
+    (no shipped app stops declaring `companion` at runtime) — do NOT use an empty publish as a
+    removal mechanism. Shrinking to ZERO commands ⇒ the generated skill disappears while the three
+    static skills remain (the surface entry itself stays).
+
+## F-159 (Q-18 / R-5) — ONE golden fixture asserted on BOTH sides
+
+- [ ] F-159: Run `manifest.test.ts` and the Rust `tests/companion_manifest.rs`.
+  **Expected:** TS reads `apps/ui/src/shared/companion/fixtures/wireframe.companion.golden.json` via
+      `resolve(process.cwd(),'src/shared/companion/fixtures/…')` and asserts
+      `buildCompanionManifest(allRegisteredFeatures)` deep-equals `fixture.manifest`. Rust
+      `include_str!`s the SAME path (`CARGO_MANIFEST_DIR` = `apps/tauri/src-tauri` + `../../ui`) and
+      asserts `render_tools(build_companion_skill_registry(&fixture.manifest.surfaces))` contains
+      `fixture.offer` verbatim (name, description, enum ending in `listActions`,
+      `required:["action"]`, open `arguments` object) AND
+      **`static_skills_are_byte_identical_to_the_pre_change_baseline`** passes: the first three
+      rendered tools deep-equal `fixture.staticOffer` (name + description + parameters, in order) and
+      re-run the `validate` matrix (missing / blank / non-string / undeclared key).
+      `grep -rn 'companion.golden.json' apps` → exactly ONE file, TWO readers. A second fixture or a
+      hand-edited fixture is a FAIL.
+  - **Edge:** enum order drift ⇒ Rust FAIL; builder drift ⇒ TS FAIL; a `staticOffer` block re-derived
+    instead of captured at ST-1 step 0 ⇒ FAIL (`git show` the baseline commit).
+
+## F-160 (Q-19 / R-5a) — registry contract: bounds, rejection matrix, read fidelity
+
+- [ ] F-160: (a) Snapshot `invoke('app_command_surfaces')`. (b) Publish 33 surfaces
+      (`APP_COMMAND_SURFACE_MAX_SURFACES = 32`), then a 513-command surface
+      (`APP_COMMAND_SURFACE_MAX_COMMANDS = 512`). (c) Run the rejection matrix: `skillName != appId`;
+      reserved `skillName` (`open_app` / `close_app` / `doom_mode` / `listActions`); duplicate `appId`
+      in ONE publish; duplicate command ids in one surface; blank `appId` / `appName` / `skillName` /
+      surface `description` / command `id` / command `description` (`""` and `"   "`). (d) Re-read
+      `app_command_surfaces()` after every case.
+  **Expected:** (a) the read returns EXACTLY what `register_app_command_surfaces` stored (same
+      surfaces, same order, same fields). (b)+(c) every case returns `Err` with NO partial write.
+      (d) after EACH rejected publish the read is **byte-identical** to (a) — a following F-157 list
+      and F-145 offer are unchanged (no truncation).
+  - **Edge:** exactly 32 / 512 (accepted AT the bound); **an empty `surfaces: []` is ACCEPTED as a
+    NO-OP and the previous registry is unchanged** (never a clear); a legal publish that omits an
+    existing `appId` leaves that app's entry untouched (upsert, not replace-all); a blank `listLabel`
+    (treat as absent).
+
+## F-161 (Q-21 / NFR-2) — exactly one `llm-done` per turn
+
+- [ ] F-161: `__EV.done` delta across (a) a Wireframe skill turn, (b) a plain chat turn, (c) a rejected
+      listing turn. Run the existing pin `every_backend_path_settles_with_exactly_one_done`.
+  **Expected:** delta exactly 1 in every case and `llm-done` is the LAST event (no `llm-token` after
+      it); the Rust pin green.
+  - **Edge:** the F-151 timeout leg still settles once; a parse-failure turn is covered by the unit pin
+    only (the model never emits malformed JSON).
+
+## F-162 (Q-29 / LIVE) — mandatory `telemetry_spans` receipt
+
+- [ ] F-162: Same run as F-145..F-161: `fredo emit --event-type chat` + `--event-type tool_use` with
+      distinct session ids; query `telemetry_spans` + `chat_rows`/`tool_use_rows` through the
+      telemetry-query skill against the env's PostgreSQL (`-Manifest .opencode/tmp/envs/<id>/manifest.json`).
+  **Expected:** both emits return `{"queued":true}`; the injected session ids classify under the row
+      tables; `telemetry_spans` returns a NON-ZERO count with a recent `max(timestamp)`. A static-only
+      PASS is a FALSE PASS. Disclose the port; if the pool refuses `psql`, use the named
+      `telemetry_get_stats` fallback and DISCLOSE.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim in `## Tests Runs`.
+
+## F-163 (Q-19 edge / D3) — reserved / colliding / blank identity is refused (matrix subset)
+
+- [ ] F-163: Publish a surface with `skillName:"open_app"`; one with a `skillName` equal to another
+      surface's; one with `skillName != appId`; one with a blank `skillName`.
+  **Expected:** EVERY case returns `Err` and the registry/read/offer are UNCHANGED (a following
+      `llm-skill-call` for `open_app` still gets exactly ONE reply). A publish that shadows `open_app`
+      would make two dispatchers answer one turn; `skillName != appId` is REFUSED (one identity, no
+      alias). This row is the focused subset of F-160's full matrix — both must pass.
+  - **Edge:** a `skillName` differing only by case from a reserved name (record the resolved rule);
+    `listActions` as a `skillName` (reserved, `Err`).
+
+---
+
+## #3120 rescope extension — teleport-attached instruction composer (human-directed rescope)
+
+> **HUMAN-DIRECTED RESCOPE.** The launcher-only conversation (old AC7) is REPLACED: the companion's
+> ONE conversation surface is an instruction composer attached to Fredo's teleport. Rows map 1:1 to
+> `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-3**, **R-4** (natural-language leg) and
+> **R-7** (the trail/undo legs live in `wireframe-navigation` F-N41..F-N43).
+> **Verification policy: live** — every row is provable only on the running app. Evidence per case:
+> `tauri_webview_dom_snapshot` / `tauri_webview_execute_js` / `tauri_webview_screenshot` /
+> `tauri_webview_interact` / `tauri_read_logs(source="console")`; the mandatory live receipt is F-178
+> (a static-only PASS is a FALSE PASS). Record: the POSTED `## Tests Runs` comment (G-415).
+>
+> **Binding names (consume verbatim).** Root `fredo-companion-composer` (`role="group"`,
+> `aria-label="Tell Fredo what to change"`); input `fredo-companion-composer-input`
+> (`aria-label="Instruction for Fredo"`, placeholder `Tell Fredo what to change…`); submit
+> `fredo-companion-composer-submit` (accessible name `Send instruction`); target
+> `fredo-companion-composer-target` (text `for <App>` via `COMPANION_COMPOSER_TARGET_PREFIX`, or
+> `No app in front of Fredo`); dismiss `fredo-companion-composer-dismiss` (`Close instruction box`).
+> New modules `shared/companion/composerBridge.ts`, `shared/companion/composerTarget.ts`,
+> `shared/components/companion/CompanionComposer.tsx`; placement `computeComposerPlacement` with
+> `COMPOSER_W=320`/`COMPOSER_H=40`/`COMPOSER_GAP=8` and `REPLY_AVATAR_CLEARANCE=14`.
+>
+> **Reach recipes.** Same-window teleport = `mousedown {button:2, ctrlKey:true}` on
+> `.fredo-companion-avatar`; cross-window = the shipped `companion-teleport` event into
+> `run-cli-terminal` (`tauri_ipc_emit_event`); scripted routed intent =
+> `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-c<n>",
+> appId:"wireframe", action:"<verbId>", arguments:{…}}})` (actor `companion`, the SAME funnel the
+> composer's turn uses); model turn = a real managed `llama-server`.
+>
+> **Supersession.** Launcher rows F-144..F-151 (launcher-only conversation / undo routing /
+> `/ Ask` → launcher / no-chat-panel) are SUPERSEDED by F-164..F-178 and `wireframe-navigation`
+> F-N41..F-N43. F-7/F-8/F-9/F-10 (click/joke, game, teleport), F-31/F-32 (states),
+> F-99/F-100/F-102 (skill contract, reply copy, stability) and F-79..F-98 (reply surface growth /
+> never-cover / scroll) remain IN FORCE and are the regression baseline for the reply path.
+
+- [ ] **F-164 (R-3.1) — the composer auto-opens on the teleport-in settle.**
+  **Steps:** companion ON; record the DOM before a teleport; drive a same-window teleport
+  (`mousedown {button:2, ctrlKey:true}` at (400,400)); sample
+  `[data-testid="fredo-companion-composer"]` + the avatar `data-state` every ~50 ms with
+  `performance.now()`; repeat with a cross-window `companion-teleport` into `run-cli-terminal`.
+  **Expected:** the composer is ABSENT while `data-state` is `teleport-out`/`teleport-in` and appears
+  at the `teleport-in` settle (`ANIM_DURATION['teleport-in'] + 50` = 450 ms after arrival, tolerance
+  +150 ms) in the DESTINATION window — same-window and cross-window arrival both open it; no click,
+  no keypress is required; exactly ONE composer node (never one per window); the composer root carries
+  `role="group"` + the bound aria-label.
+  - **Edge:** a teleport while a joke streams (the bubble is cleaned; the composer still opens); a
+    teleport to the same point; reduced motion (opens at the settle, no motion dependence); a teleport
+    while the composer is already open (no duplicate).
+  - **Receipt:** the (t, state, composerPresent) samples for both legs + E-SHOT.
+
+- [ ] **F-165 (R-3.2) — the composer input receives focus without a click.**
+  **Steps:** after F-164's open, read `document.activeElement` + its attributes; type `abc` with no
+  pointer event; repeat after a second teleport.
+  **Expected:** `document.activeElement` IS `[data-testid="fredo-companion-composer-input"]`; its
+  `aria-label` is `Instruction for Fredo` and its placeholder `Tell Fredo what to change…`; focus lands
+  in the SAME task as the settle (measured delta ≤ one frame, ≤ 50 ms); typing immediately inserts
+  `abc`; no pointer/click event was issued.
+  - **Edge:** the OS window was not in the foreground — bring it to the front and repeat (DOM focus is
+    the assertion; record if the webview cannot take OS focus); a second teleport re-lands focus on
+    the input; the composer opened while the launcher is visible; reduced motion.
+  - **Receipt:** E-DOM (`activeElement` per step + the measured delta).
+
+- [ ] **F-166 (R-3.3) — the composer never covers Fredo: zero intersection and at least 14 px separation.**
+  **Steps:** with the composer open, sample `getBoundingClientRect()` of the composer and the avatar
+  (the LAYOUT box, as #2886 round 2 established) in the SAME task every ~100 ms for 2 s, then after
+  typing, after a reply bubble appears, and with Fredo teleported to each screen edge; compute
+  `intersectionArea` and `dx`/`dy`.
+  **Expected:** `intersectionArea(composer, avatar) === 0` at EVERY sample and
+  `dx ≥ 14 || dy ≥ 14` (`REPLY_AVATAR_CLEARANCE`); the composer ROOT carries
+  `data-composer-placement` whose value is exactly one of `above|right|left` and matches the measured
+  side, plus `data-composer-clearance` whose value is an integer `>= 14` matching the measured facing
+  separation; `below` is NOT a valid value (its absence is asserted — a `below` value at the seat is a
+  FAIL); rect measurement is the fallback ONLY if a hook is absent, and an absent hook is itself a
+  FAIL of UIUX-D1 (it should not be absent); when the `SpeechBubble` is visible the composer rect does
+  not intersect the bubble rect either; at 900×600 (shipped minimum) the composer stays fully
+  on-screen and still clears the avatar; the facing edge is stable across the open lifetime (no
+  motion-collapsed gap — measure the transform envelope, G-169).
+  - **Edge:** all four screen edges; the bubble visible; the game bubble open (out of scope — record);
+    a window resize while open; reduced motion; a near-zero-gap candidate must fall through to the
+    next side; a `below` value or a clearance < 14 on the root is a FAIL.
+  - **Receipt:** the per-sample rect/area/gap table + E-SHOT.
+
+- [ ] **F-167 (R-3.4) — the default target is the app Fredo is in front of.**
+  **Steps:** teleport Fredo over the Wireframe window frame (`[data-fredo-app-id="wireframe"]`) with no
+  other app focused; read the target chip; submit a grounded instruction; repeat with Fredo on empty
+  desktop while the focused window is Wireframe; repeat in a standalone app window whose root carries
+  `data-fredo-app-id`.
+  **Expected:** resolution order `requestedAppId → topmost frame containing the landing point →
+  windowAppId → focusedAppId → null`; the chip reads `for Wireframe`; the submitted turn's envelope
+  equals `describeContext('wireframe')` (path/selection — the live grounding plus the unit pin
+  `composerTarget.test.ts`); `explicit === false`; with NO resolvable app the chip reads
+  `No app in front of Fredo` and submit sends the shipped UNGROUNDED turn (envelope null).
+  - **Edge:** overlapping frames (the TOPMOST by z at the landing point wins); a minimized window
+    (not focused → fall through); a frame of a non-showable app (the default rule does NOT filter
+    showable — record); a landing point exactly on a frame edge.
+  - **Receipt:** E-DOM (chip + the envelope/path) + the unit pin summary.
+
+- [ ] **F-168 (R-3.5) — an explicitly named showable app overrides the default target.**
+  **Steps:** Fredo over Wireframe; type an instruction naming `Mission Monitor` (e.g. `open Mission
+  Monitor`); then one naming `Wireframe`; then an ambiguous mention; then `mission monitor` in lower
+  case.
+  **Expected:** `resolveNamedAppMention` is whole-word, case-insensitive, longest match over `name` AND
+  `id`; when the named app is showable and DIFFERENT from the default, the chip reads
+  `for Mission Monitor` and `explicit === true`; the turn grounds on
+  `describeContext('mission-monitor')` (null if unregistered) and executes through the SAME dispatch
+  (F-169); naming the SAME app as the default does not set `explicit`; an AMBIGUOUS mention (2+
+  distinct matches) resolves `null` and the default target is used; a mention of a NON-showable app
+  does not match; a partial word (`mission`) does not match (`Mission Monitor` is whole-word).
+  - **Edge:** case variants; the app `id` instead of its name; two apps whose names share a prefix; an
+    instruction naming two different apps (ambiguous → default).
+  - **Receipt:** E-DOM (chip + explicit flag) per leg + the unit `composerTarget.test.ts` summary.
+
+- [ ] **F-169 (R-3.6) — submit grounds the turn in `describeContext(targetApp)` and executes through the one `dispatch` funnel as the companion.**
+  **Steps:** target Wireframe with one CARD selected; type `change the card label to Reports` in the
+  composer; press Enter; capture the generation, the grounding envelope (unit pin / routed-intent
+  result) and the journal.
+  **Expected:** exactly ONE generation; the grounding envelope is `describeContext('wireframe')`
+  (path `Canvas`, the selected card's id/label) — one envelope per turn; the selected application
+  command executes through the ONE `dispatch` funnel with `actor:'companion'` (the relay result
+  `outcome:"Performed"`, `performed` naming the text verb) — the composer adds NO second dispatch
+  path; the card's `label` becomes `Reports`; exactly ONE journal entry attributed `Companion`; undo
+  reverts it. **The natural-language leg is scored on the AC's observable (the label becomes
+  `Reports`), not on a particular verb id** — any declared text verb that produces the label is
+  acceptable (quote the selected verb); a turn that selects no text verb and leaves the label
+  unchanged is a FAIL of R-4's natural-language clause.
+  - **Edge:** the model selects `setField` instead of `setLabel` (acceptable if the label becomes
+    `Reports`); a target with no registered host (envelope null → ungrounded, nothing performed);
+    Shift+Enter inserts a newline and submits nothing; one generation per submit.
+  - **Receipt:** E-DOM (label + journal + actor) + the grounding envelope + the reply transcript.
+
+- [ ] **F-170 (R-3.7) — an empty submit is a no-op.**
+  **Steps:** focus the input; press Enter on an empty value, then on `'   '` (whitespace); count
+  generations; read focus + the composer.
+  **Expected:** ZERO generations for both; no turn is sent; no journal entry; the composer STAYS open;
+  `document.activeElement` stays the input; the submit control does nothing; text is trimmed
+  (leading/trailing whitespace never becomes a turn).
+  - **Edge:** type `abc` then delete it and press Enter; Enter during an in-flight generation from a
+    prior submit (the one-in-flight guard; record); Shift+Enter (newline, no submit).
+  - **Receipt:** E-DOM (generation count + focus + composer presence).
+
+- [ ] **F-171 (R-3.8) — Escape closes the composer and returns focus to the app, never `body`.**
+  **Steps:** record the element focused BEFORE the composer opens (e.g.
+  `[data-testid="wireframe-canvas"]` or the app root); open the composer; press `Escape`; read
+  `document.activeElement` + the composer presence; repeat with the dismiss control
+  `fredo-companion-composer-dismiss`.
+  **Expected:** the composer is GONE (`composerOpen === false`, node count 0); `document.activeElement`
+  is the element focused before it opened (when still connected), else the landing app frame
+  (`[data-fredo-app-id]`), else the app root container — NEVER `body`; Escape again is a no-op; the
+  dismiss control (accessible name `Close instruction box`) closes with the same focus restoration.
+  - **Edge:** Escape while a reply streams (the stream continues; the composer closes); the pre-open
+    element unmounted (app-root fallback, never body); the user moved focus elsewhere before Esc
+    (restore per the contract; record); the composer not open (no-op).
+  - **Receipt:** E-DOM (activeElement before/after) + E-SHOT.
+
+- [ ] **F-172 (R-3.9) — the destructive and external confirmation policy is preserved on the teleport path.**
+  **Steps:** one element selected in Wireframe; relay `wireframe.element.delete` through the SAME
+  companion funnel the composer turn uses (`app_command_intent`); read the dialog; Cancel; then repeat
+  with Accept. Then relay `place.exportPng` (external) and Cancel only.
+  **Expected:** a destructive verb reaches `requestLauncherConfirmation` and renders
+  `[data-testid="launcher-confirmation"]` (`role="alertdialog"`) with verb/target/consequence/undo and
+  **Cancel focused**; NOTHING is applied before accept (element present, journal unchanged); Accept
+  applies exactly ONE mutation + one journal entry (undo restores); Cancel/Esc/outside-click journal
+  nothing and the element stays; the external verb is cancel-only (never press Accept — it opens an OS
+  save dialog) and reports `Not undoable`.
+  - **Edge:** a second destructive intent while one is pending; the dialog while the composer is open;
+    a companion-origin destructive intent with no launcher mounted (resolves `false`, nothing applied).
+  - **Receipt:** E-DOM (dialog + post-cancel/accept journal) + E-SHOT.
+
+- [ ] **F-173 (R-3.10) — safe and mutating turns auto-apply and journal exactly one entry.**
+  **Steps:** with one element selected, submit a SAFE instruction (e.g. `fit the page`) and a MUTATING
+  instruction (e.g. `lock it`) through the composer (real model) and, deterministically, relay the same
+  verbs; read the dialog absence + the journal.
+  **Expected:** NO `launcher-confirmation` node for either class; each applies immediately and appends
+  exactly ONE journal entry (safe → effect `navigation`, no patch; mutating → effect `mutation` with a
+  real patch); the change is visible after the composer closes; the attribution is `Companion`
+  (F-N41).
+  - **Edge:** a `did-nothing` mutating verb (no entry); double Enter must not double-apply; a safe verb
+    that changes no document state.
+  - **Receipt:** E-DOM (journal + document) + E-SHOT.
+
+- [ ] **F-174 (R-3.11) — no chat panel or history: the reply is the existing `SpeechBubble` with its states unchanged.**
+  **Steps:** submit two turns in a row; inspect the composer/overlay subtree and the document for a
+  message list / transcript / scrollback / a second reply surface; stop the managed server and submit
+  to induce the error path; read the bubble text, the state sequence and the live region.
+  **Expected:** NO chat panel, message list, scrollback or history node exists (the composer root is
+  the ONLY new node); each turn's reply renders in the EXISTING `SpeechBubble` (the shipped 240×120
+  base tier or its grown/scrolling tier) and the prior reply is REPLACED (single-shot);
+  `thinking → joking → happy → idle` unchanged; the error path renders the curated sentence
+  `Fredo couldn't reply just now. Try again in a moment.` with no false `happy`, exactly ONE polite
+  announcement and a clean recovery. `composerOpen` is transient: it is NOT persisted (reload →
+  closed; no new storage key; grep localStorage/AppStore for a composer key → zero).
+  - **Edge:** a long reply (the grown/scrolling tier unchanged); a reload mid-composer; a reply while
+    the composer is open; two turns back-to-back (latest only).
+  - **Receipt:** E-DOM (absence + bubble text per state) + the state samples + the console read.
+
+- [ ] **F-175 (R-3.12) — the composer opens only in a window that is hosting Fredo.**
+  **Steps:** open `run-cli-terminal`; keep Fredo in the main window (not away); open a standalone app
+  window (`index.html?view=app&id=<appId>`); emit `companion-teleport {toWindow:'main', x, y}` with
+  `tauri_ipc_emit_event`; count composer nodes per window; then teleport into the terminal and back.
+  **Expected:** the composer opens ONLY in the window that hosts Fredo, gated by the existing
+  served-overlay gate (`isAway && isInThisWindow && !isAutoHidden`); the standalone app window (which
+  reports `MY_WINDOW='main'`) NEVER opens a composer while it is not hosting; exactly ONE composer
+  exists globally at any settle; an auto-hidden away state opens none. This row does NOT change the
+  `MY_WINDOW` identity (the Architect's out-of-scope wrinkle) — it proves the gate holds it.
+  - **Edge:** teleport source vs destination windows; a window (re)loaded mid-transit; auto-hidden
+    away; closing the terminal mid-transit.
+  - **Receipt:** per-window composer counts + the `data-state` of each window.
+
+- [ ] **F-176 (R-3.13) — composer a11y, copy and token-native theming.**
+  **Steps:** read the composer's roles/names/attributes; inspect computed colors in dark base, a light
+  preset and a non-default accent; re-theme with the composer open; check the live-region count.
+  **Expected:** root `role="group"` named `Tell Fredo what to change`; input `aria-label="Instruction
+  for Fredo"`; icon-only submit named `Send instruction`; dismiss named `Close instruction box`;
+  target chip text `for <App>` or `No app in front of Fredo`; every control Tab-reachable with a
+  non-empty accessible name (G-423); colors are theme tokens / `tint()` only (zero `#rrggbb`,
+  `rgba(`, `var(--x)NN` alpha-append) and re-tint live with no stale color; the composer adds ZERO
+  `aria-live` regions (the reply still announces once on the shipped polite region); a focus-visible
+  ring is present; under reduced motion the composer's own entrance (if any) is opacity/transform-only
+  or absent.
+  - **Edge:** a long target app name (record wrap/ellipsis); 900×600; light + dark + Matrix; the
+    composer over a light window; a long instruction: the composer auto-grows to ≤ 96 px (4 lines) then
+    scrolls (UIUX-D3) — `COMPOSER_H=40` is the resting minimum — never growing the launcher.
+  - **Receipt:** E-DOM (roles/names) + the computed-color table + E-SHOT per theme.
+
+- [ ] **F-177 (NFR) — the composer opens in the settle task, never polls, and keeps the console clean.**
+  **Steps:** measure open/focus latency across 20 teleports; static-read the composer/placement code
+  for timers/effects; read the console after every leg; resize while open.
+  **Expected:** open + focus land in the settle task (no interval, no polling, no extra host
+  subscription beyond the existing teleport event); the placement is a PURE function of measured rects
+  (no `useEffect` + `setState` loop; no effect deps on array `.length`/fresh objects — #523); no
+  `Error:`/`Uncaught`/`Maximum update depth exceeded`; a resize while open re-derives the placement
+  with no overlap and no flicker; the launcher command-bar `y` is unchanged (no layout participation).
+  - **Edge:** 50 open/close cycles; rapid teleports; a theme switch while open; reduced motion.
+  - **Receipt:** the latency series + the console read + the source read.
+
+- [ ] **F-178 (LIVE) — mandatory `telemetry_spans` and rendered-webview receipt for the reworked turn.**
+  **Steps:** same run as F-164..F-177: exercise the composer end-to-end; run
+  `fredo emit --event-type chat --session-id e2e-3120r-composer-chat` and
+  `--event-type tool_use --session-id e2e-3120r-composer-tool --tool-name read_file`; query
+  `telemetry_spans` + `chat_rows`/`tool_use_rows` (telemetry-query skill, against the env's PostgreSQL
+  manifest); retain the composer DOM/screenshot receipts.
+  **Expected:** both emits return `{"queued":true}` and classify under their session ids;
+  `telemetry_spans` returns a NON-ZERO count with a recent `max(ingested_at)`; a rendered-webview
+  receipt exists for every row. **A static-only PASS is a FALSE PASS.** Never fabricate a query.
+  - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; disclose the DB port;
+    if the pool refuses `psql`, use the named telemetry fallback and DISCLOSE.
+  - **Receipt:** E-SPAN + E-SHOT.

@@ -1,18 +1,97 @@
-﻿mod features;
+﻿mod applications;
 pub mod infrastructure;
 mod runtime;
 mod utils;
 
+// Spec #2975 ST-6 — test seam. The cross-engine integration binary
+// (`tests/storage_engine_pg.rs`) drives the SAME bounded `PgRuntime` the app
+// uses, so the G-263 start/stop/teardown contract is exercised by the real
+// primitive (finite timeouts, hard-kill fallback, RAII teardown) instead of a
+// test-local copy. `#[doc(hidden)]`: not part of the app's surface.
+#[doc(hidden)]
+pub use applications::pg_supervisor::runtime::PgRuntime;
+
+// Spec #2975 ST-6 — test seam. The ST-2 startup schema-init registry is populated
+// with `applications::terminal::persistence::ensure_table_on_pg` (a `mod applications`
+// item, otherwise unreachable from an integration test). The gated cross-engine
+// suite drives the SAME terminal initializer through the registry so the boot
+// schema-set contract is pinned. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
+
+// Spec #2950 ST-1 — the built-in PostgreSQL client's frozen producer contract
+// (`db_client::{types, seam, state}`): wire types, the persistence/credential
+// key contract, the G-275 seams and the managed `DbClientState`. The command
+// wrappers are registered below; the contract modules are re-exported so the
+// frozen surface is reachable (and integration tests can pin it) while the
+// ST-2/ST-3/ST-4 consumer bodies are still pending. `#[doc(hidden)]`: not part
+// of the app surface.
+#[doc(hidden)]
+pub use applications::db_client;
+
+// Spec #2992 CU-1 — the headless-ingest descriptor contract
+// (`pg_supervisor::descriptor`): the cross-process JSON descriptor + the bounded
+// liveness guard. `write`/`clear` are consumed by the CU-2 `fredo ingest` daemon
+// (ST-5); the module is re-exported so the frozen CU-1 surface is reachable while
+// that consumer is still pending. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::pg_supervisor::descriptor;
+
+// Spec #3023 — the Doom runtime lifecycle contract (`doom::{state, engine,
+// commands, ...}`): the shared types + the native in-process engine adapter. The
+// commands and the `doom` window consume this surface, so it is re-exported to
+// keep it reachable (and avoid dead-code on the window-close entry points).
+// `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::doom;
+
+// Spec #2969 ST-4 — the Doom-agent producer surface
+// (`llm_server::doom_agent`: the persona, the pure schema-constrained request
+// builder, the model-backed `DoomDecisionSource`, and the bounded request audit).
+// ST-5 wires the real consumer in the `setup` closure below (the composition root
+// constructs `ModelDoomDecisionSource` with `applications::doom`'s vocabulary); the
+// module stays re-exported so the frozen producer surface remains reachable.
+// `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::llm_server::doom_agent;
+
+// Spec #3099 ST-4 — test seam. The durable companion-manifest suite
+// (`tests/companion_manifest.rs`) renders the offer through the SAME renderer the
+// live paths use (`render_tools`), so the golden fixture is asserted against the
+// real wire shape, not a test-local copy. `mod applications` is private, so the
+// renderer is re-exported here. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::llm_server::skills::render_tools as render_companion_tools;
+
+// Spec #3147 ST-1 — the application command manifest
+// (`runtime::command_manifest::COMMAND_MANIFEST`): the ONE list of registered
+// app commands, consumed by `build.rs` via `include!` to register Tauri's
+// application manifest (`tauri_build::AppManifest::commands(...)`). It is
+// re-exported here as the crate's public command-surface contract, which is
+// what keeps the constant live in the app crate (its drift guards live beside
+// it under `#[cfg(test)]`). `mod runtime` is private, hence the re-export.
+pub use runtime::command_manifest::COMMAND_MANIFEST;
+
+// Spec #3147 ST-2 — the installed-application package trust boundary
+// (`installed_apps::{manifest, archive, store, commands_install}`): zip ingest,
+// manifest validation, the frozen refusal vocabulary, hash pinning and the
+// on-disk install root. The command wrappers are registered below; the contract
+// modules are re-exported so the frozen surface is reachable by ST-3/ST-4/ST-5
+// (scheme handler, window lifecycle, theme push) and by the unit tests that pin
+// it. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::installed_apps;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use features::terminal::state::RunCliState;
+use applications::terminal::state::TerminalState;
 use infrastructure::comm::bus::EventBus;
-use infrastructure::feature_data::commands::FeatureDataState;
-use infrastructure::feature_data::envelope::FeatureRowNotification;
-use infrastructure::feature_data::projection::{install_row_upsert_observer, ProjectionEngine, RowUpsertObserver};
-use infrastructure::feature_data::registry::DeclarationRegistry;
-use infrastructure::feature_data::store::FeatureDataStore;
-use infrastructure::feature_data::watch::{run_watch_flush_task, NotificationSink, WatchRegistry};
+use infrastructure::application_data::commands::ApplicationDataState;
+use infrastructure::application_data::envelope::ApplicationRowNotification;
+use infrastructure::application_data::projection::{install_row_upsert_observer, ProjectionEngine, RowUpsertObserver};
+use infrastructure::application_data::registry::DeclarationRegistry;
+use infrastructure::application_data::store::ApplicationDataStore;
+use infrastructure::application_data::watch::{run_watch_flush_task, NotificationSink, WatchRegistry};
 use infrastructure::rtdb::commands::IngestRow;
 use infrastructure::rtdb::cache::{
     prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
@@ -20,16 +99,21 @@ use infrastructure::rtdb::cache::{
 use infrastructure::rtdb::commands::{Rtdb, RtdbState};
 use infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
 use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
+use infrastructure::rtdb::health::{
+    spawn_publisher as spawn_stream_health_publisher, stream_health_force, StreamHealthMonitor,
+    StreamHealthState,
+};
 use infrastructure::rtdb::project::RowDelivery;
 use infrastructure::rtdb::store::{
     RtdbStore, RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
     RTDB_RETENTION_DAYS_KEY,
 };
 use infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-use infrastructure::storage::feature_store::{self, FeatureStore};
+use infrastructure::storage::engine::{EngineHandle, StorageEngineState};
+use infrastructure::storage::application_store::{self, DynamicTableStore};
 use infrastructure::storage::span_store::SpanStore;
-use infrastructure::storage::AppStore;
-use infrastructure::telemetry::metrics_collector::{MetricCollector, SpanStoreMetricsExt};
+use infrastructure::storage::SettingsStore;
+use infrastructure::telemetry::metrics_collector::MetricCollector;
 use infrastructure::telemetry::log::{LogBridgeLayer, LogCollector, LOG_COLLECTOR_CELL};
 use infrastructure::telemetry::SpanCollector;
 use runtime::AppRuntime;
@@ -38,42 +122,43 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-/// A `NotificationSink` that emits feature-data batches through the `EventBus`
+/// A `NotificationSink` that emits application-data batches through the `EventBus`
 /// (the ONLY sanctioned emission path) on the `"fredo-stream-event"` channel.
 struct EventBusSink {
     app: tauri::AppHandle,
 }
 
 impl NotificationSink for EventBusSink {
-    fn emit(&self, notifications: &[FeatureRowNotification]) {
+    fn emit(&self, notifications: &[ApplicationRowNotification]) {
         let bus = self.app.state::<EventBus>();
-        bus.emit_feature_delivery_batch(notifications);
+        bus.emit_application_delivery_batch(notifications);
     }
 }
 
 /// The ONE canonical-upsert observer: feeds canonical-table watches AND the
 /// declared-row projection engine (which then fans declared changes back into
 /// the same watch registry).
-struct FeatureDataUpsertObserver {
+struct ApplicationDataUpsertObserver {
     engine: Arc<ProjectionEngine>,
     watches: Arc<WatchRegistry>,
 }
 
-impl RowUpsertObserver for FeatureDataUpsertObserver {
-    fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
+#[async_trait::async_trait]
+impl RowUpsertObserver for ApplicationDataUpsertObserver {
+    async fn on_row_upsert(&self, row: &IngestRow, changed_fields: &[String]) {
         self.watches.on_canonical_row(row, changed_fields);
-        self.engine.on_row_upsert(row, changed_fields);
+        self.engine.on_row_upsert(row, changed_fields).await;
     }
 }
 
 /// One declared-table retention prune cycle; every eviction fans out into the
 /// watch registry as a `remove` notification (the function itself returns the
 /// evictions and emits nothing).
-fn prune_feature_data(app: &tauri::AppHandle) {
-    let Some(state) = app.try_state::<Arc<FeatureDataState>>() else {
+async fn prune_application_data(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<Arc<ApplicationDataState>>() else {
         return;
     };
-    match infrastructure::feature_data::lifecycle::prune_declared_tables(
+    match infrastructure::application_data::lifecycle::prune_declared_tables(
         &state.meta,
         &state.tables,
         &state.app_store,
@@ -81,11 +166,11 @@ fn prune_feature_data(app: &tauri::AppHandle) {
         Ok(evicted) if !evicted.is_empty() => {
             let removed = evicted.len();
             state.watches.handle_declared_changes(&evicted);
-            tracing::info!(target: "fredo::feature_data", removed, "declared retention prune");
+            tracing::info!(target: "fredo::application_data", removed, "declared retention prune");
         }
         Ok(_) => {}
         Err(e) => tracing::error!(
-            target: "fredo::feature_data",
+            target: "fredo::application_data",
             error = %e,
             "declared retention prune failed"
         ),
@@ -96,6 +181,15 @@ fn prune_feature_data(app: &tauri::AppHandle) {
 pub fn run() {
     let _runtime = AppRuntime::new();
 
+    // Spec #2944 ST-2 (R-1.2/R-4.1): resolve this process's local
+    // test-environment configuration ONCE from the `FREDO_*` variables. With no
+    // `FREDO_*` set every value is the legacy literal (MCP 9223, OTLP
+    // 4317/4318, pipe `\\.\pipe\fredo-ipc`, title `Fredo`), so the single-env
+    // path is byte-identical.
+    let env_config = infrastructure::env::EnvConfig::from_env();
+    // The per-env title for the `RunEvent::Ready` re-assert below.
+    let window_title = env_config.window_title();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init());
 
@@ -103,65 +197,284 @@ pub fn run() {
     let builder = builder.plugin(
         tauri_plugin_mcp_bridge::Builder::new()
             .bind_address("127.0.0.1")
-            .base_port(9223)
+            // Spec #2944 ST-2 (R-4.1/R-4.2): each environment's MCP bridge binds
+            // its OWN loopback base port. The driver targets an environment by
+            // this port as its explicit `appIdentifier`; there is no shared
+            // default-app port. `bind_address` stays loopback-only.
+            .base_port(env_config.mcp_base_port)
             .build()
     );
 
+    // Spec #3147 ST-3 — the installed-application origin.
+    //
+    // Registering the `fredoapp` scheme is what makes an installed application a
+    // DOCUMENT at an origin the host does not own: Tauri maps it to
+    // `fredoapp://localhost` on macOS/Linux and `http://fredoapp.localhost` on
+    // Windows/Android, both of which differ from the host's
+    // `tauri://localhost` / `http://tauri.localhost`. The handler (`scheme.rs`)
+    // owns routing, verify-at-serve and the child document's CSP; it is
+    // registered here unconditionally (not debug-only) because the origin is the
+    // product's isolation mechanism.
+    //
+    // This registration performs NO work: it stores a closure. No window is
+    // created, no install directory is read and no document is built until a
+    // request arrives — which is what keeps R-5.5's "nothing installed-app-shaped
+    // happens at startup" true.
+    let builder = builder.register_uri_scheme_protocol(
+        applications::installed_apps::scheme::INSTALLED_APP_SCHEME,
+        |context, request| {
+            applications::installed_apps::scheme::handle_uri_request(
+                context.app_handle(),
+                request,
+            )
+        },
+    );
+
     builder.setup(|app| {
-            // -- SQLite settings store -----------------------------------------
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to resolve app data dir");
+            // The setup closure is `'static`, so it re-reads the same `FREDO_*`
+            // variables through the ONE resolver (`EnvConfig`) — resolution logic
+            // is never duplicated, and the read is idempotent.
+            let env_config = infrastructure::env::EnvConfig::from_env();
+
+            // Spec #2944 ST-2 (R-2.2): per-environment window identity. The
+            // legacy path (no `FREDO_ENV_ID`) keeps the title `Fredo`; an
+            // isolated env titles the window `Fredo [<envId>]`.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_title(&env_config.window_title());
+            }
+
+            // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
+            // `FREDO_DATA_DIR` redirects the app-data dir to an in-repo fixture; the
+            // managed-PG install dir + lock stay
+            // on the OS dir (`applications::pg_supervisor`), so a fixture run reuses the
+            // existing install. Inert when unset (the default path is byte-identical).
+            let data_dir = infrastructure::storage::boot_config::resolve_app_data_dir(
+                &app.path()
+                    .app_data_dir()
+                    .expect("Failed to resolve app data dir"),
+            );
+
+            // -- Shared storage-engine seam (Spec #2975 ST-2; #2979 CU-2) ------
+            // The swap-once `EngineHandle`, built BEFORE the supervisor starts.
+            // Since Spec #2979 CU-2 the data plane is PostgreSQL-only: the handle
+            // starts PENDING and the supervisor's background pool build installs
+            // the PostgreSQL engine once the managed server is ready. Until then
+            // a data-plane op fails closed (R-3.2) — it never serves from SQLite.
+            // The startup schema set is materialized on the CANDIDATE pool by the
+            // registered initializers below, BEFORE the pool is installed.
+            let engine_handle = EngineHandle::new_pending();
+
+            // -- Settings store (Spec #3005 ST-2) ------------------------------
+            // `SettingsStore` holds the volatile, PG-hydrated synchronous settings
+            // cache plus the JSON boot KV. The async data plane (`get`/`set`) sits
+            // ON the shared handle; the setup closure below reads config via the
+            // synchronous cache (hydrated on pool-ready in the supervisor).
             let app_store = Arc::new(
-                AppStore::open(data_dir.clone()).expect("Failed to open settings store"),
+                SettingsStore::open(engine_handle.clone(), &data_dir)
+                    .expect("Failed to open settings store"),
             );
             app.manage(app_store.clone());
 
-            // -- FeatureStore (generic typed-column SQLite store for features) --
-            let feature_store = Arc::new(
-                FeatureStore::open(data_dir.clone()).expect("Failed to open FeatureStore"),
-            );
-            app.manage(feature_store.clone());
+            // -- Storage-engine state (Spec #3005 ST-3) -------------------------
+            // PostgreSQL is the ONLY data-plane engine; the engine selector is
+            // gone. The swap-once handle starts Pending and the supervisor installs
+            // the pool on its (lazy) readiness leg.
+            let storage_state = StorageEngineState::new(engine_handle.clone());
+            // Spec #2975 ST-2 rework: register the startup schema initializers
+            // BEFORE the supervisor starts, so the registry is populated before
+            // the background task can reach pool-ready (no timing race). They run
+            // against the candidate PostgreSQL pool pre-install, so the full
+            // startup schema set exists before any application op. The SQLite path
+            // below keeps creating the same schema on SQLite.
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                ApplicationDataStore::ensure_schema_on_pg(pool)
+            }));
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                applications::terminal::persistence::ensure_table_on_pg(pool)
+            }));
+            // Spec #3011 ST-3 / CU-2: materialize the Doom save feature table
+            // (`feature_doom_save`) on the CANDIDATE pool BEFORE it is installed
+            // (fail-closed — a failed init installs nothing), so a Doom resume
+            // read/write resolves the table without an ad-hoc create. Mirrors the
+            // Terminal precedent above; `ensure_table_on_pg` delegates to the ONE
+            // `DynamicTableStore` DDL builder.
+            storage_state.register_pg_schema_init(Arc::new(|pool: &sqlx::PgPool| {
+                applications::doom::save::ensure_table_on_pg(pool)
+            }));
+            // Spec #2976 ST-7: the six slice-3 canonical tables (three `*_rows`
+            // for RtdbStore + three telemetry tables) exist on the candidate
+            // pool BEFORE it is installed (fail-closed: a failed init installs
+            // NOTHING).
+            storage_state.register_slice3_pg_schema_inits();
+            app.manage(storage_state);
 
-            // -- Tracing subscriber initialization (Spec #408) -----------------
+            // -- Embedded-PostgreSQL supervisor (Spec #2974 ST-3) --------------
+            // Spec #3005 ST-3: PostgreSQL is the ONLY engine, so the supervisor
+            // always starts (no selector, no opt-out). It acquires the exclusive
+            // data-dir lock BEFORE the orphan sweep and LAZILY starts the postmaster
+            // on a background task: `setup` NEVER awaits the boot (G-273/R-2.3), so
+            // the webview shell renders while PostgreSQL starts.
+            applications::pg_supervisor::start_supervisor(app.handle());
+
+            // -- DynamicTableStore (generic typed-column store for applications) --------
+            // Spec #2975 ST-4: the store holds an `Arc<EngineHandle>` clone of the
+            // ONE shared engine; its SQLite statements are byte-identical to the
+            // incumbent path, PostgreSQL is the 1:1 translated dialect.
+            let application_store = Arc::new(
+                DynamicTableStore::open(engine_handle.clone()).expect("Failed to open DynamicTableStore"),
+            );
+            app.manage(application_store.clone());
+
+            // -- Terminal persisted session records (Spec #2935 ST-2) ----------
+            // Materialize the record table on the CANDIDATE PostgreSQL pool via
+            // the schema-init registry above (`ensure_table_on_pg`), which runs
+            // PRE-install — so no data-plane call is needed here while the pool
+            // is still pending (Spec #2979 CU-2; R-3.2 fail-closed).
+
+            // -- Tracing subscriber initialization (Spec #408; reload #3005 ST-2) --
             // Initialize before any tracing::info!/warn!/error! calls.
             // Uses a deferred LogBridgeLayer that reads from LOG_COLLECTOR_CELL,
             // which is set after LogCollector creation below.
+            //
+            // Spec #3005 ST-2 (R-2.4): the subscriber initializes at INFO and
+            // retains a `reload` handle. PostgreSQL is not up yet, so the persisted
+            // `tracing.logging_level` cannot be read synchronously; `hydrate`
+            // applies it through the retained handle later (a single `.init()`,
+            // never a re-init).
             {
-                let logging_level = app.state::<Arc<AppStore>>()
-                    .get("tracing.logging_level").ok().flatten()
-                    .unwrap_or_else(|| "INFO".to_string());
-
-                let env_filter = EnvFilter::try_new(&logging_level)
-                    .unwrap_or_else(|_| EnvFilter::new("INFO"));
+                let (filter_layer, reload_handle) =
+                    tracing_subscriber::reload::Layer::<EnvFilter, tracing_subscriber::Registry>::new(
+                        EnvFilter::new("INFO"),
+                    );
 
                 tracing_subscriber::registry()
-                    .with(env_filter)
+                    .with(filter_layer)
                     .with(tracing_subscriber::fmt::layer()
                         .with_target(true)
                         .with_level(true)
                         .compact())
                     .with(LogBridgeLayer::new())
                     .init();
+
+                app.state::<Arc<SettingsStore>>()
+                    .set_log_level_sink(Box::new(move |level: &str| {
+                        if let Ok(filter) = EnvFilter::try_new(level) {
+                            let _ = reload_handle.reload(filter);
+                        }
+                    }));
             }
 
-            // -- Companion llama-server state (Spec #2857 ST-4) ----------------
-            // Out-of-process inference: the managed child process lives in this
-            // state and is spawned/killed via the `features::llm_server`
-            // commands registered below. There is NO in-process engine load —
-            // readiness is the server's own `/health`, gated by the wizard.
-            app.manage(features::llm_server::state::LlamaServerState::default());
+            // -- Local test-environment wiring (Spec #2944 ST-2) ---------------
+            // Log the resolved environment so the endpoints/identity a live run
+            // actually bound are observable (R-2.2/R-4.1 evidence). Isolated
+            // runs only — the legacy path logs nothing new.
+            if env_config.is_isolated() {
+                tracing::info!(
+                    target: "fredo::env",
+                    env_id = env_config.env_id.as_deref().unwrap_or(""),
+                    app_identity = %env_config.app_identity(),
+                    mcp_port = env_config.mcp_base_port,
+                    otlp_grpc = env_config.ingest_grpc_port,
+                    otlp_http = env_config.ingest_http_port,
+                    pipe = %env_config.cli_pipe,
+                    "isolated test environment resolved"
+                );
+            }
 
-            // -- Startup orphan sweep (Spec #2857 ST-7) ------------------------
-            // A hard-kill (Task Manager) never runs the `RunEvent::Exit` hook, so
-            // reclaim a persisted `llama-server` PID on the next launch. The sweep
-            // is PID-reuse guarded (image name) and can never kill an unrelated
-            // process (R-3.3).
-            features::llm_server::process::sweep_orphan(app.handle());
+            // The companion artifact dir is a persisted setting; an isolated env
+            // injects its own value so each environment's engine log lands in
+            // its own dir (R-1.2 / AC-27). Inert on the legacy path (see
+            // `companion_env_overrides`). There is no port any more: the engine
+            // is in-process, so no listener is isolated.
+            applications::llm_server::apply_companion_env_overrides(app.handle(), &env_config);
+
+            // -- In-process companion engine state (Spec #3141 ST-1) -----------
+            // The engine lives on ONE owned OS thread (LlamaContext/MtpSession
+            // are `!Send`); commands talk to it through the bounded handle.
+            app.manage(applications::llm_server::commands::CompanionEngineState::default());
+
+            // -- Doom native engine state (Spec #3023 ST-2) --------------------
+            // The native in-process Doom engine session (exactly-one) lives in
+            // this state and is driven via the `applications::doom` commands
+            // registered below. There is NO child process and no loopback port:
+            // teardown is take-and-drop, so no orphan is constructible (G-263).
+            app.manage(applications::doom::engine::DoomEngineState::default());
+
+            // -- Doom autoplay state (Spec #2969 ST-5) -------------------------
+            // The ONE autoplay run's stop flag + last status; the
+            // `start_doom_autoplay` / `stop_doom_autoplay` /
+            // `get_doom_autoplay_status` commands below own it.
+            app.manage(applications::doom::commands::DoomAutoplayState::default());
+
+            // -- Doom fine-tuning dataset state (Spec #3032 ST-3) --------------
+            // The opt-in capture gate's writer + the resolved dataset directory
+            // (`<app_data_dir>/doom-dataset/`, `FREDO_DOOM_DATASET_DIR` test
+            // override) resolved from the ONE app-data-dir resolver above. The
+            // writer is built lazily — default OFF builds none and creates no
+            // dataset file (R-5). Shared (`Arc`) so the export IPC and the loop
+            // (ST-2) use the SAME instance / `export_in_progress` guard (AC3).
+            app.manage(Arc::new(
+                applications::doom::commands::DoomDatasetState::new(&data_dir),
+            ));
+
+            // -- Doom Mode state (Spec #2970 ST-2) -----------------------------
+            // The single source of truth for "is Doom Mode active" (G-124); the
+            // `enter_doom_mode` / `exit_doom_mode` / `get_doom_mode_status`
+            // commands below own it. The mode is NEVER persisted.
+            app.manage(applications::doom::mode::DoomModeState::default());
+
+            // -- Companion performance-mode suppression (Spec #2970 ST-2) ------
+            // The ONE provider-agnostic boolean that gates the companion
+            // voice/audio pipeline while Doom Mode is active. Shared
+            // infrastructure so ST-3 (`infrastructure/voice` + `llm_server`) can
+            // read it without importing `applications::doom`.
+            app.manage(infrastructure::companion::PerformanceModeState::default());
+
+            // -- Doom decision source (Spec #2969 ST-5, binding decision 1) ----
+            // The composition root selects the decision source from
+            // `FREDO_DOOM_AGENT_DECISION_SOURCE` (`model` default, `scripted`
+            // lever) and installs it into the shared Tauri-managed holder.
+            // Neither application imports the other — this is the only place both
+            // `applications::doom` and `applications::llm_server` are visible. The
+            // scripted lever is inert unless explicitly selected; if its script
+            // cannot be loaded no source is installed, so a start reports a typed
+            // `NotReady` instead of silently falling back to the model.
+            let doom_decision_state =
+                infrastructure::companion::doom_decision::DoomDecisionSourceState::default();
+            let doom_source = applications::doom::decision::decision_source_from_env();
+            if doom_source == applications::doom::decision::DOOM_AGENT_SOURCE_SCRIPTED {
+                match applications::doom::decision::ScriptedDecisionSource::from_env() {
+                    Ok(scripted) => doom_decision_state.set(Arc::new(scripted)),
+                    Err(error) => tracing::error!(
+                        target: "fredo::doom",
+                        error = %error,
+                        "the scripted Doom decision source could not be loaded; \
+                         start_doom_autoplay will report NotReady"
+                    ),
+                }
+            } else if doom_source == applications::doom::decision::DOOM_AGENT_SOURCE_LOCAL {
+                // The deterministic, model-independent local route source
+                // (Spec #3039 ST-7): the `local` selector installs it; the
+                // `model` default is unchanged.
+                doom_decision_state.set(Arc::new(
+                    applications::doom::local_route::LocalRouteSource::new(),
+                ));
+            } else {
+                doom_decision_state.set(Arc::new(
+                    applications::llm_server::doom_agent::ModelDoomDecisionSource::new(
+                        app.handle().clone(),
+                        applications::doom::actions::action_vocabulary_json(),
+                    ),
+                ));
+            }
+            app.manage(doom_decision_state);
 
             // -- Terminal state ------------------------------------------------
-            app.manage(Mutex::new(RunCliState::new()));
+            app.manage(Mutex::new(TerminalState::new()));
+            // Cold-launch one-shot handshake (Spec #2940 ST-8): the armed
+            // `fredo open-terminal` intent a freshly created window drains on
+            // its first `list_terminal_sessions`.
+            app.manage(applications::terminal::commands::PendingTerminalOpen::default());
 
             // -- EventBus (RTDB row-batch emitter for "fredo-stream-event") ----
             // The ONLY sanctioned emission path to the webview: RTDB row
@@ -170,51 +483,39 @@ pub fn run() {
             app.manage(EventBus::new(app.handle().clone()));
 
             // -- Telemetry: SpanStore + SpanCollector (Spec #396) --------------
-            // REQ-1: Create SpanStore with the telemetry_spans schema.
+            // REQ-1: Create SpanStore on the ONE shared engine handle
+            // (Spec #2976 ST-5): the shared PostgreSQL pool once installed. The
+            // telemetry + metrics tables are materialized on the CANDIDATE pool by
+            // `register_slice3_pg_schema_inits` PRE-install, so no data-plane
+            // schema call is made here while the pool is still pending (Spec #2979
+            // CU-2; R-3.2 fail-closed).
             let span_store = Arc::new(
-                SpanStore::open(data_dir.clone()).expect("Failed to open SpanStore"),
+                SpanStore::open(engine_handle.clone()).expect("Failed to open SpanStore"),
             );
-            span_store.ensure_schema().expect("Failed to create telemetry schema");
-            // REQ-9: Create telemetry_metrics table
-            span_store
-                .ensure_metrics_schema()
-                .expect("Failed to create telemetry metrics schema");
             app.manage(span_store.clone());
 
-            // REQ-11: Set telemetry defaults if not already configured.
+            // REQ-11 / REQ-13 / REQ-7: register the startup defaults. Spec #3005
+            // ST-2: `hydrate` seeds each default ONLY when PostgreSQL has no row
+            // for the key, so a persisted user value survives a restart (R-2.1).
             {
-                let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get("tracing.enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.enabled", "true");
-                }
-                if store_ref.get("tracing.retention_days").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.retention_days", "7");
-                }
-                // REQ-13: Set metrics defaults if not already configured.
-                if store_ref.get("tracing.metrics_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_enabled", "true");
-                }
-                if store_ref.get("tracing.metrics_aggregation_s").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.metrics_aggregation_s", "60");
-                }
-                // REQ-7: Set logging defaults if not already configured.
-                if store_ref.get("tracing.logging_enabled").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_enabled", "true");
-                }
-                if store_ref.get("tracing.logging_level").ok().flatten().is_none() {
-                    let _ = store_ref.set("tracing.logging_level", "INFO");
-                }
+                let store_ref = app.state::<Arc<SettingsStore>>();
+                store_ref.register_default("tracing.enabled", "true");
+                store_ref.register_default("tracing.retention_days", "7");
+                store_ref.register_default("tracing.metrics_enabled", "true");
+                store_ref.register_default("tracing.metrics_aggregation_s", "60");
+                store_ref.register_default("tracing.logging_enabled", "true");
+                store_ref.register_default("tracing.logging_level", "INFO");
             }
 
-            // REQ-9: Run retention cleanup on startup.
-            let store_ref = app.state::<Arc<AppStore>>();
+            // REQ-9: Run retention cleanup on startup (pre-hydration reads default).
+            let store_ref = app.state::<Arc<SettingsStore>>();
             let retention_days: i64 = store_ref
-                .get("tracing.retention_days")
+                .cached_get("tracing.retention_days")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7);
-            match span_store.delete_expired(retention_days) {
+            match tauri::async_runtime::block_on(span_store.delete_expired(retention_days)) {
                 Ok(deleted) => {
                     if deleted > 0 {
                         tracing::info!(target: "fredo::telemetry", deleted, "retention cleanup");
@@ -226,12 +527,12 @@ pub fn run() {
             // Create MetricCollector and register as Tauri state.
             let metric_collector = Arc::new(MetricCollector::new(
                 span_store.clone(),
-                Arc::clone(&*app.state::<Arc<AppStore>>()),
+                Arc::clone(&*app.state::<Arc<SettingsStore>>()),
             ));
             app.manage(metric_collector.clone());
 
             // Create SpanCollector and register as Tauri state.
-            let collector = Arc::new(SpanCollector::new(span_store.clone(), Arc::clone(&*app.state::<Arc<AppStore>>())));
+            let collector = Arc::new(SpanCollector::new(span_store.clone(), Arc::clone(&*app.state::<Arc<SettingsStore>>())));
             app.manage(collector.clone());
 
             // -- LogCollector (Spec #408) -------------------------------------
@@ -239,7 +540,7 @@ pub fn run() {
             // OnceLock so the LogBridgeLayer (initialized earlier) starts capturing.
             let log_collector = Arc::new(LogCollector::new(
                 span_store.clone(),
-                Arc::clone(&*app.state::<Arc<AppStore>>()),
+                Arc::clone(&*app.state::<Arc<SettingsStore>>()),
             ));
             // Set the global OnceLock for the LogBridgeLayer
             let _ = LOG_COLLECTOR_CELL.set(log_collector.clone());
@@ -252,7 +553,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let collector = flush_handle.state::<Arc<SpanCollector>>();
-                    let flushed = collector.flush_if_needed();
+                    let flushed = collector.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "spans flushed from timer");
                     }
@@ -266,7 +567,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let mc = metrics_flush_handle.state::<Arc<MetricCollector>>();
-                    let flushed = mc.flush_if_needed();
+                    let flushed = mc.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "metrics flushed from timer");
                     }
@@ -280,7 +581,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let lc = log_flush_handle.state::<Arc<LogCollector>>();
-                    let flushed = lc.flush_if_needed();
+                    let flushed = lc.flush_if_needed().await;
                     if flushed > 0 {
                         tracing::info!(target: "fredo::telemetry", flushed, "log buffer flushed");
                     }
@@ -294,7 +595,7 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let collector = sweep_handle.state::<Arc<SpanCollector>>();
-                    let swept = collector.sweep_orphans();
+                    let swept = collector.sweep_orphans().await;
                     if swept > 0 {
                         tracing::info!(target: "fredo::telemetry", swept, "orphan sweep completed");
                     }
@@ -306,16 +607,17 @@ pub fn run() {
                 }
             });
 
-            // -- RTDB row store (Spec #2788 P1.2) ------------------------------
-            // SQLite-authoritative typed rows (chat_rows / tool_use_rows /
-            // agent_session_rows in fredo.db) behind an LRU row cache with a
-            // ~30 ms write-behind flush task. telemetry_spans is never touched.
+            // -- RTDB row store (Spec #2788 P1.2; engine-selected #2976 ST-7) ---
+            // Typed rows (chat_rows / tool_use_rows / agent_session_rows) behind
+            // an LRU row cache with a ~30 ms write-behind flush task, routed
+            // through the ONE shared `EngineHandle` (PostgreSQL-only since Spec
+            // #2979 CU-2). The three `*_rows` tables are materialized on the
+            // CANDIDATE pool by `register_slice3_pg_schema_inits` PRE-install, so
+            // no data-plane schema call is made here while the pool is pending.
+            // telemetry_spans is never touched.
             let rtdb_store = Arc::new(
-                RtdbStore::open(data_dir.clone()).expect("Failed to open RtdbStore"),
+                RtdbStore::open(engine_handle.clone()).expect("Failed to open RtdbStore"),
             );
-            rtdb_store
-                .ensure_schema()
-                .expect("Failed to create rtdb schema");
             let (rtdb_cache, rtdb_rx) = RtdbCache::new(Arc::clone(&rtdb_store));
             app.manage(rtdb_cache.clone());
 
@@ -346,80 +648,80 @@ pub fn run() {
             app.manage(rtdb);
             app.manage(classifier);
 
-            // -- Feature-owned data layer (Spec #2896 ST-4) --------------------
-            // Declared, backend-owned, persistent per-feature tables: compose
+            // -- Application-owned data layer (Spec #2896 ST-4) --------------------
+            // Declared, backend-owned, persistent per-application tables: compose
             // the declaration registry + projection engine here, install the
             // projection observer UNCONDITIONALLY (never gated by a watch/read/
             // open UI — R-4.2), and make the watch registry the declared-row
             // sink. Canonical-table watches are fed by the same observer.
-            let feature_meta = Arc::new(
-                FeatureDataStore::open(data_dir.clone()).expect("Failed to open FeatureDataStore"),
+            let application_meta = Arc::new(
+                ApplicationDataStore::open(engine_handle.clone())
+                    .expect("Failed to open ApplicationDataStore"),
             );
-            feature_meta
-                .ensure_schema()
-                .expect("Failed to create feature data schema");
-            let feature_registry = Arc::new(DeclarationRegistry::new(
-                feature_meta.clone(),
-                feature_store.clone(),
+            // The metadata tables are materialized on the CANDIDATE pool by the
+            // registered `ApplicationDataStore::ensure_schema_on_pg` PRE-install, so
+            // no data-plane schema call is made here while the pool is pending
+            // (Spec #2979 CU-2; R-3.2 fail-closed).
+            let application_registry = Arc::new(DeclarationRegistry::new(
+                application_meta.clone(),
+                application_store.clone(),
             ));
             // Re-materialize every persisted declaration (R-4.4: a restart over
-            // an existing fredo.db preserves the declared rows).
-            match feature_registry.materialize_persisted() {
+            // an existing store preserves the declared rows).
+            match application_registry.materialize_persisted() {
                 Ok(materialized) if !materialized.is_empty() => tracing::info!(
-                    target: "fredo::feature_data",
+                    target: "fredo::application_data",
                     tables = materialized.len(),
                     "persisted declared tables re-materialized"
                 ),
                 Ok(_) => {}
                 Err(errors) => tracing::warn!(
-                    target: "fredo::feature_data",
+                    target: "fredo::application_data",
                     error = %errors.join("; "),
                     "declared table re-materialization reported errors"
                 ),
             }
-            let feature_engine = Arc::new(
+            let application_engine = Arc::new(
                 ProjectionEngine::new(
-                    data_dir.clone(),
-                    feature_meta.clone(),
-                    feature_store.clone(),
+                    engine_handle.clone(),
+                    application_meta.clone(),
+                    application_store.clone(),
                 )
-                .expect("Failed to open feature-data projection engine"),
+                .expect("Failed to open application-data projection engine"),
             );
-            let feature_watches = Arc::new(WatchRegistry::new(Arc::new(EventBusSink {
+            let application_watches = Arc::new(WatchRegistry::new(Arc::new(EventBusSink {
                 app: app.handle().clone(),
             })));
-            feature_engine.set_declared_row_observer(feature_watches.clone());
+            application_engine.set_declared_row_observer(application_watches.clone());
             // ONE observer slot: a composite feeding canonical watches AND the
             // projection engine. Installing the ST-3 engine alone would leave
-            // canonical-table watches (contract (c) `featureId: null`) un-fed.
-            install_row_upsert_observer(Arc::new(FeatureDataUpsertObserver {
-                engine: feature_engine.clone(),
-                watches: feature_watches.clone(),
+            // canonical-table watches (contract (c) `applicationId: null`) un-fed.
+            install_row_upsert_observer(Arc::new(ApplicationDataUpsertObserver {
+                engine: application_engine.clone(),
+                watches: application_watches.clone(),
             }));
-            app.manage(Arc::new(FeatureDataState {
+            app.manage(Arc::new(ApplicationDataState {
                 data_dir: data_dir.clone(),
-                meta: feature_meta.clone(),
-                tables: feature_store.clone(),
+                meta: application_meta.clone(),
+                tables: application_store.clone(),
                 app_store: app_store.clone(),
-                registry: feature_registry,
-                engine: feature_engine.clone(),
-                watches: feature_watches.clone(),
+                registry: application_registry,
+                engine: application_engine.clone(),
+                watches: application_watches.clone(),
                 rtdb_store: rtdb_store.clone(),
             }));
             // Watch flush task: emits due coalescing windows (~5 ms cadence).
-            let feature_flush = feature_watches.clone();
+            let application_flush = application_watches.clone();
             tauri::async_runtime::spawn(async move {
-                run_watch_flush_task(feature_flush).await;
+                run_watch_flush_task(application_flush).await;
             });
             // One-time declared-table projection backfill (A-17): spawned,
             // never awaited on the read path.
-            let backfill_dir = data_dir.clone();
-            let backfill_meta = feature_meta.clone();
-            let backfill_engine = feature_engine.clone();
+            let backfill_meta = application_meta.clone();
+            let backfill_engine = application_engine.clone();
             let backfill_store = rtdb_store.clone();
             tauri::async_runtime::spawn(async move {
-                infrastructure::feature_data::backfill::run_backfill(
-                    backfill_dir,
+                infrastructure::application_data::backfill::run_backfill(
                     backfill_meta,
                     backfill_engine,
                     backfill_store,
@@ -427,20 +729,28 @@ pub fn run() {
                 .await;
             });
 
-            // Voice / STT session state: holds the ONE active listening session.
-            // The microphone is still opened ONLY by `stt_start`; the engine, by
-            // contrast, loads once per process into the resident slot (see
-            // `infrastructure::voice::resident`) so a dictation does not re-pay
-            // the model load (Spec #2887 R-1/R-6/R-7).
+            // Voice session state: holds the ONE active listening session and the
+            // bounded model-audio clip awaiting `stt_take_audio_clip`. The
+            // microphone is opened ONLY by `stt_start` (Spec #2887 / #2914 —
+            // there is no resident engine: the captured clip is the ONE path).
             app.manage(infrastructure::voice::session::VoiceState::new());
-            app.manage(infrastructure::voice::resident::ResidentEngine::new());
 
-            // Earliest-safe warm (Spec #2887 ST-1): FIRE-AND-FORGET — nothing on
-            // this path awaits it, so app startup is never blocked or delayed.
-            // Gated on the persisted opt-in flag + model presence, silent on
-            // failure, engine-only (it never touches capture). Spawned AFTER the
-            // state is managed so the background task can always resolve it.
-            infrastructure::voice::resident::ResidentEngine::warm_at_setup(app.handle());
+            // Legacy STT on-disk cleanup (Spec #2914 SA-12/SA-13, NFR-3). The
+            // on-device sherpa engine was deleted with the local speech path, so
+            // an upgraded machine's previously downloaded model directory under
+            // `<models_dir>/sherpa-onnx-streaming-zipformer-en-2023-06-26` is
+            // dead weight. FIRE-AND-FORGET, exactly like the retired
+            // `ResidentEngine::warm_at_setup`: nothing on the setup path awaits
+            // it, so startup is never blocked or delayed. Un-gated and
+            // idempotent (no completion marker) — a restart on an upgraded
+            // machine is the live trigger. The cleanup is scoped to that ONE
+            // path; a missing path or a failure is silent (logged, never panics).
+            let legacy_stt_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let models_dir =
+                    infrastructure::companion::models::resolve_models_dir(&legacy_stt_handle);
+                applications::setup::legacy_stt::remove_legacy_stt_model_dir(&models_dir);
+            });
 
             // Flush task: polls due coalescing windows (~5 ms cadence).
             let rtdb_flush_task = Arc::clone(&rtdb_flush);
@@ -448,35 +758,36 @@ pub fn run() {
                 run_flush_task(rtdb_flush_task).await;
             });
 
-            // Set RTDB retention defaults if not already configured (AppStore
-            // KV keys — the binding config-first mechanism).
+            // Register RTDB retention defaults (SettingsStore KV keys — the binding
+            // config-first mechanism). Spec #3005 ST-2: seeded by `hydrate` only
+            // when PostgreSQL has no row, so a persisted override survives.
             {
-                let store_ref = app.state::<Arc<AppStore>>();
-                if store_ref.get(RTDB_RETENTION_DAYS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref
-                        .set(RTDB_RETENTION_DAYS_KEY, &RTDB_DEFAULT_RETENTION_DAYS.to_string());
-                }
-                if store_ref.get(RTDB_MAX_ROWS_KEY).ok().flatten().is_none() {
-                    let _ = store_ref.set(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
-                }
+                let store_ref = app.state::<Arc<SettingsStore>>();
+                store_ref.register_default(
+                    RTDB_RETENTION_DAYS_KEY,
+                    &RTDB_DEFAULT_RETENTION_DAYS.to_string(),
+                );
+                store_ref.register_default(RTDB_MAX_ROWS_KEY, &RTDB_DEFAULT_MAX_ROWS.to_string());
             }
 
             // Retention prune on startup (mirrors the SpanStore/contract flow;
             // the writer task re-prunes on a 60-minute interval). P2.3: the
-            // evicted keys route `kind: remove` deliveries through Rtdb.
-            prune_with_knobs(app.handle());
+            // evicted keys route `kind: remove` deliveries through Rtdb. The
+            // prune awaits the PostgreSQL-only store; the sync setup closure
+            // bridges with `block_on` to keep the pre-writer-task ordering.
+            tauri::async_runtime::block_on(prune_with_knobs(app.handle()));
 
             // Declared-table retention prune: once at startup, then on the same
             // 60-minute cadence as the RTDB writer prune (ST-7 supplies the
             // function; evictions fan out as `remove` notifications here).
-            prune_feature_data(app.handle());
-            let feature_prune_handle = app.handle().clone();
+            tauri::async_runtime::block_on(prune_application_data(app.handle()));
+            let application_prune_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
                 interval.tick().await; // consume the immediate first tick
                 loop {
                     interval.tick().await;
-                    prune_feature_data(&feature_prune_handle);
+                    prune_application_data(&application_prune_handle).await;
                 }
             });
 
@@ -495,10 +806,32 @@ pub fn run() {
             // Spawned: never blocks startup. Idempotent: content-identical
             // re-merges skip the write (no seq inflation); a one-shot
             // completion marker keeps later startups O(1).
+            //
+            // This replay ingests INTO THE IN-MEMORY RTDB pipeline
+            // (classifier → cache → write-behind queue); it performs NO direct
+            // storage write — its storage writes are the writer task's.
+            //
+            // Spec #2932 ST-6: the provider re-derivation leg runs SEQUENTIALLY
+            // after it, gated by its OWN independent marker
+            // (`rtdb.backfill.provider.completed`) so an install that latched
+            // `rtdb.backfill.completed` before the `provider` column existed
+            // still gets one pass. Sequential in this task so the two one-shot
+            // replays never overlap; the second leg builds its own classifier
+            // instance (the per-classifier turn/correlation state must start
+            // fresh — see rtdb::backfill module docs).
             let backfill_handle = app.handle().clone();
-            let backfill_dir = data_dir.clone();
+            let backfill_engine = engine_handle.clone();
             tauri::async_runtime::spawn(async move {
-                infrastructure::rtdb::backfill::run_startup_backfill(&backfill_handle, &backfill_dir);
+                infrastructure::rtdb::backfill::run_startup_backfill(
+                    &backfill_handle,
+                    backfill_engine.clone(),
+                )
+                .await;
+                infrastructure::rtdb::backfill::run_startup_provider_rebackfill(
+                    &backfill_handle,
+                    backfill_engine,
+                )
+                .await;
             });
 
             // -- IPC server (OpenCode plugin event path) -----------------------------
@@ -516,8 +849,95 @@ pub fn run() {
             // the frontend owns the one resolution rule.
             app.manage(infrastructure::app_open::AppOpenRegistry::new());
 
-            // -- OTLP receiver (gRPC :4317 + HTTP :4318) -----------------------
-            infrastructure::otlp::start(app.handle().clone());
+            // -- Generic app command intent relay (Spec #3099 ST-5) ------------
+            // A published-surface `llm-skill-call` reaches the main window
+            // ONCE; the owning application may mount later (open-first) or live
+            // in another webview (multi-window). The bounded host queue holds
+            // the intent until the application drains its own `appId` entries
+            // on mount (`app_command_intent_take`), so no command is ever lost
+            // (G-124).
+            app.manage(infrastructure::app_command::AppCommandIntentState::new());
+
+            // -- Published application command surfaces (Spec #3099 ST-4) ------
+            // The frontend publishes every application's command surface here
+            // (`register_app_command_surfaces`); the companion offer reads this
+            // registry ON EVERY turn, and the read-only `app_command_surfaces`
+            // view lets the dispatcher resolve a surface from the PUBLISHED state
+            // (never a local rebuild). The three static skills are always offered;
+            // one generated skill follows per surface with at least one command.
+            app.manage(
+                infrastructure::companion::surface_registry::AppCommandSurfaceRegistry::new(),
+            );
+
+            // -- Built-in PostgreSQL client state (Spec #2950 ST-1) ------------
+            // The single managed state every `db_*` command takes. ST-1 resolves
+            // only the G-275 seams and opens NO pool; ST-2 populates the
+            // per-connection pool registry.
+            // Spec #2950 ST-7 integration: the production state dir is rooted at
+            // the resolved app-data dir (`<app_data_dir>/dbclient`), never the
+            // repo-relative test fallback; `FREDO_DBCLIENT_STATE_DIR` still wins.
+            let db_client_state = Arc::new(
+                applications::db_client::state::DbClientState::from_env(&data_dir),
+            );
+            // Spec #3029 ST-3: the composition root (which MAY import both
+            // applications) wires the live embedded-PostgreSQL endpoint provider
+            // onto the db-client state — the endpoint is resolved at connect time
+            // with NO cross-application import. When no managed supervisor is
+            // present the provider stays absent, so a built-in connect fails with
+            // the typed `config` error (EARS-4b).
+            if let Some(supervisor) =
+                app.try_state::<Arc<applications::pg_supervisor::state::PgSupervisorState>>()
+            {
+                db_client_state.set_embedded_endpoint_provider(Arc::new(
+                    applications::pg_supervisor::endpoint::PgSupervisorEndpointProvider::new(
+                        supervisor.inner().clone(),
+                    ),
+                ));
+            }
+            app.manage(db_client_state);
+
+            // -- Stream-health liveness producer (Spec #3064 ST-1) -------------
+            // A backend-owned timer that ticks independently of agent activity
+            // (idle ≠ outage): every STREAM_HEARTBEAT_INTERVAL_MS it emits a
+            // `{"streamHealth": ...}` envelope via EventBus::emit_stream_health,
+            // and the read-only `stream_health` probe proves IPC liveness. The
+            // inert-by-default outage lever (`FREDO_STREAM_HEALTH_FORCE`) is
+            // resolved ONCE here (G-376).
+            let stream_health_monitor = Arc::new(StreamHealthMonitor::new(stream_health_force()));
+            app.manage(StreamHealthState(Arc::clone(&stream_health_monitor)));
+            spawn_stream_health_publisher(
+                app.handle().clone(),
+                Arc::clone(&stream_health_monitor),
+            );
+
+            // -- OTLP receiver (Spec #2944 ST-2: env-resolved loopback ports) --
+            // Each environment's receivers bind its OWN loopback ports (R-1.2);
+            // unset env keeps the legacy 4317/4318. `start_with_ports` is the
+            // existing AppHandle-free seam (`otlp/mod.rs`), so the receivers
+            // stay loopback-only. The context is built here from the same
+            // managed state `otlp::start` uses.
+            let otlp_ctx = Arc::new(infrastructure::otlp::ReceiverContext {
+                classifier: app.state::<IngestClassifierState>().inner().clone(),
+                span_store: app.state::<Arc<SpanStore>>().inner().clone(),
+            });
+            let otlp_grpc_port = env_config.ingest_grpc_port;
+            let otlp_http_port = env_config.ingest_http_port;
+            // Spec #3064 ST-1: a receiver bind/start failure marks the ingest
+            // pipeline not-connected on the health monitor, so the heartbeat and
+            // the probe report `ingestConnected: false` (the REQ-5 path).
+            let otlp_health = Arc::clone(&stream_health_monitor);
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = infrastructure::otlp::start_with_ports(
+                    otlp_ctx,
+                    otlp_grpc_port,
+                    otlp_http_port,
+                )
+                .await
+                {
+                    otlp_health.set_ingest_connected(false);
+                    tracing::error!(target: "fredo::otlp", error = %e, "OTLP receiver error");
+                }
+            });
 
             Ok(())
         })
@@ -525,103 +945,255 @@ pub fn run() {
             // RTDB (Spec #2788 P2.3)
             infrastructure::rtdb::commands::subscribe_events,
             infrastructure::rtdb::commands::unsubscribe_events,
-            // Feature-owned data layer (Spec #2896 ST-4): read/watch/unwatch +
+            // Stream-health IPC-liveness probe (Spec #3064 ST-1): read-only,
+            // no args; `Err` under the inert-by-default `down` lever.
+            infrastructure::rtdb::health::stream_health,
+            // Application-owned data layer (Spec #2896 ST-4): read/watch/unwatch +
             // write/delete/declare over declared and canonical tables.
-            infrastructure::feature_data::commands::feature_data_read,
-            infrastructure::feature_data::commands::feature_data_watch,
-            infrastructure::feature_data::commands::feature_data_unwatch,
-            infrastructure::feature_data::commands::feature_data_write,
-            infrastructure::feature_data::commands::feature_data_delete,
-            infrastructure::feature_data::commands::feature_data_declare,
-            // Voice / STT (local, opt-in transcription; control-plane events)
-            infrastructure::voice::commands::stt_check_model,
+            infrastructure::application_data::commands::application_data_read,
+            infrastructure::application_data::commands::application_data_watch,
+            infrastructure::application_data::commands::application_data_unwatch,
+            infrastructure::application_data::commands::application_data_write,
+            infrastructure::application_data::commands::application_data_delete,
+            infrastructure::application_data::commands::application_data_declare,
+            // Voice input (opt-in, one model-audio path; control-plane events)
             infrastructure::voice::commands::stt_list_devices,
             infrastructure::voice::commands::stt_start,
             infrastructure::voice::commands::stt_stop,
             infrastructure::voice::commands::stt_cancel,
             infrastructure::voice::commands::stt_status,
-            infrastructure::voice::commands::stt_warm,
-            infrastructure::voice::commands::stt_release,
             // #2897 ST-2 — take (and clear) the bounded model-audio clip after a
-            // model-audio stop; the clip crosses IPC only.
+            // stop; the clip crosses IPC only.
             infrastructure::voice::commands::stt_take_audio_clip,
-            // Features
-            features::settings::commands::save_setting,
-            features::settings::commands::get_setting,
-            features::terminal::commands::open_run_cli,
-            features::terminal::commands::get_run_cli_status,
-            features::terminal::commands::get_pty_buffer,
-            features::terminal::commands::write_pty_input,
-            features::terminal::commands::resize_pty,
-            features::terminal::commands::close_run_cli,
-            features::setup::commands::check_cli_installations,
-            features::setup::commands::install_plugin,
-            features::setup::commands::get_plugin_source_path,
-            features::setup::commands::check_fredo_in_path,
-            features::setup::commands::add_fredo_to_path,
-            features::setup::commands::check_otel_configured,
-            features::setup::commands::configure_otel,
-            features::setup::commands::get_setup_plan,
-            features::setup::commands::check_all_setup,
-            features::setup::commands::run_setup_step,
-            features::setup::commands::check_model_files,
-            features::setup::commands::download_model,
-            features::setup::commands::download_stt_model,
-            features::setup::commands::check_companion_readiness,
-            features::setup::commands::install_llama_cpp,
-            // Companion llama-server (Spec #2857 ST-4): rerouted chat/vision +
-            // the lifecycle commands. SAME `llm_chat` / `llm_chat_with_image`
-            // IPC names and argument shapes as the deleted in-process path.
-            features::llm_server::commands::llm_chat,
-            features::llm_server::commands::llm_chat_with_image,
-            // #2897 ST-3 — model-audio turn: the captured clip is attached to the
-            // last user message and delivered over the managed loopback server.
-            features::llm_server::commands::llm_chat_with_audio,
-            features::llm_server::commands::generate_llama_server_config,
-            features::llm_server::commands::launch_llama_server,
-            features::llm_server::commands::stop_llama_server,
-            features::llm_server::commands::get_llama_server_status,
-            // Phase-0 live capability diagnostic (Spec #2893, ST-1): read-only
-            // `/props` + `tools`/`response_format` probe; no window, no state write.
-            features::llm_server::probe::probe_companion_skills,
+            // Applications
+            applications::settings::commands::save_setting,
+            applications::settings::commands::get_setting,
+            // Control-plane KV access (Spec #2955): the frontend seam for keys
+            // the backend reads synchronously (e.g. the per-app window
+            // presentation map on the terminal per-emit hot path).
+            applications::settings::commands::get_control_setting,
+            applications::settings::commands::save_control_setting,
+            // Per-user login auto-start backend (Spec #2992 ST-6): installs /
+            // removes the `HKCU\...\Run\FredoIngest` entry that launches
+            // `fredo ingest` at login. Registry-backed, bounded `reg.exe`.
+            applications::settings::autostart::ingest_autostart_get,
+            applications::settings::autostart::ingest_autostart_set,
+            applications::terminal::commands::open_terminal_window,
+            applications::terminal::commands::spawn_terminal_session,
+            applications::terminal::commands::list_terminal_sessions,
+            applications::terminal::commands::get_pty_buffer,
+            applications::terminal::commands::write_pty_input,
+            applications::terminal::commands::resize_pty,
+            applications::terminal::commands::close_terminal_session,
+            applications::terminal::commands::close_terminal_window,
+            applications::terminal::commands::list_persisted_terminal_sessions,
+            applications::terminal::commands::resume_terminal_session,
+            applications::terminal::commands::delete_terminal_session_record,
+            applications::terminal::commands::rename_terminal_session_record,
+            // Platform-wide per-app window presentation (Spec #2955 ST-1): the
+            // singleton/focus authority every app's open/close routes through.
+            infrastructure::app_window::open_app_window,
+            infrastructure::app_window::close_app_window,
+            applications::setup::commands::check_cli_installations,
+            applications::setup::commands::install_plugin,
+            applications::setup::commands::get_plugin_source_path,
+            applications::setup::commands::check_fredo_in_path,
+            applications::setup::commands::add_fredo_to_path,
+            applications::setup::commands::check_otel_configured,
+            applications::setup::commands::configure_otel,
+            applications::setup::commands::get_setup_plan,
+            applications::setup::commands::check_all_setup,
+            applications::setup::commands::run_setup_step,
+            applications::setup::commands::check_model_files,
+            applications::setup::commands::download_model,
+            applications::setup::commands::check_companion_readiness,
+            // In-process companion engine (Spec #3141): the chat/vision/audio
+            // IPC names and argument shapes are unchanged; the turns run on the
+            // engine thread. `launch_llama_server` now performs the engine's
+            // bounded start and returns the typed engine result.
+            applications::llm_server::commands::chat::llm_chat,
+            applications::llm_server::commands::chat::llm_chat_with_image,
+            applications::llm_server::commands::chat::llm_chat_with_audio,
+            applications::llm_server::commands::engine::start_companion_engine,
+            applications::llm_server::commands::engine::launch_llama_server,
+            applications::llm_server::commands::engine::stop_llama_server,
+            applications::llm_server::commands::engine::get_llama_server_status,
             // #2897 ST-6 — backend-owned model-audio capability for the Companion
-            // readiness row + the pre-start gate. Reads the managed loopback
-            // server and records the verdict on `VoiceState` (REQ-7).
-            features::llm_server::commands::stt_audio_capability,
+            // readiness row + the pre-start gate. Reads the loaded projector off
+            // the in-process engine (REQ-7).
+            applications::llm_server::commands::capability::stt_audio_capability,
             // Skill-aware inference path (Spec #2893, ST-5): offers the ST-3
             // registry, validates a selection, emits `llm-skill-call` then
             // `llm-done`. ADDITIVE — `llm_chat`/`llm_chat_with_image` unchanged.
-            features::llm_server::skills::llm_chat_with_skills,
-            features::screenshot::commands::capture_screen_region,
-            // FeatureStore (Spec #339)
-            feature_store::feature_store_ensure_table,
-            feature_store::feature_store_insert,
-            feature_store::feature_store_query,
-            feature_store::feature_store_update,
-            feature_store::feature_store_delete,
+            applications::llm_server::skills::llm_chat_with_skills,
+            // Structured per-reply status (Spec #2918, ST-1): the reply is
+            // obtained under a JSON-Schema `response_format` contract
+            // (`{reply,status}`); ONLY decoded reply characters cross as
+            // `llm-token` and the parsed status rides the ADDITIVE `llm-status`
+            // before the shipped `llm-done`. ADDITIVE — `llm_chat` /
+            // `llm_chat_with_skills` unchanged.
+            applications::llm_server::status::llm_chat_with_status,
+            applications::screenshot::commands::capture_screen_region,
+            // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
+            // read-only observability hook (no state mutation).
+            applications::pg_supervisor::state::pg_supervisor_status,
+            // Windows distribution quality (Spec #2978 S4): the bounded,
+            // read-only postmaster log tail (`<data_dir>/log/postgres.log`).
+            applications::pg_supervisor::state::pg_server_log_tail,
+            // Spec #3022 ST-4/ST-5: the Settings → Database config surface —
+            // read the effective config + apply (restart) / reset the embedded
+            // cluster. All three are awaited commands; no new events.
+            applications::pg_supervisor::state::pg_config_get,
+            applications::pg_supervisor::state::pg_config_apply,
+            applications::pg_supervisor::state::pg_database_reset,
+            // Built-in PostgreSQL client (Spec #2950 ST-1): all nine `db_*`
+            // commands registered once. ADDITIVE — the wrappers are typed; the
+            // connect/schema/query bodies land in ST-2/ST-3/ST-4.
+            applications::db_client::commands::db_connection_list,
+            applications::db_client::commands::db_connection_test,
+            applications::db_client::commands::db_connection_save,
+            applications::db_client::commands::db_connection_delete,
+            applications::db_client::commands::db_connect,
+            applications::db_client::commands::db_disconnect,
+            applications::db_client::commands::db_schema_list,
+            applications::db_client::commands::db_query_execute,
+            applications::db_client::commands::db_result_page,
+            // Storage engine seam (Spec #2975 ST-2): the live-observable,
+            // read-only engine status (dialect + fail-closed reason).
+            infrastructure::storage::engine::storage_engine_status,
+            // Wireframe file I/O (Spec #3070 ST-6): native Save As / Open /
+            // Export PNG. `rfd` (already declared) owns the OS picker from the
+            // blocking pool; the C6 env seams make every branch drivable and
+            // no plugin/capability/lockfile change is involved.
+            applications::wireframe::commands::wireframe_save_as,
+            applications::wireframe::commands::wireframe_open_document,
+            applications::wireframe::commands::wireframe_export_png,
+            // Generic application command intent relay (Spec #3099 ST-5):
+            // persist + broadcast an intent, drain one application's queue on
+            // mount, and report the outcome (`app-command-intent` / `-result`).
+            infrastructure::app_command::app_command_intent,
+            infrastructure::app_command::app_command_intent_take,
+            infrastructure::app_command::app_command_intent_result,
+            // Published application command surfaces (Spec #3099 ST-4): the
+            // frontend publish (upsert by appId, fail-closed) and the READ-ONLY
+            // view the dispatcher resolves its surface from (D12).
+            infrastructure::companion::surface_registry::register_app_command_surfaces,
+            infrastructure::companion::surface_registry::app_command_surfaces,
+            // DynamicTableStore (Spec #339)
+            application_store::application_store_ensure_table,
+            application_store::application_store_insert,
+            application_store::application_store_query,
+            application_store::application_store_update,
+            application_store::application_store_delete,
             // Telemetry (Spec #396)
-            features::telemetry::commands::telemetry_get_stats,
-            features::telemetry::commands::telemetry_purge,
-            features::telemetry::commands::telemetry_toggle,
+            applications::telemetry::commands::telemetry_get_stats,
+            applications::telemetry::commands::telemetry_purge,
+            applications::telemetry::commands::telemetry_toggle,
             // Telemetry Metrics (Spec #407)
-            features::telemetry::commands::telemetry_metrics_toggle,
+            applications::telemetry::commands::telemetry_metrics_toggle,
             // Telemetry Logging (Spec #408)
-            features::telemetry::commands::telemetry_logging_toggle,
-            features::telemetry::commands::telemetry_logging_set_level,
+            applications::telemetry::commands::telemetry_logging_toggle,
+            applications::telemetry::commands::telemetry_logging_set_level,
             // App-open transport (Spec #2893 ST-4): the webview's confirmation
             // of an emitted `app-open-request`, and the companion's thin CLI
             // spawn/bound/parse seam.
             infrastructure::app_open::confirm_app_open_request,
             infrastructure::app_open::run_open_app_cli,
+            // Doom runtime lifecycle (Spec #2968 CU-2/ST-3; native engine
+            // Spec #3023): the idempotent engine launch + stop and the status
+            // snapshot. The observation/control surface (`doom_read_state` /
+            // `doom_step` / `doom_frame_raw`, all Rust-side) is registered here
+            // too. `open_doom_window` (CU-4/ST-6) is the singleton window opener
+            // the main-window entry host invokes.
+            applications::doom::commands::open_doom_window,
+            applications::doom::commands::launch_doom_runtime,
+            applications::doom::commands::stop_doom_runtime,
+            applications::doom::commands::get_doom_status,
+            applications::doom::commands::doom_read_state,
+            applications::doom::commands::doom_step,
+            applications::doom::commands::doom_frame_raw,
+            // Doom autoplay trigger host (Spec #2969 ST-5): the bounded
+            // start/stop/status commands over the ST-3 loop. `start` chooses
+            // nothing — the decision source was installed at startup above.
+            applications::doom::commands::start_doom_autoplay,
+            applications::doom::commands::stop_doom_autoplay,
+            applications::doom::commands::get_doom_autoplay_status,
+            // Doom fine-tuning dataset (Spec #3032 ST-3): the opt-in capture gate
+            // (`set_doom_dataset_enabled` / `get_doom_dataset_status`, persisted at
+            // the Rust-readable `doom_dataset_enabled` KV the loop reads) and the
+            // LOCAL-ONLY export (`export_doom_dataset`, no egress). No new visible
+            // settings surface.
+            applications::doom::commands::get_doom_dataset_status,
+            applications::doom::commands::set_doom_dataset_enabled,
+            applications::doom::commands::export_doom_dataset,
+            // Doom save/resume (Spec #2972 CU-3/ST-5): the durable resume point
+            // read (`get_doom_save`) and the explicit discard
+            // (`reset_doom_save`). Save WRITES are owned by the autoplay loop's
+            // injected progress writer, never by a command.
+            applications::doom::commands::get_doom_save,
+            applications::doom::commands::reset_doom_save,
+            // Doom Mode lifecycle (Spec #2970 ST-2): the secret-activation mode
+            // state machine. `enter` launches the runtime + agent + window and
+            // turns on the shared suppression gate; `exit` tears them down and
+            // clears suppression; `get_doom_mode_status` is the mount seed. The
+            // `doom-mode-changed` global broadcast is emitted via the EventBus.
+            applications::doom::commands::enter_doom_mode,
+            applications::doom::commands::exit_doom_mode,
+            applications::doom::commands::get_doom_mode_status,
+            // Spec #3023 ST-2/ST-5/ST-6: the from-source provisioning command
+            // surface (Spec #3012) and its module are removed — the native
+            // in-process engine needs no build and no download.
+            // Spec #3147 ST-2 — the installed-application install pipeline
+            // (`applications::installed_apps`): turn a user-picked package into a
+            // validated, hashed, INERT install directory, and list what is
+            // installed. ST-5 (`push_theme`) appends its own registration after
+            // this region. Nothing here runs at startup — `installed_apps_list`
+            // is only called by the settings pane (R-5.5).
+            applications::installed_apps::commands_install::installed_app_install,
+            applications::installed_apps::commands_install::installed_apps_list,
+            // Spec #3147 ST-4 — the installed-application window lifecycle
+            // (`commands_window`): `installed_app_open` builds (or focuses) the
+            // singleton `installed-<id>` window at the `fredoapp` document URL
+            // once its install record has been re-verified, and
+            // `installed_app_close` destroys it. No window exists until the user
+            // opens one, so this registration is inert at startup (R-5.1/R-5.5).
+            applications::installed_apps::commands_window::installed_app_open,
+            applications::installed_apps::commands_window::installed_app_close,
+            // Spec #3147 ST-5 — the theme transport's live leg
+            // (`applications::installed_apps::theme_push`):
+            // `installed_apps_push_theme` validates the host's resolved token
+            // values, writes the in-memory mirror the scheme handler inlines at
+            // document-serve time (R-1.4), and `Webview::eval`s the theme into
+            // every live `installed-*` window so an open app follows a change
+            // without reloading (R-1.5). No database, no file, and nothing at
+            // startup — the host's theme effect is the only caller.
+            applications::installed_apps::theme_push::installed_apps_push_theme,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
-        .run(|app, event| {
-            // Spec #2857 ST-4: the app-exit hook. Terminate the managed
-            // `llama-server` tree so no orphan survives Fredo (R-3.3). The
-            // startup PID sweep + the kill-on-exit test are ST-7's.
+        .run(move |app, event| {
+            // Spec #2944 ST-2 (R-2.2): re-assert the per-env window title once
+            // the app is ready, so the title lands even if the config window was
+            // not yet materialized during `setup`.
+            if let tauri::RunEvent::Ready = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&window_title);
+                }
+            }
+            // Spec #3141: the app-exit hook. Stop the in-process companion
+            // engine thread so no model/context outlives Fredo. There is no
+            // child process and no orphan to sweep any more.
             if let tauri::RunEvent::Exit = event {
-                features::llm_server::commands::stop_llama_server_on_exit(app);
+                applications::llm_server::commands::engine::stop_llama_server_on_exit(app);
+                // Spec #2974 ST-3: bounded embedded-PostgreSQL teardown. The
+                // graceful stop is wall-clock capped by PG_EXIT_HOOK_BOUND (5 s)
+                // with a `taskkill /T /F` hard-kill fallback, then a marker sweep
+                // backstop — quit never blocks on a hung server (R-2.1/G-263).
+                applications::pg_supervisor::stop_on_exit(app);
+                // Spec #3023 ST-2: Doom engine teardown is take-and-drop of the
+                // native in-process session — bounded by construction (no child,
+                // no thread to join, no orphan possible; G-263). No sweep needed.
+                applications::doom::commands::stop_doom_on_exit(app);
             }
         });
 }

@@ -109,8 +109,8 @@ This pod has restarted 15 times, indicating a crash loop.
 
 ## Components Updated
 
-### 4. DiagramFeature.tsx
-**Location**: `apps/browser-extension/src/features/diagram/DiagramFeature.tsx`
+### 4. Diagram Feature.tsx
+**Location**: `apps/browser-extension/src/features/diagram/Diagram Feature.tsx`
 
 **Changes**:
 - Added kubectl event subscription via `eventFilters`
@@ -132,7 +132,7 @@ readonly eventFilters: EventFilter[] = [
 **Focus Logic (Event-Driven Architecture)**:
 ```typescript
 processEvent(event: StreamEvent): void {
-  console.log('[DiagramFeature] Received event:', event.toolName, event.state, event.input);
+  console.log('[Diagram Feature] Received event:', event.toolName, event.state, event.input);
   
   // Only process kubectl Init events for auto-focus
   if (!event.toolName.startsWith('kubectl_') || event.state !== 'Init') return;
@@ -165,18 +165,18 @@ processEvent(event: StreamEvent): void {
   });
   window.dispatchEvent(focusEvent);
   
-  console.log(`[DiagramFeature] ✅ Focus target set (v${this.focusTargetVersion}): ${target.namespace}/${target.name}`);
+  console.log(`[Diagram Feature] ✅ Focus target set (v${this.focusTargetVersion}): ${target.namespace}/${target.name}`);
 }
 ```
 
 **Why Custom Events Instead of Props?**
 - **Prevents infinite loops**: Props create new object references on each render, triggering useEffect
-- **Decoupled architecture**: DiagramFeature doesn't need to know about React component lifecycle
+- **Decoupled architecture**: Diagram Feature doesn't need to know about React component lifecycle
 - **Better performance**: Event listener registered once, doesn't re-run on every render
 - **Simpler debugging**: Clear event flow visible in browser DevTools
 
-### 5. ArchitectureDiagram.tsx
-**Location**: `apps/browser-extension/src/features/diagram/components/ArchitectureDiagram.tsx`
+### 5. Architecture Diagram.tsx
+**Location**: `apps/browser-extension/src/features/diagram/components/Architecture Diagram.tsx`
 
 **Changes**:
 - Removed `focusTarget` prop (now uses event listener pattern)
@@ -199,7 +199,7 @@ useEffect(() => {
     const focusTarget = customEvent.detail;
     
     const focusKey = `${focusTarget.namespace}/${focusTarget.name}`;
-    console.log(`[ArchitectureDiagram] Auto-focusing on ${focusKey}`);
+    console.log(`[Architecture Diagram] Auto-focusing on ${focusKey}`);
     
     // Guards: Prevent duplicate processing
     if (lastFocusedTargetRef.current === focusKey) return;
@@ -220,7 +220,7 @@ useEffect(() => {
         });
 
         if (!targetNode) {
-          console.log(`[ArchitectureDiagram] ❌ Node not found: ${focusKey}`);
+          console.log(`[Architecture Diagram] ❌ Node not found: ${focusKey}`);
           
           // Fuzzy match fallback (partial name matching)
           const fuzzyMatch = currentNodes.find(node => {
@@ -232,7 +232,7 @@ useEffect(() => {
           });
           
           if (fuzzyMatch) {
-            console.log(`[ArchitectureDiagram] ✅ Found fuzzy match:`, (fuzzyMatch.data as K8sNodeData).label);
+            console.log(`[Architecture Diagram] ✅ Found fuzzy match:`, (fuzzyMatch.data as K8sNodeData).label);
             fitView({ nodes: [fuzzyMatch], duration: 400, padding: 0.3, maxZoom: 1.5 });
             
             setTimeout(() => {
@@ -254,7 +254,7 @@ useEffect(() => {
           return currentNodes;
         }
 
-        console.log(`[ArchitectureDiagram] ✅ Zooming to node:`, targetNode.id);
+        console.log(`[Architecture Diagram] ✅ Zooming to node:`, targetNode.id);
         fitView({ nodes: [targetNode], duration: 400, padding: 0.3, maxZoom: 1.5 });
 
         setTimeout(() => {
@@ -399,8 +399,8 @@ const activeOperations = useMemo(() => {
    ```
 5. Agent executes `kubectl_logs` → Init event published to Redis
 6. SSE broadcasts event to StreamContext → Home.tsx distributes to features
-7. DiagramFeature.processEvent() validates event → emits 'diagram-focus-node' event
-8. ArchitectureDiagram event listener triggers → finds node → applies focus
+7. Diagram Feature.processEvent() validates event → emits 'diagram-focus-node' event
+8. Architecture Diagram event listener triggers → finds node → applies focus
 9. Purple pulse animation plays for 3 seconds on "assure-xyz" pod
 8. K8sNode shows operation badge "1 OP"
 9. EventTimeline updates in context menu:
@@ -422,7 +422,7 @@ const activeOperations = useMemo(() => {
 ### Scenario 3: List Pods (No Auto-Focus)
 1. User asks Agent: "Show me all pods in production namespace"
 2. Agent executes `kubectl_get_pods`
-3. DiagramFeature skips auto-focus (list operation, no specific target)
+3. Diagram Feature skips auto-focus (list operation, no specific target)
 4. Diagram remains in current view
 5. User sees pod list in chat, diagram stays stable
 
@@ -440,13 +440,13 @@ StreamContext updates events array
   ↓
 Home.tsx distributes event to all grid features
   ↓
-DiagramFeature.processEvent() triggered
+Diagram Feature.processEvent() triggered
   ↓
 Validation: deduplication, debouncing, list operation check
   ↓
 Emit custom DOM event: window.dispatchEvent('diagram-focus-node')
   ↓
-ArchitectureDiagram event listener receives event
+Architecture Diagram event listener receives event
   ↓
 Guards check: not already focused, not in progress
   ↓
@@ -456,7 +456,7 @@ Purple pulse animation (3s) → Clear styling → onFocusComplete()
 ```
 
 **Why This Architecture Works**:
-1. **Decoupled**: DiagramFeature and ArchitectureDiagram communicate via browser events
+1. **Decoupled**: Diagram Feature and Architecture Diagram communicate via browser events
 2. **No prop dependencies**: Event listener has stable dependencies `[fitView, setNodes, onFocusComplete]`
 3. **No infinite loops**: Events only fire when processEvent() is called, not on every render
 4. **Debuggable**: Event flow visible in browser DevTools Event Listeners tab
@@ -522,8 +522,8 @@ Purple pulse animation (3s) → Clear styling → onFocusComplete()
 - AI-suggested remediation workflows
 
 ## Files Modified
-1. `apps/browser-extension/src/features/diagram/DiagramFeature.tsx` (90 lines)
-2. `apps/browser-extension/src/features/diagram/components/ArchitectureDiagram.tsx` (+50 lines)
+1. `apps/browser-extension/src/features/diagram/Diagram Feature.tsx` (90 lines)
+2. `apps/browser-extension/src/features/diagram/components/Architecture Diagram.tsx` (+50 lines)
 3. `apps/browser-extension/src/features/diagram/components/NodeContextMenu.tsx` (280 → 320 lines)
 4. `apps/browser-extension/src/features/diagram/components/K8sNode.tsx` (+30 lines)
 5. `apps/browser-extension/src/features/diagram/components/K8sNode.module.css` (+50 lines)

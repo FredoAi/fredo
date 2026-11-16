@@ -1,0 +1,228 @@
+{
+  "description": "Committed expected-output manifest for the Spec #3147 ST-2 install-validation packages. Read each fixture id, its refusal code and the bad-manifest defect shape from HERE, never from an assumption: regenerate with node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs and confirm with --verify.",
+  "generator": ".opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs",
+  "schemaVersion": 1,
+  "refusalCodes": [
+    "not_a_zip",
+    "no_manifest",
+    "manifest_malformed",
+    "manifest_unknown_field",
+    "manifest_invalid_field",
+    "unsupported_manifest_version",
+    "id_invalid",
+    "id_reserved",
+    "version_invalid",
+    "engines_range_invalid",
+    "host_incompatible",
+    "entry_missing",
+    "entry_invalid",
+    "unsafe_path",
+    "reserved_path",
+    "archive_too_large",
+    "already_installed",
+    "io_error",
+    "integrity_mismatch",
+    "integrity_record_corrupt",
+    "id_not_installed",
+    "id_is_installed_app"
+  ],
+  "zipPolicy": {
+    "method": "stored (0)",
+    "dosTimestamp": "1980-01-01T00:00:00 (dosTime 0x0000, dosDate 0x0021)",
+    "entryOrder": "fredo-app.json (omitted for no-manifest), index.html, main.js, then any declared extra"
+  },
+  "fixtures": [
+    {
+      "id": "qa3147-valid",
+      "displayName": "QA3147 Valid",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-valid-1.0.0.zip",
+      "bytes": 2044,
+      "sha256": "93e06305ac79e0676f05f522185a10cf8e10afe92edacdc1e713b8b507ffbd0c",
+      "expects": null,
+      "expectsStage": "none (installs cleanly)",
+      "defect": null,
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 312
+        },
+        {
+          "name": "index.html",
+          "bytes": 674
+        },
+        {
+          "name": "main.js",
+          "bytes": 746
+        }
+      ]
+    },
+    {
+      "id": "qa3147-no-manifest",
+      "displayName": "QA3147 No Manifest",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-no-manifest-1.0.0.zip",
+      "bytes": 1652,
+      "sha256": "1f0b5b20874ff2a14607513df40bf343d6a113f254d6dfd7c7709743d1e578fd",
+      "expects": "no_manifest",
+      "expectsStage": "install",
+      "defect": "no fredo-app.json entry (the zip is otherwise well-formed)",
+      "entries": [
+        {
+          "name": "index.html",
+          "bytes": 680
+        },
+        {
+          "name": "main.js",
+          "bytes": 764
+        }
+      ]
+    },
+    {
+      "id": "qa3147-bad-manifest",
+      "displayName": "QA3147 Bad Manifest",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-bad-manifest-1.0.0.zip",
+      "bytes": 2167,
+      "sha256": "f3c20acef3800a1d4f788f3bbd2b48026ca922c0deb083b6c24eecabc48c5f31",
+      "expects": "manifest_unknown_field",
+      "expectsStage": "install",
+      "defect": "unknown top-level key \"capabilities\" (manifestVersion 1 does not define it)",
+      "badManifestShape": "capabilities",
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 407
+        },
+        {
+          "name": "index.html",
+          "bytes": 681
+        },
+        {
+          "name": "main.js",
+          "bytes": 767
+        }
+      ]
+    },
+    {
+      "id": "qa3147-zip-slip",
+      "displayName": "QA3147 Zip Slip",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-zip-slip-1.0.0.zip",
+      "bytes": 2207,
+      "sha256": "670779e2efe0a31b46961e8ac9f783ac0bbe3abc3f4af8cf5ebb798af76bab5e",
+      "expects": "unsafe_path",
+      "expectsStage": "install",
+      "defect": "archive entry \"../../qa3147-escaped.txt\" carries a \"..\" component",
+      "unsafeShape": "parent-directory traversal (\"..\")",
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 330
+        },
+        {
+          "name": "index.html",
+          "bytes": 677
+        },
+        {
+          "name": "main.js",
+          "bytes": 755
+        },
+        {
+          "name": "../../qa3147-escaped.txt",
+          "bytes": 9
+        }
+      ]
+    },
+    {
+      "id": "qa3147-hash-tamper",
+      "displayName": "QA3147 Hash Tamper",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-hash-tamper-1.0.0.zip",
+      "bytes": 2103,
+      "sha256": "0c2dcda3eacf6b130aa9d062416459ab2ca3f8ef8bc3125d1a154fc90a751150",
+      "expects": "integrity_mismatch",
+      "expectsStage": "load (after a post-install byte mutation)",
+      "defect": "none at install time; the tester mutates one installed byte",
+      "tamper": {
+        "file": "main.js",
+        "offset": 3
+      },
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 347
+        },
+        {
+          "name": "index.html",
+          "bytes": 680
+        },
+        {
+          "name": "main.js",
+          "bytes": 764
+        }
+      ]
+    },
+    {
+      "id": "qa3147-incompatible-engines",
+      "displayName": "QA3147 Incompatible Engines",
+      "version": "1.0.0",
+      "enginesFredo": ">=999.0.0",
+      "file": "qa3147-incompatible-engines-1.0.0.zip",
+      "bytes": 2154,
+      "sha256": "2cbaaa1a56b39a847b2e05a9275a73d25a72a46cd0299701495d742bf8347981",
+      "expects": "host_incompatible",
+      "expectsStage": "install",
+      "defect": "engines.fredo \">=999.0.0\" is well-formed but excludes every real build",
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 362
+        },
+        {
+          "name": "index.html",
+          "bytes": 689
+        },
+        {
+          "name": "main.js",
+          "bytes": 791
+        }
+      ]
+    },
+    {
+      "id": "qa3147-reserved-path",
+      "displayName": "QA3147 Reserved Path",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3147-reserved-path-1.0.0.zip",
+      "bytes": 2254,
+      "sha256": "a409263de4ee15509abd987c2a713c7fbc7061ec8bc61becc3621ecf050b9ff8",
+      "expects": "reserved_path",
+      "expectsStage": "install",
+      "defect": "archive entry \"__fredo/bootstrap.js\" claims the host-reserved segment",
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 350
+        },
+        {
+          "name": "index.html",
+          "bytes": 682
+        },
+        {
+          "name": "main.js",
+          "bytes": 770
+        },
+        {
+          "name": "__fredo/bootstrap.js",
+          "bytes": 24
+        }
+      ]
+    }
+  ]
+}

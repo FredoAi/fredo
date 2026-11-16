@@ -670,3 +670,175 @@ export function computeReplyPlacement(input: ReplyPlacementInput): ReplyPlacemen
   const fallback = buildCandidate(sides[0], avatar, region, viewport, contentHeightPx, 'grown', true);
   return toResult(fallback, 'grown');
 }
+
+/* ── #3120 ST-2 — the teleport-attached instruction composer ─────────────── */
+
+/**
+ * The composer's resting/minimum width. The card is a single-line instruction
+ * field; the target chip + input + send share this fixed 320 px block.
+ */
+export const COMPOSER_W = 320;
+/**
+ * The composer's RESTING/MINIMUM height (UIUX-D3). The textarea auto-grows to
+ * `COMPOSER_MAX_H` and then scrolls; a placement is always computed at the
+ * composer's CURRENT (measured) height so growth never drives it onto Fredo.
+ */
+export const COMPOSER_H = 40;
+/** Auto-grow cap: beyond this the textarea scrolls (UIUX-D3). */
+export const COMPOSER_MAX_H = 96;
+/** The base gap constant; the FACING separation always respects the bound. */
+export const COMPOSER_GAP = 8;
+
+/**
+ * Placement input. The region is the SAME four-number contract the reply
+ * surface uses (viewport px, already inset by `REPLY_MARGIN`), so the composer
+ * and the bubble can never disagree about the safe band.
+ */
+export interface ComposerPlacementInput {
+  readonly avatar: ReplyAvatarRect;
+  readonly region: ReplyRegion;
+  readonly viewport: { readonly width: number; readonly height: number };
+  /** The composer's current size (height grows with the textarea). */
+  readonly size: { readonly width: number; readonly height: number };
+  /** The visible SpeechBubble rect — a candidate must never intersect it. */
+  readonly avoid?: ReplyRect | null;
+}
+
+export interface ComposerPlacement extends ReplyRect {
+  /** `above` > `right` > `left`; `below` is NEVER returned. */
+  readonly placement: ReplySide;
+  /** The facing separation actually applied (≥ `REPLY_AVATAR_CLEARANCE`). */
+  readonly clearance: number;
+  /** True when the composer had to shrink below the requested size. */
+  readonly scrollable: boolean;
+}
+
+const COMPOSER_SIDES: readonly ReplyPlacement[] = ['above', 'right', 'left'];
+
+/** The facing offset: the bound clearance wins over the smaller base gap. */
+function composerFacingOffset(): number {
+  return Math.max(COMPOSER_GAP, REPLY_AVATAR_CLEARANCE);
+}
+
+function composerBarrier(
+  region: ReplyRegion,
+  viewport: { readonly width: number; readonly height: number },
+): number {
+  return Math.min(region.barrierTop - REPLY_MARGIN, viewport.height - REPLY_MARGIN);
+}
+
+function buildComposerCandidate(
+  placement: ReplyPlacement,
+  avatar: ReplyAvatarRect,
+  region: ReplyRegion,
+  viewport: { readonly width: number; readonly height: number },
+  size: { readonly width: number; readonly height: number },
+): ComposerPlacement {
+  const facing = composerFacingOffset();
+  const barrier = composerBarrier(region, viewport);
+  const regionWidth = Math.max(0, region.boundsRight - region.boundsLeft);
+
+  let widthBudget: number;
+  if (placement === 'above') widthBudget = regionWidth;
+  else if (placement === 'right') widthBudget = region.boundsRight - (avatar.right + facing);
+  else widthBudget = avatar.left - facing - region.boundsLeft;
+
+  const heightBudget =
+    placement === 'above' ? avatar.top - facing - region.safeTop : barrier - region.safeTop;
+
+  const width = Math.max(0, Math.min(size.width, widthBudget));
+  const height = Math.max(0, Math.min(size.height, heightBudget));
+
+  let left: number;
+  if (placement === 'above') {
+    const centred = avatar.left + avatar.width / 2 - width / 2;
+    left = clamp(centred, region.boundsLeft, Math.max(region.boundsLeft, region.boundsRight - width));
+  } else if (placement === 'right') {
+    left = avatar.right + facing;
+  } else {
+    left = avatar.left - facing - width;
+  }
+
+  let top: number;
+  if (placement === 'above') {
+    top = avatar.top - facing - height;
+  } else {
+    const centred = avatar.top + avatar.height / 2 - height / 2;
+    top = clamp(centred, region.safeTop, Math.max(region.safeTop, barrier - height));
+  }
+
+  const rect: ReplyRect = { left, top, right: left + width, bottom: top + height, width, height };
+  return {
+    ...rect,
+    placement,
+    clearance: separationOnAxis(rect, avatar, placement),
+    scrollable: size.width > width || size.height > height,
+  };
+}
+
+function acceptsComposerCandidate(
+  candidate: ComposerPlacement,
+  avatar: ReplyAvatarRect,
+  region: ReplyRegion,
+  viewport: { readonly width: number; readonly height: number },
+  avoid: ReplyRect | null,
+): boolean {
+  const rect = candidate;
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  if (rectsIntersect(rect, avatar)) return false;
+  if (candidate.clearance < REPLY_AVATAR_CLEARANCE) return false;
+  if (rect.left < region.boundsLeft - 0.001) return false;
+  if (rect.right > region.boundsRight + 0.001) return false;
+  if (rect.top < region.safeTop - 0.001) return false;
+  if (rect.bottom > composerBarrier(region, viewport) + 0.001) return false;
+  if (rect.left < 0 || rect.top < 0) return false;
+  if (rect.right > viewport.width || rect.bottom > viewport.height) return false;
+  if (avoid && rectsIntersect(rect, avoid)) return false;
+  return true;
+}
+
+/**
+ * The ONE pure composer placement decision (#3120 ST-2 / R-3.3).
+ *
+ * Ranked `above > right > left` and NEVER `below` (UIUX-D2). Every candidate
+ * keeps the facing separation at/above `REPLY_AVATAR_CLEARANCE` (14 px), stays
+ * inside the measured region and the viewport, and rejects both the avatar
+ * footprint and the visible SpeechBubble rect (`avoid`).
+ *
+ * Degradation (E5 analogue): when no full-size candidate is viable the module
+ * retries with the extent the region can actually afford (height first, then
+ * width) — it shrinks the CARD, never the separation — so the composer may
+ * scroll but never covers Fredo. The final fallback is still an `above`
+ * candidate pinned to the facing edge with whatever extents remain; it never
+ * intersects the avatar.
+ */
+export function computeComposerPlacement(input: ComposerPlacementInput): ComposerPlacement {
+  const { avatar, region, viewport, size, avoid } = input;
+  const safeAvoid = avoid ?? null;
+
+  for (const placement of COMPOSER_SIDES) {
+    const candidate = buildComposerCandidate(placement, avatar, region, viewport, size);
+    // The full-size pass never shrinks the card: a side that cannot host the
+    // requested height/width yields to the next ranked side (UIUX-D2), and only
+    // the degrade pass below takes a reduced extent.
+    if (candidate.scrollable) continue;
+    if (acceptsComposerCandidate(candidate, avatar, region, viewport, safeAvoid)) return candidate;
+  }
+
+  // Degrade: the region may simply be too small for the resting card at a side.
+  // Try the available extent at each ranked placement (still no avatar overlap).
+  for (const placement of COMPOSER_SIDES) {
+    const candidate = buildComposerCandidate(placement, avatar, region, viewport, size);
+    if (candidate.width <= 0 || candidate.height <= 0) continue;
+    if (rectsIntersect(candidate, avatar)) continue;
+    if (candidate.clearance < REPLY_AVATAR_CLEARANCE) continue;
+    if (acceptsComposerCandidate(candidate, avatar, region, viewport, safeAvoid)) {
+      return { ...candidate, scrollable: true };
+    }
+  }
+
+  // Enclosed region (never reachable at the shipped 900×600 minimum): keep the
+  // top-ranked placement at the extent the region can afford. Never `below`.
+  const fallback = buildComposerCandidate(COMPOSER_SIDES[0] as ReplyPlacement, avatar, region, viewport, size);
+  return { ...fallback, scrollable: true };
+}

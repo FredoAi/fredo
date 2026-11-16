@@ -76,7 +76,7 @@ clearQueue();
 ```typescript
 interface GenericFeatureResponse {
   connectionId: string;   // MCP session ID (from handshake)
-  featureId: string;      // Feature identifier (e.g., 'alerts', 'azdo-create-workitem')
+  featureId: string;      // Feature identifier (e.g., 'alerts', 'azdo-create-work-item')
   payload: Record<string, any>;    // Flexible response data
   metadata?: Record<string, any>;  // Optional metadata (timestamps, etc.)
 }
@@ -95,7 +95,7 @@ await sendFeatureResponse(
 // Send work item creation response
 await sendFeatureResponse(
   connectionId,
-  'azdo-create-workitem',
+  'azdo-create-work-item',
   {
     action: 'created',
     workItemId: 12345,
@@ -168,10 +168,10 @@ const handleConfirm = async (alertId: string, alertText: string) => {
 
 ##### Example 2: Work Item Creation
 
-**File**: [`apps/browser-extension/src/features/azdo-create-workitem/hooks/useCreateWorkItem.ts`](../../apps/browser-extension/src/features/azdo-create-workitem/hooks/useCreateWorkItem.ts)
+**File**: [`apps/browser-extension/src/features/azdo-create-work-item/hooks/the create-work-item hook.ts`](../../apps/browser-extension/src/features/azdo-create-work-item/hooks/the create-work-item hook.ts)
 
 ```tsx
-const create = async (workItemData: CreateWorkItemInput) => {
+const create = async (workItemData: Create Work Item Input) => {
   // Create work item via Azure DevOps API
   const createdWorkItem = await createWorkItem(org, pat, project, workItemData);
   const workItemId = createdWorkItem.id;
@@ -180,7 +180,7 @@ const create = async (workItemData: CreateWorkItemInput) => {
   // Send response to AI agent
   await sendFeatureResponse(
     connectionId,
-    'azdo-create-workitem',
+    'azdo-create-work-item',
     {
       action: 'created',
       workItemId,
@@ -194,7 +194,7 @@ const create = async (workItemData: CreateWorkItemInput) => {
 ```
 
 **Flow**:
-1. AI agent calls `azdo_create_workitem` MCP tool
+1. AI agent calls `azdo_create_work_item` MCP tool
 2. Browser extension shows pre-filled form modal
 3. User reviews/edits form and clicks "Create"
 4. Extension creates work item via Azure DevOps REST API
@@ -312,7 +312,7 @@ ui:response:{connectionId}:{featureId}:{timestamp}
 
 Examples:
 ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:alerts:1708253400000
-ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:azdo-create-workitem:1708253405000
+ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:azdo-create-work-item:1708253405000
 ui:response:a3245ba6-3cfb-420d-bc74-9151603d2e7c:azdo-profile:1708253410000
 ```
 
@@ -385,7 +385,7 @@ const result2 = await Fredo_ui_collect_responses({});
   "connectionId": "a3245ba6-3cfb-420d-bc74-9151603d2e7c",
   "responses": [
     {
-      "featureId": "azdo-create-workitem",
+      "featureId": "azdo-create-work-item",
       "payload": {
         "action": "created",
         "workItemId": 12345,
@@ -710,7 +710,7 @@ result.responses.forEach(response => {
     case 'alerts':
       handleAlertResponse(response.payload);
       break;
-    case 'azdo-create-workitem':
+    case 'azdo-create-work-item':
       handleWorkItemResponse(response.payload);
       break;
   }

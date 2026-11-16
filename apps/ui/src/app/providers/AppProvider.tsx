@@ -6,10 +6,12 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
-import { useStream, applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
-import { isFeatureDeliveryBatch, isRowDelivery, isRowDeliveryBatch, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
-import { applyFeatureDeliveries } from '../../shared/feature-data/store';
-import { FeatureDataProvider } from '../../shared/contexts/FeatureDataContext';
+import { applyRowDelivery, applyRowDeliveries, endReplayDrain } from '../../shared/contexts/StreamContext';
+import { isApplicationDeliveryBatch, isRowDelivery, isRowDeliveryBatch, isStreamHealthEnvelope, replayCompleteQueryIdOf } from '../../shared/classes/EventSubscription';
+import { applyApplicationDeliveries } from '../../shared/application-data/store';
+import { ApplicationDataProvider } from '../../shared/contexts/ApplicationDataContext';
+import { installAppCommandSurfacePublisher } from '../../shared/companion/publisher';
+import { useStreamHealthProducer } from '../../shared/hooks/useStreamHealthProducer';
 import { STEP_STATUSES } from '../../shared/constants';
 import type { HostAdapter } from '../adapters/HostAdapter';
 
@@ -27,11 +29,6 @@ interface AppState {
   FredoContent: string;
   currentPage: 'main' | 'steps' | 'dev-mode' | 'settings';
   steps: Step[];
-  showDiagram: boolean;
-  viewingLiveDiagram: boolean;
-  isLoadingDiagram: boolean;
-  diagramError: string;
-  parseError: string;
 }
 
 interface AppActions {
@@ -43,11 +40,6 @@ interface AppActions {
   setSteps: (steps: Step[]) => void;
   addStep: (step: Step) => void;
   updateStep: (index: number, step: Partial<Step>) => void;
-  setShowDiagram: (show: boolean) => void;
-  setViewingLiveDiagram: (viewing: boolean) => void;
-  setIsLoadingDiagram: (loading: boolean) => void;
-  setDiagramError: (error: string) => void;
-  setParseError: (error: string) => void;
 }
 
 interface AppContextType extends AppState, AppActions {}
@@ -66,7 +58,10 @@ interface AppProviderProps {
 }
 
 export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) => {
-  const { setConnectionStatus } = useStream();
+  // Spec #3064 ST-3 — the liveness producer replaces the pre-#3064 mount
+  // constant: it drives the shared three-valued stream health from the REAL
+  // backend signal (heartbeat envelopes + a bounded `stream_health` probe).
+  const { onHeartbeat } = useStreamHealthProducer(adapter);
 
   const [isEnabled, setIsEnabled] = useState(true);
   const [isOnTargetUrl, setIsOnTargetUrl] = useState(false);
@@ -74,40 +69,45 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
   const [FredoContent, setFredoContent] = useState('');
   const [currentPage, setCurrentPage] = useState<'main' | 'steps' | 'dev-mode' | 'settings'>('main');
   const [steps, setSteps] = useState<Step[]>([]);
-  const [showDiagram, setShowDiagram] = useState(false);
-  const [viewingLiveDiagram, setViewingLiveDiagram] = useState(false);
-  const [isLoadingDiagram, setIsLoadingDiagram] = useState(false);
-  const [diagramError, setDiagramError] = useState('');
-  const [parseError, setParseError] = useState('');
 
   const currentPageRef = useRef<'main' | 'steps' | 'dev-mode' | 'settings'>('main');
   useEffect(() => {
     currentPageRef.current = currentPage;
   }, [currentPage]);
 
-  // Mark as connected on mount — Tauri IPC is always available once the app starts.
-  useEffect(() => {
-    setConnectionStatus(true);
-    return () => setConnectionStatus(false);
-  }, []);
+  // Spec #3099 ST-2 — publish the companion manifest at boot and on every
+  // application registration. The installer is MODULE-SCOPED and idempotent
+  // (ref-counted), so this effect has `[]` deps and a remount cannot double
+  // publish — no state/ref-length dependency (#523 re-render-loop rule).
+  useEffect(() => installAppCommandSurfacePublisher(), []);
 
   // Forward messages from the host's "fredo-stream-event" IPC channel:
-  // FEATURE-DATA batches ({"featureBatch": [...]}, Spec #2896 ST-5) are checked
-  // FIRST and applied to the feature-data store; RTDB BATCH envelopes
-  // ({"rowBatch": [...]}, F-33 fix W-1) follow and are applied via the bulk
-  // path (one epoch bump per touched partition; during a replay drain the bumps
-  // collapse to ONE settle at the replayCompleteQueryId marker — applied BEFORE
-  // settling so the settle bump reflects final rows); single RowDelivery
-  // envelopes keep the per-delivery path. Anything else is dropped.
+  // STREAM-HEALTH heartbeats ({"streamHealth": ...}, Spec #3064 ST-3) are
+  // discriminated FIRST so a heartbeat can never be mis-routed into the row
+  // store; APPLICATION-DATA batches ({"applicationBatch": [...]}, Spec #2896
+  // ST-5) are checked next and applied to the application-data store; RTDB
+  // BATCH envelopes ({"rowBatch": [...]}, F-33 fix W-1) follow and are applied
+  // via the bulk path (one epoch bump per touched partition; during a replay
+  // drain the bumps collapse to ONE settle at the replayCompleteQueryId marker
+  // — applied BEFORE settling so the settle bump reflects final rows); single
+  // RowDelivery envelopes keep the per-delivery path. Anything else is dropped.
   useEffect(() => {
     const unsubscribe = adapter.onMessage((msg: Record<string, unknown>) => {
-      // Spec #2896 ST-5 — FEATURE-DATA BATCH envelope. Rides the SAME
-      // "fredo-stream-event" channel as a `{"featureBatch": [...]}` payload and
+      // Spec #3064 ST-3 — STREAM-HEALTH heartbeat envelope. Rides the SAME
+      // "fredo-stream-event" channel as `{"streamHealth": ...}` and is checked
+      // BEFORE every other discriminator so it can never be mis-routed.
+      if (isStreamHealthEnvelope(msg)) {
+        onHeartbeat(msg.streamHealth);
+        return;
+      }
+
+      // Spec #2896 ST-5 — APPLICATION-DATA BATCH envelope. Rides the SAME
+      // "fredo-stream-event" channel as a `{"applicationBatch": [...]}` payload and
       // is checked BEFORE the RTDB validators (the envelopes are disjoint, but
-      // the feature discriminator runs first so a feature delivery is never
+      // the application discriminator runs first so an application delivery is never
       // mis-routed into the RTDB row store).
-      if (isFeatureDeliveryBatch(msg)) {
-        applyFeatureDeliveries(msg.featureBatch);
+      if (isApplicationDeliveryBatch(msg)) {
+        applyApplicationDeliveries(msg.applicationBatch);
         return;
       }
 
@@ -133,7 +133,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
       }
     });
     return unsubscribe;
-  }, [adapter]);
+  }, [adapter, onHeartbeat]);
 
   const addStep = (step: Step) => setSteps((prev) => [...prev, step]);
   const updateStep = (index: number, stepUpdate: Partial<Step>) =>
@@ -143,14 +143,12 @@ export const AppProvider: React.FC<AppProviderProps> = ({ adapter, children }) =
     <AppContext.Provider
       value={{
         isEnabled, isOnTargetUrl, currentUrl, FredoContent, currentPage,
-        steps, showDiagram, viewingLiveDiagram, isLoadingDiagram,
-        diagramError, parseError,
+        steps,
         setIsEnabled, setIsOnTargetUrl, setCurrentUrl, setFredoContent, setCurrentPage,
-        setSteps, addStep, updateStep, setShowDiagram,
-        setViewingLiveDiagram, setIsLoadingDiagram, setDiagramError, setParseError,
+        setSteps, addStep, updateStep,
       }}
     >
-      <FeatureDataProvider>{children}</FeatureDataProvider>
+      <ApplicationDataProvider>{children}</ApplicationDataProvider>
     </AppContext.Provider>
   );
 };

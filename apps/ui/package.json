@@ -1,6 +1,6 @@
 {
     "name": "@fredo/ui",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "type": "module",
     "exports": {
@@ -10,7 +10,8 @@
         "dev": "vite",
         "build": "tsc && vite build",
         "typecheck": "tsc --noEmit",
-        "test:run": "vitest run"
+        "test:run": "vitest run",
+        "contrast:gate": "vitest run src/app/theme/contrast"
     },
     "dependencies": {
         "@chakra-ui/react": "^3.2.2",
@@ -23,9 +24,11 @@
         "date-fns": "^4.1.0",
         "framer-motion": "^11.18.2",
         "ghostty-web": "^0.4.0",
+        "konva": "^9",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
         "react-icons": "^5.5.0",
+        "react-konva": "^18.2",
         "reactflow": "^11.11.4",
         "three": "^0.182.0"
     },

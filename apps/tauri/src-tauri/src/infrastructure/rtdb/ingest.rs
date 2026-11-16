@@ -71,11 +71,11 @@ use serde_json::Value;
 
 use crate::infrastructure::rtdb::attrs::{
     extract_messages_text, is_subagent_span, otlp_attrs_to_map, otlp_attrs_to_payload,
-    req_11_event_state_from_span, resolve_op_name, TurnTokenDerivation, ATTR_AGENT_NAME,
-    ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
+    req_11_event_state_from_span, resolve_op_name, resolve_provider_token, TurnTokenDerivation,
+    ATTR_AGENT_NAME, ATTR_CONVERSATION_ID, ATTR_INPUT_MESSAGES, ATTR_TOOL_CALL_ARGUMENTS,
     ATTR_USAGE_CACHE_READ_INPUT_TOKENS, ATTR_USAGE_INPUT_TOKENS, ATTR_USAGE_OUTPUT_TOKENS,
     CC_ATTR_PROMPT_FLAT, CC_ATTR_SESSION_ID, CC_ATTR_SESSION_PARENT_ID, CC_ATTR_TOOL_INPUT,
-    MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX,
+    MAP_CAPACITY, OP_CHAT_CANON, OP_SESSION, OP_TOOL_PREFIX, PROVIDER_COPILOT_CLI,
 };
 use crate::infrastructure::comm::adapters::parent_prompt_cache;
 use crate::infrastructure::comm::event::{EventState, EventType, FredoEvent, Transport};
@@ -89,6 +89,7 @@ use crate::infrastructure::rtdb::rows::{
     AgentSessionRow, ChatRow, RowState, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS,
     TOOL_USE_FIELDS,
 };
+use crate::infrastructure::rtdb::store::RowKind;
 
 // ── Row-specific attribute keys (verified against the plugin's emitted shapes:
 //    apps/opencode-plugin/src/telemetry-constants.ts:40-54; message.ts:135/323
@@ -98,6 +99,10 @@ const ATTR_COST_USD: &str = "cost_usd";
 const ATTR_TOOL_SUCCESS: &str = "tool.success";
 const ATTR_TOOL_ERROR: &str = "tool.error";
 const ATTR_DURATION_MS: &str = "duration_ms";
+/// OTel `error.type` — emitted on a failed span (Copilot's tool-failure
+/// signal). Spec #2933 ST-3: read ONLY as an additive fallback when the
+/// OpenCode-native flat `tool.success`/`tool.error` keys are absent.
+const ATTR_ERROR_TYPE: &str = "error.type";
 const ATTR_TOTAL_TOKENS: &str = "total_tokens";
 const ATTR_TOTAL_MESSAGES: &str = "total_messages";
 const ATTR_TOTAL_COST_USD: &str = "total_cost_usd";
@@ -115,6 +120,23 @@ const INTERNAL_TOOL_EXECUTION_AGENTS: &[&str] = &["build", "plan"];
 /// Managed-state alias — `app.manage(Arc::new(IngestClassifier::new(rtdb)))`
 /// in lib.rs (P3.1); consumed by the OTLP receivers + the IPC dispatcher.
 pub type IngestClassifierState = Arc<IngestClassifier>;
+
+/// Outcome of one [`IngestClassifier::reattribute_provider`] call
+/// (Spec #2932 round-2 FIX-R2-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderReattribution {
+    /// The row's provider slot was written — a documented fallback was upgraded
+    /// to a resolved token.
+    Upgraded,
+    /// No write: the row already carried a resolved token, or the re-derived
+    /// token equalled the stored fallback (the content-no-op gate skipped it).
+    Unchanged,
+    /// The matched spans disagreed on the provider token — nothing written
+    /// (never guess).
+    Ambiguous,
+    /// No matched span in the row's op family — nothing written.
+    NoSource,
+}
 
 /// The RTDB write-path classifier (module doc — Spec #2788 P3.1).
 pub struct IngestClassifier {
@@ -176,7 +198,7 @@ impl IngestClassifier {
     /// JSON) into row upserts. Returns the number of row mutations ingested.
     /// P3.2's backfill MUST reuse THIS entry point (reconstructed span JSON)
     /// so the extract rules stay identical to the live path.
-    pub fn ingest_otlp(&self, transport: Transport, raw: &Value) -> usize {
+    pub async fn ingest_otlp(&self, transport: Transport, raw: &Value) -> usize {
         tracing::debug!(
             target: "fredo::rtdb::ingest",
             transport = transport.as_str(),
@@ -203,7 +225,7 @@ impl IngestClassifier {
                     for span in &spans {
                         let span_name =
                             span.get("name").and_then(|v| v.as_str()).unwrap_or("span");
-                        count += self.process_span_rows(span, span_name, &res_attrs, true);
+                        count += self.process_span_rows(span, span_name, &res_attrs, true).await;
                     }
                 }
             }
@@ -216,7 +238,7 @@ impl IngestClassifier {
             .and_then(|v| v.as_str())
             .unwrap_or("otlp.span");
         let empty_res = serde_json::Map::new();
-        count += self.process_span_rows(raw, raw_name, &empty_res, false);
+        count += self.process_span_rows(raw, raw_name, &empty_res, false).await;
         count
     }
 
@@ -225,7 +247,7 @@ impl IngestClassifier {
     /// OTLP-derived rows remain the primary shape per the AGENTS.md
     /// mock-vs-real rule) into row upserts. Only the three row-bearing event
     /// types classify; others are ignored.
-    pub fn ingest_event(&self, event: &FredoEvent) -> usize {
+    pub async fn ingest_event(&self, event: &FredoEvent) -> usize {
         let payload = event.payload.clone().unwrap_or(Value::Null);
         let correlation = event
             .correlation_id
@@ -238,31 +260,165 @@ impl IngestClassifier {
         // (`engine.rs:792-840`): legacy metadata path first (no exclusion,
         // exactly as the engine), then the self-carried routing property with
         // the internal `build`/`plan` exclusion.
-        let mut copied = self.detect_event_relationship(event, &payload);
+        let mut copied = self.detect_event_relationship(event, &payload).await;
 
         match event.event_type {
             EventType::Chat => {
                 let patch =
                     chat_patch_from_event(event, &payload, &correlation, state, &updated_at);
-                copied += self.ingest_chat_with_copy(patch, &event.session_id);
+                copied += self.ingest_chat_with_copy(patch, &event.session_id).await;
             }
             EventType::ToolUse => {
                 let patch =
                     tool_patch_from_event(event, &payload, &correlation, state, &updated_at);
-                copied += self.ingest_tool_with_copy(patch, &event.session_id);
+                copied += self.ingest_tool_with_copy(patch, &event.session_id).await;
             }
             EventType::AgentSession => {
-                let patch = session_patch_from_event(&payload, &event.session_id, &correlation, state, &updated_at);
-                copied += self.ingest_session_with_copy(patch, &event.session_id);
+                let patch = session_patch_from_event(
+                    &payload,
+                    &event.session_id,
+                    &correlation,
+                    state,
+                    &updated_at,
+                    event.provider.as_str(),
+                );
+                copied += self.ingest_session_with_copy(patch, &event.session_id).await;
             }
             EventType::Infrastructure | EventType::Ui | EventType::Custom => {}
         }
         copied
     }
 
+    /// Upgrade the provider attribution of a PRE-EXISTING row, addressed by the
+    /// row's OWN persisted identity `(session_id, correlation_id)`
+    /// (Spec #2932 round-2 FIX-R2-1).
+    ///
+    /// The token is resolved with the SAME shared rule the live path uses
+    /// ([`resolve_provider_token`], NFR-6) — never a second extraction path.
+    /// The correlation-MINTING path (`resolve_span_correlation_id` /
+    /// `resolve_correlation_id` / `generate_per_turn_correlation_id`) is NEVER
+    /// called: the re-derivation pass cannot reproduce the historical
+    /// per-process correlation key, so it must write AT the row's own key
+    /// instead of minting one. Round-1 tester FAIL: a re-minted key targeted a
+    /// different PK `(session_id, correlation_id)` and INSERTed a PARALLEL row
+    /// while the pre-existing `unknown` row was never read, never patched.
+    ///
+    /// `candidates` are the span attribute maps the caller matched to this row
+    /// (already filtered to the row's op family via the shared
+    /// `attrs::resolve_op_name`). No candidates → [`ProviderReattribution::NoSource`];
+    /// candidates disagreeing on the token → [`ProviderReattribution::Ambiguous`].
+    /// Both write nothing (never guess). A one-token patch is dispatched
+    /// through the existing [`Self::apply_chat`] / [`Self::apply_tool_use`] /
+    /// [`Self::apply_agent_session`] path, so durable seq allocation, delivery
+    /// routing and cache semantics are preserved; the patch carries ONLY
+    /// `session_id` / `correlation_id` / `updated_at` / `provider`, and every
+    /// other field stays `None` — absent patch fields are skipped by
+    /// `merge::apply_rule`, so the row's existing content is untouched.
+    ///
+    /// Defensive: a missing or unreadable target row writes NOTHING. The pass
+    /// only ever targets rows it just enumerated, but without this guard a
+    /// failed lookup would fall through to the apply path's full-row upsert
+    /// and replace a live full row with a minimal one (data loss).
+    pub async fn reattribute_provider(
+        &self,
+        kind: RowKind,
+        session_id: &str,
+        correlation_id: &str,
+        candidates: &[serde_json::Map<String, Value>],
+    ) -> ProviderReattribution {
+        // Distinct tokens across the matched spans — the shared rule only.
+        let mut tokens: Vec<String> = Vec::new();
+        for attrs in candidates {
+            let token = resolve_provider_token(attrs);
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+        match tokens.len() {
+            0 => return ProviderReattribution::NoSource,
+            1 => {}
+            _ => {
+                tracing::debug!(
+                    target: "fredo::rtdb::ingest",
+                    session_id = %session_id,
+                    correlation_id = %correlation_id,
+                    "provider re-attribution skipped — matched spans disagree on the resource identity"
+                );
+                return ProviderReattribution::Ambiguous;
+            }
+        }
+        // The target row must already exist — never create one, never let a
+        // failed lookup degrade into an empty-row INSERT over a live row.
+        let target_present = match kind {
+            RowKind::Chat => self
+                .rtdb
+                .cache()
+                .get_chat(session_id, correlation_id)
+                .await
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+            RowKind::ToolUse => self
+                .rtdb
+                .cache()
+                .get_tool_use(session_id, correlation_id)
+                .await
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+            RowKind::AgentSession => self
+                .rtdb
+                .cache()
+                .get_agent_session(session_id, correlation_id)
+                .await
+                .map(|row| row.is_some())
+                .unwrap_or(false),
+        };
+        if !target_present {
+            tracing::debug!(
+                target: "fredo::rtdb::ingest",
+                session_id = %session_id,
+                correlation_id = %correlation_id,
+                "provider re-attribution skipped — target row absent"
+            );
+            return ProviderReattribution::Unchanged;
+        }
+        let token = tokens.into_iter().next().expect("token list has exactly one element");
+        let updated_at = Some(rfc3339_now());
+        let wrote = match kind {
+            RowKind::Chat => self.apply_chat(
+                ChatPatch {
+                    session_id: Some(session_id.to_string()),
+                    correlation_id: Some(correlation_id.to_string()),
+                    updated_at,
+                    provider: Some(token),
+                    ..ChatPatch::default()
+                },
+                None,
+            ).await,
+            RowKind::ToolUse => self.apply_tool_use(ToolUsePatch {
+                session_id: Some(session_id.to_string()),
+                correlation_id: Some(correlation_id.to_string()),
+                updated_at,
+                provider: Some(token),
+                ..ToolUsePatch::default()
+            }).await,
+            RowKind::AgentSession => self.apply_agent_session(AgentSessionPatch {
+                session_id: Some(session_id.to_string()),
+                correlation_id: Some(correlation_id.to_string()),
+                updated_at,
+                provider: Some(token),
+                ..AgentSessionPatch::default()
+            }).await,
+        };
+        if wrote {
+            ProviderReattribution::Upgraded
+        } else {
+            ProviderReattribution::Unchanged
+        }
+    }
+
     // ── Per-span classification (ported from the deleted v1 OTLP adapter) ────
 
-    fn process_span_rows(
+    async fn process_span_rows(
         &self,
         span: &Value,
         span_name: &str,
@@ -271,9 +427,18 @@ impl IngestClassifier {
     ) -> usize {
         let span_attrs = otlp_attrs_to_map(span.get("attributes"));
 
+        // Spec #2933 ST-2: build the merged resource+span attribute map BEFORE
+        // op resolution so the resource `service.name` is visible to the
+        // provider-scoped `invoke_agent` → session promotion (the promotion
+        // resolves the provider through the shared `resolve_provider_token` rule
+        // on this map). Span attributes are extended LAST, so a span-level key
+        // always wins a collision.
+        let mut merged = res_attrs.clone();
+        merged.extend(span_attrs.clone());
+
         // Resolve canonical op name. Unrecognised spans are dropped (logged) —
         // same classification as the v1 adapter (R6).
-        let Some(op_name) = resolve_op_name(span_name, &span_attrs) else {
+        let Some(op_name) = resolve_op_name(span_name, &merged) else {
             tracing::debug!(
                 target: "fredo::rtdb::ingest",
                 span_name = %span_name,
@@ -333,8 +498,11 @@ impl IngestClassifier {
             }
         }
 
-        let mut merged = res_attrs.clone();
-        merged.extend(span_attrs);
+        // Spec #2932 ST-3 (R1/R3): resolve the canonical CLI-provider token ONCE
+        // per span from the merged resource+span attribute map, via the SHARED
+        // extract rule (NFR-6 — the canonical backfill reuses the same helper).
+        // The token is stamped on all three row patch kinds below.
+        let provider = resolve_provider_token(&merged);
 
         // REQ-11 / REQ-609: session spans always Init; others from span timing.
         let event_state = if op_name == OP_SESSION {
@@ -350,8 +518,13 @@ impl IngestClassifier {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let correlation_id =
-            self.resolve_span_correlation_id(&session_id, &span_id, &op_name, event_state);
+        let correlation_id = self.resolve_span_correlation_id(
+            &session_id,
+            &span_id,
+            &op_name,
+            event_state,
+            &provider,
+        );
 
         // REQ-6: parent from OTLP span links (order-independent detection).
         if check_links {
@@ -419,7 +592,7 @@ impl IngestClassifier {
                     "Classifier: relationship skipped — internal tool-execution agent session"
                 );
             } else {
-                copied += self.register_relationship(parent, &session_id);
+                copied += self.register_relationship(parent, &session_id).await;
             }
         }
 
@@ -479,6 +652,46 @@ impl IngestClassifier {
         // v1 applies) and the preserved verbatim flat attrs.
         let mut payload = otlp_attrs_to_payload(merged, derived);
         self.inject_instruction_if_needed(is_subagent, &session_id, &mut payload);
+
+        // Spec #2933 ST-3R (R-2.1): Copilot splits ONE user turn across TWO
+        // `chat` spans — the dispatch span carries the user text (plus a
+        // tool_call output), the continuation span (after `execute_tool`)
+        // carries only the tool result plus the assistant text. OpenCode
+        // re-carries the exchange's user prompt on EVERY chat span of a turn
+        // (`message.ts:702,716-719`), and Mission Monitor's same-exchange
+        // tool anchoring depends on that canonical row contract. When a
+        // Copilot continuation span's own `gen_ai.input.messages` has no
+        // `user` role, its projected payload loses `userMessage`; carry the
+        // session's cached prompt forward so `userMessage`, `rawJson`, the
+        // typed column and the delivery all agree (one layer, consumer
+        // untouched).
+        //
+        // Provider-scoped by construction (a `copilot_cli` data-mapping rule):
+        // no `open_code` row can take this branch, so the R-5.1/AC5
+        // byte-identity bar holds. A miss (content off, or the dispatch span
+        // not yet ingested) is a no-op — `userMessage` stays absent, exactly
+        // the R-3 documented degradation. The carried text is the exchange's
+        // own captured prompt, never fabricated.
+        if op_name == OP_CHAT_CANON
+            && provider == PROVIDER_COPILOT_CLI
+            && payload
+                .get(ATTR_INPUT_MESSAGES)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| extract_messages_text(s, "user").is_none())
+            && payload
+                .get("userMessage")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.trim().is_empty())
+        {
+            if let Ok(map) = self.parent_prompts.lock() {
+                if let Some(prompt) = parent_prompt_cache::req_3_cached_prompt(&map, &session_id) {
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("userMessage".to_string(), Value::String(prompt.to_string()));
+                    }
+                }
+            }
+        }
+
         let raw_json = payload.to_string();
         let empty_map = serde_json::Map::new();
         let payload_map = payload.as_object().unwrap_or(&empty_map);
@@ -497,16 +710,32 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    // Spec #2932 ST-3 (R1): the CLI-provider token resolved from
+                    // the merged resource+span attribute map (shared rule).
+                    provider: Some(provider.clone()),
                     // The projector preserves the flat attrs verbatim and
                     // projects gen_ai.agent.name → `agent`/`name` — read the
                     // canonical fields (one source of truth).
-                    total_tokens: attr_i64(payload_map, ATTR_TOTAL_TOKENS),
+                    // Spec #2933 ST-3 (R-2.6): the flat OpenCode-native
+                    // `total_tokens` key stays primary; only when it is absent
+                    // fall back to Copilot's session-cumulative
+                    // `gen_ai.usage.input_tokens + gen_ai.usage.output_tokens`.
+                    // `total_messages`/`total_cost_usd` stay absent (Copilot
+                    // emits no such attributes — documented limitation).
+                    total_tokens: attr_i64(payload_map, ATTR_TOTAL_TOKENS).or_else(|| {
+                        let input = attr_i64(payload_map, ATTR_USAGE_INPUT_TOKENS);
+                        let output = attr_i64(payload_map, ATTR_USAGE_OUTPUT_TOKENS);
+                        match (input, output) {
+                            (None, None) => None,
+                            (i, o) => Some(i.unwrap_or(0) + o.unwrap_or(0)),
+                        }
+                    }),
                     total_messages: attr_i64(payload_map, ATTR_TOTAL_MESSAGES),
                     total_cost_usd: attr_f64(payload_map, ATTR_TOTAL_COST_USD),
                     agent_name: attr_str(payload_map, "agent").or_else(|| attr_str(payload_map, "name")),
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_session_with_copy(patch, &session_id);
+                copied += self.ingest_session_with_copy(patch, &session_id).await;
             }
             OP_CHAT_CANON => {
                 // Text/tokens come from the adapter projector's canonical
@@ -524,6 +753,7 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    provider: Some(provider.clone()),
                     user_message: attr_str(payload_map, "userMessage"),
                     agent_reply: attr_str(payload_map, "agentReply"),
                     prompt_tokens: attr_i64(payload_map, "promptTokens"),
@@ -535,7 +765,7 @@ impl IngestClassifier {
                     composited_child_session_id: None,
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_chat_with_copy(patch, &session_id);
+                copied += self.ingest_chat_with_copy(patch, &session_id).await;
             }
             _ => {
                 let tool_name = op_name
@@ -550,16 +780,44 @@ impl IngestClassifier {
                     ended_at_ns: end_ns,
                     updated_at: Some(updated_at),
                     state: Some(row_state),
+                    provider: Some(provider.clone()),
                     tool_name: Some(tool_name),
-                    tool_success: payload_map.get(ATTR_TOOL_SUCCESS).and_then(|v| v.as_bool()),
-                    tool_error: attr_str(payload_map, ATTR_TOOL_ERROR),
-                    duration_ms: attr_i64(payload_map, ATTR_DURATION_MS),
+                    // Spec #2933 ST-3 (R-2.5): the flat OpenCode-native
+                    // `tool.success`/`tool.error`/`duration_ms` keys stay
+                    // primary. Copilot emits `error.type` + span timing
+                    // instead, so fall back ONLY when the flat key is absent:
+                    // failure iff `error.type` is present, success iff the span
+                    // completed (has an end time), else in-flight (absent).
+                    tool_success: payload_map
+                        .get(ATTR_TOOL_SUCCESS)
+                        .and_then(|v| v.as_bool())
+                        .or_else(|| {
+                            if attr_str(payload_map, ATTR_ERROR_TYPE).is_some() {
+                                Some(false)
+                            } else if end_ns.is_some() {
+                                Some(true)
+                            } else {
+                                None
+                            }
+                        }),
+                    tool_error: attr_str(payload_map, ATTR_TOOL_ERROR)
+                        .or_else(|| attr_str(payload_map, ATTR_ERROR_TYPE)),
+                    duration_ms: attr_i64(payload_map, ATTR_DURATION_MS).or_else(|| {
+                        // Span timing fallback (end − start, ms) — fires only
+                        // when the flat duration_ms attr is absent.
+                        match (start_ns, end_ns) {
+                            (Some(start), Some(end)) if end >= start => {
+                                Some((end - start) / 1_000_000)
+                            }
+                            _ => None,
+                        }
+                    }),
                     tool_input_json: attr_str(payload_map, "input"),
                     tool_output_json: attr_str(payload_map, "output"),
                     is_subagent: Some(is_subagent),
                     raw_json: Some(raw_json),
                 };
-                copied += self.ingest_tool_with_copy(patch, &session_id);
+                copied += self.ingest_tool_with_copy(patch, &session_id).await;
             }
         }
 
@@ -570,14 +828,32 @@ impl IngestClassifier {
 
     /// ST9 (#2688) port — one correlation id per span (see
     /// `rtdb/attrs.rs` for the retained shared extract helpers).
+    ///
+    /// Spec #2933 (R-4.2): the provider-scoped promoted Copilot session root
+    /// (`invoke_agent` → [`OP_SESSION`], ST-2) is routed through the SAME
+    /// span-keyed guard as every other span. Without this, a replayed (or
+    /// late-duplicated) export would re-mint the root's per-turn correlation
+    /// id and land it at a NEW `(sessionId, correlationId)` PK — a second
+    /// `agent_session_rows` row at the same `startedAtNs`. The guard reuses
+    /// the id the span already resolved to for THIS classifier instance, so a
+    /// replay is a content no-op.
+    ///
+    /// The span-keyed route is byte-identical to the session-keyed route on
+    /// the FIRST sight of the root: with no prior resolution it mints via
+    /// `resolve_correlation_id(session, Init)` (`<session>_1` for the first
+    /// span of a session). It only diverges on a re-seen span — the duplicate
+    /// we must not create. Kept provider-scoped (checks the shared
+    /// [`PROVIDER_COPILOT_CLI`] token) so the OpenCode `run_agent` root keeps
+    /// its historical session-keyed resolution byte-for-byte (R-5.1/AC5).
     fn resolve_span_correlation_id(
         &self,
         session_id: &str,
         span_id: &str,
         op_name: &str,
         event_state: EventState,
+        provider: &str,
     ) -> String {
-        if op_name == OP_SESSION {
+        if op_name == OP_SESSION && provider != PROVIDER_COPILOT_CLI {
             return self.resolve_correlation_id(session_id, event_state);
         }
 
@@ -704,6 +980,17 @@ impl IngestClassifier {
         if op_name != OP_CHAT_CANON {
             return None;
         }
+        // Spec #2933 ST-3 (R-2.2): Copilot's `gen_ai.usage.input_tokens` on a
+        // `chat` span is PER-CALL, not session-cumulative. Feeding it through
+        // the cumulative-delta machinery below would emit a deflated/zero
+        // delta; returning `None` makes the projector fall back to the RAW
+        // per-call registry values (promptTokens/completionTokens are the
+        // per-call figures; cacheReadTokens stays absent — the delta path is
+        // the only injector). No baseline is written for a Copilot session, so
+        // the OpenCode baselines stay isolated (R-5.2).
+        if resolve_provider_token(attrs) == PROVIDER_COPILOT_CLI {
+            return None;
+        }
         let input_n_raw = attr_i64(attrs, ATTR_USAGE_INPUT_TOKENS);
         let output_n = attr_i64(attrs, ATTR_USAGE_OUTPUT_TOKENS);
         let cache_n = attr_i64(attrs, ATTR_USAGE_CACHE_READ_INPUT_TOKENS).unwrap_or(0);
@@ -825,7 +1112,7 @@ impl IngestClassifier {
     /// Register a child→parent relationship (idempotent per child; capped at
     /// [`MAP_CAPACITY`] with oldest-first eviction) and COPY the child's
     /// existing rows under the parent key. Returns the number of copied rows.
-    fn register_relationship(&self, parent: &str, child: &str) -> usize {
+    async fn register_relationship(&self, parent: &str, child: &str) -> usize {
         {
             let Ok(mut child_map) = self.child_to_parent.lock() else {
                 return 0;
@@ -852,7 +1139,7 @@ impl IngestClassifier {
         if let Ok(mut rev) = self.parent_to_children.lock() {
             rev.entry(parent.to_string()).or_default().push(child.to_string());
         }
-        self.rekey_child_rows(parent, child)
+        self.rekey_child_rows(parent, child).await
     }
 
     /// The parent of a registered child session, if any.
@@ -867,32 +1154,36 @@ impl IngestClassifier {
     /// Child-keyed rows are LEFT INTACT — a re-key never removes rows (the
     /// binding `kind: remove` constraint). The cached ∪ persisted key set is
     /// read so rows inside the write-behind window are not missed.
-    fn rekey_child_rows(&self, parent: &str, child: &str) -> usize {
+    async fn rekey_child_rows(&self, parent: &str, child: &str) -> usize {
         let mut copied = 0usize;
 
-        if let Ok(chat_keys) = self.rtdb.cache().chat_keys_for_session(child) {
+        if let Ok(chat_keys) = self.rtdb.cache().chat_keys_for_session(child).await {
             for (_, corr) in chat_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_chat(child, &corr) {
+                if let Ok(Some(existing)) = self.rtdb.cache().get_chat(child, &corr).await {
                     self.apply_chat(
                         chat_patch_from_row(&existing, parent),
                         Some((parent, child)),
-                    );
+                    )
+                    .await;
                     copied += 1;
                 }
             }
         }
-        if let Ok(tool_keys) = self.rtdb.cache().tool_keys_for_session(child) {
+        if let Ok(tool_keys) = self.rtdb.cache().tool_keys_for_session(child).await {
             for (_, corr) in tool_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_tool_use(child, &corr) {
-                    self.apply_tool_use(tool_patch_from_row(&existing, parent));
+                if let Ok(Some(existing)) = self.rtdb.cache().get_tool_use(child, &corr).await {
+                    self.apply_tool_use(tool_patch_from_row(&existing, parent)).await;
                     copied += 1;
                 }
             }
         }
-        if let Ok(session_keys) = self.rtdb.cache().agent_session_keys_for_session(child) {
+        if let Ok(session_keys) = self.rtdb.cache().agent_session_keys_for_session(child).await {
             for (_, corr) in session_keys {
-                if let Ok(Some(existing)) = self.rtdb.cache().get_agent_session(child, &corr) {
-                    self.apply_agent_session(session_patch_from_row(&existing, parent));
+                if let Ok(Some(existing)) =
+                    self.rtdb.cache().get_agent_session(child, &corr).await
+                {
+                    self.apply_agent_session(session_patch_from_row(&existing, parent))
+                        .await;
                     copied += 1;
                 }
             }
@@ -914,7 +1205,7 @@ impl IngestClassifier {
     /// non-`parent-child` metadata object falls through to the self-carried
     /// check, exactly as the engine; the self-carried path applies the
     /// internal-agent exclusion).
-    fn detect_event_relationship(&self, event: &FredoEvent, payload: &Value) -> usize {
+    async fn detect_event_relationship(&self, event: &FredoEvent, payload: &Value) -> usize {
         if let Some(rel_type) = event
             .metadata
             .as_ref()
@@ -936,7 +1227,7 @@ impl IngestClassifier {
                     .and_then(|r| r.get("childSessionId"))
                     .and_then(|v| v.as_str());
                 if let (Some(parent), Some(child)) = (parent, child) {
-                    return self.register_relationship(parent, child);
+                    return self.register_relationship(parent, child).await;
                 }
             }
         }
@@ -961,21 +1252,23 @@ impl IngestClassifier {
                 );
                 return 0;
             }
-            return self.register_relationship(parent, &event.session_id);
+            return self.register_relationship(parent, &event.session_id).await;
         }
         0
     }
 
     // ── Merge-then-ingest helpers (P1.1 rules applied by the classifier) ─────
 
-    fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) {
+    /// Merge-then-ingest one chat patch. Returns `true` when the row was
+    /// actually written (a new row, or a content change past the no-op gate).
+    async fn apply_chat(&self, patch: ChatPatch, stamp: Option<(&str, &str)>) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
-        let existing = self.rtdb.cache().get_chat(&session, &corr).unwrap_or(None);
+        let existing = self.rtdb.cache().get_chat(&session, &corr).await.unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_chat_row(&session, &corr));
         let old = serde_json::to_value(&row).unwrap_or(Value::Null);
@@ -987,24 +1280,28 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, CHAT_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::Chat(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "chat row ingest failed");
+            return false;
         }
+        true
     }
 
-    fn apply_tool_use(&self, patch: ToolUsePatch) {
+    /// Merge-then-ingest one tool-use patch. Returns `true` when written.
+    async fn apply_tool_use(&self, patch: ToolUsePatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
         let existing = self
             .rtdb
             .cache()
             .get_tool_use(&session, &corr)
+            .await
             .unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_tool_row(&session, &corr));
@@ -1013,24 +1310,28 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, TOOL_USE_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::ToolUse(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "tool-use row ingest failed");
+            return false;
         }
+        true
     }
 
-    fn apply_agent_session(&self, patch: AgentSessionPatch) {
+    /// Merge-then-ingest one agent-session patch. Returns `true` when written.
+    async fn apply_agent_session(&self, patch: AgentSessionPatch) -> bool {
         let Some(session) = patch.session_id.clone() else {
-            return;
+            return false;
         };
         let Some(corr) = patch.correlation_id.clone() else {
-            return;
+            return false;
         };
         let existing = self
             .rtdb
             .cache()
             .get_agent_session(&session, &corr)
+            .await
             .unwrap_or(None);
         let existed = existing.is_some();
         let mut row = existing.unwrap_or_else(|| empty_session_row(&session, &corr));
@@ -1039,48 +1340,50 @@ impl IngestClassifier {
         let new = serde_json::to_value(&row).unwrap_or(Value::Null);
         let changed = changed_fields(&old, &new, AGENT_SESSION_FIELDS);
         if content_no_op(existed, &changed) {
-            return;
+            return false;
         }
-        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed) {
+        if let Err(e) = self.rtdb.ingest_row_upsert(IngestRow::AgentSession(row), &changed).await {
             tracing::warn!(target: "fredo::rtdb::ingest", session_id = %session, correlation_id = %corr, error = %e, "agent-session row ingest failed");
+            return false;
         }
+        true
     }
 
     /// Ingest a child chat row, then (while a child→parent relationship is
     /// registered) also ingest a parent-keyed stamped copy — the parent-space
     /// composite. The copy's correlation id is the CHILD's per-turn id (the
     /// brief's "new correlation_id = child's turn id").
-    fn ingest_chat_with_copy(&self, patch: ChatPatch, child: &str) -> usize {
-        self.apply_chat(patch.clone(), None);
+    async fn ingest_chat_with_copy(&self, patch: ChatPatch, child: &str) -> usize {
+        self.apply_chat(patch.clone(), None).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_chat(copy, Some((parent.as_str(), child)));
+            self.apply_chat(copy, Some((parent.as_str(), child))).await;
             copied += 1;
         }
         copied
     }
 
-    fn ingest_tool_with_copy(&self, patch: ToolUsePatch, child: &str) -> usize {
-        self.apply_tool_use(patch.clone());
+    async fn ingest_tool_with_copy(&self, patch: ToolUsePatch, child: &str) -> usize {
+        self.apply_tool_use(patch.clone()).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_tool_use(copy);
+            self.apply_tool_use(copy).await;
             copied += 1;
         }
         copied
     }
 
-    fn ingest_session_with_copy(&self, patch: AgentSessionPatch, child: &str) -> usize {
-        self.apply_agent_session(patch.clone());
+    async fn ingest_session_with_copy(&self, patch: AgentSessionPatch, child: &str) -> usize {
+        self.apply_agent_session(patch.clone()).await;
         let mut copied = 0usize;
         if let Some(parent) = self.parent_of(child) {
             let mut copy = patch;
             copy.session_id = Some(parent.clone());
-            self.apply_agent_session(copy);
+            self.apply_agent_session(copy).await;
             copied += 1;
         }
         copied
@@ -1261,6 +1564,7 @@ fn empty_chat_row(session: &str, corr: &str) -> ChatRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         user_message: None,
         agent_reply: None,
         prompt_tokens: None,
@@ -1283,6 +1587,7 @@ fn empty_tool_row(session: &str, corr: &str) -> ToolUseRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         tool_name: None,
         tool_success: None,
         tool_error: None,
@@ -1303,6 +1608,7 @@ fn empty_session_row(session: &str, corr: &str) -> AgentSessionRow {
         ended_at_ns: None,
         updated_at: rfc3339_now(),
         state: RowState::Init,
+        provider: None,
         total_tokens: None,
         total_messages: None,
         total_cost_usd: None,
@@ -1323,6 +1629,7 @@ fn chat_patch_from_row(existing: &ChatRow, parent: &str) -> ChatPatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: existing.provider.clone(),
         user_message: existing.user_message.clone(),
         agent_reply: existing.agent_reply.clone(),
         prompt_tokens: existing.prompt_tokens,
@@ -1345,6 +1652,7 @@ fn tool_patch_from_row(existing: &ToolUseRow, parent: &str) -> ToolUsePatch {
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: existing.provider.clone(),
         tool_name: existing.tool_name.clone(),
         tool_success: existing.tool_success,
         tool_error: existing.tool_error.clone(),
@@ -1365,6 +1673,7 @@ fn session_patch_from_row(existing: &AgentSessionRow, parent: &str) -> AgentSess
         ended_at_ns: existing.ended_at_ns,
         updated_at: Some(rfc3339_now()),
         state: Some(existing.state),
+        provider: existing.provider.clone(),
         total_tokens: existing.total_tokens,
         total_messages: existing.total_messages,
         total_cost_usd: existing.total_cost_usd,
@@ -1394,6 +1703,7 @@ fn chat_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: Some(event.provider.as_str().to_string()),
         user_message: str_field(payload, &["userMessage"])
             .or_else(|| nested_str(payload, &["info", "text"]))
             .or_else(|| parts_text(payload, "user")),
@@ -1429,6 +1739,7 @@ fn tool_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: Some(event.provider.as_str().to_string()),
         tool_name: event
             .tool_name
             .clone()
@@ -1461,6 +1772,7 @@ fn session_patch_from_event(
     correlation: &str,
     state: RowState,
     updated_at: &str,
+    provider: &str,
 ) -> AgentSessionPatch {
     AgentSessionPatch {
         session_id: Some(session_id.to_string()),
@@ -1470,609 +1782,11 @@ fn session_patch_from_event(
         ended_at_ns: None,
         updated_at: Some(updated_at.to_string()),
         state: Some(state),
+        provider: Some(provider.to_string()),
         total_tokens: i64_field(payload, &["totalTokens"]),
         total_messages: i64_field(payload, &["totalMessages"]),
         total_cost_usd: f64_field(payload, &["totalCostUsd"]),
         agent_name: str_field(payload, &["agent", "name", "agentName"]),
         raw_json: Some(payload.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::infrastructure::comm::event::EventProvider;
-    use crate::infrastructure::rtdb::flush::{FlushLoop, RowEmitter};
-    use crate::infrastructure::rtdb::project::{RowChangeKind, RowDelivery};
-    use crate::infrastructure::rtdb::store::RtdbStore;
-    use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
-    use serde_json::json;
-    use std::sync::Mutex;
-
-    type Sink = Arc<Mutex<Vec<RowDelivery>>>;
-
-    fn make_classifier() -> (tempfile::TempDir, Arc<IngestClassifier>, Arc<Rtdb>, Sink) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(RtdbStore::open(dir.path().to_path_buf()).expect("open store"));
-        store.ensure_schema().expect("schema");
-        let (cache, _rx) = crate::infrastructure::rtdb::cache::RtdbCache::new(store);
-        let registry = Arc::new(SubscriptionRegistry::new());
-        let sink: Sink = Arc::new(Mutex::new(Vec::new()));
-        let capture = Arc::clone(&sink);
-        let emitter: RowEmitter = Arc::new(
-            move |deliveries: &[RowDelivery], _marker: Option<&str>| {
-                capture
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend_from_slice(deliveries);
-            },
-        );
-        let flush = Arc::new(FlushLoop::new(emitter));
-        let rtdb = Arc::new(Rtdb::new(cache, registry, flush));
-        let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
-        (dir, classifier, rtdb, sink)
-    }
-
-    fn emitted(sink: &Sink) -> Vec<RowDelivery> {
-        sink.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    fn attr(key: &str, value: impl Into<Value>) -> Value {
-        json!({ "key": key, "value": { "stringValue": value.into() } })
-    }
-
-    fn attr_num(key: &str, value: i64) -> Value {
-        json!({ "key": key, "value": { "intValue": value } })
-    }
-
-    fn envelope(spans: Vec<Value>) -> Value {
-        json!({
-            "resourceSpans": [{
-                "resource": { "attributes": [] },
-                "scopeSpans": [{ "spans": spans }]
-            }]
-        })
-    }
-
-    fn chat_span(session: &str, span_id: &str, completed: bool, extra: Vec<Value>) -> Value {
-        let mut span = json!({
-            "name": "llm",
-            "traceId": format!("trace-{session}-{span_id}"),
-            "spanId": span_id,
-            "attributes": [
-                attr("gen_ai.operation.name", "chat"),
-                attr("session.id", session),
-                attr("gen_ai.input.messages",
-                     "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather?\"}]}]"),
-                attr("gen_ai.output.messages",
-                     "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather is sunny.\"}]}]"),
-                attr("gen_ai.response.model", "claude-sonnet-4")
-            ]
-        });
-        if completed {
-            span["endTimeUnixNano"] = json!("2000000000");
-            span["startTimeUnixNano"] = json!("1000000000");
-        }
-        for item in extra {
-            span["attributes"].as_array_mut().expect("attrs").push(item);
-        }
-        span
-    }
-
-    // ── R-4a: chat span → ChatRow with real-shape extract + per-turn deltas ──
-
-    #[test]
-    fn chat_span_classifies_to_chat_row_with_real_corpus_shapes() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-        // Real-corpus-shaped span (registry keys — realCorpus.ts / span_store
-        // shapes): completed turn with usage + cost + model.
-        let raw = envelope(vec![chat_span(
-            "ses_chat1",
-            "sp1",
-            true,
-            vec![
-                attr_num("gen_ai.usage.input_tokens", 100),
-                attr_num("gen_ai.usage.output_tokens", 50),
-                attr_num("gen_ai.usage.cache_read.input_tokens", 512_000),
-                json!({ "key": "cost_usd", "value": { "doubleValue": 0.0125 } }),
-            ],
-        )]);
-        let rows = classifier.ingest_otlp(Transport::OtlpGrpc, &raw);
-        assert!(rows >= 1, "a completed chat span must classify into a row");
-
-        let row = rtdb
-            .cache()
-            .get_chat("ses_chat1", "ses_chat1_1")
-            .expect("read")
-            .expect("per-turn row exists under <session>_1 (REQ-639)");
-        assert_eq!(row.state, RowState::Response, "completed span → Response");
-        assert_eq!(row.user_message.as_deref(), Some("What is the weather?"));
-        assert_eq!(row.agent_reply.as_deref(), Some("The weather is sunny."));
-        assert_eq!(row.prompt_tokens, Some(100), "first-turn prompt = full input");
-        assert_eq!(row.completion_tokens, Some(50));
-        assert_eq!(
-            row.cache_read_tokens,
-            Some(512_000),
-            "first-turn cache delta = full cumulative baseline"
-        );
-        assert_eq!(row.cost_usd, Some(0.0125), "flat cost_usd span attr");
-        assert_eq!(row.model.as_deref(), Some("claude-sonnet-4"));
-        assert_eq!(row.started_at_ns, Some(1_000_000_000));
-        assert_eq!(row.ended_at_ns, Some(2_000_000_000));
-    }
-
-    // ── R-1f: #2711/#2723 per-turn delta baselines across multi-turn ──────────
-
-    #[test]
-    fn delta_baselines_across_multi_turn_preserve_2711_2723_semantics() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-        let turn = |input: i64, cache: i64| {
-            envelope(vec![chat_span(
-                "ses_delta",
-                &format!("sp-{input}-{cache}"),
-                true,
-                vec![
-                    attr_num("gen_ai.usage.input_tokens", input),
-                    attr_num("gen_ai.usage.output_tokens", 40),
-                    attr_num("gen_ai.usage.cache_read.input_tokens", cache),
-                ],
-            )])
-        };
-
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(100, 512_000));
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(120, 513_000));
-        // Compaction / out-of-order: input drops below the baseline → delta
-        // clamped to 0 AND the baseline resets to the new reading.
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(50, 513_500));
-        classifier.ingest_otlp(Transport::OtlpGrpc, &turn(60, 514_000));
-
-        let row2 = rtdb
-            .cache()
-            .get_chat("ses_delta", "ses_delta_2")
-            .expect("read")
-            .expect("turn 2 row");
-        assert_eq!(row2.prompt_tokens, Some(20), "input2 − input1");
-        assert_eq!(row2.cache_read_tokens, Some(1_000), "cache2 − cache1");
-
-        let row3 = rtdb
-            .cache()
-            .get_chat("ses_delta", "ses_delta_3")
-            .expect("read")
-            .expect("turn 3 row");
-        assert_eq!(
-            row3.prompt_tokens, None,
-            "clamped-to-0 delta stores ABSENT — the P1.1 LastNonZero rule never \
-             fills zero; the frontend renders 0 (R-3.3, same contract as v1)"
-        );
-        assert_eq!(row3.cache_read_tokens, Some(500));
-
-        let row4 = rtdb
-            .cache()
-            .get_chat("ses_delta", "ses_delta_4")
-            .expect("read")
-            .expect("turn 4 row");
-        assert_eq!(
-            row4.prompt_tokens,
-            Some(10),
-            "next delta derives from the RESET baseline (60 − 50)"
-        );
-    }
-
-    // ── R-4a: tool span → ToolUseRow, session span → AgentSessionRow ─────────
-
-    #[test]
-    fn tool_and_session_spans_classify_to_their_rows() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-
-        let tool = json!({
-            "name": "fredo.tool.Bash",
-            "traceId": "trace-tool",
-            "spanId": "sp-tool",
-            "endTimeUnixNano": "3000000000",
-            "attributes": [
-                attr("gen_ai.operation.name", "execute_tool"),
-                attr("gen_ai.tool.name", "Bash"),
-                attr("session.id", "ses_tool"),
-                json!({ "key": "tool.success", "value": { "boolValue": false } }),
-                attr("tool.error", "file not found"),
-                attr_num("duration_ms", 120),
-                attr("gen_ai.tool.call.arguments", "{\"command\":\"ls\"}"),
-                attr("gen_ai.tool.call.result", "file1 file2")
-            ]
-        });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![tool]));
-        let tool_row = rtdb
-            .cache()
-            .get_tool_use("ses_tool", "ses_tool_1")
-            .expect("read")
-            .expect("tool row");
-        assert_eq!(tool_row.tool_name.as_deref(), Some("Bash"));
-        assert_eq!(tool_row.tool_success, Some(false), "false is a meaningful outcome");
-        assert_eq!(tool_row.tool_error.as_deref(), Some("file not found"));
-        assert_eq!(tool_row.duration_ms, Some(120));
-        assert_eq!(tool_row.tool_input_json.as_deref(), Some("{\"command\":\"ls\"}"));
-        assert_eq!(tool_row.tool_output_json.as_deref(), Some("file1 file2"));
-        assert_eq!(tool_row.state, RowState::Response);
-
-        let session = json!({
-            "name": "run_agent",
-            "traceId": "trace-session",
-            "spanId": "sp-session",
-            "attributes": [
-                attr("gen_ai.operation.name", "run_agent"),
-                attr("session.id", "ses_session"),
-                attr("gen_ai.agent.name", "build"),
-                attr_num("total_tokens", 59_200),
-                attr_num("total_messages", 12),
-                json!({ "key": "total_cost_usd", "value": { "doubleValue": 0.42 } })
-            ]
-        });
-        classifier.ingest_otlp(Transport::OtlpGrpc, &envelope(vec![session]));
-        // Ported correlation resolution (resolve_correlation_id, Init): the
-        // FIRST session span of a pure-OTLP session generates the per-turn id
-        // `<session>_1` — exactly the v1 adapter behavior (port, don't
-        // re-design).
-        let session_row = rtdb
-            .cache()
-            .get_agent_session("ses_session", "ses_session_1")
-            .expect("read")
-            .expect("session-level row (v1-faithful per-turn correlation)");
-        assert_eq!(session_row.total_tokens, Some(59_200));
-        assert_eq!(session_row.total_messages, Some(12));
-        assert_eq!(session_row.total_cost_usd, Some(0.42));
-        assert_eq!(session_row.agent_name.as_deref(), Some("build"));
-        assert_eq!(
-            session_row.state,
-            RowState::Init,
-            "REQ-609: session spans always Init — never Response"
-        );
-    }
-
-    // ── ST9 (#2688): one correlation id per span, no counter double-advance ──
-
-    #[test]
-    fn st9_guard_dual_export_shares_one_correlation_and_one_row() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-        // Streaming open-then-complete: the same spanId exported twice.
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span("ses_st9", "sp-1", false, vec![])]),
-        );
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span("ses_st9", "sp-1", true, vec![])]),
-        );
-
-        let row = rtdb
-            .cache()
-            .get_chat("ses_st9", "ses_st9_1")
-            .expect("read")
-            .expect("one row for the dual export");
-        assert_eq!(row.state, RowState::Response, "completed export wins (LastWins)");
-        // The counter must NOT have double-advanced: the NEXT span is turn 2.
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span("ses_st9", "sp-2", true, vec![])]),
-        );
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("ses_st9", "ses_st9_2")
-                .expect("read")
-                .is_some(),
-            "one turn → one correlation id (no phantom turn between)"
-        );
-    }
-
-    // ── R-4a: unconditional ingest (no subscriber → rows still stored) ───────
-
-    #[test]
-    fn ingest_is_unconditional_without_subscribers() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
-        assert_eq!(rtdb.registry().subscription_count(), 0);
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span(
-                "ses_uncond",
-                "sp-1",
-                true,
-                vec![attr_num("gen_ai.usage.input_tokens", 42)],
-            )]),
-        );
-        let row = rtdb
-            .cache()
-            .get_chat("ses_uncond", "ses_uncond_1")
-            .expect("read")
-            .expect("row stored with NO subscription — replay-critical");
-        assert_eq!(row.prompt_tokens, Some(42));
-        assert!(emitted(&sink).is_empty(), "no subscriber → no deliveries");
-    }
-
-    // ── R-1e: relationship registration + re-key (no removes, stamps) ────────
-
-    #[test]
-    fn relationship_registration_copies_child_rows_under_the_parent_key() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
-        rtdb.subscribe(
-            &["chat(sessionId = \"parent-s\") { userMessage, parentSessionId, compositedChildSessionId }".to_string()],
-            false,
-            Some(0),
-        )
-        .expect("subscribe");
-        assert!(emitted(&sink).is_empty());
-
-        // Turn 1 of the child: keyed under the CHILD session — no parent yet.
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span(
-                "child-s",
-                "sp-c1",
-                true,
-                vec![attr_num("gen_ai.usage.input_tokens", 10)],
-            )]),
-        );
-        assert!(
-            emitted(&sink).is_empty(),
-            "child-keyed rows do not match the parent query"
-        );
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("child-s", "child-s_1")
-                .expect("read")
-                .is_some(),
-            "child-keyed row intact"
-        );
-
-        // Turn 2 carries the parent attribution (session.parent_id) + a real
-        // agent name → registers the relationship and re-keys.
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span(
-                "child-s",
-                "sp-c2",
-                true,
-                vec![
-                    attr("session.parent_id", "parent-s"),
-                    attr("gen_ai.agent.name", "general"),
-                ],
-            )]),
-        );
-
-        let deliveries = emitted(&sink);
-        assert!(
-            !deliveries.is_empty(),
-            "parent-keyed copies must arrive as first-match inserts (SubagentNode creation)"
-        );
-        assert!(
-            deliveries.iter().all(|d| d.kind != RowChangeKind::Remove),
-            "BINDING: a re-key NEVER emits kind: remove"
-        );
-        for delivery in &deliveries {
-            assert_eq!(delivery.key.session_id, "parent-s");
-            let patch = delivery
-                .patch
-                .as_ref()
-                .and_then(|p| p.as_object())
-                .expect("patch");
-            assert_eq!(
-                patch.get("compositedChildSessionId"),
-                Some(&json!("child-s")),
-                "#523 stamp — the original child id on composited rows"
-            );
-            assert_eq!(patch.get("parentSessionId"), Some(&json!("parent-s")));
-        }
-
-        // The child's existing rows are queryable under BOTH keys.
-        let child_row = rtdb
-            .cache()
-            .get_chat("child-s", "child-s_1")
-            .expect("read")
-            .expect("child row intact");
-        assert_eq!(child_row.prompt_tokens, Some(10));
-        let copied = rtdb
-            .cache()
-            .get_chat("parent-s", "child-s_1")
-            .expect("read")
-            .expect("EXISTING child row copied under the parent key");
-        assert_eq!(copied.prompt_tokens, Some(10), "row content carried over");
-        assert_eq!(copied.composited_child_session_id.as_deref(), Some("child-s"));
-        assert_eq!(copied.parent_session_id.as_deref(), Some("parent-s"));
-        // The new (turn-2) row is also composited into the parent space.
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("parent-s", "child-s_2")
-                .expect("read")
-                .is_some(),
-            "post-registration child rows also copy under the parent key"
-        );
-    }
-
-    #[test]
-    fn internal_build_plan_agents_are_excluded_from_relationships() {
-        let (_dir, classifier, rtdb, sink) = make_classifier();
-        rtdb.subscribe(
-            &["chat(sessionId = \"parent-x\") { userMessage }".to_string()],
-            false,
-            Some(0),
-        )
-        .expect("subscribe");
-
-        classifier.ingest_otlp(
-            Transport::OtlpGrpc,
-            &envelope(vec![chat_span(
-                "child-build",
-                "sp-b1",
-                true,
-                vec![
-                    attr("session.parent_id", "parent-x"),
-                    attr("gen_ai.agent.name", "build"),
-                ],
-            )]),
-        );
-
-        assert!(
-            emitted(&sink).is_empty(),
-            "internal tool-execution agents register NO relationship (AGENTS.md #509)"
-        );
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("parent-x", "child-build_1")
-                .expect("read")
-                .is_none(),
-            "no parent-keyed copy was created"
-        );
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("child-build", "child-build_1")
-                .expect("read")
-                .is_some(),
-            "the child row itself is still ingested"
-        );
-    }
-
-    // ── IPC/CLI mock path (ingest_event) ─────────────────────────────────────
-
-    fn fredo_event(
-        event_type: EventType,
-        state: EventState,
-        session: &str,
-        payload: Value,
-    ) -> FredoEvent {
-        let mut event = FredoEvent::new(event_type, state);
-        event.provider = EventProvider::OpenCode;
-        event.session_id = session.to_string();
-        event.payload = Some(payload);
-        event
-    }
-
-    #[test]
-    fn ingest_event_maps_cli_mock_payloads_to_rows() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-
-        let chat = fredo_event(
-            EventType::Chat,
-            EventState::Init,
-            "e2e-session-1",
-            json!({
-                "message": { "role": "assistant", "content": [{ "type": "text", "text": "e2e-test: hello from mock event" }] }
-            }),
-        );
-        classifier.ingest_event(&chat);
-        let row = rtdb
-            .cache()
-            .get_chat("e2e-session-1", "e2e-session-1")
-            .expect("read")
-            .expect("mock chat event → chat row keyed by session (no correlation id)");
-        assert_eq!(row.state, RowState::Init);
-
-        // Canonical normalized fields (adapter-normalized payloads).
-        let mut chat2 = fredo_event(
-            EventType::Chat,
-            EventState::Response,
-            "e2e-session-2",
-            json!({
-                "userMessage": "fix the bug",
-                "agentReply": "done",
-                "promptTokens": 25,
-                "completionTokens": 12
-            }),
-        );
-        chat2.correlation_id = Some("e2e-corr-1".to_string());
-        classifier.ingest_event(&chat2);
-        let row2 = rtdb
-            .cache()
-            .get_chat("e2e-session-2", "e2e-corr-1")
-            .expect("read")
-            .expect("correlation-id-keyed row");
-        assert_eq!(row2.user_message.as_deref(), Some("fix the bug"));
-        assert_eq!(row2.agent_reply.as_deref(), Some("done"));
-        assert_eq!(row2.prompt_tokens, Some(25));
-        assert_eq!(row2.state, RowState::Response);
-
-        let mut tool = fredo_event(
-            EventType::ToolUse,
-            EventState::Error,
-            "e2e-tool-1",
-            json!({ "error": { "message": "intentional error for testing" } }),
-        );
-        tool.tool_name = Some("terminal".to_string());
-        classifier.ingest_event(&tool);
-        let tool_row = rtdb
-            .cache()
-            .get_tool_use("e2e-tool-1", "e2e-tool-1")
-            .expect("read")
-            .expect("mock tool event → tool row");
-        assert_eq!(tool_row.tool_name.as_deref(), Some("terminal"));
-        assert_eq!(
-            tool_row.tool_error.as_deref(),
-            Some("intentional error for testing")
-        );
-        assert_eq!(tool_row.state, RowState::Error);
-
-        let session = fredo_event(
-            EventType::AgentSession,
-            EventState::Response,
-            "e2e-lifecycle-1",
-            json!({ "totalTokens": 1024, "totalMessages": 3, "agent": "opencode" }),
-        );
-        classifier.ingest_event(&session);
-        let session_row = rtdb
-            .cache()
-            .get_agent_session("e2e-lifecycle-1", "e2e-lifecycle-1")
-            .expect("read")
-            .expect("mock session event → agent-session row");
-        assert_eq!(session_row.total_tokens, Some(1024));
-        assert_eq!(session_row.agent_name.as_deref(), Some("opencode"));
-
-        // Non-row-bearing event types classify to nothing.
-        let infra = fredo_event(EventType::Infrastructure, EventState::Init, "e2e-diag", json!({}));
-        assert_eq!(classifier.ingest_event(&infra), 0);
-    }
-
-    #[test]
-    fn ingest_event_registers_relationships_and_rekeys() {
-        let (_dir, classifier, rtdb, _sink) = make_classifier();
-        // A child event with the self-carried parent property + payload agent
-        // name — registers and re-keys (build/plan excluded).
-        let mut child = fredo_event(
-            EventType::Chat,
-            EventState::Init,
-            "child-e2e",
-            json!({ "userMessage": "child turn", "agent": "general" }),
-        );
-        child.parent_session_id = Some("parent-e2e".to_string());
-        classifier.ingest_event(&child);
-
-        let copied = rtdb
-            .cache()
-            .get_chat("parent-e2e", "child-e2e")
-            .expect("read")
-            .expect("child row copied under the parent key");
-        assert_eq!(copied.composited_child_session_id.as_deref(), Some("child-e2e"));
-        assert_eq!(copied.parent_session_id.as_deref(), Some("parent-e2e"));
-
-        // build/plan exclusion.
-        let mut internal = fredo_event(
-            EventType::Chat,
-            EventState::Init,
-            "child-build-e2e",
-            json!({ "userMessage": "internal turn", "agent": "plan" }),
-        );
-        internal.parent_session_id = Some("parent-e2e".to_string());
-        classifier.ingest_event(&internal);
-        assert!(
-            rtdb
-                .cache()
-                .get_chat("parent-e2e", "child-build-e2e")
-                .expect("read")
-                .is_none(),
-            "internal tool-execution agent (plan) never registers"
-        );
     }
 }

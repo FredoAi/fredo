@@ -17,32 +17,62 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
 - **bash:** deny-by-default. Everyone gets read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
   + `rust-script .opencode/scripts/pipeline-state.rs*` (your state-machine reads).
   **Read-only `git` (`git log/status/diff/branch/show/fetch/remote`) exists ONLY for
-  `developer`/`tester`/`self-improver`** — the three triage planners (`software-architect`,
+  `developer`/`tester`/`orchestrator`** — the three triage planners (`software-architect`,
   `ui-ux-expert`, `qa-expert`) have **no git commands at all** (deny-by-default breaks tool-loops,
   see [Loop mitigation](#loop-mitigation)). A planner never needs git — it edits its A2A section and
   reads repo files.
 - **Command chaining is DENIED for everyone** - `&&`, `;`, `|` never work. Run one command
-  per line.
+  per line. **Known machine residual (#3098, Machinist-flagged):** `set-permission` appends new
+  allow rules *after* the chain-deny block and opencode evaluates rules last-match-wins, so an
+  appended allow prefix (`git rm*`, `git clone*`, `git apply*`, `Test-Path*`, and since #3098
+  `git worktree add*` / `git worktree remove*`) can be matched ahead of a chain deny on a
+  compound command. The action refuses to re-add or reorder the chain denies; the durable fix is
+  script logic in the state machine (see `playbooks/references.md` § Pipeline Mechanics). Until
+  then the chain rule is belt-and-braces — still issue one command per call.
 - **Denied for all:** `gh issue create/edit/close`, `gh pr create/edit/merge/close`,
   force-push, `git push` to `main`/`master`, and edits outside your edit allowlist.
   No agent ever calls `gh`/`git` to write (single-writer rule) - draft content and request
   the state-machine action instead.
+- **Out-of-repo access is DENY-by-default (`external_directory`).** Each agent's block also
+  carries an `external_directory` map. opencode defaults that category to `ask` — which is NOT a
+  hard block (it auto-approves in `--auto`, and a single "always" approval re-opens the path for
+  the whole session), so an agent can reach out-of-repo files unless a rule DENIES them. The
+  sanctioned out-of-repo paths are the **app-data directory** (`%APPDATA%\com.fredo.app`, or
+  `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster), the
+  **installed-plugin path** (`~/.config/opencode/plugins/`), and — for `software-architect`,
+  `developer`, and `tester` only — the **local Cargo registry source tree**
+  (`~/.cargo/registry/src/**`) so an agent can read a pinned dependency's actual source during
+  research/implementation; everything else must be denied. **An explicit deny for one path
+  is not repo-scoping** (G-009 default-deny variant): the map must deny by default and re-allow
+  only those documented paths. The Machinist owns this map via
+  `set-permission --tool external_directory`.
+  A flat `read: "allow"` is unscoped and the action refuses flat categories, so
+  `external_directory` is the lever that scopes reads to the repo. **`external_directory` has no
+  read/write split** — a path rule re-allows the whole path, not one verb — so the Cargo entry is
+  a *path*-scoped re-allow (the registry source tree only), not a verb-scoped read-only exception.
+  Keep it that narrow: never widen it to `~/.cargo/**`, and grant it to no role outside the three
+  named here.
 
-## Editing agent permissions (the Self-Improver owns this)
+## Editing agent permissions (the Machinist owns this)
 
 An agent that hits a missing allowlist verb (a denied deletion, a new prerequisite command)
-does **not** route the change to the human. The **Self-Improver applies it itself**, through
+does **not** route the change to the human. The **Machinist applies it itself**, through
 the state machine's `set-permission` action:
 
 ```
-rust-script .opencode/scripts/pipeline-state.rs --agent self-improver --action set-permission \
-  --role <agent> --tool <category> --pattern "<glob>" --decision allow|deny
+rust-script .opencode/scripts/pipeline-state.rs --agent machinist --action set-permission \
+  --role <agent> --tool <category> [--pattern "<glob>"] --decision allow|ask|deny|remove
 ```
 
 - Scope is **agent `permission` blocks only** — the action refuses anything else and refuses
   a role/category that does not exist. It is text-surgical and order-preserving, because
   opencode evaluates permission rules **last-match-wins**; a new rule is appended (so an
   `allow` beats the preceding catch-all `deny`), and the document is re-validated before write.
+- `--pattern` is **optional**: with it, the rule inside the per-pattern map `permission.<tool>` is
+  set (`allow`/`ask`/`deny`) or deleted (`remove`, order-preserving); **without it, the top-level
+  `permission.<tool>` member itself is set/replaced (flat) or deleted** — the way a flat
+  tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the corrected key, then
+  `--decision remove` the dead one. A flat category is refused only when `--pattern` is given.
 - The rest of `opencode.json` (models, MCP servers, tool wiring, top-level settings) and
   `AGENTS.md` remain **human-owned**. A change there is proposed to the human, not applied.
 - Runtime note: `opencode.json` is read at startup, so a permission change takes effect on the
@@ -81,21 +111,26 @@ written. Four layers stop a loop; keep all four enabled:
 | Agent | edit | extra bash (beyond baseline) | gotchas / what is DENIED |
 |-------|------|-----------------------------|--------------------------|
 | `product-owner` | tmp + refs | (baseline only) | GitHub output: `create-issue` + `Status` comments (PO amendments, #2734); never gate artifacts. |
-| `software-architect` | tmp + refs | `sqlite3*` (read-only telemetry) | Research/planning only - no code edits, no gh/git writes. |
+| `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
 | `ui-ux-expert` | tmp + refs | (baseline only) | Design assets only - no code edits. |
-| `qa-expert` | tmp + refs + `.opencode/tests/**` | `sqlite3*` | Writes only under `.opencode/tests/`; sole test-suite author. |
-| `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. |
-| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `clean-fredo-db.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the live DB is deleted via `clean-fredo-db.ps1`, NOT a direct path (sandbox denies it, G-009). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Run CLI feature (write_pty_input, never `opencode run`). |
-| `self-improver` | **allow** | `sqlite3`, `dev-env.ps1`, `clean-fredo-db.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git push origin main` (doc-sync ONLY), `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO force-push, NO `git push origin main` except the doc-sync, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Run CLI. |
+| `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
+| `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git worktree add*/remove*` (#3098), `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*` | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. **NO `git pull`** — deliberately not granted (#3098): sync with `git fetch` then `git rebase origin/spec/<N>`, since a bare pull can merge main outside the SHA-pinned form. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
+| `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git worktree add*/remove*` (#3098), `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). **NO `git pull`** (same decision as the developer: fetch + rebase). NO gh writes, NO command chains. NO direct `opencode` CLI invocation — live opencode sessions are launched ONLY through Fredo's Terminal feature (write_pty_input, never `opencode run`). `external_directory` **denies by default** — the app-data directory, the installed-plugin path, and `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) are the only re-allowed paths (G-009), so no other out-of-repo read/write is reachable. |
+| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO `git push origin main` (denied — the post-audit gate opens + force-merges (`--admin`) the single `maint/<N>` SPEC MAINT PR through the machine's `maint-pr` action instead), NO force-push, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `auditor` | tmp only | (baseline only) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
+| `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | (baseline only) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
+| `toolsmith` | tmp + `.opencode/skills/**` + `.opencode/scripts/**` (`pipeline-state.rs` denied) + `.opencode/tests/**` | `test-scripts.ps1` | Reusable capability only — every script ships with its skill + a test. No gh/git writes. |
+| `machinist` | tmp + `.opencode/scripts/pipeline-state.rs` + `.opencode/pipeline.json` + `.opencode/skills/pipeline-state/**` + `docs/agentic-pipeline/state-machine.md` | `test-scripts.ps1` | The state machine, permissions/sandbox, and measurement. Every state-machine edit passes `test-scripts.ps1`. No gh/git writes. |
 
 ## Final-report issues section (required)
 
-Every agent's **final report** back to the orchestrator (the Self-Improver) MUST end with an
+Every agent's **final report** back to the Orchestrator MUST end with an
 `## Issues & tool-access gaps` section listing:
 
 1. **problems** you hit (blockers, stalls, confusing behavior),
 2. **tools/commands you could NOT use** (and why - permission denied? not installed? wrong path?),
-3. **tools you would like to have** (and what you would use them for).
+3. **tools you would like to have** (and what you would use them for),
+4. **recurring ad-hoc scripts** — any launcher, port probe, config inspector, or receipt script you improvised under `.opencode/tmp/<issue>/`, with its path and how many runs/rounds it recurred (a one-off dump stays ad-hoc; a script run more than once is a promotion candidate the Orchestrator routes to the Toolsmith; the motivating case is #3077).
 
-This is the channel by which the SI learns about subagent pain points. If you had no issues,
-state that explicitly ("none"). The SI reads this section and routes/tracks the gaps.
+This is the channel by which the Orchestrator learns about subagent pain points. If you had no issues,
+state that explicitly ("none"). The Orchestrator reads this section and routes/tracks the gaps.

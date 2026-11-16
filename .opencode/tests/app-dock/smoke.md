@@ -1,5 +1,11 @@
 # app-dock — Smoke
 
+> **RETIRED by #2954 — DO NOT RUN against the post-#2954 build.** The persistent dock is REMOVED
+> (no `app-dock` / `data-dock-entry` / `data-dock-item` / `.dock-close`); the open-apps surface moved
+> INTO the engaged launcher. Every row below is HISTORICAL (pre-#2954). The live assertions now live
+> in `.opencode/tests/launcher/smoke.md` `#2954 extension` (S-38/S-39). The relocated `dock-arrange`
+> is PRESERVED (see launcher R-71 / workspace-layout).
+
 - [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>` (**PASS** — DOM snapshots throughout the rounds returned non-empty element sets; the Fredo desktop rendered FREDO logo band, clock, settings, launcher)
 - [x] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded` (**PASS** — console read after every leg across rounds 1 & 2; zero of the three signatures)
 - [x] S-3: Dock surface reachable — open ≥1 window (launcher grid / desktop toolbar); the dock renders its open-app entries (Sidebar default: left-edge rail `[data-testid="app-dock"]` / `role="region" aria-label="Open applications"` → `list` → `listitem` per open app) (**PASS** — opening Mission Monitor/Query Viewer rendered the dock region → list → listitem with per-window `aria-label` entries; empty-gate verified: 0 windows → no dock)
