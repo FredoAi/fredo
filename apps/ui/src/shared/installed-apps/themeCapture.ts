@@ -43,27 +43,18 @@
  * * A failed push never touches the host's own theme: it is logged and dropped.
  */
 
-import { adapterBridge } from '../utils/adapterBridge';
 import { luminance, parseColor } from '../../app/theme/contrast/wcag';
+// ST-6 landed the ONE wire-type home (`types.ts`) and the typed command seam
+// (`client.ts`) — imported here rather than redeclared, so the transport's shape
+// and its invoke path each have exactly one owner.
+import { pushTheme } from './client';
+import type { FredoThemeToken, FredoThemeTokens } from './types';
 
 /** The command the backend registers for the mirror write + live broadcast. */
 export const FREDO_THEME_PUSH_COMMAND = 'installed_apps_push_theme';
 
 /** The one derived appearance value the transport carries (`FredoThemeTokens`). */
-export type ColorScheme = 'light' | 'dark';
-
-/** Wire mirror of the backend's `ThemeToken` (camelCase, no optional fields). */
-export interface FredoThemeToken {
-  name: string;
-  value: string;
-}
-
-/** Wire mirror of the backend's `ThemePayload` — no optional fields, so the
- *  absent-key case does not exist for this payload. */
-export interface FredoThemeTokens {
-  tokens: FredoThemeToken[];
-  colorScheme: ColorScheme;
-}
+export type ColorScheme = FredoThemeTokens['colorScheme'];
 
 /**
  * WCAG relative luminance at which a surface stops reading as dark. `0.5` is the
@@ -198,7 +189,9 @@ export async function pushCapturedTheme(): Promise<void> {
   const payload = captureDocumentTheme();
   if (payload.tokens.length === 0) return;
   try {
-    await adapterBridge.invoke(FREDO_THEME_PUSH_COMMAND, { payload });
+    // ST-6's typed seam — `adapterBridge.invoke('installed_apps_push_theme', …)`
+    // lives there, so the command name has ONE owner in the frontend.
+    await pushTheme(payload);
   } catch (error) {
     console.warn('[installed-apps] the theme push failed; the host theme is unaffected', error);
   }
