@@ -995,11 +995,30 @@ A command reaches a built-in window only through all three. A command registered
 
 **Installed applications match no capability.** No capability `windows` list includes an `installed-` label, so an installed application's window (`installed-<id>`) is refused **every** application command — that is the isolation mechanism, and it is carried entirely by the label sets (see `docs/SECURITY.md` § Tauri Capabilities). `permissions/app/default.toml` is a permission set referenced from a capability, never a capability itself.
 
-`mcp-bridge:default` is **not** part of the production capability: it lives only in `capabilities/mcp-bridge-dev.json`. That capability is inert in a release build because the plugin is registered under `#[cfg(debug_assertions)]` (`src/lib.rs:169-179`) — no bridge port is bound and no bridge command exists. Both capability files are auto-loaded in every build (no explicit `app.security.capabilities` list is used), so release-absence comes from that runtime gate.
+`mcp-bridge:default` is **not** part of the production capability: it lives only in `capabilities/mcp-bridge-dev.json`. That capability is inert in a release build because the plugin is registered under `#[cfg(debug_assertions)]` (`src/lib.rs:169-179`) — no bridge port is bound and no bridge command exists. All three capability files (`default.json`, `mcp-bridge-dev.json`, `app-commands.json`) are auto-loaded in every build (no explicit `app.security.capabilities` list is used), so release-absence comes from that runtime gate.
 
 No capability grants a shell-plugin command: `shell:allow-open`, `shell:allow-spawn` and `shell:allow-execute` were removed because no product source calls the shell plugin (`tauri_plugin_shell::init()` remains registered at `src/lib.rs:167` but is inert without a grant). Backend process spawning uses `std::process::Command` / `portable_pty`.
 
 **CSP and global Tauri.** The production CSP (`app.security.csp`) keeps `script-src 'self' blob: 'wasm-unsafe-eval'` (no `'unsafe-inline'`), retains `style-src 'self' 'unsafe-inline'` for Chakra UI v3 / emotion runtime styles, and leaves `img-src`, `connect-src` and `worker-src blob:` unchanged. `app.security.devCsp` is the dev-only policy that still permits `script-src 'unsafe-inline'` for Vite HMR. `app.withGlobalTauri` is `false`, so a shipped webview has no `window.__TAURI__`; product code uses `__TAURI_INTERNALS__` only. The dev-only `tauri.dev.conf.json` override (merged by `tauri dev --config`) restores `withGlobalTauri: true` for the MCP driver in development.
+
+### The `fredoapp` origin (Spec #3147 ST-3)
+
+An installed application is a **document at an origin the host does not own**. `lib.rs` registers the custom URI scheme `fredoapp` (`Builder::register_uri_scheme_protocol`), which Tauri exposes as `fredoapp://localhost` on macOS/Linux and `http://fredoapp.localhost` on Windows/Android — distinct from the host's `tauri://localhost` / `http://tauri.localhost` and from the dev server's `http://localhost:5174`. Both spellings arrive at the handler with `<id>/<relative>` in the URL path, so routing is path-based and platform-agnostic.
+
+`applications/installed_apps/scheme.rs` owns four things and nothing else:
+
+| Concern | Rule |
+|---|---|
+| Routing | `/<id>/` serves the app's `entry.document`; `/<id>/<relative>` serves a file **only** if it resolves inside `<id>/files/`; `/__fredo/bootstrap.js` is the one host path. `record.json`/`manifest.json` live outside `files/` and have no route, so they are unreachable; nothing is ever listed. |
+| Integrity at serve time (AC-4.4, CWE-367) | Each requested file is read **once**, that same buffer is hashed, the hash is compared to the install record, and **that buffer** is served. An unrecorded file has no route (the record is the whitelist). |
+| The child's policy | The handler authors `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'` on every response. `app.security.csp` is injected only for Tauri's own asset protocol, so `tauri.conf.json` needs and gets no edit — the child's policy is per-document. `connect-src` keeps the IPC transport reachable deliberately, so an installed app's command attempt is refused by the **ACL** rather than by the network. |
+| The served document | The app's HTML with the host-authored `<style>` (the theme custom properties + the panel styles) and `__fredo/bootstrap.js` injected. The bootstrap owns the loading → usable / loading → failure (with Retry) lifecycle, in the same document, at the same origin. |
+
+Because the child policy's `connect-src` allows only the IPC transport, the bootstrap loads the app's module with `import()` (`script-src 'self'`), never `fetch()` — a fetch of an app file would be blocked by our own policy.
+
+The theme is inlined at serve time from `installed_apps::theme_state` (an in-memory mirror the host pushes into), so a **correctly-themed first paint needs no IPC**; with an empty mirror a documented system-colour fallback is used. When the entry document no longer matches its pin, the handler serves a host-authored failure document carrying `startupFailure: "integrity_mismatch"` — not one byte of the mutated document, and never an HTTP error page no script can decorate.
+
+Every request emits one `tracing` line on target `fredo::installed_apps` with message `installed-app serve` and the request `url` — the host-side instrument the QA serve-line receipt greps for.
 
 ---
 

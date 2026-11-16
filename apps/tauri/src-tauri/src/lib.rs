@@ -205,6 +205,31 @@ pub fn run() {
             .build()
     );
 
+    // Spec #3147 ST-3 — the installed-application origin.
+    //
+    // Registering the `fredoapp` scheme is what makes an installed application a
+    // DOCUMENT at an origin the host does not own: Tauri maps it to
+    // `fredoapp://localhost` on macOS/Linux and `http://fredoapp.localhost` on
+    // Windows/Android, both of which differ from the host's
+    // `tauri://localhost` / `http://tauri.localhost`. The handler (`scheme.rs`)
+    // owns routing, verify-at-serve and the child document's CSP; it is
+    // registered here unconditionally (not debug-only) because the origin is the
+    // product's isolation mechanism.
+    //
+    // This registration performs NO work: it stores a closure. No window is
+    // created, no install directory is read and no document is built until a
+    // request arrives — which is what keeps R-5.5's "nothing installed-app-shaped
+    // happens at startup" true.
+    let builder = builder.register_uri_scheme_protocol(
+        applications::installed_apps::scheme::INSTALLED_APP_SCHEME,
+        |context, request| {
+            applications::installed_apps::scheme::handle_uri_request(
+                context.app_handle(),
+                request,
+            )
+        },
+    );
+
     builder.setup(|app| {
             // The setup closure is `'static`, so it re-reads the same `FREDO_*`
             // variables through the ONE resolver (`EnvConfig`) — resolution logic

@@ -14,6 +14,8 @@
 //! | [`archive`] | ZIP reading, entry-name safety (zip-slip, reserved paths, non-regular entries) and the three archive budgets |
 //! | [`store`] | the on-disk install root, `manifest.json`/`record.json`/`files/`, SHA-256 pinning, the atomic install transaction, and the registry listing |
 //! | [`commands_install`] | exactly `installed_app_install` and `installed_apps_list` |
+//! | [`scheme`] | the `fredoapp` URI-scheme handler: routing, path-escape refusal, verify-at-serve, MIME, the child document's CSP and the served document |
+//! | [`theme_state`] | the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror |
 //!
 //! # Why the refusal codes live here
 //!
@@ -25,16 +27,20 @@
 //!
 //! # Non-goals this module keeps
 //!
-//! No window is created (ST-4), no document is served (ST-3), no theme is
-//! pushed (ST-5), no registry/update/signature path exists, and no installed-app
-//! work happens at startup (R-5.5) — [`commands_install::installed_apps_list`]
-//! is the only reader of the install root and nothing calls it from `lib.rs`'s
-//! setup closure.
+//! No window is created (ST-4), no theme is pushed (ST-5), no
+//! registry/update/signature path exists, and no installed-app work happens at
+//! startup (R-5.5) — [`commands_install::installed_apps_list`] is the only
+//! reader of the install root and nothing calls it from `lib.rs`'s setup
+//! closure. [`scheme`] serves bytes only (ST-3): registering the scheme
+//! performs no read, and [`theme_state`] is empty until the host's theme effect
+//! pushes a value.
 
 pub mod archive;
 pub mod commands_install;
 pub mod manifest;
+pub mod scheme;
 pub mod store;
+pub mod theme_state;
 
 use serde::{Deserialize, Serialize};
 
