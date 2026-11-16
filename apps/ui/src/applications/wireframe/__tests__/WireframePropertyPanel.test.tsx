@@ -24,6 +24,7 @@ import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { WireframePropertyPanel } from '../components/WireframePropertyPanel';
 import {
   WireframeNavigationProvider,
+  getWireframeHostJournal,
   handleWireframeKeyDown,
   useWireframeNavigation,
 } from '../components/WireframeNavigationProvider';
@@ -34,7 +35,6 @@ import {
 } from '../model/elements';
 import {
   dispatch,
-  getNavigationJournal,
   getSnapshot,
   resetWireframeStoreForTests,
   select,
@@ -627,11 +627,11 @@ describe('the panel is the details view — every edit dispatches a declared ver
   it('a fill edit appends one journal entry carrying the declared style verb id', async () => {
     const element = addElement('shape');
     renderPanel();
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     await clickControl('wireframe-fill-accent');
 
-    const entries = getNavigationJournal().entries();
+    const entries = getWireframeHostJournal().entries();
     expect(entries).toHaveLength(before + 1);
     const entry = entries[entries.length - 1];
     expect(entry.verbId).toBe('wireframe.style.fill');
@@ -643,13 +643,13 @@ describe('the panel is the details view — every edit dispatches a declared ver
   it('a field edit dispatches wireframe.element.setField', () => {
     const element = addElement('text');
     renderPanel();
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     fireEvent.change(screen.getByTestId('wireframe-text-content'), {
       target: { value: 'Hero headline' },
     });
 
-    const entries = getNavigationJournal().entries();
+    const entries = getWireframeHostJournal().entries();
     expect(entries).toHaveLength(before + 1);
     expect(entries[entries.length - 1].verbId).toBe('wireframe.element.setField');
     expect(elementFromStore(element.id)).toMatchObject({ text: 'Hero headline' });
@@ -658,16 +658,16 @@ describe('the panel is the details view — every edit dispatches a declared ver
   it('visible and lock dispatch the declared Edit toggle verbs', async () => {
     const element = addElement('text');
     renderPanel();
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     await toggleSwitch('wireframe-visible-switch');
-    let entries = getNavigationJournal().entries();
+    let entries = getWireframeHostJournal().entries();
     expect(entries).toHaveLength(before + 1);
     expect(entries[entries.length - 1].verbId).toBe('wireframe.element.toggleVisible');
     expect(elementFromStore(element.id)).toMatchObject({ visible: false });
 
     await toggleSwitch('wireframe-lock-switch');
-    entries = getNavigationJournal().entries();
+    entries = getWireframeHostJournal().entries();
     expect(entries).toHaveLength(before + 2);
     expect(entries[entries.length - 1].verbId).toBe('wireframe.element.toggleLock');
     expect(elementFromStore(element.id)).toMatchObject({ locked: true });
@@ -677,7 +677,7 @@ describe('the panel is the details view — every edit dispatches a declared ver
     const element = addElement('text');
     renderPanel();
     const field = screen.getByTestId('wireframe-text-content') as HTMLTextAreaElement;
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     await act(async () => {
       await host().runVerb('wireframe.element.rename', 'pointer', {});
@@ -688,7 +688,7 @@ describe('the panel is the details view — every edit dispatches a declared ver
     expect(field.selectionEnd).toBe(element.text.length);
     // A navigation effect — no document name is written.
     expect(elementFromStore(element.id)).toMatchObject({ text: element.text });
-    const entries = getNavigationJournal().entries();
+    const entries = getWireframeHostJournal().entries();
     expect(entries[entries.length - 1].verbId).toBe('wireframe.element.rename');
     expect(entries).toHaveLength(before + 1);
   });
@@ -719,7 +719,7 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
     input.focus();
     expect(input).toHaveFocus();
 
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     // Discrimination instrumentation (ST-4(c)): record every activeElement change while the
     // user types + deletes. A remount would surface here as a blur to `body`.
@@ -737,14 +737,14 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
       await user.type(input, 'a');
 
       expect(labelFromStore(element.id)).toBe('a');
-      expect(getNavigationJournal().entries()).toHaveLength(before + 1);
+      expect(getWireframeHostJournal().entries()).toHaveLength(before + 1);
       // The focus-loss half: the SAME DOM node is still the active element after the commit.
       expect(document.activeElement).toBe(input);
 
       await user.keyboard('{Backspace}');
 
       expect(labelFromStore(element.id)).toBe('');
-      const entries = getNavigationJournal().entries();
+      const entries = getWireframeHostJournal().entries();
       expect(entries).toHaveLength(before + 2);
       const entry = entries[entries.length - 1];
       expect(entry.verbId).toBe('wireframe.element.setField');
@@ -769,7 +769,7 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
 
     const input = screen.getByTestId('wireframe-card-label') as HTMLInputElement;
     input.focus();
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     await user.type(input, 'a');
     expect(labelFromStore(element.id)).toBe('a');
@@ -779,7 +779,7 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
     await user.type(input, 'b');
     expect(labelFromStore(element.id)).toBe('ab');
     expect(input).toHaveValue('ab');
-    expect(getNavigationJournal().entries()).toHaveLength(before + 2);
+    expect(getWireframeHostJournal().entries()).toHaveLength(before + 2);
     // Same node, caret preserved at the end of the two-character draft.
     expect(document.activeElement).toBe(input);
     expect(caretAfterFirst).toBe(1);
@@ -792,13 +792,13 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
 
     const input = screen.getByTestId('wireframe-card-label') as HTMLInputElement;
     input.focus();
-    const before = getNavigationJournal().entries().length;
+    const before = getWireframeHostJournal().entries().length;
 
     fireEvent.keyDown(input, { key: 'f' });
     await settle();
 
     // The text control keeps the key: no place transition, no journal entry.
-    expect(getNavigationJournal().entries()).toHaveLength(before);
+    expect(getWireframeHostJournal().entries()).toHaveLength(before);
     expect(host().getSnapshot().context.placePath).toEqual(['wireframe.canvas']);
     expect(labelFromStore(element.id)).toBe('');
 
@@ -807,7 +807,7 @@ describe('details text input — deletion and focus retention (R-5.1 / R-5.2 / R
     root.focus();
     fireEvent.keyDown(root, { key: 'f' });
     await settle();
-    expect(getNavigationJournal().entries()).toHaveLength(before + 1);
+    expect(getWireframeHostJournal().entries()).toHaveLength(before + 1);
     expect(host().getSnapshot().context.placePath).toEqual([
       'wireframe.canvas',
       'wireframe.file',

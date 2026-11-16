@@ -55,13 +55,13 @@ import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import {
   WireframeNavigationProvider,
+  getWireframeHostJournal,
   useWireframeNavigation,
 } from '../components/WireframeNavigationProvider';
 import { WIREFRAME_SURFACE_APP_ID } from '../wireframeSurface';
 import { WireframeEditor } from '../components/WireframeEditor';
 import {
   clearSelection,
-  getNavigationJournal,
   getSnapshot,
   loadDocument,
   resetWireframeStoreForTests,
@@ -381,7 +381,7 @@ describe('WireframeNavigationProvider — host registry + composer bridge (R-1.8
 
   it('pressing `k` publishes exactly one composer request for wireframe and journals nothing', async () => {
     renderWithChakra(React.createElement(WireframeEditor));
-    const entriesBefore = getNavigationJournal().entries().length;
+    const entriesBefore = getWireframeHostJournal().entries().length;
 
     const requests = captureComposerRequests(() => {
       fireEvent.keyDown(root(), { key: 'k' });
@@ -389,7 +389,7 @@ describe('WireframeNavigationProvider — host registry + composer bridge (R-1.8
 
     expect(requests).toEqual([{ source: 'keyboard', appId: 'wireframe', focus: true }]);
     // Ask is not an editor mutation — the consumed stroke appends no journal entry.
-    expect(getNavigationJournal().entries().length).toBe(entriesBefore);
+    expect(getWireframeHostJournal().entries().length).toBe(entriesBefore);
   });
 });
 

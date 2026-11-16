@@ -32,6 +32,7 @@ import React, {
 } from 'react';
 
 import type { Channel, ContextSnapshot, DispatchResult } from '../../../shared/navigation';
+import { createJournalStore, type JournalStore } from '../../../shared/navigation/journal';
 import {
   createNavigationHost,
   registerNavigationHost,
@@ -42,7 +43,6 @@ import {
 import { isTextControl } from '../../../shared/navigation/focusContext';
 import {
   applyDocumentPatch,
-  getNavigationJournal,
   getSnapshot,
   getWireframeContext,
   setWireframeContextProvider,
@@ -57,6 +57,34 @@ import {
   wireframeSurface,
 } from '../wireframeSurface';
 import type { Surface } from '../../../shared/navigation';
+
+/* ───────────────────────────── host journal ───────────────────────────── */
+
+/**
+ * The navigation host's own session journal (Spec #3151, ST-3).
+ *
+ * This is NO LONGER the undo authority: the Wireframe document store owns its
+ * bounded app-local history (`store/wireframeHistory.ts`) and the store's
+ * `undo()`/`redo()`/`canUndo`/`canRedo` read only that. This journal survives
+ * only because the still-mounted rail/trail projections read entry attribution
+ * until ST-5/ST-6 delete them together with the engine; it dies with this file.
+ */
+const hostJournal: JournalStore = createJournalStore();
+
+/** The current host journal (the surviving engine-surface suites read it). */
+export function getWireframeHostJournal(): JournalStore {
+  return hostJournal;
+}
+
+/**
+ * Test-only: clear the host journal IN PLACE. The store's
+ * `resetWireframeStoreForTests` used to clear the shared journal; now that the
+ * host owns its own instance, a suite that asserts absolute entry counts must
+ * clear this too. Same instance, same call shape — no second undo container.
+ */
+export function resetWireframeHostJournalForTests(): void {
+  hostJournal.commit([], []);
+}
 
 /* ───────────────────────────── context ───────────────────────────── */
 
@@ -87,7 +115,7 @@ export function WireframeNavigationProvider({
     const host = createNavigationHost({
       surface: wireframeSurface,
       getContext: getWireframeContext,
-      journal: getNavigationJournal(),
+      journal: hostJournal,
       applyPatch: (patch) =>
         applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
       // Spec #3120 (P6) §9.1 — launcher/voice/agent intents ask the launcher to confirm;

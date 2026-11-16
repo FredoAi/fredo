@@ -20,7 +20,6 @@ import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { createDefaultElement } from '../model/elements';
 import {
   dispatch,
-  getNavigationJournal,
   getSnapshot,
   resetWireframeStoreForTests,
   select,
@@ -32,7 +31,9 @@ import {
 } from '../wireframeSurface';
 import {
   WireframeNavigationProvider,
+  getWireframeHostJournal,
   handleWireframeKeyDown,
+  resetWireframeHostJournalForTests,
   useWireframeNavigation,
 } from '../components/WireframeNavigationProvider';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -75,7 +76,7 @@ function place(): string {
 }
 
 function entries() {
-  return getNavigationJournal().entries();
+  return getWireframeHostJournal().entries();
 }
 
 async function press(key: string): Promise<void> {
@@ -106,7 +107,7 @@ function primaryFill(): string | undefined {
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetNavigationAnnouncer();
+  resetWireframeHostJournalForTests();
   resetNavigationAnnouncer();
   currentHost = null;
 });
@@ -115,7 +116,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetNavigationAnnouncer();
+  resetWireframeHostJournalForTests();
   resetNavigationAnnouncer();
   currentHost = null;
   vi.restoreAllMocks();

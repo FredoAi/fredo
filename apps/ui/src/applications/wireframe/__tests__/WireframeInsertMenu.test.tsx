@@ -17,13 +17,10 @@ import type { NavigationHost } from '@/shared/navigation/ui/host';
 import { WireframeInsertMenu } from '../components/WireframeInsertMenu';
 import {
   WireframeNavigationProvider,
+  getWireframeHostJournal,
   useWireframeNavigation,
 } from '../components/WireframeNavigationProvider';
-import {
-  getNavigationJournal,
-  getSnapshot,
-  resetWireframeStoreForTests,
-} from '../store/wireframeDocumentStore';
+import { getSnapshot, resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
 import { resetWireframeSurfaceForTests } from '../wireframeSurface';
 
 let currentHost: NavigationHost | null = null;
@@ -129,7 +126,7 @@ describe('wireframe insert menu (Spec #3119, ST-6)', () => {
     });
     const elements = getSnapshot().document.elements;
     expect(elements[0]).toMatchObject({ type: 'section', preset: 'footer' });
-    const entries = getNavigationJournal().entries();
+    const entries = getWireframeHostJournal().entries();
     expect(entries[entries.length - 1].verbId).toBe('wireframe.add.section');
     expect(host().getSnapshot().context.placePath).toEqual(['wireframe.canvas']);
   });

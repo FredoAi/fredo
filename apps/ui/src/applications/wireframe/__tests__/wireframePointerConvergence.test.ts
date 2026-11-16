@@ -24,13 +24,14 @@ import type { NavigationHost } from '@/shared/navigation/ui';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
 import {
   WireframeNavigationProvider,
+  getWireframeHostJournal,
+  resetWireframeHostJournalForTests,
   useWireframeNavigation,
   wireframeStrokeTarget,
 } from '../components/WireframeNavigationProvider';
 import { createNewWireframeDocument, type WireframeDocument } from '../model/document';
 import type { WireframeElement } from '../model/elements';
 import {
-  getNavigationJournal,
   getSnapshot,
   loadDocument,
   resetWireframeStoreForTests,
@@ -248,7 +249,7 @@ function host(): NavigationHost {
 }
 
 function journalEntries() {
-  return getNavigationJournal().entries();
+  return getWireframeHostJournal().entries();
 }
 
 function lastEntry() {
@@ -351,7 +352,7 @@ async function dragCreate(
 beforeEach(() => {
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
-  resetNavigationAnnouncer();
+  resetWireframeHostJournalForTests();
   resetNavigationAnnouncer();
   hostRef = null;
   konvaMock.stageProps = null;
@@ -388,6 +389,7 @@ afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
   resetWireframeSurfaceForTests();
+  resetWireframeHostJournalForTests();
   resetNavigationAnnouncer();
   resetNavigationAnnouncer();
   hostRef = null;

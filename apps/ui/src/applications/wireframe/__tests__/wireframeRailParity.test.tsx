@@ -42,6 +42,7 @@ import {
 } from '@/shared/navigation/ui';
 import { WIREFRAME_ACTIONS } from '../actions/wireframeActions';
 import { WireframeEditor } from '../components/WireframeEditor';
+import { getWireframeHostJournal } from '../components/WireframeNavigationProvider';
 import {
   DEFAULT_ICON_ID,
   DEFAULT_SECTION_PRESET,
@@ -51,7 +52,6 @@ import {
 import {
   applyDocumentPatch,
   dispatch,
-  getNavigationJournal,
   getSnapshot,
   resetWireframeStoreForTests,
   select,
@@ -233,9 +233,9 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
     expect(screen.getByTestId(NAV_MAP_TESTID)).toBeInTheDocument();
     await closeMap();
 
-    const entriesBefore = getNavigationJournal().entries().length;
+    const entriesBefore = getWireframeHostJournal().entries().length;
     await press('/');
-    expect(getNavigationJournal().entries().length).toBe(entriesBefore);
+    expect(getWireframeHostJournal().entries().length).toBe(entriesBefore);
     expect(screen.queryByTestId(NAV_MAP_TESTID)).toBeNull();
   });
 
@@ -352,7 +352,7 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
       true,
     );
 
-    const journalBefore = getNavigationJournal().entries().length;
+    const journalBefore = getWireframeHostJournal().entries().length;
     await act(async () => {
       select(null);
     });
@@ -362,7 +362,7 @@ describe('rail + map replace the bar and the toolbar (R-3 / AC3)', () => {
         .every((row) => row.getAttribute('data-nav-availability') === 'disabled'),
     ).toBe(true);
     // A selection change is editor state: it never journals.
-    expect(getNavigationJournal().entries().length).toBe(journalBefore);
+    expect(getWireframeHostJournal().entries().length).toBe(journalBefore);
   });
 });
 

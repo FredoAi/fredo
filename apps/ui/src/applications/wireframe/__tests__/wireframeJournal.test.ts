@@ -1,17 +1,22 @@
 /**
- * Wireframe journal — the single mutation + undo authority (Spec #3119, ST-2 / R-5).
+ * Wireframe document history — one entry per mutation, one undo authority
+ * (Spec #3119 ST-2 / R-5; re-pointed by Spec #3151, ST-3 / AC4).
  *
- * The store's compatibility funnel (`dispatch`) commits exactly ONE human entry
- * per document mutation to the module-scoped journal; `undo`/`redo` are
- * journal-backed shims. The last two cases exercise the journal/trail model the
- * P5 host consumes (the host itself lands in ST-4).
+ * The store used to commit every mutation to the shared navigation journal and
+ * shim `undo`/`redo` off it. Spec #3151 deletes that journal, so the store now
+ * owns a bounded app-local `WireframeHistory`: these cases pin the SAME
+ * externally observable contract (one undo step per mutation, undo then redo,
+ * field-scoped deltas) against the new home.
+ *
+ * The two trailing cases still exercise the ENGINE's trail projection over a
+ * journal instance the test owns; they assert nothing about the store and die
+ * with the engine in ST-6.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { appendEntry } from '../../../shared/navigation/journal';
-import type { Surface } from '../../../shared/navigation/types';
-import { createNavigationHost } from '../../../shared/navigation/ui/host';
+import type { JournalEntry, Surface } from '../../../shared/navigation/types';
 import { buildActivityTrailModel } from '../../../shared/navigation/ui/models';
 import { createNewWireframeDocument } from '../model/document';
 import {
@@ -20,25 +25,23 @@ import {
   type WireframeElementType,
 } from '../model/elements';
 import {
-  applyDocumentPatch,
   dispatch,
-  getNavigationJournal,
   getSnapshot,
   getWireframeContext,
+  getWireframeHistory,
   loadDocument,
   redo,
   resetWireframeStoreForTests,
   select,
   setWireframeContextProvider,
   undo,
-  type WireframeDocumentPatch,
 } from '../store/wireframeDocumentStore';
 
 beforeEach(() => {
   resetWireframeStoreForTests();
 });
 
-/** Load a saved (journal-free) document with the given element ids. */
+/** Load a saved (history-free) document with the given element ids. */
 function seed(ids: readonly string[]): void {
   const base = createNewWireframeDocument('desktop');
   const elements = ids.map((id) =>
@@ -52,7 +55,7 @@ function makeElement(type: WireframeElementType, id: string): WireframeElement {
   return createDefaultElement(type, { page, elements: [], id });
 }
 
-/** The smallest declaration the host/trail projections need (the real surface is ST-3). */
+/** The smallest declaration the trail projection needs (the real surface is ST-5). */
 function minimalSurface(): Surface {
   const place = (id: string, label: string, parent: string | null) => ({
     id,
@@ -82,8 +85,8 @@ function minimalSurface(): Surface {
   };
 }
 
-describe('the journal is the single mutation authority (R-5)', () => {
-  it('every document mutation appends exactly one human entry with the verb id and place path', () => {
+describe('the app-local history is the single mutation authority (AC4)', () => {
+  it('every document mutation records exactly one entry with the action id', () => {
     seed(['a']);
     setWireframeContextProvider(() => ({
       appId: 'wireframe',
@@ -95,16 +98,16 @@ describe('the journal is the single mutation authority (R-5)', () => {
 
     expect(dispatch('element.update', { id: 'a', patch: { x: 77 } })).toBe(true);
 
-    const entries = getNavigationJournal().entries();
+    const entries = getWireframeHistory().entries();
     expect(entries).toHaveLength(1);
     const [entry] = entries;
-    expect(entry.actor).toBe('human');
-    // The store funnel's verb id is the store action id; the P5 surface verbs
-    // (ST-3) pass their declared verb id through the engine's own append.
+    // The store funnel's verb id is the store action id.
     expect(entry.verbId).toBe('element.update');
-    expect(entry.placePath).toEqual(['wireframe.canvas', 'wireframe.create']);
-    expect(entry.effect).toBe('mutation');
-    expect(entry.undoable).toBe(true);
+    expect(entry.label).toBe('Update Card');
+    // `before` reverts the edit; `after` re-applies it.
+    expect(entry.before).toBeTruthy();
+    expect(entry.after).toBeTruthy();
+    expect(entry.seq).toBe(1);
 
     // `setWireframeContextProvider` publishes the primary element TYPE first.
     expect(getWireframeContext().selection).toEqual({
@@ -115,7 +118,7 @@ describe('the journal is the single mutation authority (R-5)', () => {
     });
   });
 
-  it('undo restores the previous document and journals one system entry', () => {
+  it('undo restores the previous document and records no extra entry', () => {
     seed(['a']);
     dispatch('element.update', { id: 'a', patch: { x: 12 } });
     const mutated = getSnapshot().document;
@@ -124,25 +127,22 @@ describe('the journal is the single mutation authority (R-5)', () => {
 
     expect(getSnapshot().document).not.toBe(mutated);
     expect(getSnapshot().document.elements[0].x).not.toBe(12);
-    const entries = getNavigationJournal().entries();
-    expect(entries).toHaveLength(2);
-    const system = entries[1];
-    expect(system.actor).toBe('system');
-    expect(system.effect).toBe('mutation');
-    expect(system.label).toBe('Undo Update Card');
-    expect(getNavigationJournal().redo()).toEqual([1]);
+    // Undo steps the cursor; it never pushes a second entry.
+    expect(getWireframeHistory().entries()).toHaveLength(1);
+    expect(getWireframeHistory().canUndo()).toBe(false);
+    expect(getWireframeHistory().canRedo()).toBe(true);
   });
 
-  it('redo re-applies the entry and drops it from the redo stack', () => {
+  it('redo re-applies the entry and exhausts the redo tail', () => {
     seed(['a']);
     dispatch('element.update', { id: 'a', patch: { x: 12 } });
     undo();
-    expect(getNavigationJournal().redo()).toEqual([1]);
+    expect(getWireframeHistory().canRedo()).toBe(true);
 
     redo();
 
     expect(getSnapshot().document.elements[0].x).toBe(12);
-    expect(getNavigationJournal().redo()).toEqual([]);
+    expect(getWireframeHistory().canRedo()).toBe(false);
     expect(getSnapshot().canRedo).toBe(false);
     expect(getSnapshot().canUndo).toBe(true);
   });
@@ -163,7 +163,7 @@ describe('the journal is the single mutation authority (R-5)', () => {
     expect(element.y).toBe(originalY);
   });
 
-  it('undoing a selection-scoped verb after the selection changed leaves no stale id', () => {
+  it('undoing a selection-scoped entry after the selection changed leaves no stale id', () => {
     seed(['a']);
     dispatch('element.add', { element: makeElement('text', 'b') });
     expect(getSnapshot().selectedIds).toEqual(['b']);
@@ -182,63 +182,63 @@ describe('the journal is the single mutation authority (R-5)', () => {
     ).toBe(true);
   });
 
-  it('store undo and host undoLast advance the same journal', async () => {
-    seed(['a', 'b']);
-    dispatch('element.update', { id: 'a', patch: { x: 1 } });
-    dispatch('element.update', { id: 'b', patch: { y: 2 } });
-    const journal = getNavigationJournal();
-    expect(journal.entries()).toHaveLength(2);
-
-    // The P5 host (ST-4) is constructed with THIS journal + applyDocumentPatch.
-    const host = createNavigationHost({
-      surface: minimalSurface(),
-      getContext: getWireframeContext,
-      journal,
-      now: () => '2026-01-01T00:00:00.000Z',
-      applyPatch: (patch) =>
-        applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
-    });
-
-    undo();
-    expect(journal.entries()).toHaveLength(3);
-    expect(journal.entries()[2].actor).toBe('system');
-
-    await host.undoLast();
-
-    // One counter: consecutive seqs, no gap, and the host reads the SAME array.
-    expect(journal.entries().map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
-    // Spec #3120 (P6) §3.10 — the store's own undo stays `system`; the host's undoLast is the
-    // requester's (a human on the pointer channel), replacing the old hardcoded system entry.
-    expect(journal.entries().filter((entry) => entry.actor === 'system')).toHaveLength(1);
-    expect(journal.entries()[3].actor).toBe('human');
-    expect(journal.entries()[3].channel).toBe('pointer');
-    expect(host.getSnapshot().entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4]);
-  });
-
-  it('the activity trail lists the journal entries newest first', () => {
+  it('a new edit after an undo drops the redo tail (no orphaned entry)', () => {
     seed(['a']);
     dispatch('element.update', { id: 'a', patch: { x: 1 } });
     dispatch('element.update', { id: 'a', patch: { x: 2 } });
+    undo();
+    expect(getWireframeHistory().canRedo()).toBe(true);
+
     dispatch('element.update', { id: 'a', patch: { x: 3 } });
 
-    const model = buildActivityTrailModel(minimalSurface(), getNavigationJournal().entries());
+    expect(getWireframeHistory().canRedo()).toBe(false);
+    expect(getWireframeHistory().entries()).toHaveLength(2);
+    expect(getSnapshot().document.elements[0].x).toBe(3);
+
+    undo();
+    expect(getSnapshot().document.elements[0].x).toBe(1);
+  });
+});
+
+/* ───────────── the engine's trail projection over a test-owned journal ───────────── */
+
+describe('the engine trail projection (dies with the engine in ST-6)', () => {
+  it('lists the journal entries newest first', () => {
+    // A test-owned journal instance — the projection only reads `seq`/attribution.
+    let journal = { entries: [] as readonly JournalEntry[], redo: [] as readonly number[] };
+    for (let index = 0; index < 3; index += 1) {
+      const outcome = appendEntry(
+        journal,
+        {
+          verbId: 'wireframe.element.toggleLock',
+          actor: 'human',
+          channel: 'pointer',
+          label: 'Toggle lock',
+          effect: 'mutation',
+          placePath: ['wireframe.canvas'],
+          target: [],
+          patch: null,
+          inverse: { delta: {} },
+          external: false,
+          consequence: null,
+          exitedBy: 'none',
+          coalesceKey: null,
+        },
+        '2026-01-01T00:00:00.000Z',
+      );
+      journal = outcome.state;
+    }
+
+    const model = buildActivityTrailModel(minimalSurface(), journal.entries);
 
     expect(model.entries.map((entry) => entry.seq)).toEqual([3, 2, 1]);
     expect(model.entries).toHaveLength(3);
     expect(model.empty).toBe(false);
   });
 
-  it('a view verb journals one attributed navigation entry and is not undoable', () => {
-    seed(['a']);
-    dispatch('element.update', { id: 'a', patch: { x: 1 } });
-    undo();
-    const redoBefore = getNavigationJournal().redo();
-    expect(redoBefore).toEqual([1]);
-
-    // ST-3/ST-4 append this from the view verb's `effect:'navigation'` result;
-    // ST-2 owns the journal model that makes it non-undoable (R-5/Q-8).
+  it('a navigation entry is attributed and not undoable', () => {
     const outcome = appendEntry(
-      { entries: getNavigationJournal().entries(), redo: getNavigationJournal().redo() },
+      { entries: [], redo: [] },
       {
         verbId: 'wireframe.view.fitPage',
         actor: 'human',
@@ -256,10 +256,8 @@ describe('the journal is the single mutation authority (R-5)', () => {
       },
       '2026-01-01T00:00:00.000Z',
     );
-    getNavigationJournal().commit(outcome.state.entries, outcome.state.redo);
 
-    const entries = getNavigationJournal().entries();
-    const navigation = entries[entries.length - 1];
+    const navigation = outcome.entry;
     expect(navigation.effect).toBe('navigation');
     expect(navigation.patch).toBeNull();
     expect(navigation.inverse).toBeNull();
@@ -267,6 +265,6 @@ describe('the journal is the single mutation authority (R-5)', () => {
     expect(navigation.actor).toBe('human');
     expect(navigation.placePath).toEqual(['wireframe.canvas', 'wireframe.view']);
     // A navigation entry never clears the redo stack (mutation-only rule).
-    expect(getNavigationJournal().redo()).toEqual(redoBefore);
+    expect(outcome.state.redo).toEqual([]);
   });
 });

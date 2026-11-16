@@ -20,6 +20,7 @@ import {
   type Surface,
   type VerbDescriptor,
 } from '../../../shared/navigation';
+import { createJournalStore } from '../../../shared/navigation/journal';
 import {
   buildCommandRailModel,
   buildNavigationMapModel,
@@ -35,9 +36,9 @@ import { createDefaultElement, type WireframeElementType } from '../model/elemen
 import {
   applyDocumentPatch,
   dispatch,
-  getNavigationJournal,
   getSnapshot,
   getWireframeContext,
+  getWireframeHistory,
   resetWireframeStoreForTests,
   select,
   type WireframeDocumentPatch,
@@ -586,27 +587,33 @@ describe('wireframeSurface — ST-3 text-edit verbs (R-4)', () => {
     expect(explicitAfter.delta?.elements?.[button.id]).toBeUndefined();
   });
 
-  it('accepts an empty value as one real journal entry and empties the label', async () => {
+  it('accepts an empty value as one real history entry and empties the label', async () => {
     const card = seedElement('card');
+    // Spec #3151 ST-3 — the host keeps its own attribution journal; the DOCUMENT's
+    // undo history is the store's app-local one, asserted separately below.
+    const journal = createJournalStore();
     const host = createNavigationHost({
       surface: wireframeSurface,
       getContext: () => getWireframeContext(),
-      journal: getNavigationJournal(),
+      journal,
       applyPatch: (patch) =>
         applyDocumentPatch(patch as unknown as WireframeDocumentPatch),
       confirm: () => true,
     });
-    const before = getNavigationJournal().entries().length;
+    const before = journal.entries().length;
+    const historyBefore = getWireframeHistory().entries().length;
 
     const result = await host.runVerb('wireframe.element.setLabel', 'agent', { value: '' });
 
     expect(result.status).toBe('performed');
-    const entries = getNavigationJournal().entries();
+    const entries = journal.entries();
     expect(entries).toHaveLength(before + 1);
     const entry = entries[entries.length - 1];
     expect(entry.verbId).toBe('wireframe.element.setLabel');
     expect(entry.label).toBe('Set label');
     expect(entry.actor).toBe('companion');
+    // The document edit is ONE app-local history entry too.
+    expect(getWireframeHistory().entries()).toHaveLength(historyBefore + 1);
     expect(labelFromStore(card.id)).toBe('');
   });
 });

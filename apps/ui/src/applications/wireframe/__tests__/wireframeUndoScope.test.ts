@@ -9,17 +9,16 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { appendEntry } from '../../../shared/navigation/journal';
-import type { JsonPatch } from '../../../shared/navigation/types';
+import { createJournalStore } from '../../../shared/navigation/journal';
 import { createNavigationHost, type NavigationHost } from '../../../shared/navigation/ui/host';
 import { createNewWireframeDocument } from '../model/document';
-import { applyDocumentDelta } from '../model/documentDelta';
+import { applyDocumentDelta, type WireframeDocumentDelta } from '../model/documentDelta';
 import { createDefaultElement, type WireframeElement } from '../model/elements';
 import {
   applyDocumentPatch,
-  getNavigationJournal,
   getSnapshot,
   getWireframeContext,
+  getWireframeHistory,
   loadDocument,
   resetWireframeStoreForTests,
   select,
@@ -28,12 +27,16 @@ import {
 } from '../store/wireframeDocumentStore';
 import { resetWireframeSurfaceForTests, wireframeSurface } from '../wireframeSurface';
 
-/** The REAL surface over the REAL host; the host owns its own session journal. */
-function createHost(): { host: NavigationHost; journal: ReturnType<typeof getNavigationJournal> } {
-  const journal = getNavigationJournal();
-  // A dedicated journal would hide the store's undo path; the plan's harness uses a
-  // fresh journal with the real document write, so entries never share the store's.
-  journal.commit([], []);
+/**
+ * The REAL surface over the REAL host.
+ *
+ * Spec #3151 ST-3 — the host's attribution journal is its own instance now; the
+ * DOCUMENT's undo history is the store's app-local `WireframeHistory`. This
+ * suite pins the field-scoped-delta property that survived the swap (one
+ * entry's inverse never clobbers a later independent edit).
+ */
+function createHost(): { host: NavigationHost; journal: ReturnType<typeof createJournalStore> } {
+  const journal = createJournalStore();
   const host = createNavigationHost({
     surface: wireframeSurface,
     getContext: getWireframeContext,
@@ -196,32 +199,23 @@ describe('an entry\'s inverse reverts only what the entry changed (AC6 / R-6.1)'
       }),
     ).toBeNull();
 
-    const journal = getNavigationJournal();
-    const outcome = appendEntry(
-      { entries: journal.entries(), redo: journal.redo() },
-      {
-        verbId: 'wireframe.element.toggleLock',
-        actor: 'human',
-        channel: 'launcher',
-        label: 'Toggle lock',
-        effect: 'mutation',
-        placePath: ['wireframe.canvas'],
-        target: [],
-        patch: null,
-        inverse: { delta: { page: 'not-a-delta' } } as unknown as JsonPatch,
-        external: false,
-        consequence: null,
-        exitedBy: 'none',
-        coalesceKey: null,
-      },
-      '2026-01-01T00:00:00.000Z',
-    );
-    journal.commit(outcome.state.entries, outcome.state.redo);
-    const entriesBefore = journal.entries().length;
+    // Spec #3151 ST-3 — the undo path reads the app-local history, so an
+    // inapplicable `before` delta must be a no-op that leaves the document AND
+    // the history untouched (the cursor is restored, not silently consumed).
+    const history = getWireframeHistory();
+    history.push({
+      verbId: 'wireframe.element.toggleLock',
+      label: 'Toggle lock',
+      before: { page: 'not-a-delta' } as unknown as WireframeDocumentDelta,
+      after: { page: 'not-a-delta' } as unknown as WireframeDocumentDelta,
+    });
+    const entriesBefore = history.entries().length;
 
     undo();
 
     expect(getSnapshot().document).toBe(document);
-    expect(journal.entries()).toHaveLength(entriesBefore);
+    expect(history.entries()).toHaveLength(entriesBefore);
+    // The cursor was restored, so the entry is still offered as undoable.
+    expect(history.canUndo()).toBe(true);
   });
 });
