@@ -31,11 +31,12 @@
 //     asserted: later #3147 sub-tasks append manifest entries before they
 //     register the matching handler, so a bidirectional assertion would fail
 //     by construction mid-chain.
-//   * `every_manifest_command_is_granted_to_the_built_in_windows` -- asserts the
-//     hand-authored permission set grants every listed command, and that a
-//     capability references that set for the built-in window class. A manifest
-//     entry with no grant is denied at runtime even though it is registered
-//     and listed.
+//   * `every_registered_command_is_granted_to_the_built_in_windows` -- asserts the
+//     hand-authored permission set grants every registered command, and that a
+//     capability references that set for the built-in window class. It keys on
+//     the real registrations (not on this list) so a manifest entry appended
+//     ahead of its handler is exempt until it is registered. A registered
+//     command with no grant is denied at runtime to every built-in window.
 //
 // KEEP THIS FILE IMPORT-FREE. `build.rs` is a separate crate that
 // `include!`-s it; any `use` of a parent-crate path here would break the build
