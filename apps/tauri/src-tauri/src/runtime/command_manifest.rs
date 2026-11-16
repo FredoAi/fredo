@@ -169,6 +169,10 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // (or focuses) the singleton `installed-<id>` window, close destroys it.
     "installed_app_open",
     "installed_app_close",
+    // Spec #3147 ST-5 — the theme transport's live leg: write the in-memory
+    // mirror (serve-time injection reads it) and eval the theme into every open
+    // `installed-*` window.
+    "installed_apps_push_theme",
 ];
 
 #[cfg(test)]

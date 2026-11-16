@@ -35,6 +35,13 @@ import {
   type SemanticToken,
   type TokenDerivation,
 } from '../theme/contract';
+// Spec #3147 ST-5 — the ONE producer side of the installed-application theme
+// transport. `scheduleThemePush` reads the resolved values this effect just
+// wrote off `document.documentElement` AFTER paint and hands them to the
+// backend mirror (serve-time injection is ST-3's; the live broadcast to every
+// open `installed-*` window is `installed_apps_push_theme`). It carries no state
+// and starts no subscription — it is ONE call at the end of this effect.
+import { scheduleThemePush } from '../../shared/installed-apps/themeCapture';
 
 export interface ThemeContextType {
   currentTheme: ThemeMode;
@@ -541,6 +548,18 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       .map((name) => root.style.getPropertyValue(name))
       .filter((value): value is string => value.length > 0);
     root.style.setProperty('--status-on-solids', resolveOnSolids(resolvedStatus));
+
+    // --- #3147 ST-5: publish the painted theme to the installed-app transport ---
+    // ONE call site, at the very end of the effect: every declaration this
+    // effect owns (base → preset → override → Doom, the contract-derived
+    // `color-mix()` tokens, `--accent-contrast` and `--status-on-solids`) has now
+    // been written, so the post-paint read sees the resolved values a child
+    // document will consume. The producer derives `colorScheme` from the
+    // resolved `--body-bg` luminance and pushes to the backend mirror, which is
+    // what makes a closed app open in the CURRENT theme (R-1.4) and an open one
+    // follow a change without reloading (R-1.5). No new effect, no subscription,
+    // no polling — a failed push never affects this effect's own result.
+    scheduleThemePush();
   }, [activeTheme, overrides, activePreset, doomEngaged]);
 
   const setOverride = (key: keyof ThemeOverrides, value: string) => {

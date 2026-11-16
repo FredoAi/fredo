@@ -1159,6 +1159,15 @@ pub fn run() {
             // opens one, so this registration is inert at startup (R-5.1/R-5.5).
             applications::installed_apps::commands_window::installed_app_open,
             applications::installed_apps::commands_window::installed_app_close,
+            // Spec #3147 ST-5 — the theme transport's live leg
+            // (`applications::installed_apps::theme_push`):
+            // `installed_apps_push_theme` validates the host's resolved token
+            // values, writes the in-memory mirror the scheme handler inlines at
+            // document-serve time (R-1.4), and `Webview::eval`s the theme into
+            // every live `installed-*` window so an open app follows a change
+            // without reloading (R-1.5). No database, no file, and nothing at
+            // startup — the host's theme effect is the only caller.
+            applications::installed_apps::theme_push::installed_apps_push_theme,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")

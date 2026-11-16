@@ -18,6 +18,7 @@
 //! | [`window`] | the window lifecycle: `installed-<id>` labels, the served document URL, the verify-before-open gate, the singleton build/focus and the close |
 //! | [`commands_window`] | exactly `installed_app_open` and `installed_app_close` |
 //! | [`theme_state`] | the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror |
+//! | [`theme_push`] | exactly `installed_apps_push_theme`: validate, write the mirror, and `Webview::eval` the theme into every live `installed-*` window |
 //!
 //! # Why the refusal codes live here
 //!
@@ -30,7 +31,8 @@
 //! # Non-goals this module keeps
 //!
 //! An installed window exists only after [`commands_window::installed_app_open`]
-//! is called (ST-4), no theme is pushed (ST-5), no
+//! is called (ST-4), the theme is pushed only when the host's theme effect calls
+//! [`theme_push::installed_apps_push_theme`] (ST-5), no
 //! registry/update/signature path exists, and no installed-app work happens at
 //! startup (R-5.5) — [`commands_install::installed_apps_list`] is the only
 //! reader of the install root and nothing calls it from `lib.rs`'s setup
@@ -44,6 +46,7 @@ pub mod commands_window;
 pub mod manifest;
 pub mod scheme;
 pub mod store;
+pub mod theme_push;
 pub mod theme_state;
 pub mod window;
 

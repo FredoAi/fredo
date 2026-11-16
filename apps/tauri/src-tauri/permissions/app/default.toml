@@ -140,4 +140,8 @@ permissions = [
   # which is what makes its command access refuse (AC-2).
   "allow-installed-app-open",
   "allow-installed-app-close",
+  # Spec #3147 ST-5 — the theme transport's live leg. The producer is the MAIN
+  # window's theme effect (a built-in window), so it needs this grant; the
+  # `installed-<id>` window never calls it and still matches no capability.
+  "allow-installed-apps-push-theme",
 ]
