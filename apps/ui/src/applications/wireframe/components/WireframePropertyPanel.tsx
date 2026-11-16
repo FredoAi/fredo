@@ -24,9 +24,7 @@
  *
  * The Edit place's `wireframe.element.rename` is a navigation effect: it
  * publishes a one-shot rename request; this panel consumes it and focuses +
- * selects the element's name field (never a fabricated name). Escape inside a
- * panel text field returns focus to the CANVAS ROOT (no dispatch, never `body`)
- * so the key path resumes.
+ * selects the element's name field (never a fabricated name).
  *
  * Every numeric property has a stepper AND a slider (R-3.6); the corner radius
  * ships preset chips plus a 4-stop slider that both write the same
@@ -90,7 +88,6 @@ import {
   consumeWireframeRenameRequest,
   subscribeWireframeRenameRequest,
 } from '../wireframeSurface';
-import { isTextControl } from '../../../shared/navigation/focusContext';
 import { tint } from '../../../shared/utils/colorTint';
 import { useWireframeNavigation } from './WireframeNavigationProvider';
 import { CornerRadiusField } from './fields/CornerRadiusField';
@@ -779,23 +776,6 @@ export function WireframePropertyPanel(): React.ReactElement {
     return unsubscribe;
   }, [elementId]);
 
-  /**
-   * Escape inside a panel text field would otherwise die on the field (the shell
-   * adapter passes text controls through). Return focus to the CANVAS ROOT — never
-   * `body` — so the next stroke resolves again. No dispatch.
-   */
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== 'Escape') return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (!isTextControl(target)) return;
-    const canvas = event.currentTarget.ownerDocument.querySelector<HTMLElement>(
-      '[data-testid="wireframe-canvas"]',
-    );
-    if (canvas === null) return;
-    event.preventDefault();
-    canvas.focus();
-  };
-
   return (
     <VStack
       data-testid="wireframe-property-panel"
@@ -814,7 +794,6 @@ export function WireframePropertyPanel(): React.ReactElement {
       borderColor="border.subtle"
       borderTopWidth={{ base: '1px', lg: '0' }}
       borderLeftWidth={{ base: '0', lg: '1px' }}
-      onKeyDown={onKeyDown}
     >
       <SelectionHeader model={header} />
 

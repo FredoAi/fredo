@@ -5,9 +5,10 @@
  *
  * Spec #3119 ST-6: the panel is the DETAILS VIEW — every edit dispatches the
  * declared verb through the navigation host (one journal entry per interaction
- * tick), `rename` focuses+selects the name field, and Escape in a field returns
- * focus to the canvas root. The panel is rendered inside the real
- * `WireframeNavigationProvider` so `useWireframeNavigation()` resolves.
+ * tick) and `rename` focuses+selects the name field. The panel is rendered inside
+ * the real `WireframeNavigationProvider` so `useWireframeNavigation()` resolves.
+ * Spec #3151 ST-1 removed the Escape-to-canvas key branch (it only re-armed the
+ * retired engine cursor); this suite no longer pins it.
  *
  * Arc/Zag machines deliver their state-change callbacks in a microtask, so every
  * machine-driven interaction is awaited inside `act` before the store is read.
@@ -691,29 +692,9 @@ describe('the panel is the details view — every edit dispatches a declared ver
     expect(entries[entries.length - 1].verbId).toBe('wireframe.element.rename');
     expect(entries).toHaveLength(before + 1);
   });
-
-  it('Escape inside a panel field returns focus to the canvas root (never body)', () => {
-    addElement('text');
-    const canvas = document.createElement('div');
-    canvas.setAttribute('data-testid', 'wireframe-canvas');
-    canvas.tabIndex = 0;
-    document.body.appendChild(canvas);
-    try {
-      renderPanel();
-      const field = screen.getByTestId('wireframe-text-content');
-      field.focus();
-      const before = getNavigationJournal().entries().length;
-
-      fireEvent.keyDown(field, { key: 'Escape' });
-
-      expect(canvas).toHaveFocus();
-      expect(document.body).not.toHaveFocus();
-      // No dispatch, no journal entry.
-      expect(getNavigationJournal().entries()).toHaveLength(before);
-    } finally {
-      canvas.remove();
-    }
-  });
+  // Spec #3151 ST-1 — the Escape-to-canvas `onKeyDown` branch is DELETED with the
+  // navigation engine: it existed only to re-arm the engine's cursor, and the
+  // panel is now a plain pointer surface. Its pin retired with it.
 });
 
 /* ───────────── details text input — deletion + focus retention (Spec #3120 ST-4, R-5) ───────────── */

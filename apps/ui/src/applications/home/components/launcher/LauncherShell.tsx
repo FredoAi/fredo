@@ -104,9 +104,9 @@ import {
 import {
   resolveLauncherConfirmation,
   subscribeLauncherConfirmation,
-  useNavReducedMotion,
   type PendingLauncherConfirmation,
 } from '../../../../shared/navigation/ui';
+import { useReducedMotion } from '../../../../shared/hooks/useReducedMotion';
 import { LauncherConfirmation } from './LauncherConfirmation';
 
 /**
@@ -861,7 +861,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // UI/UX §4 — the reactive reduced-motion preference: the hook re-reads the CURRENT
   // `window.matchMedia` on every render (a post-mount replacement, e.g. the live R-9.2 lever,
   // is honoured) and re-subscribes to the query's `change` event.
-  const navReducedMotion = useNavReducedMotion();
+  const navReducedMotion = useReducedMotion();
 
   // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict
   // (R-6.3: "the hint always states the action Enter will take"). The old
