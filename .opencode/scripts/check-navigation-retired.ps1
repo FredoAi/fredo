@@ -47,7 +47,8 @@
     (1) POSITIVE       - one control leg per token, iterated from the token data
                          itself, plus an independent leg per prefix pair.  A
                          token in a class with no leg is a FAILURE, not a silent
-                         gap (the loop over the token list IS the leg).    (2) NEGATIVE       - a comment-only / prose-only / string-literal-only
+                         gap (the loop over the token list IS the leg).
+    (2) NEGATIVE       - a comment-only / prose-only / string-literal-only
                          mention flags nothing (the G-419 proof: a symbol in a
                          `// comment`, a string literal or a regex body is not a
                          hit for class B).
