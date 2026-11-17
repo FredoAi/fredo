@@ -316,6 +316,31 @@ describe('suppression — the chords do not fire while the focus owner consumes 
     expect(mocks.focusNextWindow).not.toHaveBeenCalled();
   });
 
+  it('does not fire under an open aria-modal ALERTdialog (AC2 "modal dialog")', () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(dialog);
+
+    const event = press({ key: ' ', ctrlKey: true });
+
+    // Suppressed, not intercepted: the chord handler leaves the event to the dialog.
+    expect(event.defaultPrevented).toBe(false);
+    expect(mocks.runWindowLauncherToggle).not.toHaveBeenCalled();
+  });
+
+  it('still fires beside a launcher-style role="dialog" WITHOUT aria-modal (positive control)', () => {
+    const overlay = document.createElement('div');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('data-testid', 'launcher-overlay');
+    document.body.appendChild(overlay);
+
+    const event = press({ key: ' ', ctrlKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mocks.runWindowLauncherToggle).toHaveBeenCalledTimes(1);
+  });
+
   it('a chord-shaped keystroke in a terminal is NOT prevented and still propagates to the PTY', () => {
     const root = document.createElement('div');
     root.setAttribute('data-fredo-terminal-root', 'true');

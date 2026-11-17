@@ -43,6 +43,17 @@ function modalWithInput(): HTMLElement {
   return input;
 }
 
+/** An input nested inside an open aria-modal ALERTdialog (also a modal dialog by ARIA). */
+function alertDialogWithInput(ariaModal: boolean): HTMLElement {
+  const attrs: Record<string, string> = { role: 'alertdialog' };
+  if (ariaModal) attrs['aria-modal'] = 'true';
+  const dialog = element('div', attrs);
+  const input = element('input');
+  dialog.appendChild(input);
+  document.body.appendChild(dialog);
+  return input;
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
 });
@@ -106,6 +117,18 @@ describe('classifyChordSuppression — precedence terminal > modal > text-entry 
     expect(classifyChordSuppression(modalWithInput())).toBe('modal');
   });
 
+  it('classifies a focus inside an open aria-modal ALERTdialog as modal (AC2 "modal dialog")', () => {
+    expect(classifyChordSuppression(alertDialogWithInput(true))).toBe('modal');
+  });
+
+  it('does NOT classify an alertdialog WITHOUT aria-modal as modal (the attribute is the gate)', () => {
+    // Role alone is not the gate: a non-aria-modal alertdialog leaves the text control
+    // to its own classification rather than claiming modal suppression.
+    const input = alertDialogWithInput(false);
+    expect(classifyChordSuppression(input)).toBe('text-entry');
+    expect(classifyChordSuppression(element('div', { role: 'alertdialog' }))).toBe('none');
+  });
+
   it('honours the global modalOpen fact', () => {
     expect(classifyChordSuppression(element('div'), { modalOpen: true })).toBe('modal');
     expect(classifyChordSuppression(element('div'), { modalOpen: false })).toBe('none');
@@ -155,6 +178,15 @@ describe('isChordSuppressed — the document-reading predicate', () => {
 
   it('is true under an open modal dialog (AC2 case 3)', () => {
     const dialog = element('div', { role: 'dialog', 'aria-modal': 'true' });
+    const button = element('button');
+    dialog.appendChild(button);
+    document.body.appendChild(dialog);
+    button.focus();
+    expect(isChordSuppressed()).toBe(true);
+  });
+
+  it('is true under an open aria-modal ALERTdialog with a non-text element focused', () => {
+    const dialog = element('div', { role: 'alertdialog', 'aria-modal': 'true' });
     const button = element('button');
     dialog.appendChild(button);
     document.body.appendChild(dialog);

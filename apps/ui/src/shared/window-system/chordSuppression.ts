@@ -12,9 +12,12 @@
  *
  * `terminal` is checked before `text-entry` because a terminal's hidden helper
  * textarea would otherwise classify as text-entry and mask the terminal
- * passthrough context. `modal` covers both a focus inside an open
- * `[role="dialog"][aria-modal="true"]` and the caller's global "a modal is open"
- * fact.
+ * passthrough context. `modal` covers both a focus inside an open aria-modal
+ * dialog — `[role="dialog"][aria-modal="true"]` or `[role="alertdialog"][aria-modal="true"]`,
+ * since AC2's literal words are "under an open modal dialog" and an aria-modal
+ * alertdialog IS a modal dialog (the attribute, not the role, is the gate; the
+ * launcher overlay is a role="dialog" WITHOUT aria-modal and must not suppress) —
+ * and the caller's global "a modal is open" fact.
  *
  * Scope discipline: this module adds NO `document` listener and holds no state —
  * it only inspects the element tree it is handed (and, in `isChordSuppressed()`,
@@ -25,8 +28,8 @@
 /** The terminal root the focus classifier keys on. */
 export const TERMINAL_ROOT_SELECTOR = '[data-fredo-terminal-root="true"]';
 
-/** The selector for an open, aria-modal dialog. */
-const MODAL_SELECTOR = '[role="dialog"][aria-modal="true"]';
+/** The selector for an open, aria-modal dialog (dialog OR alertdialog). */
+const MODAL_SELECTOR = '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]';
 
 /** Roles that make an element a textbox even without a native input tag. */
 const TEXTBOX_ROLES: ReadonlySet<string> = new Set(['textbox']);

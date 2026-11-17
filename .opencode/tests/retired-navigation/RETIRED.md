@@ -183,6 +183,28 @@ suites that exercised it have nothing left to exercise.
 | `apps/ui/src/applications/__tests__/navigationParityMatrix.test.ts` | navigation-parity | #3151 | subject: verb/shape parity across the five deleted surfaces |
 | `apps/ui/src/applications/__tests__/navigationBindingsCompleteness.test.ts` | navigation-bindings | #3151 | subject: the declared bindings of the five deleted surfaces + the engine's global chords |
 
+#### Round-2 completion — the Wireframe app + window-system host and their suites
+
+> These rows complete the ST-6 landing: the same deletion commit removed the paths below, but the
+> first pass of this ledger omitted them. The deleted-path set is the authority — every path the
+> deletion diff reports has a row here and in the sections above.
+
+| path | suite | retired in | reason |
+|---|---|---|---|
+| `apps/ui/src/applications/wireframe/wireframeSurface.ts` | wireframe-surface | #3151 | subject: the Wireframe declaration (places / verbs); the keyboard model is deleted in #3151 |
+| `apps/ui/src/applications/wireframe/components/WireframeNavigationProvider.tsx` | wireframe-provider | #3151 | subject: the Wireframe app's engine host + key adapter + footer |
+| `apps/ui/src/shared/window-system/WindowSystemNavigationProvider.tsx` | window-system-provider | #3151 | subject: the window-system engine host + dock (the three surviving chords live in `platformChords.ts`) |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeKeyTable.test.ts` | wireframe-surface | #3151 | subject: the declared key table |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeLegacySurface.test.ts` | wireframe-surface | #3151 | subject: asserted `wireframeSurface.ts` exists and the deleted `navigation-rail` region |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeNavigationFocus.test.tsx` | wireframe-surface | #3151 | subject: the declaration's place-transition focus model |
+| `apps/ui/src/applications/wireframe/__tests__/wireframePlaceLifecycle.test.ts` | wireframe-surface | #3151 | subject: the declaration's place lifecycle |
+| `apps/ui/src/applications/wireframe/__tests__/wireframePointerConvergence.test.ts` | wireframe-surface | #3151 | subject: pointer/stroke convergence through the engine |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeRailParity.test.tsx` | wireframe-surface | #3151 | subject: the command rail's verb parity |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeSurface.test.ts` | wireframe-surface | #3151 | subject: the deleted declared surface + its provider |
+| `apps/ui/src/applications/wireframe/__tests__/wireframeUndoScope.test.ts` | wireframe-surface | #3151 | subject: the shared-journal undo scope (Wireframe now owns an app-local bounded history) |
+| `apps/ui/src/shared/companion/__tests__/manifest.test.ts` | companion-manifest | #3151 | subject: the companion manifest projection over registered navigation surfaces |
+| `apps/ui/src/shared/companion/__tests__/manifest.parity.test.ts` | companion-manifest | #3151 | subject: the manifest parity matrix over the deleted surfaces |
+
 ### ST-8 — the committed absence guard (AC1's evidence)
 
 **What the guard proves.** AC1's scoped absence predicate: **zero references to the retired
