@@ -3,7 +3,7 @@
 Durable functional suite for the **retirement of the navigation/keyboard engine** (Issue #3151,
 slice 1 of 3 — a REMOVAL programme). Rows map 1:1 to the QA Plan in
 `.opencode/tmp/3151/triage.md` `## QA Expert` (`Q-1` … `Q-47`), keyed to the Software Architect's
-EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Architect's
+EARS ids `R-1.1` … `R-5.5` and NFR-1 … NFR-7. Names bind verbatim to the Architect's
 `### API Contracts & Data Models` block — do not invent alternative testids or ids.
 
 > **Verification policy: MIXED, declared per row.** `static` rows (the committed absence guard,
@@ -19,14 +19,31 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
 > chaining, so `$LASTEXITCODE` is otherwise unreachable). The printed `EXITCODE=<n>` line is the
 > receipt.
 
+> **Recorded deferrals are legitimate; silent drops are not.** Three sub-legs are deferred with a
+> stated reason because the sanctioned drivers or the isolated env cannot produce them: Q-13/Q-20's
+> terminal *character-echo* leg (ghostty's canvas never emits `onData` from synthesised driver
+> input), Q-20's *paste* leg (no app-level paste handler exists), and Q-24's SQL-Studio live
+> destructive-confirm leg (only the read-only built-in connection is seeded; no read-write
+> connection can be created). Each is reported as `DEFERRED — <reason>` with its unit pin cited —
+> neither a PASS nor a silent skip. **No row is deleted.**
+
 ## Harness
 
 - **Env:** `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3151 -EnvId qa3151-a -EnvSlot 1 -RequireIsolation`.
   `Restart` is forbidden (G-328) — recover with `Down` then `Up`. Driver:
   `tauri_driver_session start appIdentifier="16001"` (slot-1 MCP port as a decimal string).
-- **Wireframe file seams (set when a file leg runs):** `-EnvVar "FREDO_WIREFRAME_SAVE_PATH=…"`,
-  `-EnvVar "FREDO_WIREFRAME_OPEN_PATH=…"`, `-EnvVar "FREDO_WIREFRAME_EXPORT_PATH=…"`
-  (`applications/wireframe/files.rs:29-33`). Leave UNSET for the native-dialog leg (Q-24).
+- **Env split (binding — Q-24 and Q-34 are mutually exclusive in ONE env).** **Env A** = Wireframe
+  file seams **UNSET** → runs **Q-24** (native-dialog path). **Env B** = seams **SET**
+  (`-EnvVar "FREDO_WIREFRAME_SAVE_PATH=…"`, `-EnvVar "FREDO_WIREFRAME_OPEN_PATH=…"`,
+  `-EnvVar "FREDO_WIREFRAME_EXPORT_PATH=…"`, `applications/wireframe/files.rs:29-33`) → runs
+  **Q-34**. Rationale: the seam precedence `CANCEL > FAIL_FILE > path seams > shared fallback >
+  native dialog` (`files.rs:74-84`) is precedence-ordered, so the two legs cannot both hold at once.
+- **Mission Monitor session lever (Q-21):** `fredo emit`
+  (`.opencode/skills/fredo-cli-events/SKILL.md:10,23`; recipe `:117-123`; dev-environment
+  `SKILL.md:435` MANDATES it for mission-monitor specs). Target the isolated env's pipe via
+  `FREDO_CLI_PIPE` / `FREDO_ENV_ID` (`SKILL.md:35-44`). Seed two **chat-init** events with distinct
+  session ids and distinct providers (`--provider open_code --session-id qa3151-mm-a
+  --correlation-id qa3151-mm-a_1`; `--provider copilot_cli --session-id qa3151-mm-b`).
 - **Captures:** `.opencode/tmp/3151/e2e/<row>-<state>.jpeg`, uploaded with
   `pipeline-state.rs --issue 3151 --agent tester --action upload-evidence --image <path>`; the
   evidence is the resulting `user-attachments` URL in the posted comment — never the scratch file.
@@ -125,30 +142,63 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
   **Edge:** a `role="textbox"` control (`mm-session-search`, `SessionHistoryDrawer.tsx:292-295`);
   a `contenteditable` target. NOTE: the Wireframe panel's Escape-to-canvas branch is GONE (ST-1) —
   Escape in a panel field must NOT move focus to the canvas.
-- [ ] **Q-13 (R-2.5, live).** Spawn a shell (`terminal-session-sidebar-add`), click inside the pane
-  so focus is inside `[data-fredo-terminal-root="true"]` (`SessionTerminal.tsx:344`);
-  `tauri_ipc_monitor action=start`; type `echo qa3151`; press each of the three chords;
+- [ ] **Q-13 (R-2.5, live).** Spawn a shell (`terminal-session-sidebar-add` → confirm the New-session
+  dialog), pointer-click inside the pane so focus is inside `[data-fredo-terminal-root="true"]`
+  (`SessionTerminal.tsx:340-344`); `tauri_ipc_monitor action=start`; then run ONE
+  `tauri_webview_execute_js` that (1) asserts
+  `document.activeElement?.closest('[data-fredo-terminal-root="true"]') !== null`; (2) for EACH
+  of the three chords dispatches a chord-shaped keydown AT that focused element —
+  `new KeyboardEvent('keydown',{key:'Tab',ctrlKey:true,bubbles:true,cancelable:true})` plus the
+  `Space` and `shift+Tab` variants — reads `defaultPrevented`, and checks a bubbling listener
+  attached INSIDE the root RECEIVED the event; (3) re-reads the launcher notch `aria-expanded`
+  and the focused-window id after all three. Then
   `tauri_ipc_get_captured filter=write_pty_input`.
-  **Expected:** (a) a `write_pty_input` invoke with `data:"echo qa3151"` for the typed leg
-  (`SessionTerminal.tsx:172-174`); (b) for EACH chord press ≥1 further `write_pty_input` invoke is
-  captured AND launcher `aria-expanded` stays `false` AND the focused window id is unchanged.
-  **Edge:** the terminal check is FIRST in the precedence (`focusContext.ts:73`, re-homed to
-  `chordSuppression.ts`) so the hidden helper textarea cannot mask it; a second session tab.
-- [ ] **Q-14 (R-2.5, live).** From Q-13's state, click the Wireframe empty canvas, then press
-  `primary+Tab`.
-  **Expected:** after focus leaves the terminal root the chord FIRES (focused window changes by
-  one); before the click-away it did not. Click-away is the only release.
-  **Edge:** click-away into a text field (still no fire); click back into the terminal
-  (suppression returns immediately).
-- [ ] **Q-15 (R-2.6, live).** Open a real `[role="dialog"][aria-modal="true"]` — primary:
-  `[data-testid="db-destructive-confirm"]` (`DestructiveConfirm.tsx:62-65`) reached by typing a
-  destructive statement into `db-query-editor` and clicking `db-query-run`; accepted alternative:
-  `[data-testid="layout-delete-dialog"]` (`LayoutSettings.tsx:453-457`). Press each chord.
-  **Expected:** the dialog is still present after all three (count = 1), the focused window id is
-  unchanged, the launcher `aria-expanded` is unchanged, and nothing executed unbidden.
-  **Edge:** the launcher overlay itself is `role="dialog"` with NO `aria-modal` — it must NOT
-  suppress; `[data-testid="wireframe-new-document-dialog"]` — record whether it carries
-  `aria-modal="true"`, do not FAIL on it.
+  **Expected:** (1) focus is inside the root; (2) for EACH chord `defaultPrevented` is **`false`**
+  (SUPPRESSED — not intercepted) AND the in-root bubbling listener **received** the event (the
+  keystroke still reaches the terminal's own consumer); (3) after all three the launcher
+  `aria-expanded` and the focused-window id are UNCHANGED; (4) **PTY reachability receipt —
+  corroboration ONLY:** one `write_pty_input` invoke issued through the sanctioned
+  `__TAURI__.core.invoke` path is captured; the input chain is `SessionTerminal.tsx:172-174`
+  (`term.onData → write_pty_input`).
+  **Edge:** **the character-echo leg is NOT drivable** — ghostty's canvas never emits `onData`
+  from synthesised driver input (`tauri_webview_keyboard action=type` updates the DOM `value` and
+  produces zero `write_pty_input`), a documented limitation; the suppression and non-interception
+  obligations are proven directly, PTY deliverability by the invoke receipt plus the cited input
+  chain. `terminal` is FIRST in the precedence (`chordSuppression.ts:91-100`) so the hidden helper
+  textarea cannot mask it; a second session tab.
+- [ ] **Q-14 (R-2.5, live).** From Q-13's guided state: (1) pointer-click a control OUTSIDE the
+  terminal root but inside the same webview — a session row in
+  `[data-testid="terminal-session-sidebar"]` (**avoid `terminal-session-sidebar-add`** — it opens
+  a dialog); (2) read `document.activeElement?.closest('[data-fredo-terminal-root="true"]')`;
+  (3) press `primary+Tab`, re-read the focused-window id; (4) pointer-click back into the pane,
+  confirm focus inside the root, press `primary+Tab`, re-read.
+  **Expected:** after the out-of-root pointer click the `closest(...)` is **`null`** and
+  `primary+Tab` **fires** (the focused-window id changes by exactly one); after clicking back into
+  the pane focus is inside the root again and `primary+Tab` leaves the id **unchanged** —
+  suppression returns immediately, no reload needed.
+  **Edge:** AC2's release is *"click-away / focus-change"* — a pointer-driven focus change is
+  within the AC and is drivable; a pointer click landing physically OUTSIDE the focused window is
+  not (all windows render maximized at identical rects with z-index 1). Click-away into a text
+  field → still no fire.
+- [ ] **Q-15 (R-2.6, live).** Primary lever, by pointer: Settings → Layout
+  (`[data-testid="settings-nav-layout"]`) → `[data-testid="layout-new-button"]` → a template preset
+  `[data-testid="layout-template-columns"]` (**required**: `layout-editor-confirm` is `disabled`
+  while `zones.length === 0`, `ZoneLayoutEditor.tsx:455`) → `[data-testid="layout-editor-confirm"]`
+  (save a layout) → `[data-testid="layout-delete-<id>"]` (`LayoutSettings.tsx:425`; dialog
+  `:451-463`, `role="alertdialog" aria-modal="true"`). Press each chord.
+  **Expected (after the predicate widening — `chordSuppression.ts:29` also matches
+  `[role="alertdialog"][aria-modal="true"]`):** after EACH of the three presses the dialog is still
+  present (`layout-delete-dialog` count = 1), the focused-window id is unchanged, the launcher
+  `aria-expanded` is unchanged, and nothing was deleted (the layout is still in
+  `[data-testid="layout-list-item-<id>"]`).
+  **Edge:** `[data-testid="db-destructive-confirm"]` is DROPPED as the primary lever — the only
+  seeded connection is the built-in **read-only** `Fredo` connection
+  (`db_client/query.rs:112-127` refuses a destructive statement before any confirmation) and a
+  read-write connection cannot be created (the embedded-cluster password is OS-keychain-only), so
+  its live leg is not drivable; it remains a corroborating STATIC citation of the other
+  `aria-modal="true"` surface (`DestructiveConfirm.tsx:62-65`). The launcher overlay itself is
+  `role="dialog"` with NO `aria-modal` — it must NOT suppress (positive control, Q-10's third
+  edge).
 
 ## AC3 / R-3 — every application still works by pointer
 
@@ -190,59 +240,107 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
   `within(getByTestId('wireframe-view-controls'))`. Never a page-wide count of a repeating testid,
   never a count while a menu is closed.
   Click each row by its accessible name, verbatim from `WIREFRAME_ACTIONS`
-  (`actions/wireframeActions.ts:355-603`): arrange **10** `Group, Ungroup, Lock group, Align left,
-  Align centre, Align right, Distribute, Bring forward, Send backward, Snap to grid`; file **3**
-  `Open, Save As, Export PNG` (UI/UX §3.4 order); view **5** `Zoom out, Zoom in, Fit page,
-  Reset view, Pan tool`.
-  **Expected:** all **18** rows exist, are enabled and pointer-activatable, each producing its
+  (`actions/wireframeActions.ts:355-603`): arrange **12**, in five `Menu.ItemGroup` sections —
+  **Element** `Delete, Duplicate` (FIRST group; both disabled on an empty selection), **Group**
+  `Group, Ungroup, Lock group`; **Align** `Align left, Align centre, Align right, Distribute`;
+  **Order** `Bring forward, Send backward`; **Snap** `Snap to grid`; file **4** — `New` (the
+  FIRST row, never disabled), then `Open, Save As, Export PNG` (UI/UX §3.4 order); view **5**
+  `Zoom out, Zoom in, Fit page, Reset view, Pan tool`.
+  **Expected:** all **21** rows exist, are enabled and pointer-activatable, each producing its
   declared effect — `Group` on a 2-element selection: `data-wireframe-group-count` 0→1;
   `Snap to grid` is a `role="menuitemcheckbox"` whose `aria-checked` AND `data-wireframe-snap`
   flip together on the same tick; `Zoom in` grows `-zoom` by 10 percentage points
   (`ZOOM_STEP = 0.1`, `model/geometry.ts:16`); `Reset view` → `-zoom`=`100`; `Pan tool` is a
   toggle — `aria-pressed` AND `-pan-mode` flip together; `Save As` writes at the seam and sets
   `-document-path`; `Export PNG` writes at `FREDO_WIREFRAME_EXPORT_PATH` and leaves `-dirty`
-  untouched.
-  **Edge:** the UI/UX §7 disabled matrix — empty selection → Group/Ungroup/Lock/Align×3/
-  Distribute/Bring/Send disabled and `Snap` ENABLED; one element → Bring/Send enabled; exactly one
-  whole group → Group disabled, Ungroup+Lock enabled; `Zoom out` disabled at ≤10 %, `Zoom in` at
-  ≥400 % (`MIN_VIEW_SCALE`/`MAX_VIEW_SCALE`, `model/geometry.ts:13-14`); all three file rows
-  disabled while `status !== 'idle'`; the triggers themselves are never disabled. Also: already
-  aligned (`wireframeActions.ts:299-303`); both menu open/close paths. Owning artifact: ST-5's
-  `wireframePointerControls.test.tsx` (new). **Row count is 18; the UI/UX §9 proposal to add
-  `New`/`Delete`/`Duplicate` would make it 21 — see the QA section's Discussion (plan defect).**
-- [ ] **Q-20 (R-3.5, live).** Terminal by pointer: `terminal-session-sidebar-add` (aria-label "Add
-  session"), type, paste, then `terminal-session-kill-<id>` (aria-label `Close session <name>`).
-  **Expected:** `terminal-session-row-<id>`=1, `terminal-canvas-host-<id>`=1, typing and paste
-  each produce `write_pty_input` invokes, the kill removes the session. Owning artifact: ST-6's
-  `terminalPrimaryControl.test.tsx` (new).
-  **Edge:** spawn with a session already running; empty clipboard (no invoke, no error); close the
-  last session.
-- [ ] **Q-21 (R-3.5, live).** Mission Monitor: click a `[role="button"].mm-session-row`
-  (`SessionHistoryDrawer.tsx:324-351`; `aria-label=<displayName>`).
-  **Expected:** ≥1 `.mm-session-row` before; `[data-testid="detail-panel"]`=1 after and the row is
-  selected. Owning artifact: ST-6's `missionMonitorPrimaryControl.test.tsx` (new).
-  **Edge:** zero sessions (empty state, no crash); drawer collapsed then re-expanded; the
-  already-selected row (no-op).
+  untouched. `Delete` on a selected element decrements the element count by 1; `Duplicate`
+  increments it by 1 with a NEW element id; `New` exists, is enabled (never disabled) and on a
+  dirty document opens `wireframe-new-document-dialog` (the reset itself is Q-33's).
+  **Edge:** the UI/UX §7 disabled matrix — empty selection → `Delete`/`Duplicate`/Group/Ungroup/
+  Lock/Align×3/Distribute/Bring/Send disabled and `Snap` ENABLED; one element → Bring/Send
+  enabled; exactly one whole group → Group disabled, Ungroup+Lock enabled; `Zoom out` disabled at
+  ≤10 %, `Zoom in` at ≥400 % (`MIN_VIEW_SCALE`/`MAX_VIEW_SCALE`, `model/geometry.ts:13-14`);
+  Open/Save As/Export PNG disabled while `status !== 'idle'` (New is NEVER disabled); the
+  triggers themselves are never disabled. Also: already aligned (`wireframeActions.ts:299-303`);
+  both menu open/close paths. Owning artifact: ST-5's `wireframePointerControls.test.tsx` (new).
+  **The row count is 21 in the three clusters (12 arrange + 4 file + 5 view), totalling 23
+  pointer-reachable controls with the two separately-testid'd history controls
+  (`wireframe-undo`, `wireframe-redo`).**
+- [ ] **Q-20 (R-3.5, live).** Terminal by pointer — spawn and close are LIVE; type is Q-13's
+  limbs; paste is DEFERRED. Spawn: `terminal-session-sidebar-add` (aria-label "Add session") →
+  confirm the New-session dialog. Close: `terminal-session-kill-<id>` (aria-label
+  `Close session <name>`). Type: Q-13's limbs 1, 2 and 4. Paste: see the edge.
+  **Expected:** `terminal-session-row-<id>`=1 AND `terminal-canvas-host-<id>`=1 after spawn; the
+  kill removes the session (row count returns to the prior value) and `close_terminal_session` is
+  invoked; typing obligations are Q-13's. No keyboard navigation is needed anywhere. Owning
+  artifact: ST-6's `terminalPrimaryControl.test.tsx` (`:118-157` spawn → `write_pty_input` →
+  close; `:148` pins the `write_pty_input` call).
+  **Edge:** **paste is DEFERRED, not dropped** — there is no app-level paste handler (the only
+  clipboard write in the app is `TerminalWindow.tsx:425`, a *copy* of the copilot auth command), so
+  paste is ghostty's own and cannot be driven by the sanctioned driver; recorded with that reason.
+  Also: spawn with a session already running; close the last session.
+- [ ] **Q-21 (R-3.5, live).** Seed the list with the sanctioned `fredo emit` lever — two **chat-init**
+  events with distinct session ids and distinct providers into the target env's pipe
+  (`FREDO_CLI_PIPE` / `FREDO_ENV_ID`, `fredo-cli-events/SKILL.md:35-44`: `--provider open_code
+  --session-id qa3151-mm-a --correlation-id qa3151-mm-a_1` and `--provider copilot_cli
+  --session-id qa3151-mm-b`). Then, with Mission Monitor open: **leg 1** locate ≥2 `.mm-session-row`
+  by `aria-label` matching the seeded user text (`SessionHistoryDrawer.tsx:324-351`); **leg 2**
+  pointer-click the row whose `aria-label` matches session **B**, compare
+  `[data-testid="mm-selected-cli-label"]`'s `data-provider` with the `data-provider` of THAT ROW's
+  own `[data-testid="mm-session-cli-label"]` (scoped `within(rowB)` — that testid REPEATS per row,
+  never a page-wide read; `CliLabel.tsx:112-122`); **leg 3** double-click a
+  chat node on the canvas → `[data-testid="detail-panel"]`.
+  **Expected:** leg 1 — ≥2 rows, each identified by its own `aria-label` (the list source is the
+  declared `sessions` rollup table, `lib/dataDeclaration.ts:40-68`, `kind: 'sessionRollup'`,
+  materialised from canonical chat rows). Leg 2 — the two `data-provider` attributes are EQUAL
+  (compare them to each other, never a hard-coded token) AND the chip's value CHANGED from the
+  pre-click value (auto-select picks the newest, so start on the other row); this proves the drawer
+  row is the session-selection control. Leg 3 — `detail-panel`=1; this proves the detail control.
+  **A single click on a row does NOT open `detail-panel`** — it calls `selectSession`;
+  `detail-panel` is opened only by a canvas node double-click, which is shipped behaviour, not a
+  defect. If leg 3 cannot be reached, record the row as *half proven* naming
+  `missionMonitorPrimaryControl.test.tsx:134-167` and the reason — never delete the row.
+  Corroborating green unit pin: `missionMonitorPrimaryControl.test.tsx:134-167`.
+  **Edge:** zero sessions (empty state, no crash); the drawer collapsed then re-expanded; the
+  already-selected row (no-op); a sibling env's emit must not appear (env-scoped pipe).
 - [ ] **Q-22 (R-3.5, live).** SQL Studio: select the built-in connection
   (`db-connection-builtin-badge`), type a SELECT into `db-query-editor`, click `db-query-run`.
   **Expected:** `[data-testid="db-query-results"]` renders with `db-grid-rowcount` ≥ 0 and no
   `db-query-error`. Owning artifact: ST-6's `sqlStudioPrimaryControl.test.tsx` (new).
-  **Edge:** a destructive statement → `db-destructive-confirm` (this is Q-15's modal); empty
-  editor (no-op); `db-export-csv`.
+  **Edge:** a destructive statement is REFUSED before any confirmation on the read-only built-in
+  connection (`db_client/query.rs:112-127`) — record the refusal and do NOT treat it as a missing
+  confirm (that surface is Q-15's corroborating static citation); empty editor (no-op);
+  `db-export-csv`.
 - [ ] **Q-23 (R-3.5, live).** Dev Mode (Konami-only route): click `dev-mode-view-toggle`'s
   `Application Data` segment, then back to `Rows`.
   **Expected:** both segments pointer-activatable; `dev-mode-filter-input` present in `Rows`,
   absent in `Application Data` (`DevMode.tsx:518-520,677-689`); switching back restores it.
   Owning artifact: ST-6's `devModeViewSwitch.test.tsx` (new).
   **Edge:** re-select the active view (declared no-op, `DevMode.tsx:653`); a filter query active.
-- [ ] **Q-24 (AC3 edge, live).** With NO seam env vars: `wireframe-file-menu` → `Save As`, then
-  `Open`; then trigger `terminal-delete-session-dialog` (kill a running session) and
-  `db-destructive-confirm` (a destructive statement).
-  **Expected:** Save As / Open open the NATIVE OS picker (cancel → document/path/`-dirty`
-  unchanged, no `wireframe-file-error`); `[data-testid="launcher-confirmation"]` count = 0 at all
-  times (the seam is deleted with the engine, no requester); both app-owned dialogs reachable and
-  dismissible.
-  **Edge:** cancel every native dialog; a `CANCEL=1` seam run (document intact, no banner).
+- [ ] **Q-24 (AC3 edge, live + static — Env A: file seams UNSET).** (1) With the File menu open,
+  pointer-click `wireframe-file-menu` rows `Save As` then `Open`, asserting at every step. (2) Spawn
+  a shell and close it so a persisted record exists, select it, pointer-click **Delete** on the
+  record surface (`TerminalPane.tsx:253,260` → `handleDeleteRequest`); assert
+  `[data-testid="terminal-delete-session-dialog"]`=1, then Cancel. (3) Static: read
+  `applications/wireframe/commands.rs:29-35,42-81` + `files.rs:75-96`.
+  **Expected:** (1) `[data-testid="launcher-confirmation"]` count = **0** at every step, no
+  `wireframe-file-error` appears, and `data-wireframe-document-path` / `data-wireframe-dirty` are
+  UNCHANGED (the cancel path leaves the document intact) — the AC's actual clause *"confirmations
+  have no requester"*. (2) `terminal-delete-session-dialog`=1 then gone after Cancel (this also
+  REMOVES the "fresh env has no record" blocker by creating the record first). (3) With no seam
+  set, `seam_short_circuit()` → `files::env_path()` returns `None` → the native
+  `save_dialog`/`open_dialog` is called (`commands.rs:91-95` + `:42-64`): the native OS picker is
+  the only fallback; a file command's fallback branch is SOURCE, not runtime, so this sub-leg is
+  `static`.
+  **Edge:** **SQL Studio's destructive-confirm live leg is a RECORDED DEFERRAL, not drivable** —
+  the only seeded connection is the built-in **read-only** `Fredo` connection
+  (`db_client/query.rs:112-127` refuses a destructive statement before any confirmation) and a
+  read-write connection cannot be created (the embedded-cluster password is OS-keychain-only); cite
+  `DestructiveConfirm.test.tsx:32-44` + `sqlStudioPrimaryControl.test.tsx` as the unit pins —
+  never PASS, never silently dropped. **(Env split, binding: Q-24 runs in Env A with the Wireframe
+  file seams UNSET; Q-34 runs in Env B with them SET — the precedence `CANCEL > FAIL_FILE > path
+  seams > shared fallback > native dialog` (`files.rs:74-84`) makes the two legs mutually
+  exclusive in ONE env.)**
 
 ## AC4 / R-4 — Wireframe undo/redo is application-local
 
@@ -270,17 +368,27 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
   either is a no-op. Owning artifacts: ST-3's `wireframeHistory.test.ts` ("empty-history flags") +
   ST-5's `WireframeHistoryControls` disabled wiring.
   **Edge:** history emptied by undoing everything; one edit re-enables only Undo.
-- [ ] **Q-33 (R-4.4, live).** Build ≥3 edits; activate the control whose accessible name is
-  exactly `New` (`wireframeActions.ts:586`); if the document is dirty click
+- [ ] **Q-33 (R-4.4, live).** Build ≥3 edits; open `wireframe-file-menu` and click the row INSIDE
+  the opened popup whose accessible name is exactly `New` — the FIRST `wireframe-file-item` row,
+  the `WIREFRAME_ACTIONS` title verbatim (`wireframeActions.ts:584-592`, verb
+  `wireframe.document.new`; `WireframeFileMenu.tsx:100-107`); if the document is dirty click
   `wireframe-new-document-discard`.
   **Expected:** count=0, `-document-path`='', `-dirty`=`true`, BOTH history controls disabled. A
   second edit then undoes normally (the history instance identity never changed). Owning artifact:
   ST-3's `wireframeHistory.test.ts` ("New/Open reset").
   **Edge:** cancel the discard prompt (document AND its history intact, controls still enabled);
-  New on a clean document (no prompt); New twice. **CONDITIONAL — see the QA section's Discussion
-  note: Contracts §11 binds no `New` control and UI/UX §9 records that after the command bar dies
-  `New` has no pointer home. If the PO/architect do not accept adding it to the File menu, this
-  row is UNVERIFIED-with-a-plan-defect, never a PASS.**
+  New on a clean document (no prompt); New twice. **not conditional** — the File menu's first
+  `wireframe-file-item` row is `New` (never disabled) and is the pointer home for the reset
+  (`WireframeFileMenu.tsx:100-107`; `runWireframeAction('wireframe.document.new')` →
+  `resetForNewDocument`).
+- [ ] **Q-34 (R-4.4, live — Env B: the save/open/export seams SET).** Save a 3-element document
+  (`Save As`, writing at `FREDO_WIREFRAME_SAVE_PATH`); make 2 edits; `wireframe-file-menu` → `Open`
+  (`FREDO_WIREFRAME_OPEN_PATH` pointing at the saved file).
+  **Expected:** count = 3, `-document-path` = the seam path, `-dirty`=`false`, BOTH history controls
+  disabled; a later edit undoes normally. Owning artifact: ST-3's `wireframeHistory.test.ts`.
+  **Edge:** Open while dirty (record the declared behaviour); a `phone`-dimension document; open
+  then undo (no-op). **Env split (binding): the seams belong to Env B alone — Q-24 runs in Env A
+  with them UNSET.**
 - [ ] **Q-34 (R-4.4, live).** With the save seam: save a 3-element document (`Save As`); make 2
   edits; `wireframe-file-menu` → `Open` (open seam pointing at the saved file).
   **Expected:** count = 3, `-document-path` = the seam path, `-dirty`=`false`, BOTH history controls
@@ -298,24 +406,28 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
 
 ## AC5 / R-5 — the companion still converses and grounds
 
-- [ ] **Q-36 (R-5.1, live).** With Wireframe open and 2 elements selected
-  (`data-wireframe-selection-count`=`2`), publish the composer open request from the page context
-  via `tauri_webview_execute_js` calling
-  `requestCompanionComposerOpen({ source: 'command-bar-ask', appId: 'wireframe', focus: true })`
-  (the shipped public bridge, `shared/companion/composerBridge.ts:39` — the same call the deleted
-  rail `Ask` button made); read `fredo-companion-composer` and
+- [ ] **Q-36 (R-5.1, R-5.5, live).** With Wireframe open, 2 elements selected
+  (`data-wireframe-selection-count`=`2`) and the TicTacToe bubble CLOSED (shipped default):
+  **click the companion avatar ONCE** — locator `.fredo-companion-avatar`
+  (`CompanionEntity.tsx:1833-1853`) disambiguated by its `aria-label` (**no testid exists on the
+  avatar and none was invented**). The click runs `handleSpriteClick`'s single-click branch →
+  `openComposer()` in addition to `askForJoke()`. Then read `fredo-companion-composer`,
   `fredo-companion-composer-target`; type into `fredo-companion-composer-input`; click
   `fredo-companion-composer-submit`.
-  **Expected:** composer mounts exactly once, only in the hosting window; the target chip reads
+  **Expected:** composer mounts EXACTLY once, only in the hosting window; the target chip reads
   exactly `for Wireframe` (`COMPANION_COMPOSER_TARGET_PREFIX = 'for '` + `WireframeFeature.name`);
+  the pre-existing joke observable is still produced (asserted as present, never as absent);
   submitting yields a non-empty conversational reply with no error banner. No `ContextEnvelope`,
   no host registry (Q-3 class-B = 0).
   **Edge:** no app in front (chip reads `No app in front of Fredo`); empty submit (no-op, focus
   retained); a repeated open request (exactly ONE composer, `focusNonce` re-focus,
-  `CompanionComposer.tsx:137-140`). **DISCLOSURE (G-410 style): the OPENER's pointer reachability
-  is NOT established by this row — the rail's `Ask` was the only pointer opener and dies with the
-  engine (UI/UX `## Discussion`). This row proves grounding + reply only; record that limitation
-  verbatim, never as proof of pointer reachability.**
+  `CompanionComposer.tsx:137-140`); a DOUBLE click still only toggles the TicTacToe bubble and opens
+  no composer. **TIMER DISCIPLINE:** the single-click path is armed by a ~250 ms `setTimeout`, so
+  an immediate re-read finds 0 composers and is a FALSE FAIL — wait for the node or advance timers.
+  **SURFACE DISCIPLINE:** assert `data-composer-surface="overlay"`; the home seat can never render
+  it (Q-41). The `requestCompanionComposerOpen` bridge (`composerBridge.ts:39`) is a
+  **corroborating/diagnostic** lever only (if the pointer click fails to open the box, publish the
+  request to prove the gate works) — never the row's mechanism.
 - [ ] **Q-37 (R-5.1, static).** ST-2's
   `apps/ui/src/shared/companion/__tests__/grounding.test.ts`.
   **Expected:** `readCompanionGrounding('wireframe')` returns a FRESH payload with `version`=`1`,
@@ -343,11 +455,18 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
   over-cap payload (>16384 bytes) → `null` (never truncated JSON).
 - [ ] **Q-40 (R-5.4, live).** Open a standalone window
   (`tauri_ipc_execute_command command=open_app_window args={"appId":"wireframe"}`,
-  `infrastructure/app_window.rs:198`), publish a composer open request there, query the composer.
-  **Expected:** `fredo-companion-composer` count = 0 there and no `data-composer-surface="overlay"`
-  node; the overlay branch is gated on `isHosting` (`CompanionEntity.tsx:1655-1666`).
+  `infrastructure/app_window.rs:198`). **Leg A:** publish NOTHING; query the composer in that
+  window. **Leg B:** publish a composer open request there (`tauri_webview_execute_js` calling the
+  bridge), query again, then dismiss and re-query.
+  **Expected:** **Leg A (at rest — the AC's requirement):** `fredo-companion-composer` count = **0**
+  AND `data-composer-surface` count = **0**. **Leg B (summon — documented shipped semantics, NOT a
+  violation):** the count becomes **1** with `data-composer-surface="overlay"` (Fredo teleported
+  into that webview), then after dismissing it re-asserts **0**. Overlay gate
+  `CompanionEntity.tsx:1681-1683`; composer render gate `:1833`.
   **Edge:** two standalone windows; a request published BEFORE the window mounts; the main window
-  as the positive control (Q-36: composer = 1).
+  as the positive control (Q-36: composer = 1). **A published request in a standalone window
+  correctly produces 1, NOT 0** — a teleport makes that webview the host; treating 1 as a FAIL
+  would contradict the shipped summon semantics.
 - [ ] **Q-41 (R-5.4, live).** On the home desktop with the launcher engaged (home seat), publish a
   composer open request from the seat; query the composer.
   **Expected:** composer count = 0 on the home seat; only `overlay` can host it
