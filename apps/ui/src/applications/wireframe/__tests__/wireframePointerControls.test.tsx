@@ -76,15 +76,24 @@ function addElement(type: WireframeElementType, id: string) {
   return element;
 }
 
-/** The open menu popup (rows exist only after the trigger is clicked). */
+/**
+ * The open menu popup (rows exist only after the trigger is clicked).
+ *
+ * A menu that is still playing its close transition keeps the trigger's
+ * internal state "open", so a click landng in that window RE-CLOSES instead of
+ * re-opening and the rows never mount. Wait for the previous popup's rows to
+ * unmount (`lazyMount` removes them) before clicking the trigger, so the click
+ * always lands on a settled trigger.
+ */
 async function openMenu(triggerTestId: string): Promise<HTMLElement> {
-  const user = userEvent.setup();
-  await user.click(screen.getByTestId(triggerTestId));
-  const rows = await screen.findAllByTestId(
+  const itemTestId =
     triggerTestId === WIREFRAME_ARRANGE_TESTID
       ? WIREFRAME_ARRANGE_ITEM_TESTID
-      : WIREFRAME_FILE_ITEM_TESTID,
-  );
+      : WIREFRAME_FILE_ITEM_TESTID;
+  await waitFor(() => expect(screen.queryAllByTestId(itemTestId)).toHaveLength(0));
+  const user = userEvent.setup();
+  await user.click(screen.getByTestId(triggerTestId));
+  const rows = await screen.findAllByTestId(itemTestId);
   const popup = rows[0]?.closest('[role="menu"]');
   if (popup === null || popup === undefined) throw new Error('menu popup not mounted');
   return popup as HTMLElement;
