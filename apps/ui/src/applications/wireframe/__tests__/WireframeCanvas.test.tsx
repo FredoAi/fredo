@@ -522,9 +522,7 @@ describe('canvas host contract', () => {
     seedDocument([]);
     renderCanvas();
     expect(
-      screen.getByText(
-        'Add an element from Insert, or ask the Companion to draft a wireframe.',
-      ),
+      screen.getByText('Add an element from Insert to start your wireframe.'),
     ).toBeInTheDocument();
   });
 });

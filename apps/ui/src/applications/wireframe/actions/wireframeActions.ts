@@ -14,9 +14,9 @@
  * `wireframe.companion.*` ids are Companion-only (`toolbar: false`) and are
  * executed by the companion layer — their `run` is deliberately absent here.
  *
- * The descriptions are user-facing (the Companion lists them per R-6.1) and
- * ST-7 mirrors them verbatim in the Rust catalog
- * (`infrastructure/companion/wireframe_catalog.rs`).
+ * The descriptions are user-facing labels for the pointer controls; nothing
+ * renders them to the Companion (Spec #3152 removed the generated per-surface
+ * skill offer, so no Companion surface lists these rows).
  *
  * Nothing in this module touches telemetry or the RTDB row pipeline: the
  * wireframe document is document state, and every mutation goes through the
