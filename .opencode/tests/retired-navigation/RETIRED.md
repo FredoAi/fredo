@@ -183,3 +183,30 @@ suites that exercised it have nothing left to exercise.
 | `apps/ui/src/applications/__tests__/navigationParityMatrix.test.ts` | navigation-parity | #3151 | subject: verb/shape parity across the five deleted surfaces |
 | `apps/ui/src/applications/__tests__/navigationBindingsCompleteness.test.ts` | navigation-bindings | #3151 | subject: the declared bindings of the five deleted surfaces + the engine's global chords |
 
+### ST-8 — the committed absence guard (AC1's evidence)
+
+**What the guard proves.** AC1's scoped absence predicate: **zero references to the retired
+navigation engine anywhere under `apps/ui/src`, outside the named enforcement guard and the
+evidence allowlist.** The guard scans exactly one root — `apps/ui/src` — for three token classes
+(module paths, engine symbols, deleted-file import specifiers) and exits non-zero on any hit that
+is not covered by the allowlist. **The evidence allowlist is empty by construction:** the guard
+lives in `.opencode/scripts/` and this record in `.opencode/tests/retired-navigation/`, both
+outside the scanned root, so neither needs an entry — and an allowlist entry may never name
+product source under `apps/ui/src`.
+
+The guard is paired with a non-vacuity control: `-SelfTest` seeds a real banned import into the
+scanned root, proves it is caught at that exact path, removes the probe in a `try/finally`, and
+asserts the tree scans clean again.
+
+```powershell
+# Plain run — exit 0 = clean, 1 = at least one hit, 2 = cannot run (bad root / zero files scanned)
+powershell -File .opencode/scripts/check-navigation-retired.ps1
+
+# Exit-code-assertable form (prints `EXITCODE=<n>` and exits with the guard's own code)
+powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-navigation-retired.ps1"
+
+# Non-vacuity control — exits 0 only when all three controls pass
+powershell -File .opencode/scripts/check-navigation-retired.ps1 -SelfTest
+powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-navigation-retired.ps1 -SelfTest"
+```
+
