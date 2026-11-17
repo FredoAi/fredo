@@ -88,8 +88,3 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoApplicationClass } from './shared/classes/FredoApplicationClass';
 export type { GridItemConfig } from './shared/classes/types';
-
-export * from './shared/navigation';
-
-// ── Navigation UI surfaces (Spec #3118 ST-7) — second, additive barrel ────────
-export * from './shared/navigation/ui';

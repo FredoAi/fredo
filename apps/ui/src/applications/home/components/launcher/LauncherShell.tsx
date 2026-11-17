@@ -21,11 +21,11 @@ import { useFredoHealth } from '../../../../shared/hooks/useFredoHealth';
 // Companion designated presence — gates the launcher mascot (#2853 ST-4).
 import { useCompanion } from '../../../../shared/contexts/CompanionContext';
 import type { FredoApplicationClass } from '../../../../shared/classes/FredoApplicationClass';
-// Spec #3122 ST-2 — the Ctrl+Space chord is owned by the ONE navigation chord
-// dispatcher (`globalKeys.ts`, installed by `NavigationProvider` in `main.tsx`). The shell
-// adds no `document` keydown listener and registers no legacy action override; it publishes
-// its core toggle through the window-system seam, which the declared
-// `window.launcher.toggle` verb runs.
+// Spec #3151 ST-4 — the Ctrl+Space chord is owned by the ONE platform-chord
+// listener (`shared/window-system/platformChords.ts`, mounted by `PlatformChordHost`
+// in `main.tsx`). The shell adds no `document` keydown listener and registers no
+// legacy action override; it publishes its core toggle through the window-system
+// seam, which that listener calls.
 import { setWindowLauncherToggle } from '../../../../shared/window-system/launcherToggleSeam';
 
 // Spec #2899 ST-1 — the desktop background registry. `none` resolves to the
@@ -97,17 +97,10 @@ import {
   spaceWriteForVerdict,
 } from './launcherSpaceHold';
 
-// ── Spec #3120 (P6) — the launcher keeps the shipped confirmation host (the ONE
-// await in the risk-policy funnel) and drops the app-scoped navigation seam.
-// Spec #3120 (P6) ST-7 (R-2/R-8): no `>` palette, no app-scoped context header,
-// no launcher-open bridge — the launcher is launch/search + global commands only.
-import {
-  resolveLauncherConfirmation,
-  subscribeLauncherConfirmation,
-  type PendingLauncherConfirmation,
-} from '../../../../shared/navigation/ui';
-import { useReducedMotion } from '../../../../shared/hooks/useReducedMotion';
-import { LauncherConfirmation } from './LauncherConfirmation';
+// ── #3151 ST-6 — the launcher confirmation host (the dialog + its store) was
+// removed with the navigation engine: only the five deleted per-app navigation
+// providers ever requested a confirmation, so nothing in the surviving product
+// can reach it. The launcher is launch/search + global commands only.
 
 /**
  * LauncherShell — the Fredo-owned launcher host (Spec #2808 ST-1; Spec #2821
@@ -530,13 +523,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   // resting z-model (coveredByWindow) applies unchanged.
   const [open, setOpen] = useState(false);
 
-  // The ST-1 confirmation store's pending request. Subscribed for the shell's whole
-  // mounted lifetime (never gated on visibility): a destructive/external companion
-  // instruction from the teleport composer must still render the alertdialog while
-  // the launcher is closed (QA-6 / F-172).
-  const [pendingConfirmation, setPendingConfirmation] =
-    useState<PendingLauncherConfirmation | null>(null);
-
   // Spec #2887 follow-up (UI/UX §4 S4) — the CANCEL signal handed to the bar's
   // live region. A monotonic counter (never a boolean) so each live Escape / `×`
   // is a distinct transition the bar announces exactly once. Bumped ONLY when a
@@ -858,11 +844,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [currentWindows, query],
   );
 
-  // UI/UX §4 — the reactive reduced-motion preference: the hook re-reads the CURRENT
-  // `window.matchMedia` on every render (a post-mount replacement, e.g. the live R-9.2 lever,
-  // is honoured) and re-subscribes to the query's `change` event.
-  const navReducedMotion = useReducedMotion();
-
   // Spec #2882 ST-4 — the truthful hint, derived from ST-1's ONE Enter verdict
   // (R-6.3: "the hint always states the action Enter will take"). The old
   // independent exact-full-name rule + the `companionBusy` global gate are
@@ -1116,11 +1097,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     [filteredEntries, launchFeature],
   );
 
-  /** The confirmation dialog's only exit: Accept = true, Cancel/Esc/outside = false. */
-  const handleConfirmationResolve = useCallback((accepted: boolean) => {
-    resolveLauncherConfirmation(accepted);
-  }, []);
-
   const handleQueryChange = useCallback((q: string) => {
     // #2878 ST-1 — synchronous mirror so the release owner's ordinary-space write
     // reads the current text in the same commit (never a one-render-stale read).
@@ -1328,12 +1304,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           void cancelVoice();
           return;
         }
-        // Spec #3120 (P6) — a pending confirmation is dismissed first (the dialog is
-        // portal'd, but the shell honours the same branch for deterministic hosts).
-        if (pendingConfirmation !== null) {
-          resolveLauncherConfirmation(false);
-          return;
-        }
         if (open) {
           // #2823: ESC on a shortcut-opened overlay closes the overlay (AC2) and
           // restores focus to the pre-open element (REQ-5). This is the ONLY action
@@ -1529,7 +1499,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       resetHoldGesture,
       signalCancel,
       voiceAvailable,
-      pendingConfirmation,
     ],
   );
 
@@ -1563,13 +1532,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
       setWindowLauncherToggle(null);
     };
   }, [performLauncherToggle]);
-
-  // ── Spec #3120 (P6) — the confirmation host ────────────────────────────────
-  // Subscribe for the shell's MOUNTED LIFETIME (never gated on `open`/`engaged`): a
-  // destructive/external companion instruction from the teleport composer must render
-  // the alertdialog even while the launcher is closed (QA-6 / F-172 — it is a portal).
-  // The dialog itself owns Accept/Cancel/Esc/outside; nothing auto-confirms.
-  useEffect(() => subscribeLauncherConfirmation(setPendingConfirmation), []);
 
   // Spec #2882 ST-5 — the SINGLE release owner for the hold gesture (R-2.2/R-2.6/
   // R-2.7, UI/UX §5.9): one mount-once bubble-phase `document` keyup listener,
@@ -1944,15 +1906,6 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
           {engaged && <LauncherInstalledAppsSection query={query} />}
         </Box>
       </Box>
-      {/* Spec #3120 (P6) — the confirmation host (the ONLY await in the keystroke
-          path). Rendered whenever a request is pending, regardless of launcher
-          visibility: a destructive/external teleport-composer instruction must show
-          the alertdialog even with the launcher closed (QA-6 / F-172). */}
-      <LauncherConfirmation
-        request={pendingConfirmation?.request ?? null}
-        onResolve={handleConfirmationResolve}
-        reducedMotion={navReducedMotion}
-      />
     </>
   );
 };

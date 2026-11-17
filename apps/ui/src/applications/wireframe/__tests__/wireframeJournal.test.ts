@@ -8,16 +8,13 @@
  * externally observable contract (one undo step per mutation, undo then redo,
  * field-scoped deltas) against the new home.
  *
- * The two trailing cases still exercise the ENGINE's trail projection over a
- * journal instance the test owns; they assert nothing about the store and die
- * with the engine in ST-6.
+ * #3151 ST-6 — the two trailing engine-trail-projection cases (over a
+ * test-owned journal) were removed with the engine they exercised; the
+ * app-local cases above are the surviving subject and stay.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { appendEntry } from '../../../shared/navigation/journal';
-import type { JournalEntry, Surface } from '../../../shared/navigation/types';
-import { buildActivityTrailModel } from '../../../shared/navigation/ui/models';
 import { createNewWireframeDocument } from '../model/document';
 import {
   createDefaultElement,
@@ -53,36 +50,6 @@ function seed(ids: readonly string[]): void {
 function makeElement(type: WireframeElementType, id: string): WireframeElement {
   const { page } = getSnapshot().document;
   return createDefaultElement(type, { page, elements: [], id });
-}
-
-/** The smallest declaration the trail projection needs (the real surface is ST-5). */
-function minimalSurface(): Surface {
-  const place = (id: string, label: string, parent: string | null) => ({
-    id,
-    label,
-    parent,
-    transient: false,
-    sticky: false,
-    cursor: null,
-    operator: null,
-    keys: {},
-    entryHooks: [] as string[],
-    exitHooks: [] as string[],
-  });
-  return {
-    tree: {
-      appId: 'wireframe',
-      root: 'wireframe.canvas',
-      places: [
-        place('wireframe.canvas', 'Canvas', null),
-        place('wireframe.create', 'Create', 'wireframe.canvas'),
-        place('wireframe.view', 'View', 'wireframe.canvas'),
-      ],
-      directAliases: {},
-    },
-    verbs: [],
-    companion: null,
-  };
 }
 
 describe('the app-local history is the single mutation authority (AC4)', () => {
@@ -197,74 +164,5 @@ describe('the app-local history is the single mutation authority (AC4)', () => {
 
     undo();
     expect(getSnapshot().document.elements[0].x).toBe(1);
-  });
-});
-
-/* ───────────── the engine's trail projection over a test-owned journal ───────────── */
-
-describe('the engine trail projection (dies with the engine in ST-6)', () => {
-  it('lists the journal entries newest first', () => {
-    // A test-owned journal instance — the projection only reads `seq`/attribution.
-    let journal = { entries: [] as readonly JournalEntry[], redo: [] as readonly number[] };
-    for (let index = 0; index < 3; index += 1) {
-      const outcome = appendEntry(
-        journal,
-        {
-          verbId: 'wireframe.element.toggleLock',
-          actor: 'human',
-          channel: 'pointer',
-          label: 'Toggle lock',
-          effect: 'mutation',
-          placePath: ['wireframe.canvas'],
-          target: [],
-          patch: null,
-          inverse: { delta: {} },
-          external: false,
-          consequence: null,
-          exitedBy: 'none',
-          coalesceKey: null,
-        },
-        '2026-01-01T00:00:00.000Z',
-      );
-      journal = outcome.state;
-    }
-
-    const model = buildActivityTrailModel(minimalSurface(), journal.entries);
-
-    expect(model.entries.map((entry) => entry.seq)).toEqual([3, 2, 1]);
-    expect(model.entries).toHaveLength(3);
-    expect(model.empty).toBe(false);
-  });
-
-  it('a navigation entry is attributed and not undoable', () => {
-    const outcome = appendEntry(
-      { entries: [], redo: [] },
-      {
-        verbId: 'wireframe.view.fitPage',
-        actor: 'human',
-        channel: 'keyboard',
-        label: 'Fit page',
-        effect: 'navigation',
-        placePath: ['wireframe.canvas', 'wireframe.view'],
-        target: [],
-        patch: null,
-        inverse: null,
-        external: false,
-        consequence: null,
-        exitedBy: 'none',
-        coalesceKey: null,
-      },
-      '2026-01-01T00:00:00.000Z',
-    );
-
-    const navigation = outcome.entry;
-    expect(navigation.effect).toBe('navigation');
-    expect(navigation.patch).toBeNull();
-    expect(navigation.inverse).toBeNull();
-    expect(navigation.undoable).toBe(false);
-    expect(navigation.actor).toBe('human');
-    expect(navigation.placePath).toEqual(['wireframe.canvas', 'wireframe.view']);
-    // A navigation entry never clears the redo stack (mutation-only rule).
-    expect(outcome.state.redo).toEqual([]);
   });
 });

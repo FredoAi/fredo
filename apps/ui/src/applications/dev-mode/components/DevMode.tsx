@@ -17,11 +17,9 @@ import {
 } from '../../../shared/companion/grounding';
 import { getApplications } from '../../applicationRegistry';
 import { SpatiotemporalManifold } from './SpatiotemporalManifold';
-import {
-  DevModeNavigationFooter,
-  DevModeNavigationProvider,
-} from './DevModeNavigationProvider';
-import type { DevModeActionHandlers, DevModeViewId } from '../devModeSurface';
+
+/** The two shipped Dev Mode views, in view-toggle order. */
+type DevModeViewId = 'rows' | 'application-data';
 
 // ── State badge colours ───────────────────────────────────────────────────────
 
@@ -589,43 +587,9 @@ export const DevMode: React.FC = () => {
     [view],
   );
 
-  // Spec #3121 (P7), ST-5 — the live callbacks the declared verbs delegate to. Every outcome
-  // is exactly the shipped handler; a `false` return is the shipped no-op (R-04) and writes
-  // no state and no journal entry.
-  const navigationActions = useMemo<DevModeActionHandlers>(
-    () => ({
-      clearEvents: () => {
-        if (events.length === 0) return false;
-        clearEvents();
-        return true;
-      },
-      focusFilter: () => {
-        const input = filterInputRef.current;
-        if (view !== 'rows' || input === null) return false;
-        input.focus();
-        return true;
-      },
-      showAllStates: () => {
-        if (view !== 'rows' || allStatesActive) return false;
-        setActiveStates(new Set(ALL_STATES));
-        return true;
-      },
-      showApplicationData: () => {
-        setView('application-data');
-        return true;
-      },
-      showRows: () => {
-        setView('rows');
-        return true;
-      },
-    }),
-    [events.length, clearEvents, view, allStatesActive],
-  );
-
   return (
-    <DevModeNavigationProvider view={view} actions={navigationActions}>
-      {(bindings) => (
-    <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden" onKeyDown={bindings.onKeyDown}>
+    <Box width="100%" height="100%" display="flex" flexDirection="column" background="var(--body-bg)" overflow="hidden">
+
       {/* Header */}
       <Box px={3} py={2} background="var(--header-bg)" borderBottom="1px solid" borderColor="var(--border-color)" flexShrink={0}>
         <HStack justify="space-between" align="center">
@@ -669,10 +633,9 @@ export const DevMode: React.FC = () => {
                 key={entry.id}
                 as="button"
                 onClick={() => {
-                  // The view IS the place (Architect §B.3): a real switch runs through the
-                  // SAME declared verb, so the cursor follows the view. Re-selecting the
-                  // active view is the shipped no-op.
-                  if (entry.id !== view) bindings.runView(entry.id);
+                  // The view is the app's own pointer state; re-selecting the
+                  // active view is a no-op.
+                  if (entry.id !== view) setView(entry.id);
                 }}
                 px="7px"
                 py="2px"
@@ -909,12 +872,6 @@ export const DevMode: React.FC = () => {
       ) : (
         <ApplicationDataFeed />
       )}
-
-      {/* Spec #3121 (P7), ST-5 — the shared navigation footer is the root's LAST flex child
-          (UI/UX §3): the shipped rail + trail over the App Data feed, map inside the footer. */}
-      <DevModeNavigationFooter />
     </Box>
-      )}
-    </DevModeNavigationProvider>
   );
 };
