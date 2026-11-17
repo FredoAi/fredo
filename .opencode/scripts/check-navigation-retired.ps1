@@ -47,8 +47,7 @@
     (1) POSITIVE       - one control leg per token, iterated from the token data
                          itself, plus an independent leg per prefix pair.  A
                          token in a class with no leg is a FAILURE, not a silent
-                         gap (the loop over the token list IS the leg).
-    (2) NEGATIVE       - a comment-only / prose-only / string-literal-only
+                         gap (the loop over the token list IS the leg).    (2) NEGATIVE       - a comment-only / prose-only / string-literal-only
                          mention flags nothing (the G-419 proof: a symbol in a
                          `// comment`, a string literal or a regex body is not a
                          hit for class B).
@@ -57,6 +56,11 @@
                          exact path and line, delete the probe (in a try/finally
                          so it is removed even when the assertion fails), and
                          assert the tree scans clean again.
+    (4) OUT-OF-ROOT    - write the SAME banned import at
+                         apps/ui/__nav_absence_probe_outside__.ts (a sibling of
+                         the scanned root), assert it is NOT scanned, and delete
+                         it (try/finally).  Proves the root confinement the AC
+                         claims: the guard scans apps/ui/src and nothing else.
 
   Usage:
     powershell -File .opencode/scripts/check-navigation-retired.ps1
@@ -125,6 +129,8 @@ $SkipDirNames = @('node_modules', 'dist', '.git')
 
 $ProbeRelPath = 'apps/ui/src/__nav_absence_probe__.ts'
 $ProbeFileName = '__nav_absence_probe__.ts'
+# A synthetic hit OUTSIDE the scanned root, used to prove root confinement.
+$OutOfRootRelPath = 'apps/ui/__nav_absence_probe_outside__.ts'
 
 # ---------------------------------------------------------------------------
 # Literal-aware sanitizer
@@ -663,8 +669,48 @@ const re = /navigationJournal|getNavigationJournal|createJournalStore/;
         if (-not $seededOk) { $failures++ }
     }
 
+    # ---- (4) OUT-OF-ROOT NON-SCAN: a synthetic hit OUTSIDE the root is not scanned ----
+    Write-Host ('CONTROL 4 - OUT-OF-ROOT NON-SCAN (probe at {0}, outside {1}):' -f $OutOfRootRelPath, $ScanRelRoot)
+    $outProbeFull = Join-Path $Root $OutOfRootRelPath
+    if (Test-Path -LiteralPath $outProbeFull) {
+        Write-Host ('  [FAIL] out-of-root probe path already exists before the write: {0}' -f $OutOfRootRelPath)
+        $failures++
+    }
+    else {
+        $outOk = $false
+        try {
+            [System.IO.File]::WriteAllText($outProbeFull, "import { NavigationHost } from '../shared/navigation/ui/host';`r`n")
+            Write-Host ('  wrote out-of-root probe: {0}' -f $OutOfRootRelPath)
+
+            $outside = Invoke-NavAbsenceScan -RepoRoot $Root
+            $outHits = @($outside.Hits | Where-Object { $_.Path -eq $OutOfRootRelPath })
+            Write-Host ('  scanned with out-of-root probe present: {0} file(s) (unchanged root), {1} hit(s) on the probe' -f $outside.Scanned, $outHits.Count)
+            if ($outHits.Count -eq 0) {
+                Write-Host ('  [PASS] out-of-root file NOT scanned (root confinement holds)')
+                $outOk = $true
+            }
+            else {
+                Write-Host ('  [FAIL] out-of-root file WAS scanned: {0}' -f $OutOfRootRelPath)
+                foreach ($h in $outHits) { Write-Host ('    unexpected hit: {0}:{1}: {2}' -f $h.Path, $h.Line, $h.Token) }
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $outProbeFull) {
+                Remove-Item -LiteralPath $outProbeFull -Force
+            }
+        }
+        if (Test-Path -LiteralPath $outProbeFull) {
+            Write-Host ('  [FAIL] out-of-root probe still exists after cleanup: {0}' -f $OutOfRootRelPath)
+            $failures++
+        }
+        else {
+            Write-Host ('  out-of-root probe removed: {0} (path absent)' -f $OutOfRootRelPath)
+        }
+        if (-not $outOk) { $failures++ }
+    }
+
     if ($failures -eq 0) {
-        Write-Host 'SELFTEST: PASS (all three controls passed)'
+        Write-Host 'SELFTEST: PASS (all four controls passed)'
         exit 0
     }
     Write-Host ('SELFTEST: FAIL ({0} control failure(s))' -f $failures)

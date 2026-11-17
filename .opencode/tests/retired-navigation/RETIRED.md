@@ -196,7 +196,9 @@ product source under `apps/ui/src`.
 
 The guard is paired with a non-vacuity control: `-SelfTest` seeds a real banned import into the
 scanned root, proves it is caught at that exact path, removes the probe in a `try/finally`, and
-asserts the tree scans clean again.
+asserts the tree scans clean again. It also proves the root confinement the predicate claims: the
+same banned import written at `apps/ui/__nav_absence_probe_outside__.ts` (a sibling of the scanned
+root) is **not** scanned, and the probe is likewise removed in a `try/finally`.
 
 ```powershell
 # Plain run — exit 0 = clean, 1 = at least one hit, 2 = cannot run (bad root / zero files scanned)
@@ -205,7 +207,7 @@ powershell -File .opencode/scripts/check-navigation-retired.ps1
 # Exit-code-assertable form (prints `EXITCODE=<n>` and exits with the guard's own code)
 powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-navigation-retired.ps1"
 
-# Non-vacuity control — exits 0 only when all three controls pass
+# Non-vacuity control — exits 0 only when all four controls pass
 powershell -File .opencode/scripts/check-navigation-retired.ps1 -SelfTest
 powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-navigation-retired.ps1 -SelfTest"
 ```
