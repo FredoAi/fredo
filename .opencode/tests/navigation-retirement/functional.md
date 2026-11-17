@@ -60,7 +60,8 @@ EARS ids `R-1.1` … `R-5.4` and NFR-1 … NFR-7. Names bind verbatim to the Arc
   `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-navigation-retired.ps1"`.
   **Expected:** `EXITCODE=0`; `Scanned files` > 0 (a zero-file scan is exit 2, not a pass); the
   three token classes match Contracts §9 exactly — class A module-path tokens
-  (`shared/navigation`, `shared/hotkeys`) scanned comment-stripped raw; class B symbol tokens
+  (`shared/navigation`, plus the retired hotkey-runtime directory path, whose directory no longer
+  exists) scanned comment-stripped raw; class B symbol tokens
   scanned CODE-ONLY (comments AND string-literal text stripped, interpolation expressions still
   scanned as code — G-419); class C deleted-file tokens (`wireframeSurface`, `terminalSurface`,
   `missionMonitorSurface`, `databaseClientSurface`, `devModeSurface`, `windowSystemSurface`,
