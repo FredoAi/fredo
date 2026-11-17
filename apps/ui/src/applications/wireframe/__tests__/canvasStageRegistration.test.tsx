@@ -18,7 +18,6 @@ import { act, cleanup, render } from '@testing-library/react';
 import { ChakraProvider, createSystem, defaultBaseConfig } from '@chakra-ui/react';
 
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
-import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
   captureWireframePagePng,
   getWireframeStage,
@@ -28,6 +27,7 @@ import {
   loadDocument,
   resetWireframeStoreForTests,
 } from '../store/wireframeDocumentStore';
+import { resetWireframeCanvasOperatorForTests } from '../components/wireframeCanvasOperator';
 
 interface StageInstance {
   id: number;
@@ -159,9 +159,7 @@ function renderCanvas(): ReturnType<typeof render> {
   return render(
     <React.StrictMode>
       <ChakraProvider value={testSystem}>
-        <WireframeNavigationProvider>
-          <WireframeCanvasImpl />
-        </WireframeNavigationProvider>
+        <WireframeCanvasImpl />
       </ChakraProvider>
     </React.StrictMode>,
   );
@@ -169,6 +167,7 @@ function renderCanvas(): ReturnType<typeof render> {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
+  resetWireframeCanvasOperatorForTests();
   konvaMock.instances.length = 0;
   konvaMock.nextId = 1;
 
@@ -202,6 +201,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
+  resetWireframeCanvasOperatorForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });

@@ -49,6 +49,7 @@ export type {
 // ── Shared window system (own kernel, Spec #2807 ST-1) ───────────────────────
 export { WindowSystemProvider } from './shared/window-system/WindowSystemProvider';
 export { WindowManager } from './shared/window-system/WindowManager';
+export { PlatformChordHost } from './shared/window-system/PlatformChordHost';
 export { useWindowActions } from './shared/window-system/useWindowActions';
 export { useWindows } from './shared/window-system/useWindows';
 export {
@@ -87,8 +88,3 @@ export { API_BASE_URL, STEP_STATUSES } from './shared/constants';
 // ── Feature classes ───────────────────────────────────────────────────────────
 export { FredoApplicationClass } from './shared/classes/FredoApplicationClass';
 export type { GridItemConfig } from './shared/classes/types';
-
-export * from './shared/navigation';
-
-// ── Navigation UI surfaces (Spec #3118 ST-7) — second, additive barrel ────────
-export * from './shared/navigation/ui';

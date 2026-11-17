@@ -11,10 +11,10 @@ import { ThemeProvider } from './app/providers/ThemeProvider';
 import { CompanionProvider } from './shared/contexts/CompanionContext';
 import { FredoCompanion } from './shared/components/companion';
 import { Router } from './app/routes/Router';
-// Spec #3122 ST-2 — the ONE navigation shell provider: installs the global chord
-// dispatcher and renders the ONE navigation announcer. Mounted here so BOTH
-// webviews (main and `?view=terminal`) run exactly one navigation keyboard runtime.
-import { NavigationProvider } from './shared/navigation/ui';
+// Spec #3151 ST-4 — the ONE platform-chord host: installs the three surviving chords'
+// keydown listener (primary+space / primary+tab / primary+shift+tab) for this webview.
+// Mounted here so BOTH webviews (main and `?view=terminal`) run exactly one listener.
+import { PlatformChordHost } from './shared/window-system/PlatformChordHost';
 import { DevAdapter } from './app/adapters/DevAdapter';
 import { TauriAdapter } from './app/adapters/TauriAdapter';
 import { adapterBridge } from './shared/utils/adapterBridge';
@@ -46,10 +46,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <AppProvider adapter={adapter}>
             <CompanionProvider>
               <ReactFlowProvider>
-                <NavigationProvider>
+                <PlatformChordHost>
                   <Router />
                   <Toaster />
-                </NavigationProvider>
+                </PlatformChordHost>
               </ReactFlowProvider>
               <FredoCompanion />
             </CompanionProvider>

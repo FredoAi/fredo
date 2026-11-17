@@ -1482,20 +1482,47 @@ mod tests {
     #[test]
     fn the_live_offer_carries_the_generated_wireframe_skill_with_its_projected_description() {
         use crate::infrastructure::companion::surface_registry::{
-            build_companion_skill_registry, CompanionManifest,
+            build_companion_skill_registry, CompanionCommandManifest, CompanionSurfaceManifest,
         };
 
-        #[derive(serde::Deserialize)]
-        struct GoldenFixture {
-            manifest: CompanionManifest,
-        }
-
-        let fixture: GoldenFixture = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../ui/src/shared/companion/fixtures/wireframe.companion.golden.json"
-        )))
-        .expect("the golden fixture parses");
-        let surfaces = fixture.manifest.surfaces;
+        // The subject is the generated OFFER, not the publication transport, so
+        // the surface is built here as a plain literal. The shared golden fixture
+        // this pin used to read lived under `apps/ui/src/shared/companion/` and
+        // was deleted with the frontend verb-manifest bridge (#3151); the Rust
+        // half of the command path is untouched and still compiles.
+        let surfaces = vec![CompanionSurfaceManifest {
+            app_id: "wireframe".to_string(),
+            app_name: "Wireframe".to_string(),
+            skill_name: "wireframe".to_string(),
+            description: "Draw and arrange wireframe pages.".to_string(),
+            list_label: None,
+            commands: vec![
+                CompanionCommandManifest {
+                    id: "wireframe.create.rect".to_string(),
+                    label: "Rectangle".to_string(),
+                    description: "Arm the rectangle draw tool.".to_string(),
+                    risk: Some("mutating".to_string()),
+                    args: Vec::new(),
+                    aliases: Vec::new(),
+                },
+                CompanionCommandManifest {
+                    id: "wireframe.element.delete".to_string(),
+                    label: "Delete".to_string(),
+                    description: "Delete every selected element.".to_string(),
+                    risk: Some("destructive".to_string()),
+                    args: Vec::new(),
+                    aliases: Vec::new(),
+                },
+                CompanionCommandManifest {
+                    id: "wireframe.zoom.in".to_string(),
+                    label: "Zoom in".to_string(),
+                    description: "Zoom in one step about the viewport centre.".to_string(),
+                    risk: Some("safe".to_string()),
+                    args: Vec::new(),
+                    aliases: Vec::new(),
+                },
+            ],
+        }];
         let registry = build_companion_skill_registry(&surfaces);
         let tools = skills::render_tools(&registry);
         let tools = tools.as_array().expect("the offer renders a tools array");

@@ -15,7 +15,6 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, waitFor } from '@testing-library/react';
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { NavigationProvider } from '@/shared/navigation/ui';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { setPerformanceGateActive } from '@/shared/doom-mode';
 import { LauncherShell } from '../LauncherShell';
@@ -83,11 +82,7 @@ afterEach(() => {
 
 describe('Spec #2970 ST-6 — launcher voice suppression gate', () => {
   it('closes every voice affordance while suppressed and restores it after', async () => {
-    renderWithChakra(
-      <NavigationProvider>
-        <LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />
-      </NavigationProvider>,
-    );
+    renderWithChakra(<LauncherShell showableFeatures={[]} onOpenFeature={vi.fn()} />);
 
     await waitFor(() => expect(lastProps()).toBeTruthy());
     expect(lastProps().voiceEnabled).toBe(true);

@@ -78,12 +78,6 @@ function collectTsx(dir: string): string[] {
 const DEV_MODE = `${BASE}/dev-mode/components/DevMode.tsx`;
 const TERMINAL_COMPONENTS = `${BASE}/terminal/components`;
 const TERMINAL_WINDOW = `${TERMINAL_COMPONENTS}/TerminalWindow.tsx`;
-/**
- * Spec #3121 ST-1 — the terminal is the ONE structural wrapper of the fleet: its column root
- * (the `h="100%"` definite-height root) lives in the navigation provider, and the shipped
- * row became that column's `flex="1"` child.
- */
-const TERMINAL_NAV_PROVIDER = `${TERMINAL_COMPONENTS}/TerminalNavigationProvider.tsx`;
 const TERMINAL_SIDEBAR = `${TERMINAL_COMPONENTS}/TerminalSidebar.tsx`;
 const TERMINAL_SESSION_VIEW = `${TERMINAL_COMPONENTS}/TerminalSessionView.tsx`;
 /** The superseded #2940 horizontal rail module — must not return (#2942). */
@@ -123,13 +117,10 @@ describe('#2924 ST-4 — feature roots size to the content region, not the viewp
   });
 
   it('terminal window root is content-region sized (direction-agnostic)', () => {
-    // Spec #3121 ST-1 — the root MOVED, the invariant did not. The terminal's column root
-    // (the definite-height `h="100%"` Flex that fills its content region) now lives in the
-    // navigation provider, which also owns the ONE key adapter and the footer; the shipped
-    // row became that column's `flex="1"` child (it MUST NOT keep `h="100%"`, or it would
-    // overflow the column past the footer). Re-pointed exactly as #2934 ST-3 re-pointed this
-    // pin when the root moved out of `TerminalSessionView.tsx`.
-    expect(source(TERMINAL_NAV_PROVIDER)).toMatch(/<Flex\b[^>]*\bh="100%"/);
+    // #3151 ST-6 — the column root the deleted navigation provider used to own
+    // moved back into `TerminalWindow.tsx`: the definite-height `h="100%"` Flex
+    // is the window root and the shipped row is its `flex="1"` child.
+    expect(source(TERMINAL_WINDOW)).toMatch(/<Flex\b[^>]*\bh="100%"/);
     expect(source(TERMINAL_WINDOW)).toMatch(/<Flex\b[^>]*\bflex="1"/);
   });
 

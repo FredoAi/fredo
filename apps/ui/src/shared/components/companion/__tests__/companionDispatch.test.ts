@@ -26,22 +26,23 @@ import {
   queuedWaitingCopy,
   resolveSendOutcome,
 } from '../companionDispatch';
-import { CAPABILITY_LIMITS } from '../../../navigation/types';
-import type { ContextEnvelope } from '../../../navigation/types';
+import { COMPANION_CAPABILITY_LIMITS } from '../../../companion/grounding';
+import type { CompanionGrounding } from '../../../companion/grounding';
 
 const PERSONA = 'You are Fredo, a friendly, concise desktop assistant.';
 
-/** #3120 ST-3 — a minimal envelope used as the exact grounding payload. */
-function makeContext(overrides: Partial<ContextEnvelope> = {}): ContextEnvelope {
+/**
+ * #3151 ST-2 — a minimal grounding payload used as the exact grounding stimulus.
+ * Deliberately a literal (not a registry read) so the seam's assertion is about
+ * the EXACT object the caller hands over, including JSON.stringify key order.
+ */
+function makeContext(overrides: Partial<CompanionGrounding> = {}): CompanionGrounding {
   return {
     version: 1,
     appId: 'wireframe',
-    placePath: [{ id: 'root', label: 'Wireframe', transient: false, sticky: true }],
+    appName: 'Wireframe',
     selection: { count: 0, kinds: [], label: null, ids: [] },
-    verbs: [],
-    journal: { last: [], undoableCount: 0 },
     dirty: false,
-    limits: CAPABILITY_LIMITS,
     ...overrides,
   };
 }
@@ -212,7 +213,7 @@ describe('#3120 ST-3 — companionGroundingContent', () => {
     expect(companionGroundingContent({ context: undefined })).toBeNull();
   });
 
-  it('returns the exact JSON.stringify(context) for a supplied envelope', () => {
+  it('returns the exact JSON.stringify(context) for a supplied payload', () => {
     const context = makeContext();
     const grounding = companionGroundingContent({ context });
 
@@ -226,13 +227,14 @@ describe('#3120 ST-3 — companionGroundingContent', () => {
     const oversized = makeContext({ appId: '🚀'.repeat(5_000) });
     expect(companionGroundingContent({ context: oversized })).toBeNull();
 
-    // A comfortably under-cap envelope still grounds.
+    // A comfortably under-cap payload still grounds.
     const within = makeContext({ appId: 'x'.repeat(8_000) });
     const grounding = companionGroundingContent({ context: within });
     expect(grounding).toBe(JSON.stringify(within));
     expect(new TextEncoder().encode(grounding as string).length).toBeLessThanOrEqual(
-      CAPABILITY_LIMITS.maxContextBytes,
+      COMPANION_CAPABILITY_LIMITS.maxContextBytes,
     );
+    expect(COMPANION_CAPABILITY_LIMITS.maxContextBytes).toBe(16384);
   });
 });
 
@@ -293,7 +295,7 @@ describe('#3120 ST-3 — the FIFO carries the grounding context', () => {
     const item = queue.dequeue();
 
     expect(item).toEqual({ id: first.queueId, text: 'grounded', context });
-    // The same envelope reference is carried (no re-serialization on the way in).
+    // The same grounding reference is carried (no re-serialization on the way in).
     expect(item?.context).toBe(context);
   });
 

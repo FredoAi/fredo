@@ -1,11 +1,14 @@
 /**
- * Wireframe canvas implementation (Spec #3070, ST-2; extended by Spec #3071, ST-5).
+ * Wireframe canvas implementation (Spec #3070, ST-2; extended by Spec #3071,
+ * ST-5; engine seam stripped by Spec #3151, ST-5).
  *
  * Loaded lazily by `WireframeCanvas.tsx` so `konva` / `react-konva` stay out of
  * the eager startup chunk (F-56). Renders the document as the visible page,
  * provides multi-selection (shift-click), group drag/resize committed as ONE
  * mutation, snap-to-grid on drop and ephemeral smart alignment guides, and
- * consumes the store's view transform.
+ * consumes the store's view transform. Pointer gestures commit through the
+ * store's ONE write seam (`dispatch`), each recording exactly one app-local
+ * history entry — there is no navigation host in the path.
  *
  * Performance contract (UI/UX section 9): pointer moves update Konva node
  * attributes imperatively — no React state is written per move — and exactly
@@ -45,6 +48,7 @@ import type Konva from 'konva';
 import {
   ELEMENT_MIN_SIZE,
   clamp,
+  clampRectToPage,
   roundTo1dp,
   type WireframeRect,
 } from '../model/geometry';
@@ -55,23 +59,26 @@ import {
   snapValueToGrid,
   type WireframeGuide,
 } from '../model/arrange';
-import type {
-  WireframeBorderWidth,
-  WireframeElement,
-  WireframeRadius,
-  WireframeSectionPreset,
-  WireframeShapeDrawKind,
-  WireframeTextSize,
+import {
+  createShapeElementAtRect,
+  type WireframeBorderWidth,
+  type WireframeElement,
+  type WireframeRadius,
+  type WireframeSectionPreset,
+  type WireframeShapeDrawKind,
+  type WireframeTextSize,
 } from '../model/elements';
 import { findWireframeIcon } from '../model/icons';
 import {
   clearSelection,
+  dispatch,
   fitPageToViewport,
   getSnapshot,
   isElementMovable,
   primarySelectedId,
   registerCanvasStage,
   select,
+  setView,
   subscribe,
   toggleSelect,
 } from '../store/wireframeDocumentStore';
@@ -82,11 +89,12 @@ import {
   registerWireframeStage,
 } from '../canvas/wireframeCanvasRegistry';
 import { useCanvasPalette, type CanvasPalette } from '../theme/useCanvasPalette';
-import { WIREFRAME_DRAW_CURSOR } from '../wireframeSurface';
 import {
-  useWireframeNavigation,
-  useWireframePlaceView,
-} from './WireframeNavigationProvider';
+  WIREFRAME_DRAW_CURSOR,
+  clearArmedWireframeShape,
+  getArmedWireframeShape,
+  subscribeArmedWireframeShape,
+} from './wireframeCanvasOperator';
 
 /**
  * Pointer modifier that toggles an element in/out of the selection (R-1.1 /
@@ -179,9 +187,9 @@ const TRANSFORMER_ANCHORS = [
 ] as const;
 
 const EMPTY_HINT =
-  'Add an element from the toolbar, or ask the Companion to draft a wireframe.';
+  'Add an element from Insert, or ask the Companion to draft a wireframe.';
 const CANVAS_INSTRUCTIONS =
-  'Arrow keys select the previous or next element at the Canvas and align the selection inside Arrange; edits are made from the rail, the details view or their shortcuts.';
+  'Select an element by clicking it and drag or resize it on the canvas. Insert adds elements, the details view edits the selection, and the Arrange, View and File controls group, align, zoom and save the document.';
 
 interface CanvasSize {
   width: number;
@@ -640,21 +648,23 @@ function normalizeCreateRect(start: PagePoint, end: PagePoint): WireframeRect {
 }
 
 export function WireframeCanvasImpl(): ReactElement {
-  // The ONE navigation host (Spec #3119). Pointer gestures commit through its
-  // declared verbs — the canvas holds geometry, the host owns the mutation.
-  const { host } = useWireframeNavigation();
+  // Spec #3151 ST-5 — pointer gestures commit through the store's own
+  // `dispatch` funnel (the ONE write seam: it records exactly one app-local
+  // history entry per mutation). The engine host is gone; the canvas holds the
+  // geometry, the store owns the mutation.
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document: wireframe, selectedIds, view, panMode, captureView, snapToGrid } = state;
   const primaryId = primarySelectedId(state);
   const palette = useCanvasPalette();
 
-  // ── Derived place view (Spec #3119, ST-5) ─────────────────────────────────
-  // The canvas reads the CACHED place slice (`armed`), never the journal
-  // snapshot: `useWireframePlaceView` keeps its object identity stable across
-  // journal appends that do not move the cursor or the armed kind, so the canvas
-  // is not in the journal's render hot path.
-  const placeView = useWireframePlaceView(host);
-  const drawShape: WireframeShapeDrawKind | null = placeView.armed;
+  // ── Armed create operator ────────────────────────────────────────────────
+  // Session-scoped presentation state (never the journal): the canvas reads the
+  // armed shape kind and re-renders only when it flips.
+  const drawShape: WireframeShapeDrawKind | null = useSyncExternalStore(
+    subscribeArmedWireframeShape,
+    getArmedWireframeShape,
+    getArmedWireframeShape,
+  );
   const createOperatorActive = drawShape !== null;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -935,20 +945,19 @@ export function WireframeCanvasImpl(): ReactElement {
       const point = stageToPagePoint(event) ?? gesture.current;
       const rect = normalizeCreateRect(gesture.start, point);
       if (rect.width < ELEMENT_MIN_SIZE || rect.height < ELEMENT_MIN_SIZE) return;
-      // Commit through the DECLARED verb (pointer is a channel, not a second
-      // implementation): the verb clamps to the page, adds + auto-selects the
-      // element, writes ONE journal entry, clears the armed kind and pops the
-      // transient Create place exactly once. Geometry stays in this layer.
-      const verbId =
-        drawShape === 'ellipse' ? 'wireframe.create.ellipse' : 'wireframe.create.rect';
-      void host.runVerb(verbId, 'pointer', {
-        x: String(rect.x),
-        y: String(rect.y),
-        width: String(rect.width),
-        height: String(rect.height),
+      // Commit through the store's ONE write seam: build the shape, add +
+      // auto-select it in ONE snapshot, then disarm the operator. Geometry stays
+      // in this layer.
+      const element = createShapeElementAtRect({
+        shape: drawShape,
+        rect,
+        page: getSnapshot().document.page,
       });
+      if (element === null) return;
+      dispatch('element.add', { element });
+      clearArmedWireframeShape();
     },
-    [drawShape, host, stageToPagePoint],
+    [drawShape, stageToPagePoint],
   );
 
   const handleCreatePointerCancel = useCallback((): void => {
@@ -1115,8 +1124,9 @@ export function WireframeCanvasImpl(): ReactElement {
         }
       }
 
-      // ONE commit per gesture through the DECLARED verb: a uniform page-space
-      // delta over the movable members (the model stays the source of truth).
+      // ONE commit per gesture through the store's write seam: a uniform
+      // page-space delta over the movable members, each clamped to the page (the
+      // model stays the source of truth).
       const referenceId = targetIds.find((id) => rects.has(id));
       const referenceRect = referenceId === undefined ? undefined : rects.get(referenceId);
       const referenceBefore = referenceId === undefined ? undefined : byId.get(referenceId);
@@ -1124,11 +1134,17 @@ export function WireframeCanvasImpl(): ReactElement {
         const dx = roundTo1dp(referenceRect.x - referenceBefore.x);
         const dy = roundTo1dp(referenceRect.y - referenceBefore.y);
         if (dx !== 0 || dy !== 0) {
-          void host.runVerb('wireframe.element.move', 'pointer', {
-            ids: targetIds.join(','),
-            dx: String(dx),
-            dy: String(dy),
-          });
+          const patches: Record<string, { x: number; y: number }> = {};
+          for (const id of targetIds) {
+            const current = byId.get(id);
+            if (!current) continue;
+            const next = clampRectToPage(
+              { ...current, x: current.x + dx, y: current.y + dy },
+              snapshot.document.page,
+            );
+            patches[id] = { x: next.x, y: next.y };
+          }
+          dispatch('elements.update', { patches });
         }
       }
 
@@ -1138,7 +1154,7 @@ export function WireframeCanvasImpl(): ReactElement {
       // geometry the instant the gesture ends (R-1.8).
       resetNodesToModel(getSnapshot().selectedIds);
     },
-    [panMode, snapToGrid, clearGuides, resetNodesToModel, host],
+    [panMode, snapToGrid, clearGuides, resetNodesToModel],
   );
 
   const handleTransformStart = useCallback((): void => {
@@ -1189,10 +1205,9 @@ export function WireframeCanvasImpl(): ReactElement {
     }
     const endBox = selectionBounds(endRects);
 
-    // ONE commit per gesture through the DECLARED verb: the union-box delta
-    // `(dx, dy, dw, dh)` is applied to every MOVABLE member by the verb, which
-    // also clamps so no member falls below `ELEMENT_MIN_SIZE`
-    // (R-1.4 / R-1.8 / R-2.9).
+    // ONE commit per gesture through the store's write seam: the union-box delta
+    // `(dx, dy, dw, dh)` is applied to every MOVABLE member, clamped so no member
+    // falls below `ELEMENT_MIN_SIZE` (R-1.4 / R-1.8 / R-2.9).
     if (startBox && endBox && movable.length > 0) {
       const minWidth = Math.min(...movable.map((element) => element.width));
       const minHeight = Math.min(...movable.map((element) => element.height));
@@ -1203,19 +1218,33 @@ export function WireframeCanvasImpl(): ReactElement {
         Math.max(endBox.height - startBox.height, ELEMENT_MIN_SIZE - minHeight),
       );
       if (dx !== 0 || dy !== 0 || dw !== 0 || dh !== 0) {
-        void host.runVerb('wireframe.element.resize', 'pointer', {
-          ids: movable.map((element) => element.id).join(','),
-          dx: String(dx),
-          dy: String(dy),
-          dw: String(dw),
-          dh: String(dh),
-        });
+        const patches: Record<string, { x: number; y: number; width: number; height: number }> =
+          {};
+        for (const element of movable) {
+          const next = clampRectToPage(
+            {
+              ...element,
+              x: element.x + dx,
+              y: element.y + dy,
+              width: Math.max(ELEMENT_MIN_SIZE, element.width + dw),
+              height: Math.max(ELEMENT_MIN_SIZE, element.height + dh),
+            },
+            snapshot.document.page,
+          );
+          patches[element.id] = {
+            x: next.x,
+            y: next.y,
+            width: next.width,
+            height: next.height,
+          };
+        }
+        dispatch('elements.update', { patches });
       }
     }
 
     resetNodesToModel(snapshot.selectedIds);
     transformerRef.current?.forceUpdate();
-  }, [panMode, resetNodesToModel, host]);
+  }, [panMode, resetNodesToModel]);
 
   const handlePanDragStart = useCallback(
     (event: Konva.KonvaEventObject<DragEvent>) => {
@@ -1236,15 +1265,16 @@ export function WireframeCanvasImpl(): ReactElement {
       if (event.target !== event.currentTarget) return;
       const node = event.currentTarget as Konva.Group;
       setStageCursor('grab');
-      // A pan is a NAVIGATION effect: commit the translation through the
-      // declared verb, which journals one attributed entry and leaves the
-      // document + selection byte-identical.
-      void host.runVerb('wireframe.view.panBy', 'pointer', {
-        x: String(roundTo1dp(node.x())),
-        y: String(roundTo1dp(node.y())),
+      // A pan is a pure VIEW transform: write it straight to the store, which
+      // leaves the document, the selection and the history byte-identical.
+      const { view: liveView } = getSnapshot();
+      setView({
+        scale: liveView.scale,
+        x: roundTo1dp(node.x()),
+        y: roundTo1dp(node.y()),
       });
     },
-    [host, setStageCursor],
+    [setStageCursor],
   );
 
   const handlePointerDown = useCallback((): void => {
