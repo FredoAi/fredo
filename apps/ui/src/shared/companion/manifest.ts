@@ -4,7 +4,7 @@
  * Spec #3120, ST-2; legacy projection removed in Spec #3122 P8 ST-2).
  *
  * ONE declaration source feeds the published manifest: a registered navigation `Surface`
- * (Spec #3117/#3120 — e.g. `wireframeSurface`), projected through
+ * (Spec #3117/#3120), projected through
  * `shared/navigation/manifest.ts` (which appends the engine-owned `journal.undo` command
  * before `listActions`). A surface without a `companion` block publishes nothing. There is
  * no second (legacy `feature.commandSurface`) projection.

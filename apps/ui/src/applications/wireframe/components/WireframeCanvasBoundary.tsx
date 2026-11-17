@@ -5,8 +5,8 @@
  * proved that an uncaught throw at canvas mount blanked the whole webview
  * (`#root` had 0 children) because nothing caught it. This boundary wraps the
  * lazy canvas (inside `WireframeCanvas.tsx`) so only the canvas subtree is
- * replaced by a themed message — the toolbar, property panel and status bar
- * stay mounted and interactive.
+ * replaced by a themed message — the insert menu, the control strip, the
+ * property panel and the status bar stay mounted and interactive.
  *
  * Containment only: no retry/reload control, no error reporting/telemetry, no
  * global boundary. Imports no konva (`F-56`): the canvas stays its own chunk.
@@ -17,7 +17,7 @@ import { Box, Text } from '@chakra-ui/react';
 
 /** Message shown in place of the canvas after a caught fault. */
 export const CANVAS_ERROR_MESSAGE =
-  'The wireframe canvas could not be displayed. Your document is unchanged — use the toolbar, properties and file controls as usual.';
+  'The wireframe canvas could not be displayed. Your document is unchanged — use Insert, the properties panel and the File controls as usual.';
 
 interface WireframeCanvasBoundaryProps {
   children: ReactNode;

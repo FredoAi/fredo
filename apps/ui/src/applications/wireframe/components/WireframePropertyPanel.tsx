@@ -12,26 +12,20 @@
  * A multi-selection or group selection renders the header ONLY — no field
  * sections (progressive disclosure: values are ambiguous across a mixed set).
  *
- * EXECUTION SEAM (Spec #3119, R-6): the panel never mutates the store. Every
- * control dispatches the DECLARED verb through the navigation host:
- *   fill/border/radius/textStyle/appearance → `wireframe.style.*` (explicit value)
- *   width/height/label/content/placeholder/icon/preset/kind/align/size
- *                                            → `wireframe.element.setField {id,field,value}`
- *   visible / lock                           → `wireframe.element.toggleVisible/toggleLock`
- *   page preset / dimensions                 → `wireframe.page.update {field,value}`
- * The verbs keep `coalesceKey: null`, so one interaction tick = one journal
- * entry = one undo (the retired store's granularity, R-8).
- *
- * The Edit place's `wireframe.element.rename` is a navigation effect: it
- * publishes a one-shot rename request; this panel consumes it and focuses +
- * selects the element's name field (never a fabricated name).
+ * EXECUTION SEAM (Spec #3151, ST-5): the panel writes through the store's ONE
+ * write seam (`dispatch`), which records exactly one app-local history entry per
+ * interaction tick — the shipped undo granularity. The navigation host that used
+ * to sit in this path is deleted with the engine, so the panel no longer renders
+ * a one-shot rename request (its only producer was the engine's
+ * `wireframe.element.rename` verb; clicking the name field is the pointer
+ * replacement and loses nothing).
  *
  * Every numeric property has a stepper AND a slider (R-3.6); the corner radius
  * ships preset chips plus a 4-stop slider that both write the same
  * `none|s|m|l` enum. No panel control carries a legacy key attribute.
  */
 
-import React, { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import React, { useCallback, useRef, useSyncExternalStore } from 'react';
 import {
   Box,
   Button,
@@ -79,17 +73,13 @@ import {
   type WireframeTextStyle,
 } from '../model/elements';
 import {
+  dispatch,
   getSnapshot,
   selectedElements,
   selectionGroup,
   subscribe,
 } from '../store/wireframeDocumentStore';
-import {
-  consumeWireframeRenameRequest,
-  subscribeWireframeRenameRequest,
-} from '../wireframeSurface';
 import { tint } from '../../../shared/utils/colorTint';
-import { useWireframeNavigation } from './WireframeNavigationProvider';
 import { CornerRadiusField } from './fields/CornerRadiusField';
 import { IconPicker } from './fields/IconPicker';
 import { NumberSliderField } from './fields/NumberSliderField';
@@ -103,22 +93,6 @@ type NameFieldElement = HTMLInputElement | HTMLTextAreaElement;
 interface NameFieldRef {
   current: NameFieldElement | null;
 }
-
-/**
- * Patch key → the declared style verb that owns it (UI/UX §4). Every other
- * patch key is a plain field write through `wireframe.element.setField`.
- */
-const STYLE_VERB_BY_FIELD: Readonly<Record<string, string>> = {
-  fill: 'wireframe.style.fill',
-  border: 'wireframe.style.border',
-  radius: 'wireframe.style.radius',
-  textStyle: 'wireframe.style.textStyle',
-  appearance: 'wireframe.style.appearance',
-};
-
-const SET_FIELD_VERB_ID = 'wireframe.element.setField';
-const TOGGLE_VISIBLE_VERB_ID = 'wireframe.element.toggleVisible';
-const TOGGLE_LOCK_VERB_ID = 'wireframe.element.toggleLock';
 
 const ELEMENT_ICONS: Readonly<Record<WireframeElementType, IconType>> = {
   text: LuType,
@@ -308,7 +282,7 @@ function SelectionHeader({ model }: { model: SelectionHeaderModel }): React.Reac
           </Text>
         </HStack>
         <Text fontSize="xs" color="fg.muted" data-testid="wireframe-panel-caption">
-          Arrange, align or group them from the rail
+          Arrange, align or group them from the Arrange controls
         </Text>
       </VStack>
     );
@@ -701,14 +675,12 @@ function ElementFields({
 }
 
 export function WireframePropertyPanel(): React.ReactElement {
-  const { host } = useWireframeNavigation();
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document, selectedIds } = state;
 
   const selected = selectedElements(state);
   const element = selected.length === 1 ? selected[0] : null;
   const group = selectionGroup(document, selectedIds);
-  const elementId = element?.id ?? null;
   const nameFieldRef = useRef<NameFieldElement | null>(null);
 
   const header: SelectionHeaderModel =
@@ -721,60 +693,27 @@ export function WireframePropertyPanel(): React.ReactElement {
           : { kind: 'multi', count: selected.length };
 
   /**
-   * Every edit is ONE declared verb on ONE interaction tick (`coalesceKey: null`),
-   * so the journal has exactly one entry (one undo) per field change. Nothing here
-   * touches the store directly (Spec #3119, R-6a).
+   * Every edit is ONE store write on ONE interaction tick, so the app-local
+   * history gets exactly one entry (one undo) per field change — the shipped
+   * granularity. Style fields, plain fields and the visible/lock switches all
+   * land in one `element.update` patch carrying their absolute values.
    */
   const update = useCallback(
     (patch: WireframeElementPatch): void => {
       if (!element) return;
+      const defined: Record<string, unknown> = {};
       for (const [field, value] of Object.entries(patch as Record<string, unknown>)) {
         if (value === undefined) continue;
-        const styleVerb = STYLE_VERB_BY_FIELD[field];
-        if (styleVerb !== undefined) {
-          void host.runVerb(styleVerb, 'pointer', { [field]: String(value) });
-          continue;
-        }
-        // The switches are bound to the element's own value, so the click IS the
-        // toggle the Edit verbs declare (never a direct boolean write).
-        if (field === 'visible') {
-          void host.runVerb(TOGGLE_VISIBLE_VERB_ID, 'pointer', {});
-          continue;
-        }
-        if (field === 'locked') {
-          void host.runVerb(TOGGLE_LOCK_VERB_ID, 'pointer', {});
-          continue;
-        }
-        void host.runVerb(SET_FIELD_VERB_ID, 'pointer', {
-          id: element.id,
-          field,
-          value: String(value),
-        });
+        defined[field] = value;
       }
+      if (Object.keys(defined).length === 0) return;
+      dispatch('element.update', {
+        id: element.id,
+        patch: defined as WireframeElementPatch,
+      });
     },
-    [element, host],
+    [element],
   );
-
-  /**
-   * Consume the surface's one-shot rename request (Edit `r`): focus + select the
-   * element's name field. The request carries the id + field, so a stale request
-   * for another element is dropped rather than applied to the wrong field.
-   */
-  useEffect(() => {
-    if (elementId === null) return undefined;
-    const handle = (): void => {
-      const request = consumeWireframeRenameRequest();
-      if (request === null || request.id !== elementId) return;
-      const field = nameFieldRef.current;
-      if (field === null) return;
-      field.focus();
-      field.select();
-    };
-    const unsubscribe = subscribeWireframeRenameRequest(handle);
-    // A request published before this panel mounted is still one-shot pending.
-    handle();
-    return unsubscribe;
-  }, [elementId]);
 
   return (
     <VStack

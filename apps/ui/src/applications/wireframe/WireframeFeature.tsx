@@ -21,11 +21,11 @@ export class WireframeFeature extends FredoApplicationClass {
   readonly isMultiWindow = false;
   readonly hasSettings = false;
   /**
-   * Spec #3119 ST-4 — the legacy application command surface was retired. The
-   * Wireframe shell now mounts the NavigationEngine P4 surfaces over the
-   * declarative `wireframeSurface`; keyboard resolution is owned by the ONE
-   * element-scoped adapter, not by `executeCommand` modes. (`useAppCommandIntent`
-   * stays mounted, so a companion intent reports a clean `Invalid` until P6.)
+   * Spec #3151 ST-5 — the navigation engine is gone: no declarative surface, no
+   * key adapter, no command bar. The editor is the pointer product (canvas +
+   * insert menu + control strip + property panel + file commands), and the
+   * companion reaches the application through its application-level grounding
+   * registration.
    */
 
   render(): ReactElement {

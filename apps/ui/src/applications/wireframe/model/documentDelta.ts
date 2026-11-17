@@ -5,9 +5,10 @@
  * authority, and an entry's `before` delta MUST revert only what that entry
  * changed — a whole-document snapshot means an older inverse clobbers a later
  * independent edit (R-6.1). This module is the SINGLE diff/apply implementation
- * shared by both producers (`wireframeSurface.mutate` and the legacy
- * `wireframeDocumentStore.commitPlan`), so a verb's field can never silently
- * stop being reverted through a second hand-authored patch path.
+ * shared by the store's two write paths (`wireframeDocumentStore.commitPlan` for
+ * the `dispatch` funnel and its `writeDocumentPatch` for applied patches), so a
+ * field can never silently stop being reverted through a second hand-authored
+ * patch path.
  *
  * The delta is an ABSOLUTE field assignment (not an operation list): disjoint
  * deltas compose in any order and overlapping ones compose LIFO, which is exactly

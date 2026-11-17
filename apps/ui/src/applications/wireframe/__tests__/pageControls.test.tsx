@@ -2,9 +2,9 @@
  * Wireframe page controls — three presets + derived `Custom` caption, editable
  * dimensions and the declared 64..4096 clamp (Spec #3070, ST-4, R-3.5 / R-4.6).
  *
- * Spec #3119 ST-6: the controls dispatch the declared `wireframe.page.update`
- * verb through the navigation host, so the panel renders inside the real
- * `WireframeNavigationProvider`.
+ * Spec #3151 ST-5: the controls write the page through the store's ONE write
+ * seam (`dispatch('page.update', …)`); the navigation host is gone, so the panel
+ * renders standalone.
  *
  * Arc/Zag machines deliver their state-change callbacks in a microtask, so every
  * machine-driven interaction is awaited inside `act` before the store is read.
@@ -17,16 +17,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WireframePropertyPanel } from '../components/WireframePropertyPanel';
-import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import { getSnapshot, resetWireframeStoreForTests } from '../store/wireframeDocumentStore';
-import { resetWireframeSurfaceForTests } from '../wireframeSurface';
 
 function renderPageControls() {
-  return renderWithChakra(
-    <WireframeNavigationProvider>
-      <WireframePropertyPanel />
-    </WireframeNavigationProvider>,
-  );
+  return renderWithChakra(<WireframePropertyPanel />);
 }
 
 function page() {
@@ -84,13 +78,11 @@ async function pressSliderKey(name: string, key: string): Promise<void> {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
-  resetWireframeSurfaceForTests();
 });
 
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
-  resetWireframeSurfaceForTests();
 });
 
 describe('page controls (nothing selected)', () => {
@@ -203,5 +195,17 @@ describe('page controls (nothing selected)', () => {
     expect(page()).toEqual({ preset: 'desktop', width: 1280, height: 800 });
     expect(screen.queryByTestId('wireframe-page-size-custom')).toBeNull();
     expect(presetChecked('desktop')).toBe(true);
+  });
+
+  it('a page edit records exactly ONE undo step', async () => {
+    renderPageControls();
+    expect(getSnapshot().canUndo).toBe(false);
+
+    await clickPreset('tablet');
+    expect(getSnapshot().canUndo).toBe(true);
+
+    const afterFirst = page();
+    await clickPreset('phone');
+    expect(page()).not.toEqual(afterFirst);
   });
 });
