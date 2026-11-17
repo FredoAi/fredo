@@ -137,7 +137,14 @@ describe('#3151 R-3.5 — Terminal primary control, pointer only', () => {
 
     // The spawned session becomes the live row; its pane mounts.
     const row = await screen.findByTestId('terminal-session-row-a');
-    expect(withinRow(row, 'button').getAttribute('aria-current')).toBe('true');
+    // `aria-current="true"` is the shipped selected-row marker (`TerminalSidebar`
+    // renders it from `selectedId`), but the auto-select that sets `selectedId`
+    // lands in a LATER effect tick than the row's mount. Await the state — a
+    // synchronous read here passes only when the machine's timing happens to
+    // flush that effect first (it did locally, not on CI).
+    await waitFor(() =>
+      expect(withinRow(row, 'button')).toHaveAttribute('aria-current', 'true'),
+    );
     const host = await screen.findByTestId('terminal-canvas-host-a');
     expect(host).toHaveAttribute('data-fredo-terminal-root', 'true');
 

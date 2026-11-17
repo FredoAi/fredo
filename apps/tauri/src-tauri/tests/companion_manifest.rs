@@ -2,14 +2,18 @@
 //!
 //! Two contracts are pinned here so a refactor cannot silently drift them:
 //!
-//! 1. **The golden fixture is the ONE shared truth.** The SAME
-//!    `apps/ui/src/shared/companion/fixtures/wireframe.companion.golden.json` the
-//!    TypeScript suite asserts is deserialized at compile time, run through the
-//!    REAL Rust builder, and rendered by the REAL `render_tools`, so the generated
-//!    `wireframe` tool must equal the fixture's `offer` verbatim.
+//! 1. **The generated offer is the PUBLISHED manifest's projection.** A surface
+//!    is built here as a plain literal, run through the REAL Rust builder, and
+//!    rendered by the REAL `render_tools`, so the generated tool must carry the
+//!    documented description format, the declaration-order `action` enum plus the
+//!    synthetic `listActions`, and the open `arguments` object.
+//!    (Spec #3151 removed the shared TS golden fixture along with the frontend
+//!    companion verb-manifest bridge — the fixture this suite used to `include_str!`
+//!    no longer exists. The pins are self-contained: the RUST half of the command
+//!    path is untouched by that slice.)
 //! 2. **Zero drift on the shipped static skills.** The first three rendered tools
-//!    deep-equal `fixture.staticOffer` (name + description + parameters, in order)
-//!    and still fail closed through the ONE `validate` rule — a durable assertion
+//!    deep-equal their baseline (name + description + parameters, in order) and
+//!    still fail closed through the ONE `validate` rule — a durable assertion
 //!    instead of a `git diff` reading.
 //!
 //! The published-surface registry contract is exercised too: read-after-publish
@@ -17,7 +21,6 @@
 //! `Err`), bounds, empty-publish NO-OP, zero-command skip, and removed-id
 //! disappearance after a same-app re-publish.
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use fredo_lib::infrastructure::companion::skills::{
@@ -31,36 +34,16 @@ use fredo_lib::infrastructure::companion::surface_registry::{
 };
 use fredo_lib::render_companion_tools;
 
-/// The ONE shared golden fixture (authored by the TypeScript builder, Spec #3099
-/// ST-2/ST-3). `CARGO_MANIFEST_DIR` is `apps/tauri/src-tauri`, so `../../ui` is
-/// `apps/ui`.
-const GOLDEN_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../ui/src/shared/companion/fixtures/wireframe.companion.golden.json"
-));
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GoldenFixture {
-    static_offer: Vec<Value>,
-    manifest: CompanionManifest,
-    offer: Value,
-}
-
-fn fixture() -> GoldenFixture {
-    serde_json::from_str(GOLDEN_FIXTURE).expect("the shared golden fixture parses")
-}
-
-    fn command(id: &str) -> CompanionCommandManifest {
-        CompanionCommandManifest {
-            id: id.to_string(),
-            label: "Label".to_string(),
-            description: format!("Do {id}"),
-            risk: None,
-            args: Vec::new(),
-            aliases: Vec::new(),
-        }
+fn command(id: &str) -> CompanionCommandManifest {
+    CompanionCommandManifest {
+        id: id.to_string(),
+        label: "Label".to_string(),
+        description: format!("Do {id}"),
+        risk: None,
+        args: Vec::new(),
+        aliases: Vec::new(),
     }
+}
 
 fn surface(app_id: &str) -> CompanionSurfaceManifest {
     CompanionSurfaceManifest {
@@ -110,42 +93,56 @@ fn action_enum(registry: &SkillRegistry, skill: &str) -> Vec<String> {
         .collect()
 }
 
-// ── 1. The golden fixture drives the REAL renderer ────────────────────────────
+// ── 1. The generated offer is the published manifest's projection ─────────────
+
+/// A surface literal standing in for a published application surface: one skill
+/// identity, a capability sentence, and a few declared command ids.
+fn wireframe_surface() -> CompanionSurfaceManifest {
+    CompanionSurfaceManifest {
+        app_id: "wireframe".to_string(),
+        app_name: "Wireframe".to_string(),
+        skill_name: "wireframe".to_string(),
+        description: "Draw and arrange wireframe pages.".to_string(),
+        list_label: None,
+        commands: vec![
+            command("wireframe.create.rect"),
+            command("wireframe.element.delete"),
+            command("journal.undo"),
+        ],
+    }
+}
 
 #[test]
-fn the_rendered_offer_matches_the_shared_golden_fixture_verbatim() {
-    let fixture = fixture();
-    let registry = build_companion_skill_registry(&fixture.manifest.surfaces);
+fn the_rendered_offer_carries_the_published_manifest_projection() {
+    let surfaces = vec![wireframe_surface()];
+    let registry = build_companion_skill_registry(&surfaces);
     let tools = render_companion_tools(&registry);
     let tools = tools.as_array().expect("the offer renders a tools array");
 
     assert_eq!(tools.len(), 4, "three static skills then the wireframe surface");
+    assert_eq!(tools[3]["type"], "function");
     assert_eq!(
-        tools[3],
-        json!({ "type": "function", "function": fixture.offer }),
-        "the generated wireframe tool must equal the fixture's offer"
+        tools[3]["function"]["name"], "wireframe",
+        "the generated skill is named by the surface's skillName"
     );
 
-    // Explicit sub-contract assertions (the values the dispatcher relies on).
     let function = &tools[3]["function"];
-    assert_eq!(function["name"], fixture.offer["name"]);
-    assert_eq!(function["description"], fixture.offer["description"]);
-    assert_eq!(function["parameters"], fixture.offer["parameters"]);
-
     let parameters = &function["parameters"];
+    assert_eq!(parameters["type"], "object");
     assert_eq!(parameters["required"], json!(["action"]));
     assert_eq!(
         parameters["properties"]["arguments"],
         json!({ "type": "object" }),
         "arguments stays an OPEN object (its keys are validated by the app)"
     );
+    assert_eq!(parameters["properties"]["action"]["type"], "string");
     let offered: Vec<&str> = parameters["properties"]["action"]["enum"]
         .as_array()
         .expect("the action enum is an array")
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    let expected: Vec<&str> = fixture.manifest.surfaces[0]
+    let expected: Vec<&str> = surfaces[0]
         .commands
         .iter()
         .map(|command| command.id.as_str())
@@ -164,7 +161,7 @@ fn the_rendered_offer_matches_the_shared_golden_fixture_verbatim() {
     // The generated description is exactly the documented format.
     let expected_description = format!(
         "{} Actions: {}.",
-        fixture.manifest.surfaces[0].description,
+        surfaces[0].description,
         expected.join(", ")
     );
     assert_eq!(function["description"], expected_description.as_str());
@@ -172,15 +169,60 @@ fn the_rendered_offer_matches_the_shared_golden_fixture_verbatim() {
 
 // ── 2. Zero drift on the shipped static skills (D5) ───────────────────────────
 
+/// The pre-change baseline of the three shipped static skills, captured as
+/// literals (the shared TS golden fixture that used to carry this block was
+/// retired with the frontend verb-manifest bridge in Spec #3151; the Rust
+/// declarations are unchanged, so the baseline belongs here).
+fn static_skill_baseline() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": "open_app",
+                "description": "Open a Fredo desktop app/application by the name the user said. Use ONLY for an explicit open request.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "close_app",
+                "description": "Close an open Fredo desktop app/application by the name the user said. Use ONLY for an explicit close request.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "doom_mode",
+                "description": "Use ONLY when the user explicitly asks Fredo to enter or leave Doom Mode.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "action": { "type": "string" } },
+                    "required": ["action"]
+                }
+            }
+        }),
+    ]
+}
+
 #[test]
 fn static_skills_are_byte_identical_to_the_pre_change_baseline() {
-    let fixture = fixture();
-    let registry = build_companion_skill_registry(&fixture.manifest.surfaces);
+    let baseline = static_skill_baseline();
+    let registry = build_companion_skill_registry(&[wireframe_surface()]);
     let tools = render_companion_tools(&registry);
     let tools = tools.as_array().expect("the offer renders a tools array");
 
-    assert_eq!(fixture.static_offer.len(), 3, "the baseline has three static skills");
-    for (index, expected) in fixture.static_offer.iter().enumerate() {
+    assert_eq!(baseline.len(), 3, "the baseline has three static skills");
+    for (index, expected) in baseline.iter().enumerate() {
         assert_eq!(
             &tools[index], expected,
             "static skill #{index} drifted from the pre-change baseline (name/description/parameters/order)"
@@ -234,35 +276,47 @@ fn static_skills_are_byte_identical_to_the_pre_change_baseline() {
 /// formatter (`null.trim()`) threw, leaving the turn unanswered.
 #[test]
 fn the_published_wire_omits_absent_optionals_instead_of_emitting_null() {
-    // The shared golden fixture is the PROJECTION (Spec #3122 P8: every projected
-    // command carries all six fields, so `aliases` is `[]` when a verb declares
-    // none). The WIRE contract still omits an empty `aliases` list — so the
-    // serialized manifest must equal the fixture's `manifest` with those empty
-    // lists removed, and must never emit `null`.
-    let fixture = fixture();
-    let raw: Value = serde_json::from_str(GOLDEN_FIXTURE).expect("the fixture parses as JSON");
-    let mut wire_expected = raw["manifest"].clone();
-    for surface in wire_expected["surfaces"]
-        .as_array_mut()
-        .expect("the fixture manifest carries surfaces")
-    {
-        for command in surface["commands"]
-            .as_array_mut()
-            .expect("each surface carries commands")
-        {
-            let object = command.as_object_mut().expect("a command is an object");
-            if object.get("aliases") == Some(&json!([])) {
-                object.remove("aliases");
-            }
-        }
+    // The projection carries an EMPTY `aliases` list and an ABSENT `risk` for a
+    // legacy `commandSurface` command; the WIRE contract omits both. The
+    // serialized manifest must therefore equal the projection with those two
+    // unset fields removed, and must never emit `null` anywhere.
+    let projection = wireframe_surface();
+    let wire = serde_json::to_value(&projection).expect("the surface serializes");
+
+    let commands = wire["commands"]
+        .as_array()
+        .expect("the surface carries commands");
+    for (index, declared) in projection.commands.iter().enumerate() {
+        let object = commands[index]
+            .as_object()
+            .expect("a command serializes as an object");
+        assert_eq!(
+            object.get("id").and_then(Value::as_str),
+            Some(declared.id.as_str()),
+            "command {index} keeps its id"
+        );
+        assert!(
+            !object.contains_key("aliases"),
+            "an empty aliases list must be an ABSENT key on the wire: {object:?}"
+        );
+        assert!(
+            !object.contains_key("risk"),
+            "an unset risk must be an ABSENT key on the wire: {object:?}"
+        );
     }
-    assert_eq!(
-        serde_json::to_value(&fixture.manifest).expect("the manifest serializes"),
-        wire_expected,
-        "the serialized manifest must equal the fixture's `manifest` on the wire \
-         (an absent optional is an ABSENT key, never `null`; an empty aliases list \
-         is absent on the wire, present as `[]` in the projection)"
+    assert!(
+        !wire.to_string().contains("null"),
+        "the wire must never carry an explicit null: {wire}"
     );
+
+    // A declared risk and declared aliases still cross the wire with their
+    // values intact.
+    let mut declared = wireframe_surface();
+    declared.commands[0].risk = Some("mutating".to_string());
+    declared.commands[0].aliases = vec!["undo".to_string(), "revert".to_string()];
+    let wire = serde_json::to_value(&declared).expect("the surface serializes");
+    assert_eq!(wire["commands"][0]["risk"], "mutating");
+    assert_eq!(wire["commands"][0]["aliases"], json!(["undo", "revert"]));
 
     // `list_label: None` => no `listLabel` key at all.
     let absent = surface("alpha");
