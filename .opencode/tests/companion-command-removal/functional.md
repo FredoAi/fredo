@@ -68,7 +68,7 @@ guard paths, roots, exit codes, testids or test titles.
 
 - [ ] **Q-2 (R-1a, static, Env S).** Self-test:
   `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-companion-commands-retired.ps1 -SelfTest"`.
-  **Expected:** `EXITCODE=0` AND the output shows **all six controls** PASS:
+  **Expected:** `EXITCODE=0` AND the output shows **all seven controls** PASS:
   (1) positive-per-token with `legs executed == tokens declared` = **22**;
   (2) negative (a comment-only mention flags nothing; for the code-only classes a quoted string
   literal flags nothing either);
@@ -76,8 +76,12 @@ guard paths, roots, exit codes, testids or test titles.
   (4) out-of-root probe **not** scanned;
   (6) ignored-path non-scan — a probe inside a gitignored build-output dir is **not** scanned
   (the ignore filter is engaged, not inert);
+  (7) gen-coverage — a probe under `apps/tauri/src-tauri/gen/` **IS** scanned (the tracked
+  `gen/schemas/*` are visible to the guard, so a name-based walk prune may never hide tracked
+  source; the control fails loudly if `gen` is pruned again, and fails with an explicit message if
+  its probe produces no hit);
   (5) self-reference (plain run clean while the token table spells all 22).
-  **Edge:** record the six per-control lines, never only the exit code — an exit `0` without a
+  **Edge:** record the seven per-control lines, never only the exit code — an exit `0` without a
   control line is a **suite defect** (G-430). **Probe cleanup:** assert `Test-Path` is `False` on
   the probe paths **the guard itself prints** — do not pin an invented seeded-root filename (its
   name is the guard's to choose). The out-of-root probe *is* pinned by the names block at
@@ -90,7 +94,7 @@ guard paths, roots, exit codes, testids or test titles.
 - [ ] **Q-3 (R-1a, static, Env S).** Read the guard header + allowlist block of
   `.opencode/scripts/check-companion-commands-retired.ps1`.
   **Expected:** exactly **two** scanned roots (`apps/tauri/src-tauri`, `apps/ui/src`); the skip-dir
-  list (`target`, `gen`, `node_modules`, `dist`, `.git`); the text-extension list
+  list (`target`, `node_modules`, `dist`, `.git` — **`gen` is NOT pruned**); the text-extension list
   (`.rs .toml .json .ts .tsx .js .jsx .mjs .cjs .css`); 22 tokens in 4 classes with the
   **per-class text mode** (class A + relay raw = comment-stripped raw substring; class B + relay
   symbols = code-only with identifier boundaries); an evidence allowlist containing **exactly one**
@@ -99,8 +103,12 @@ guard paths, roots, exit codes, testids or test titles.
   allowlist; the guard exits `2` if one is.
   **Also expected — the ignore filter:** paths `.gitignore` marks as untracked-and-ignored are **not
   scanned** (the plain run prints the excluded count, `Ignore filter: N path(s) excluded (git
-  check-ignore)`). This is the authoritative scoping mechanism; the skip-dir list is only a
-  fast-path walk prune. If the ignore query cannot be applied the guard exits `2` — it never falls
+  check-ignore)`). This is the authoritative scoping mechanism. The skip-dir list is only a
+  fast-path walk prune, and a skip-dir name is legitimate **only** when every tracked
+  text-extension file beneath it is already git-ignored (or there is none) — the prune may only
+  **duplicate** a rule the repository itself makes, never be the reason a tracked, non-ignored file
+  is unread. `gen/` is tracked and not ignored, so it is scanned (self-test control 7 asserts this).
+  If the ignore query cannot be applied the guard exits `2` — it never falls
   back to the unfiltered walk.
   **Edge:** a maintainer widening a root to `.opencode/tests` makes this entry *live* rather than
   inert — assert the entry **resolves**, not that it is unnecessary.

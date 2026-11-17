@@ -387,40 +387,16 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-app-command-intent`\n- `allow-app-command-intent-take`\n- `allow-app-command-intent-result`\n- `allow-register-app-command-surfaces`\n- `allow-app-command-surfaces`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`",
+          "description": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-app-command-intent`\n- `allow-app-command-intent-take`\n- `allow-app-command-intent-result`\n- `allow-register-app-command-surfaces`\n- `allow-app-command-surfaces`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`"
+          "markdownDescription": "The application command surface every built-in Fredo window has today.\n#### This default permission set includes:\n\n- `allow-subscribe-events`\n- `allow-unsubscribe-events`\n- `allow-stream-health`\n- `allow-application-data-read`\n- `allow-application-data-watch`\n- `allow-application-data-unwatch`\n- `allow-application-data-write`\n- `allow-application-data-delete`\n- `allow-application-data-declare`\n- `allow-stt-list-devices`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-cancel`\n- `allow-stt-status`\n- `allow-stt-take-audio-clip`\n- `allow-save-setting`\n- `allow-get-setting`\n- `allow-get-control-setting`\n- `allow-save-control-setting`\n- `allow-ingest-autostart-get`\n- `allow-ingest-autostart-set`\n- `allow-open-terminal-window`\n- `allow-spawn-terminal-session`\n- `allow-list-terminal-sessions`\n- `allow-get-pty-buffer`\n- `allow-write-pty-input`\n- `allow-resize-pty`\n- `allow-close-terminal-session`\n- `allow-close-terminal-window`\n- `allow-list-persisted-terminal-sessions`\n- `allow-resume-terminal-session`\n- `allow-delete-terminal-session-record`\n- `allow-rename-terminal-session-record`\n- `allow-open-app-window`\n- `allow-close-app-window`\n- `allow-check-cli-installations`\n- `allow-install-plugin`\n- `allow-get-plugin-source-path`\n- `allow-check-fredo-in-path`\n- `allow-add-fredo-to-path`\n- `allow-check-otel-configured`\n- `allow-configure-otel`\n- `allow-get-setup-plan`\n- `allow-check-all-setup`\n- `allow-run-setup-step`\n- `allow-check-model-files`\n- `allow-download-model`\n- `allow-check-companion-readiness`\n- `allow-llm-chat`\n- `allow-llm-chat-with-image`\n- `allow-llm-chat-with-audio`\n- `allow-start-companion-engine`\n- `allow-launch-llama-server`\n- `allow-stop-llama-server`\n- `allow-get-llama-server-status`\n- `allow-stt-audio-capability`\n- `allow-llm-chat-with-skills`\n- `allow-llm-chat-with-status`\n- `allow-capture-screen-region`\n- `allow-pg-supervisor-status`\n- `allow-pg-server-log-tail`\n- `allow-pg-config-get`\n- `allow-pg-config-apply`\n- `allow-pg-database-reset`\n- `allow-db-connection-list`\n- `allow-db-connection-test`\n- `allow-db-connection-save`\n- `allow-db-connection-delete`\n- `allow-db-connect`\n- `allow-db-disconnect`\n- `allow-db-schema-list`\n- `allow-db-query-execute`\n- `allow-db-result-page`\n- `allow-storage-engine-status`\n- `allow-wireframe-save-as`\n- `allow-wireframe-open-document`\n- `allow-wireframe-export-png`\n- `allow-application-store-ensure-table`\n- `allow-application-store-insert`\n- `allow-application-store-query`\n- `allow-application-store-update`\n- `allow-application-store-delete`\n- `allow-telemetry-get-stats`\n- `allow-telemetry-purge`\n- `allow-telemetry-toggle`\n- `allow-telemetry-metrics-toggle`\n- `allow-telemetry-logging-toggle`\n- `allow-telemetry-logging-set-level`\n- `allow-confirm-app-open-request`\n- `allow-run-open-app-cli`\n- `allow-open-doom-window`\n- `allow-launch-doom-runtime`\n- `allow-stop-doom-runtime`\n- `allow-get-doom-status`\n- `allow-doom-read-state`\n- `allow-doom-step`\n- `allow-doom-frame-raw`\n- `allow-start-doom-autoplay`\n- `allow-stop-doom-autoplay`\n- `allow-get-doom-autoplay-status`\n- `allow-get-doom-dataset-status`\n- `allow-set-doom-dataset-enabled`\n- `allow-export-doom-dataset`\n- `allow-get-doom-save`\n- `allow-reset-doom-save`\n- `allow-enter-doom-mode`\n- `allow-exit-doom-mode`\n- `allow-get-doom-mode-status`\n- `allow-installed-app-install`\n- `allow-installed-apps-list`\n- `allow-installed-app-open`\n- `allow-installed-app-close`\n- `allow-installed-apps-push-theme`"
         },
         {
           "description": "Enables the add_fredo_to_path command without any pre-configured scope.",
           "type": "string",
           "const": "allow-add-fredo-to-path",
           "markdownDescription": "Enables the add_fredo_to_path command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the app_command_intent command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-app-command-intent",
-          "markdownDescription": "Enables the app_command_intent command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the app_command_intent_result command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-app-command-intent-result",
-          "markdownDescription": "Enables the app_command_intent_result command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the app_command_intent_take command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-app-command-intent-take",
-          "markdownDescription": "Enables the app_command_intent_take command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the app_command_surfaces command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-app-command-surfaces",
-          "markdownDescription": "Enables the app_command_surfaces command without any pre-configured scope."
         },
         {
           "description": "Enables the application_data_declare command without any pre-configured scope.",
@@ -879,12 +855,6 @@
           "markdownDescription": "Enables the pg_supervisor_status command without any pre-configured scope."
         },
         {
-          "description": "Enables the register_app_command_surfaces command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-register-app-command-surfaces",
-          "markdownDescription": "Enables the register_app_command_surfaces command without any pre-configured scope."
-        },
-        {
           "description": "Enables the rename_terminal_session_record command without any pre-configured scope.",
           "type": "string",
           "const": "allow-rename-terminal-session-record",
@@ -1105,30 +1075,6 @@
           "type": "string",
           "const": "deny-add-fredo-to-path",
           "markdownDescription": "Denies the add_fredo_to_path command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the app_command_intent command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-app-command-intent",
-          "markdownDescription": "Denies the app_command_intent command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the app_command_intent_result command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-app-command-intent-result",
-          "markdownDescription": "Denies the app_command_intent_result command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the app_command_intent_take command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-app-command-intent-take",
-          "markdownDescription": "Denies the app_command_intent_take command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the app_command_surfaces command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-app-command-surfaces",
-          "markdownDescription": "Denies the app_command_surfaces command without any pre-configured scope."
         },
         {
           "description": "Denies the application_data_declare command without any pre-configured scope.",
@@ -1585,12 +1531,6 @@
           "type": "string",
           "const": "deny-pg-supervisor-status",
           "markdownDescription": "Denies the pg_supervisor_status command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the register_app_command_surfaces command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-register-app-command-surfaces",
-          "markdownDescription": "Denies the register_app_command_surfaces command without any pre-configured scope."
         },
         {
           "description": "Denies the rename_terminal_session_record command without any pre-configured scope.",

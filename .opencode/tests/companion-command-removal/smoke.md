@@ -52,7 +52,7 @@ blockers (`E-MODEL`, `E-SPAN`).
 - [ ] **S-6: The committed absence guard runs clean.** (static, but run it first — a red guard means
   the deletion landing is incomplete.)
   `run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-companion-commands-retired.ps1"`
-  → `EXITCODE=0`; then with `-SelfTest` → `EXITCODE=0` and all six controls PASS. The plain run also
+  → `EXITCODE=0`; then with `-SelfTest` → `EXITCODE=0` and all seven controls PASS. The plain run also
   prints `Ignore filter: N path(s) excluded (git check-ignore)` — gitignored build output is not
   scanned, and an unavailable ignore query exits `2` rather than widening the scan.
   **Edge:** exit `2` (cannot run, e.g. zero files scanned) is NOT a pass; a leftover probe file
