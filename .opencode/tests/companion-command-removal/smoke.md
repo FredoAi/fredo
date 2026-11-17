@@ -25,13 +25,17 @@ blockers (`E-MODEL`, `E-SPAN`).
   **Expected:** no `Error:` / `Uncaught` / `Maximum update depth exceeded`. In particular no failed
   module import — a deleted module still referenced by a barrel surface would fail loudly here.
 
-- [ ] **S-3: Feature surface reachable — the companion composer.** Click `.fredo-companion-avatar`
-  **once**, wait ≥250 ms for the armed single-click timer, then read
-  `[data-testid="fredo-companion-composer"]`.
+- [ ] **S-3: Feature surface reachable — the companion composer.** **The composer mounts ONLY on the
+  `overlay` surface** (`CompanionEntity.tsx:1833`: `surface === 'overlay' && composerOpen`); the home
+  **seat** never renders it, so clicking `.fredo-companion-avatar` at the seat fires the shipped joke
+  and does **not** open the composer. The shipped pointer path from the seat is the
+  **Ctrl+right-click teleport** (`FredoCompanion.tsx:192-215`). Recipe: Ctrl+right-click the
+  companion to teleport it into an overlay, wait until
+  `[data-testid="fredo-companion-composer"]` reads count **1**, then read that node.
   **Expected:** exactly ONE composer node mounts; its root carries `role="group"` and
   `data-composer-surface` (`CompanionComposer.tsx:224-230`); the input
   `[data-testid="fredo-companion-composer-input"]` is present and focusable. An immediate re-read
-  finding 0 composers is a **FALSE FAIL** (timer discipline).
+  finding 0 composers is a **FALSE FAIL** (teleport/open settle discipline).
 
 - [ ] **S-4: Telemetry Settings accessible (live + static confirmation).** Open Settings → the
   Telemetry pane via the sidebar nav.
@@ -48,7 +52,9 @@ blockers (`E-MODEL`, `E-SPAN`).
 - [ ] **S-6: The committed absence guard runs clean.** (static, but run it first — a red guard means
   the deletion landing is incomplete.)
   `run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-companion-commands-retired.ps1"`
-  → `EXITCODE=0`; then with `-SelfTest` → `EXITCODE=0` and all five controls PASS.
+  → `EXITCODE=0`; then with `-SelfTest` → `EXITCODE=0` and all six controls PASS. The plain run also
+  prints `Ignore filter: N path(s) excluded (git check-ignore)` — gitignored build output is not
+  scanned, and an unavailable ignore query exits `2` rather than widening the scan.
   **Edge:** exit `2` (cannot run, e.g. zero files scanned) is NOT a pass; a leftover probe file
   after `-SelfTest` is a FAIL. See `functional.md` Q-1/Q-2.
 
