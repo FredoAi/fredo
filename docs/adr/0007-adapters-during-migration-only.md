@@ -5,7 +5,10 @@
   direction reversed: the **companion** is the interaction surface for directing Fredo
   conversationally, not the keyboard. The adapter programme's deadline model is therefore
   **moot**: the migration it existed to bound ended in deletion, not in a completed migration, so
-  no adapter outlived its phase and no adapter remains to date.
+  no adapter outlived its phase. Where the product went instead, in this record's own terms:
+  the migration order's one surviving half — window traversal — is now the plain `Tab` /
+  `Shift+Tab` window-boundary hand-off in `apps/ui/src/shared/window-system/traversal.ts`, and
+  there is nothing left for an adapter to translate.
 
 ## Context
 
