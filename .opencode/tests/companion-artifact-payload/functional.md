@@ -339,12 +339,21 @@
       `RC("Select-String -Path '.opencode/scripts/test-scripts.ps1' -Pattern 'verify-installer-payload'")`
       (three calls, not one — a `|` inside a single `-Command` string can trip the sandbox's `*|*`
       deny rule, `opencode.json:442`).
-  - **Expected:** `release.yml` carries **one** step positioned **after** `tauri-apps/tauri-action`
-    that locates the newest `apps/tauri/src-tauri/target/release/bundle/nsis/*-setup.exe`, invokes
-    `verify-installer-payload.ps1`, and fails the job with `::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT`;
-    `test-scripts.ps1` carries a leg naming the gate script.
-  - **Edge:** a gate step placed **before** `tauri-action` ⇒ **FAIL** (nothing to gate yet). YAML
-    text with no `test-scripts.ps1` leg ⇒ **FAIL** (G-406: an unexecuted guard is not a guard).
+  - **Expected:** `release.yml` carries, strictly **after** the SHA-pinned `tauri-apps/tauri-action`
+    step, a **locate** step for the newest
+    `apps/tauri/src-tauri/target/release/bundle/nsis/*-setup.exe` (taken from
+    `steps.tauri.outputs.artifactPaths`, newest-by-mtime directory fallback) and exactly **one gate**
+    step that invokes `verify-installer-payload.ps1` and fails the job with
+    `::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT`; the `tauri-apps/tauri-action` step itself carries **no**
+    `tagName`, `releaseName`, `releaseBody`, `releaseDraft` or `releaseId` (build-only ⇒ no release
+    call), and the workflow's **only** publish step is a later
+    `gh release create "app-v<version>" <installer> --draft` guarded by `if: success()`;
+    `test-scripts.ps1` carries a leg that names the gate script.
+  - **Edge:** A `tagName`/`releaseName`/`releaseBody`/`releaseDraft`/`releaseId` present on the
+    `tauri-action` step ⇒ **FAIL** (that is the `app-v0.2.0` mode: the draft is created inside the build
+    step, before any gate). A gate step placed **before** `tauri-action` ⇒ **FAIL** (nothing to gate
+    yet). YAML text with no `test-scripts.ps1` leg ⇒ **FAIL** (G-406 — an unexecuted guard is not a
+    guard).
 
 ## Non-functional
 
