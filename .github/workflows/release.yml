@@ -32,7 +32,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: 'windows-latest', args: '' }
+          # Pinned (not windows-latest) for the same reason as `rust-validate`:
+          # windows-latest now ships VS 18 whose MSVC STL requires Clang 22+ and
+          # breaks llama-cpp-sys's bindgen step before any Fredo code compiles.
+          - { platform: 'windows-2022', args: '' }
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
