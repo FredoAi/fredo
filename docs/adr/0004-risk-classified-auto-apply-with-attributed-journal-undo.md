@@ -1,6 +1,13 @@
 # ADR-4: Risk-Classified Auto-Apply with Attributed Journal Undo
 
-- **Status:** Accepted
+- **Status:** Superseded (Spec #3153, slice 3 of 3) — the shared journal, its `journal.undo`
+  query and the risk-gated auto-apply funnel are deleted with the NavigationEngine (#3151), and
+  the launcher confirmation has no requester. The direction reversed: the **companion** is the
+  interaction surface for directing Fredo conversationally, not the keyboard. The product went
+  to an **application-local bounded history**: Wireframe owns its own undo/redo bounded at
+  `WIREFRAME_HISTORY_LIMIT = 100`
+  (`apps/ui/src/applications/wireframe/store/wireframeHistory.ts`), reachable by pointer, with
+  no cross-channel attribution and no journal query.
 
 ## Context
 

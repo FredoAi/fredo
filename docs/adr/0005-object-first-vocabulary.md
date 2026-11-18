@@ -1,6 +1,13 @@
 # ADR-5: Object-First Vocabulary
 
-- **Status:** Accepted
+- **Status:** Superseded (Spec #3153, slice 3 of 3) — the closed object glossary this record makes
+  normative lived in `docs/NAVIGATION_ENGINE.md` §1 and fed the companion manifest; both are gone
+  with the NavigationEngine (#3151). The direction reversed: the **companion** is the interaction
+  surface for directing Fredo conversationally, not the keyboard. The product went to a
+  **carrier-less** shared language: there is no object glossary to keep uniform because the
+  surfaces it unified no longer exist, and the surviving copy is per-application prose. The
+  glossary's one durable trace is the research record in `docs/UX_FLUENCY_RESEARCH.md`, kept as
+  history, not as a contract.
 
 ## Context
 

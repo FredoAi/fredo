@@ -1,6 +1,12 @@
 # ADR-6: One Declaration, Every Surface Derived
 
-- **Status:** Accepted
+- **Status:** Superseded (Spec #3153, slice 3 of 3) — there is no declaration to derive from: the
+  place tree, the verb descriptors and their derivation table were deleted with the
+  NavigationEngine (#3151). The direction reversed: the **companion** is the interaction surface
+  for directing Fredo conversationally, not the keyboard. The rail/map/trail projections this
+  record required are gone rather than derived, and Wireframe's capability surface is a static
+  set of 23 pointer-reachable controls over its own bounded history — nothing is generated from
+  a declaration, so no hand-maintained list can drift from one.
 
 ## Context
 

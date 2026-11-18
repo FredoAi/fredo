@@ -1,5 +1,21 @@
 # NavigationEngine — Normative Contract
 
+> **SUPERSEDED (2026-11-17, Spec #3153 — slice 3 of 3; the engine itself was deleted in #3151).**
+> **Status: Superseded** — this document is a **historical contract**. It was normative while the
+> declared-surface navigation engine existed; the engine has since been removed from the product. The
+> direction reversed: the **companion** is the interaction surface for directing Fredo conversationally
+> (`open_app` / `close_app` / `doom_mode`), not the keyboard, and the pointer is the ordinary
+> surface inside an application. The product went instead to a deliberately tiny keyboard seam —
+> three platform chords (`primary+space` toggles the launcher, `primary+tab` /
+> `primary+shift+tab` move window focus, in `apps/ui/src/shared/window-system/platformChords.ts`)
+> plus the plain `Tab`/`Shift+Tab` window-boundary hand-off (`traversal.ts`), with chord
+> suppression classified `terminal > modal > text-entry > none` (`chordSuppression.ts`). A
+> focused terminal receives every keystroke by focus. There is no place tree, no verb grammar,
+> no declared surface, no journal and no dispatch funnel. The normative body below is **kept
+> verbatim** as the record of what was specified; read it as history, never as a contract to
+> build against. Supersession of the related decision records: `docs/adr/0001`–`docs/adr/0007`
+> (ADR-8's composer survives).
+
 ## Table of contents
 
 1. Glossary & object model
