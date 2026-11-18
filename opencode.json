@@ -340,7 +340,9 @@
                     "git worktree add*": "allow",
                     "git worktree remove*": "allow",
                     "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
-                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow",
+                    "powershell -File .opencode/scripts/run-exitcode.ps1*": "allow",
+                    "powershell -File .opencode/scripts/check-navigation-prose-retired.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
