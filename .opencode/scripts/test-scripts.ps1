@@ -4746,12 +4746,12 @@ foreach ($script in $scripts) {
 }
 
 # --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---
-# The guard is deliberately RED over the corpus between ST-1 (it lands) and the
-# last prose sweep (ST-7 drives it to zero), so this block asserts the instrument
-# ONLY: its seven self-test controls must pass.  The plain-run leg that asserts
-# EXITCODE=0 arrives with ST-7, once every sweep has landed - adding it here would
-# red the harness for every developer in the slice and blur a real regression
-# against the known interim state.
+# The guard is RED over the corpus until every prose sweep lands, so this block
+# asserts the instrument first (-SelfTest, all seven controls) and then asserts
+# the OUTCOME (the plain run is clean). The plain-run leg lands with ST-7 - the
+# sub-task that drives the corpus to zero - because landing it earlier would red
+# the harness for every developer in the slice and blur a real regression against
+# the known interim state (ST-2's ordering constraint).
 Write-Host "Navigation prose absence guard (Spec #3153):" -ForegroundColor Cyan
 $navProseGuard = ".opencode/scripts/check-navigation-prose-retired.ps1"
 
@@ -4773,6 +4773,23 @@ Test-Script "guard: -SelfTest passes all seven controls" {
   }
   if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
   return "seven controls pass (instrument proven; the corpus is ST-3..ST-7)"
+}
+
+Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
+  $out = & powershell -NoProfile -File $navProseGuard 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "plain guard run exited ${code} (expected 0): $text" }
+  # The guard reports `HITS: <total> (<n> not covered by the evidence allowlist)`.
+  # AC1's predicate is ZERO non-allowlisted hits; RESULT: CLEAN is the guard's own
+  # expression of that (a bare `HITS: 0` would mean the allowlisted corpus vanished).
+  if ($text -notmatch "HITS: \d+ \(0 not covered by the evidence allowlist\)") {
+    throw "plain guard run did not report zero non-allowlisted hits"
+  }
+  if ($text -notmatch "RESULT: CLEAN") { throw "plain guard run did not report 'RESULT: CLEAN'" }
+  if ($text -notmatch "Scanned files:") { throw "plain guard run printed no 'Scanned files:' line" }
+  if ($text -notmatch "Ignore filter:") { throw "plain guard run printed no 'Ignore filter:' line" }
+  return "AC1's absence predicate holds: zero non-allowlisted deleted-navigation references"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).

@@ -1654,24 +1654,27 @@ Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevro
       chip is absent in BOTH focus states.
       Edge: rapid focus in→out→in (no chip flash); click-away to the main window; switch sessions
       while unfocused.
-- [x] F-84 (**R-2/AC2 — the removed tests are gone; the retained suites stay green**):
-      `pnpm --filter @fredo/ui test:run src/applications/terminal/components/__tests__/TerminalPassthrough.test.tsx`
-      and `pnpm --filter @fredo/ui test:run src/shared/navigation/ui/__tests__/terminalPassthrough.test.ts`.
-      EXPECTED: `TerminalPassthrough.test.tsx` defines ONLY the `terminal root anchor` suite (the
-      `TerminalPassthroughIndicator`, `TerminalWindow — persistent indicator`, and
-      `terminalMode hook contract` suites are removed) and passes; the passthrough mechanism is
-      carried by the relocated `terminalPassthrough.test.ts` (P8 supersession — the deleted
-      passthrough module moved into `shared/navigation/ui`), which passes.
+- [x] F-84 (**R-2/AC2 — the removed tests are gone; the shipped pin stays green**):
+      `pnpm --filter @fredo/ui test:run applications/terminal` and
+      `pnpm --filter @fredo/ui test:run shared/window-system/__tests__/chordSuppression.test.ts`.
+      EXPECTED: the chip/indicator suites are gone (the `TerminalPassthroughIndicator`,
+      `TerminalWindow — persistent indicator` and `terminalMode hook contract` suites were removed
+      with the feature); `chordSuppression.test.ts` is green and pins `TERMINAL_ROOT_SELECTOR`
+      (`:63`) and the `'terminal'` classification (`:30`) — that classifier IS the shipped
+      passthrough mechanism. `terminalPrimaryControl.test.tsx:149` pins the
+      `data-fredo-terminal-root="true"` anchor on the live host.
       Edge: a kept test importing a removed symbol fails = FAIL; a deleted retained-mechanism row =
       FAIL.
-- [x] F-85 (**R-4/AC4 — the supersession is recorded + the one-time announcement retained**): read
-      the spec PR description; and after entering passthrough read
-      `[data-testid="navigation-announcer"]` in the window under test.
-      EXPECTED: the PR/plan records the intentional, human-approved supersession of #3009's
-      non-colour-only indicator criterion AND the retention of the ONE-time announcement
-      (`PASSTHROUGH_ANNOUNCEMENT_PREFIX` + the `announce(…)` call retained); when the shared live
-      region is mounted, its text equals the prefix on entry.
-      Edge: announcement removed = FAIL; supersession note absent from the PR = FAIL.
+- [x] F-85 (**R-4/AC4 — passthrough is derived from focus**): focus
+      `[data-fredo-terminal-root="true"]`, then move focus outside it.
+      EXPECTED: the terminal receives keystrokes while focused because the chord-suppression
+      classifier returns `'terminal'` for an active element inside the root
+      (`shared/window-system/chordSuppression.ts:98`) and the three platform chords decline to fire
+      there; moving focus outside the root returns `'none'` (or `'text-entry'`/`'modal'`) so the
+      chords fire again. There is no announcement channel and no announcer region to read — the
+      former one-time announcement is retired with the engine.
+      Edge: focus inside a terminal-like element that is NOT inside the root does not classify as
+      `terminal` (the selector, not an ancestor guess, is the predicate).
 
 ### AC3 — focus-derived passthrough unchanged (regression)
 
@@ -1684,10 +1687,12 @@ Round-8 frame names: `ac1-default-live`, `ac1-f80-16rec-min`, `ac2-rename-prevro
 - [x] F-87 (**R-3/AC3 — keyboard routing unaffected; LIVE**): `write_pty_input{sessionId,
       data:"SENTINEL_CHIP_<guid8>\r"}` on the active session; read `get_pty_buffer`; for the OpenCode
       leg drive one bounded turn.
-      EXPECTED: the sentinel round-trips and the session stays `running`; the ONE keydown path is
-      byte-unchanged (`rg 'addEventListener\(.keydown' src/shared/navigation/ui/terminalPassthrough.ts` = 0); the
-      OpenCode turn emits live `telemetry_spans`.
-      Edge: sentinel while passthrough active AND inactive; the navigation command bar untouched.
+      EXPECTED: the sentinel round-trips and the session stays `running`; no per-terminal `keydown`
+      listener exists (`rg 'addEventListener\(.keydown'` over `applications/terminal/**` = 0 — the
+      ONE capture-phase listener belongs to `shared/window-system/platformChords.ts`, and none of its
+      three chords routes an application command); the OpenCode turn emits live `telemetry_spans`.
+      Edge: sentinel while the terminal root is focused AND while focus is outside it (the PTY path
+      is independent of the chord classifier); no application command bar exists.
 
 ### LIVE receipt (the `live`-policy gate)
 
