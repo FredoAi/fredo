@@ -194,6 +194,12 @@ jobs:
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true
+          # The windows-2022 image does not carry vulkan-1.dll in System32, and the
+          # action's install_runtime defaults to FALSE, so without this the loader
+          # never lands in `$VULKAN_SDK\runtime\x64` and the engine-DLL PATH step
+          # (and stage-engine-payload.ps1's discovery) hard-fails. Enable the
+          # runtime copy-back so the loader is provisioned deterministically.
+          install_runtime: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest

@@ -68,6 +68,11 @@ jobs:
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true
+          # windows-2022 has no vulkan-1.dll in System32 and install_runtime
+          # defaults to FALSE; enable the runtime copy-back so the loader lands
+          # in `$VULKAN_SDK\runtime\x64` for stage-engine-payload.ps1's
+          # discovery and the produced artifact's payload gate.
+          install_runtime: true
       - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
 
       # 0. Read the version once - it names the tag and is asserted against the
