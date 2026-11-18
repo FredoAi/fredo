@@ -23,6 +23,7 @@ jobs:
     outputs:
       ui: ${{ steps.chk.outputs.ui }}
       rust: ${{ steps.chk.outputs.rust }}
+      docs: ${{ steps.chk.outputs.docs }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: chk
@@ -56,6 +57,15 @@ jobs:
               - 'apps/tauri/**'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
+              - '.github/workflows/validate.yml'
+              - '.github/workflows/validate-fast.yml'
+            # Documentation and the durable test-suite prose (Spec #3153). The
+            # scanned roots of the prose absence guard: a docs-only PR must run the
+            # guard instead of passing with nothing evaluated (CI_GATE_CONTRACT.md).
+            docs:
+              - 'docs/**'
+              - '.opencode/tests/**'
+              - '.opencode/scripts/check-navigation-prose-retired.ps1'
               - '.github/workflows/validate.yml'
               - '.github/workflows/validate-fast.yml'
 
@@ -98,6 +108,25 @@ jobs:
       # legs above cannot see a served-entry-only break (e.g. a `@/…` import or a
       # missing provider mount); this leg does (G-251).
       - run: pnpm --filter @fredo/tauri build:webview
+
+  # docs-validate — the documentation prose gate (Spec #3153, AC1); NOT a required
+  # check (skipped on PRs that touch none of the `docs` filter paths). A docs-only
+  # PR used to run NOTHING (docs/CI_GATE_CONTRACT.md); this leg closes that gap by
+  # running the committed prose absence guard over `docs/` + `.opencode/tests/`.
+  docs-validate:
+    needs: paths
+    if: needs.paths.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # The guard proves the deleted keyboard-navigation vocabulary is taught by no
+      # current-state document and no surviving durable suite (outside the named
+      # evidence allowlist).
+      - name: Navigation prose absence guard
+        run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1
+      - name: Navigation prose absence guard (self-test)
+        run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1 -SelfTest
 
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
   #
@@ -494,7 +523,7 @@ jobs:
   # `success`/`skipped`, turns this check red. `if: always()` is load-bearing — without it
   # adding `paths` to `needs` would make this job skip when the discriminator fails.
   validate:
-    needs: [paths, ui-validate, rust-validate, release-version-guard]
+    needs: [paths, ui-validate, rust-validate, docs-validate, release-version-guard]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -504,6 +533,7 @@ jobs:
           PATHS_RESULT: ${{ needs.paths.result }}
           UI_RESULT: ${{ needs.ui-validate.result }}
           RUST_RESULT: ${{ needs.rust-validate.result }}
+          DOCS_RESULT: ${{ needs.docs-validate.result }}
           VERSION_GUARD_RESULT: ${{ needs.release-version-guard.result }}
         run: |
           status=0
@@ -511,7 +541,7 @@ jobs:
             echo "::error::paths discriminator result was '$PATHS_RESULT' (expected success) - failing closed"
             status=1
           fi
-          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT" "release-version-guard=$VERSION_GUARD_RESULT"; do
+          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT" "docs-validate=$DOCS_RESULT" "release-version-guard=$VERSION_GUARD_RESULT"; do
             leg="${entry%%=*}"
             result="${entry#*=}"
             case "$result" in

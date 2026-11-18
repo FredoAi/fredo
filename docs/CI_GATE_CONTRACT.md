@@ -13,8 +13,9 @@ What runs when on a `pull_request` targeting `main`, and which check is the gate
   `if: always()` is load-bearing: it guarantees the aggregator itself is never skipped, which is
   what makes a failed or cancelled dependency (including a failed `paths` job) turn the required
   check red instead of silently passing.
-- **`ui-validate`**, **`rust-validate`**, and **`fast-validate`** (`.github/workflows/validate-fast.yml`)
-  are **NOT** required checks. They are per-stack signal; only the `validate` aggregator gates merge.
+- **`ui-validate`**, **`rust-validate`**, **`docs-validate`**, and **`fast-validate`**
+  (`.github/workflows/validate-fast.yml`) are **NOT** required checks. They are per-stack signal;
+  only the `validate` aggregator gates merge.
 
 ## Per-stack gating (what runs when)
 
@@ -37,11 +38,18 @@ each per-stack job runs only when its stack is touched. `base` is intentionally 
 - **Rust-touching PR** (`apps/tauri/`, `**/Cargo.toml`, `**/Cargo.lock`, or the validate workflows) →
   `rust-validate` runs (cargo check + nextest + clippy `-D warnings`, with `Swatinem/rust-cache` warm-cache
   reuse); the unrelated `ui-validate` job is skipped.
-- **Docs-only / no-stack PR** → neither `ui-validate` nor `rust-validate` runs; the `validate` aggregator
-  still passes and a docs-only PR is mergeable in well under a minute. Two facts make that pass safe:
-  both dependencies report `skipped` (which the aggregator accepts) **and** the `paths` discriminator
-  succeeded — the green aggregate is conditional on `paths == success`, so a docs-only PR cannot pass
-  by way of a failed discriminator.
+- **Documentation-touching PR** (`docs/`, `.opencode/tests/`, or the prose absence guard) →
+  `docs-validate` runs the committed prose absence guard **twice**: the plain run (the corpus must be
+  clean) and `-SelfTest` (all seven instrument controls pass). The `docs` path filter and the matching
+  `paths` job **output** must both exist — without the output `needs.paths.outputs.docs` is empty and
+  the job silently never runs.
+- **Docs-only / no-stack PR** → a docs-touching PR runs `docs-validate` and no stack job; a PR touching
+  none of the filtered paths runs neither `ui-validate` nor `rust-validate` nor `docs-validate`, and the
+  `validate` aggregator still passes in well under a minute. Two facts make that pass safe: every
+  dependency reports `skipped` (which the aggregator accepts) **and** the `paths` discriminator
+  succeeded — the green aggregate is conditional on `paths == success`, so such a PR cannot pass by way
+  of a failed discriminator. A docs-only PR is therefore **never** mergeable with nothing evaluated: the
+  prose guard runs whenever the documentation or the durable test-suite prose changes.
 
 The gate is thus **scoped per changed stack**: a genuine break in a stack the PR touches still blocks
 merge, while a stack the PR does not touch pays no runner cost. On a PR that touches both stacks, both

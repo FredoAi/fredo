@@ -4731,7 +4731,8 @@ $scripts = @(
   "wait-telemetry.ps1",
   "process-hygiene.ps1",
   "launch-artifact-probe.ps1",
-  "inspect-webview-config.ps1"
+  "inspect-webview-config.ps1",
+  "check-navigation-prose-retired.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4742,6 +4743,36 @@ if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
+}
+
+# --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---
+# The guard is deliberately RED over the corpus between ST-1 (it lands) and the
+# last prose sweep (ST-7 drives it to zero), so this block asserts the instrument
+# ONLY: its seven self-test controls must pass.  The plain-run leg that asserts
+# EXITCODE=0 arrives with ST-7, once every sweep has landed - adding it here would
+# red the harness for every developer in the slice and blur a real regression
+# against the known interim state.
+Write-Host "Navigation prose absence guard (Spec #3153):" -ForegroundColor Cyan
+$navProseGuard = ".opencode/scripts/check-navigation-prose-retired.ps1"
+
+Test-Script "guard: -SelfTest passes all seven controls" {
+  $out = & powershell -NoProfile -File $navProseGuard -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - POSITIVE",
+    "CONTROL 2 - NEGATIVE",
+    "CONTROL 3 - SEEDED ROOT",
+    "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+    "CONTROL 5 - IGNORED NON-SCAN",
+    "CONTROL 6 - SELF-REFERENCE",
+    "CONTROL 7 - ALLOWLIST AUDIT"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "seven controls pass (instrument proven; the corpus is ST-3..ST-7)"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
