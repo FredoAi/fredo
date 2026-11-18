@@ -128,6 +128,12 @@ dist/
 # Rust build artifacts
 apps/tauri/src-tauri/target/
 
+# Spec #3158 ST-1: the staged dynamic-link engine payload (ggml/llama/mtmd DLLs +
+# vulkan-1.dll). `tauri.conf.json` ships this directory as `bundle.resources`;
+# its contents are staged by `.opencode/scripts/stage-engine-payload.ps1` via the
+# Tauri CLI's `build.beforeBundleCommand`. Never committed — build output only.
+apps/tauri/src-tauri/engine-payload/
+
 # Spec #3147 ST-1: `tauri_build::AppManifest::commands(...)` autogenerates one
 # `allow-<command>` / `deny-<command>` permission file per registered command
 # into the SOURCE tree at this path on every build. It is derived build output,
