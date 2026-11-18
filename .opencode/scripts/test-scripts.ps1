@@ -2259,6 +2259,163 @@ Test-Script "Timeline refuses a second verdict-carrying Tests Runs flush per rou
   }
 }
 
+# #3152: the sanctioned verdict SUPERSEDE. A round whose posted verdict is WRONG
+# (stale-by-head, or stamped under an advanced round) could never be corrected —
+# G-020 refuses the corrected verdict forever and no amend path exists. The
+# `reconcile-verdict` action posts a NEW authoritative verdict bearing a
+# machine-owned supersede marker; the record keeps BOTH comments (audit trail) and
+# `latest_verdict` (latest verdict-carrying comment) then reads the new one.
+Test-Script "reconcile-verdict supersedes the round's verdict (latest verdict flips)" {
+  $url = Mock-IssueCreate "temp: reconcile verdict" "reconcile scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $bodyFile = Join-Path $env:TEMP "fredo-reconcile-verdict.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # A round-1 FAIL verdict, posted through the normal channel.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`nan earlier failing verdict`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out1 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($out1Str -notmatch "COMMENTED: Tests Runs") { throw "first verdict should post, got: $out1Str" }
+    # The normal channel refuses the correction (G-020) — this is the #3152 deadlock.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`ncorrected: SELECT ... FROM telemetry_spans ... rows=4`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $dup = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $dupStr = if ($dup -is [array]) { $dup -join "`n" } else { "$dup" }
+    if ($dupStr -notmatch "already exists for round") { throw "expected the G-020 duplicate refusal, got: $dupStr" }
+    # The sanctioned supersede clears it.
+    [System.IO.File]::WriteAllText($bodyFile, "Verdict: PASS`ncorrected: SELECT ... FROM telemetry_spans ... rows=4`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $rec = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "the earlier verdict tested a superseded tree tip" --body-file $bodyFile 2>&1
+    $recStr = if ($rec -is [array]) { $rec -join "`n" } else { "$rec" }
+    if ($LASTEXITCODE -ne 0) { throw "reconcile-verdict failed (exit $LASTEXITCODE): $recStr" }
+    if ($recStr -notmatch "RECONCILED") { throw "expected RECONCILED, got: $recStr" }
+    # BOTH verdicts remain on the timeline (never a rewrite) — the supersede is additive.
+    $cmts = @(Mock-IssueComments $issueNum)
+    $verdicts = @($cmts | Where-Object { $_ -match "(?m)^## Tests Runs\b" })
+    if ($verdicts.Count -ne 2) { throw "expected the original + superseding verdict to BOTH remain (2), got $($verdicts.Count)" }
+    if ($verdicts[-1] -notmatch "reconcile-verdict:supersedes") { throw "superseding verdict lacks the marker: $($verdicts[-1])" }
+    # The authoritative verdict is now PASS, and the transition can leave testing.
+    & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1 | Out-Null
+    $tr = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
+    $trStr = if ($tr -is [array]) { $tr -join "`n" } else { "$tr" }
+    if ($trStr -notmatch "TRANSITIONED") { throw "superseded PASS should clear the testing exit gate, got: $trStr" }
+    return "reconcile-verdict superseded the round verdict; both kept; PASS now authoritative (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3152 / G-020 must NOT be weakened into "unlimited verdicts": exactly ONE
+# supersede per round. A second reconcile in the same round is refused, and the
+# action requires an existing verdict to supersede (a first verdict goes through
+# the normal draft flush) plus a --reason (the supersede is audited).
+Test-Script "reconcile-verdict permits exactly one supersede per round" {
+  $url = Mock-IssueCreate "temp: reconcile cap" "reconcile cap scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $bodyFile = Join-Path $env:TEMP "fredo-reconcile-cap.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText($bodyFile, "Verdict: PASS`ncorrected verdict`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    # No existing verdict in the round -> reconcile is refused (not a first-post path).
+    $none = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "no prior verdict" --body-file $bodyFile 2>&1
+    $noneStr = if ($none -is [array]) { $none -join "`n" } else { "$none" }
+    if ($LASTEXITCODE -eq 0) { throw "reconcile with no existing verdict must fail, got exit 0: $noneStr" }
+    if ($noneStr -notmatch "no verdict-carrying") { throw "expected no-existing-verdict refusal, got: $noneStr" }
+    # A reason is mandatory (the supersede is audited).
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`noriginal`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $noreason = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --body-file $bodyFile 2>&1
+    $noreasonStr = if ($noreason -is [array]) { $noreason -join "`n" } else { "$noreason" }
+    if ($LASTEXITCODE -eq 0) { throw "reconcile without --reason must fail, got exit 0: $noreasonStr" }
+    # The supersede path is NOT a bypass of the verdict content gate (G-104) — checked
+    # BEFORE the legitimate supersede so the one-supersede cap is not the tripwire.
+    $badBody = Join-Path $env:TEMP "fredo-reconcile-gate.md"
+    try {
+      [System.IO.File]::WriteAllText($badBody, "Verdict: PASS`n| AC1 | PASS | Screenshot: ac1-pass.jpeg |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      $bypass = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "unviewable evidence" --body-file $badBody 2>&1
+      $bypassStr = if ($bypass -is [array]) { $bypass -join "`n" } else { "$bypass" }
+      if ($LASTEXITCODE -eq 0) { throw "an unviewable-evidence body must be refused by the shared gate, got exit 0: $bypassStr" }
+      if ($bypassStr -notmatch "unviewable evidence") { throw "expected the G-104 refusal on the supersede path, got: $bypassStr" }
+    } finally {
+      Remove-Item -LiteralPath $badBody -Force -ErrorAction SilentlyContinue
+    }
+    # First supersede is allowed; the SECOND in the same round is refused (G-020 holds).
+    $ok = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "first supersede" --body-file $bodyFile 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($okStr -notmatch "RECONCILED") { throw "first supersede should post, got: $okStr" }
+    $second = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "second supersede" --body-file $bodyFile 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($LASTEXITCODE -eq 0) { throw "a second supersede in the same round must be refused, got exit 0: $secondStr" }
+    if ($secondStr -notmatch "exactly ONE supersede per round") { throw "expected the one-supersede cap, got: $secondStr" }
+    $verdicts = @(Mock-IssueComments $issueNum | Where-Object { $_ -match "(?m)^## Tests Runs\b" })
+    if ($verdicts.Count -ne 2) { throw "expected original + one supersede (2), got $($verdicts.Count)" }
+    return "reconcile-verdict: one supersede per round enforced, --reason + existing verdict required (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3152 root cause: a verdict draft REFUSED by the content gate at the
+# testing-exit flush must NOT let the transition complete. Completing it advanced
+# the round (a rework re-entry counts) while the verdict stayed unposted, so the
+# corrected verdict posted under the ADVANCED round and collided with the next
+# round's legitimate verdict under G-020. The leg now fails CLOSED (draft kept).
+Test-Script "Refused verdict draft blocks the testing exit (no counter advance)" {
+  $url = Mock-IssueCreate "temp: counter advance" "counter scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # The #3152 draft shape: a Verdict line plus a bare image filename (G-104).
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | Screenshot: ac1-failure.jpeg |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $before = (Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | Measure-Object).Count
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($LASTEXITCODE -ne 0) { throw "the transition should block, not hard-fail: $blockedStr" }
+    if ($blockedStr -match "TRANSITIONED") { throw "a refused verdict draft must NOT let the transition complete: $blockedStr" }
+    if ($blockedStr -notmatch "would advance the round") { throw "expected the counter-advance explanation, got: $blockedStr" }
+    # The transition did NOT complete: no implementation phase.started advanced the round.
+    $events = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json }
+    if (@($events | Where-Object { $_.event_name -eq "phase.started" -and $_.phase -eq "implementation" }).Count -ne 0) {
+      throw "the round-advancing implementation entry was appended despite the refusal"
+    }
+    $gf = @($events | Where-Object { $_.event_name -eq "guard.fired" -and $_.attributes.guardKey -eq "verdict_draft_refused_counter_advance" })
+    if ($gf.Count -ne 1) { throw "expected the counter-advance guard.fired event, got $($gf.Count)" }
+    # The draft is KEPT (never deleted) so the tester can fix it.
+    if (-not (Test-Path "$dir/tests-runs.md")) { throw "the refused draft must be kept on disk" }
+    # Fix the draft (https URL) -> the flush posts it and the transition completes.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/user-attachments/assets/00000000-0000-0000-0000-000000000000) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    # The implementation-entry side-effect assembles the plan from the A2A file.
+    [System.IO.File]::WriteAllText("$dir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "fixed draft should free the leg, got: $okStr" }
+    return "refused verdict draft failed the testing exit closed; fixed draft freed it (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # PO feedback (#2688): a `tests-runs.md` draft without a literal `Verdict:` line is
 # REFUSED (kept for the tester to fix) so the timeline never gets an unparseable
 # verdict comment like "## Tests Runs -- PASS 7/7".
