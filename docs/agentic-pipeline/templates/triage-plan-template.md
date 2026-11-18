@@ -25,6 +25,13 @@
 
 <affected systems + event/data flow, every claim cited `file:line`>
 
+> **A set of files to be swept is the EXECUTED search and its output — never an asserted one (G-444).**
+> When the work visits a set of existing files (a prose retirement, a reference purge, every document
+> that still teaches a retired mechanism), write the search you will run, run it, and paste the command
+> and its output here. Every line of that output carries an owning sub-task, or an explicit disposition
+> with a reason. "Re-derived by grep" without the command and its output is a claim, not a derivation,
+> and it is returned at convergence.
+
 ### Requirements
 
 Two layers — behavioral in EARS, everything else in prose:
