@@ -339,34 +339,42 @@
       engaged: `[data-testid="launcher-open-apps"]` and `[data-testid="app-dock"]` are `count 0`;
       screenshot succeeds; console clean.
 
-## #3120 extension — navigation-grounded launcher quick paths (live)
+## #3120 extension — launcher quick paths (SHIPPED: launch/search only, live)
 
-> Issue #3120 grounds the launcher in the active app's navigation context and adds the grouped
-> palette, the confirmation and undo-by-description. Quick paths only — the full matrix lives in
-> `functional.md` F-126..F-162 / `regression.md` R-75..R-86. **Verification policy: live.**
-> Levers: the `functional.md` `#3120` L1–L6 recipe (L1 open the pilot, L5 the relay intent).
+> Issue #3120 briefly grounded the launcher in an active application's navigation context and added a
+> grouped `>` palette, a confirmation host and undo-by-description. The human-directed rescope rejected
+> that experience and the navigation engine itself is deleted in #3151. **What ships:** the launcher is
+> app launch / search, the open-apps row and the global command bar — nothing else. The quick paths
+> below therefore assert the **absence** of the retired chrome alongside the shipped behaviour they
+> keep. The full matrix lives in `functional.md` F-126..F-162 / `regression.md` R-75..R-86.
+> **Verification policy: live.**
+> Levers: the `functional.md` `#3120` L1–L6 recipe (L1 open the pilot, L5 the companion skill path).
 
-- [ ] S-40: **The context header renders on open.** L1 (type `wire` + Enter) then `Ctrl+Space`.
-      **Expected:** `[data-testid="launcher-context"]` renders with the path (`Canvas`),
-      a selection summary when something is selected, and the first ≤3 available verb chips; the
-      launcher is focused in the bar; screenshot succeeds; console clean of
+- [ ] S-40: **No context header on open.** L1 (type `wire` + Enter) then `Ctrl+Space`.
+      **Expected:** `[data-testid="launcher-context"]` count **0** — the launcher does not read an
+      application's context and has no header — while the shipped command bar
+      (`launcher-command-bar`) and its input (`launcher-command-input`) render and the launcher is
+      focused in the bar; screenshot succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] S-41: **The `>` palette is grouped.** Type `>` → **Expected:** `launcher-palette-list` with one
-      `launcher-palette-group` per place, full-path group headings, a risk word on the `Delete` row
-      and a key hint chip; arrow down moves the selection and the announcer text changes; screenshot
-      succeeds; console clean.
-- [ ] S-42: **Destructive confirm → cancel changes nothing.** L3 select one element → `>` `delete` +
-      Enter → Cancel (or Esc). **Expected:** the dialog named `Run Delete?` appeared with Cancel
-      focused; after cancel the element is still present, no journal entry was added and no error
-      line rendered; screenshot succeeds; console clean.
-- [ ] S-43: **Undo by description.** L5 one companion mutation → type `undo the companion's last
-      change` + Enter. **Expected:** exactly one new trail entry labelled `Undo <verb>` attributed to
-      `You`, the companion entry still listed, the launcher closed to reveal the trail; screenshot
-      succeeds; console clean.
-- [ ] S-44: **`/ Ask` opens the launcher.** In Wireframe click `[data-testid="navigation-rail-ask"]`
-      (or `>` `ask` + Enter). **Expected:** the launcher opens with the bar focused, empty, and the
-      context header visible for the Wireframe app; Esc returns focus to the rail button; screenshot
-      succeeds; console clean.
+- [ ] S-41: **`>` is ordinary search text — no palette.** Type `>` → **Expected:**
+      `[data-testid^="launcher-palette-"]` count **0** (no list, no group, no row, no announcer), the
+      `>` is kept as literal query text in `launcher-command-input` (never stripped) and the results
+      region renders the shipped app grid only; screenshot succeeds; console clean.
+- [ ] S-42: **A destructive pointer row applies with no confirmation.** L3 select one element → click
+      the `Delete` row in `wireframe-arrange`. **Expected:** `[data-testid="launcher-confirmation"]`
+      count **0** — there is no confirmation requester, so no dialog is shown for any intent — the
+      element is removed immediately, `-element-count` decrements by one and exactly one history entry
+      is added; screenshot succeeds; console clean.
+- [ ] S-43: **Undo is the app-local history control, not a description.** L5 drive one shipped
+      companion skill, then click `wireframe-undo`. **Expected:** the newest history entry is reverted
+      and the element/doc state matches the pre-mutation state; there is no trail surface, no
+      `Undo <verb>` entry and no attribution channel (no trail node renders); screenshot succeeds;
+      console clean.
+- [ ] S-44: **The launcher opens only by its shipped entry.** With Wireframe focused press
+      `Ctrl+Space`. **Expected:** the launcher opens with the bar focused and empty; there is no
+      `navigation-rail-ask` control to click (count **0**) and typing `>` + `ask` is ordinary query
+      text that launches nothing; Esc closes the launcher and restores focus to the pre-open element;
+      screenshot succeeds; console clean.
 - [ ] S-45: **Evidence + liveness.** Query `telemetry_spans` (telemetry-query skill) after the run and
       upload one screenshot via `upload-evidence`. **Expected:** a NON-ZERO span count with a recent
       `max(ingested_at)` (NOT `fredo emit` — that writes no spans) and a resolvable

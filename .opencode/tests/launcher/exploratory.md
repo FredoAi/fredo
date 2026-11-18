@@ -587,45 +587,47 @@
 
 ---
 
-## #3120 extension — navigation-grounded launcher edge probes
+## #3120 extension — launcher edge probes (SHIPPED: launch/search only)
 
 > Unscripted probes for issue #3120. A confirmed finding PROMOTES to `functional.md` as a new `F-`
 > row (keep the origin note). Live policy; an undrivable lever is a named blocker (G-053) with a
 > static/unit pin — never fabricated. Levers: the `functional.md` `#3120` L1–L6 recipe.
+>
+> **The retired chrome has no host.** The menu of the rescope rejected the navigation-grounded
+> launcher: there is no context header, no `>` palette, no row-actions panel, no confirmation host and
+> no companion command relay. `E-83`–`E-85` and `E-88`/`E-91` below probed that chrome; each is
+> **REMOVED** for want of a lever (G-053 — a probe whose lever does not exist is never left standing).
+> The probes that survive are the ones whose subject ships: window switching under an open launcher,
+> the app-local bounded history, and reduced motion.
 
-- [ ] E-83: **Stale-envelope race.** Fire a navigation dispatch (place entry) and a keystroke in
-      quick succession — does the context header ever render a stale path (an envelope captured
-      before the dispatch), and does the palette group order match the header? Any frame where the
-      header and the palette disagree about the current place is a finding (promotes to F-128).
-- [ ] E-84: **Two pending confirmations.** Trigger two destructive intents back-to-back (palette
-      Enter twice on `delete`, and a relay in the same window) — is exactly one dialog shown, does
-      the second resolve the first (or vanish), and is anything applied that was never confirmed?
-      Any double-apply or orphaned promise is a finding (promotes to F-141/F-143).
-- [ ] E-85: **Esc ordering across S4/S5/S6.** With the secondary open, a confirmation pending and an
-      S6 line visible in sequence, press Esc repeatedly — does each press consume exactly one branch
-      (confirmation → secondary → top-level close) with no double-fire, and does the response line
-      survive one Esc too many? Any skipped/doubled level is a finding (promotes to F-135).
-- [ ] E-86: **Undo during an in-flight intent.** Send a companion mutation (relay) and immediately
-      type `undo the companion's last change` — does the undo see the new entry, or silently undo the
-      previous one? Record the journal order; a wrong target or a double undo is a finding (promotes
-      to F-145).
+- [ ] E-86: **Undo during an in-flight companion action.** Drive one shipped companion skill
+      (`open_app` / `close_app` / `doom_mode` — the three static skills) and immediately click
+      `wireframe-undo` in Wireframe. Is the undo target deterministic (never a doubly-applied or
+      half-applied edit), and does the history length move by exactly one? A wrong target or a double
+      undo is a finding (promotes to F-145). **Lever: the shipped `llm-skill-call` path + the
+      `wireframe-undo` control.** *(Corrected from a probe of the deleted command relay — the undo
+      subject survives; only its driver moved to the shipped skill path.)*
 - [ ] E-87: **Window switch while the launcher is open.** With the launcher open over Wireframe, focus
-      another window (or minimize Wireframe) — does the context source switch, disappear, or keep
-      rendering a stale header? Any header for a non-active app is a finding (promotes to F-127).
-- [ ] E-88: **Envelope-cap interaction with the palette.** Create many elements (or select the
-      maximum) so the envelope truncates (`maxSelectionIds` 32 / `maxPathDepth` 8 / `maxVerbs` 64) —
-      does the palette still list the full 55 rows, does the context header truncate gracefully
-      (no clip/overflow), and does the list scroll (`min(52vh, 420px)`) without horizontal scroll?
-      Any lost row, clipped header or h-scroll is a finding (promotes to F-126/F-130/F-160).
-- [ ] E-89: **Relay to a closed window (queued take).** Send an `app_command_intent` while the
-      Wireframe window is closed, then open it — does the intent drain on mount (`_take`), execute
-      once, and answer exactly one result event? A lost intent, a double execution or a missing
-      result is a finding (promotes to F-138/F-139). Queue bound: 16 (oldest-first eviction).
+      another window (or minimize Wireframe) — is the launcher DOM identical in every case (the
+      launcher reads no application context, so nothing can go stale)? Any launcher node that changes
+      with the focused app is a finding (promotes to F-127).
 - [ ] E-90: **Reduced-motion override mid-animation.** Flip the `matchMedia` stub to `true` while a
-      palette entrance / selection transition is running — does the running animation stop cleanly
-      (no stuck transform/opacity) and does the next state render instantly? Any stuck mid-animation
-      frame is a finding (promotes to F-156).
-- [ ] E-91: **Recents churn.** Run 8 mutations so the journal overflows `maxJournalEntries` (10) and
-      the recents exceed `PALETTE_MAX_RECENTS` (5) — does the recent set stay deduped/capped, do
-      undo entries (`Undo …`) enter recents, and does the palette order stay stable (no flicker,
-      no duplicate row)? A duplicated/lost row is a finding (promotes to F-129/F-130).
+      shipped launcher transition is running — does the running animation stop cleanly (no stuck
+      transform/opacity) and does the next state render instantly? Any stuck mid-animation frame is a
+      finding (promotes to F-156).
+
+> **REMOVED (no shipped host — G-053):**
+> - `E-83` stale-envelope race / palette-vs-header order — the header and the palette were both
+>   retired; there is no envelope to go stale and no palette group to compare.
+> - `E-84` two pending confirmations — there is no confirmation host and no requester, so no promise
+>   can be pending (`R-86`, `F-141`).
+> - `E-85` Esc ordering across the deleted S4/S5/S6 levels — the levels do not exist; the surviving
+>   Esc behaviour (closes the launcher, restores focus) is covered by `F-135`.
+> - `E-88` envelope-cap vs the palette — the palette, `maxSelectionIds`, `maxPathDepth` and `maxVerbs`
+>   are all deleted with the palette; the surviving grounding cap is `COMPANION_CAPABILITY_LIMITS`
+>   `.maxContextBytes` = 16384, covered by `F-160`.
+> - `E-89` relay to a closed window (queued `app_command_intent` `_take`) — the relay, its result
+>   event and its 16-deep queue are deleted; there is no intent to enqueue and nothing to drain.
+> - `E-91` recents churn over `maxJournalEntries` (10) / `PALETTE_MAX_RECENTS` (5) — the recents list
+>   and both caps are deleted; the surviving bounded history is `WIREFRAME_HISTORY_LIMIT = 100`, whose
+>   eviction is covered by `F-145`/`F-146`.
