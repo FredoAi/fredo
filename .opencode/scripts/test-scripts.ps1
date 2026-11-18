@@ -4732,7 +4732,8 @@ $scripts = @(
   "process-hygiene.ps1",
   "launch-artifact-probe.ps1",
   "inspect-webview-config.ps1",
-  "check-navigation-prose-retired.ps1"
+  "check-navigation-prose-retired.ps1",
+  "verify-installer-payload.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4837,6 +4838,33 @@ Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
   if ($text -notmatch "Scanned files:") { throw "plain guard run printed no 'Scanned files:' line" }
   if ($text -notmatch "Ignore filter:") { throw "plain guard run printed no 'Ignore filter:' line" }
   return "AC1's absence predicate holds: zero non-allowlisted deleted-navigation references"
+}
+
+# --- Installer payload artifact gate (Spec #3158 ST-4, AC5) ---
+# A committed gate with no runner is not a guard: release.yml runs
+# verify-installer-payload.ps1 before any draft exists, and this leg proves the
+# instrument (all five controls) on every harness run, so a regression in the
+# gate is caught here instead of on a release branch.
+Write-Host "Installer payload artifact gate (Spec #3158):" -ForegroundColor Cyan
+$installerGate = ".opencode/scripts/verify-installer-payload.ps1"
+
+Test-Script "guard: -SelfTest passes all five controls" {
+  $out = & powershell -NoProfile -File $installerGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - PASS-ON-COMPLETE",
+    "CONTROL 2 - FAIL-ON-MISSING",
+    "CONTROL 3 - REFUSE-DEBUG-PATH",
+    "CONTROL 4 - REFUSE-NO-EXTRACTOR",
+    "CONTROL 5 - SELF-REFERENCE"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "five controls pass (artifact gate proven; a real installer run is the tester's receipt)"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
