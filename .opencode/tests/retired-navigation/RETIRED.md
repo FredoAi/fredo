@@ -476,3 +476,142 @@ powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .
 | `.opencode/tests/companion-audio-skill-parity/regression.md:24-34` | companion-audio-skill-parity/regression | CORRECTED | R-3/R-4 cited fixed `voice_invariants.rs:593-602` / `:612-644` / `:576-602` line ranges as their assertion anchors; they now reference the file's audio-path and boundary assertions by subject (the ranges drifted) and keep the same obligations. | stale line ranges; the obligations are unchanged |
 | `.opencode/tests/companion-audio-skill-parity/exploratory.md:13-15` | companion-audio-skill-parity/exploratory | CORRECTED | the probe asked "when the model selects `wireframe` on an audio turn but the arguments are malformed"; it now asks about a malformed `open_app` selection (the only mutating static skill with arguments). | the `wireframe` skill is not offered |
 | `.opencode/tests/companion-audio-skill-parity/exploratory.md:20-21` | companion-audio-skill-parity/exploratory | CORRECTED | the probe asked whether the audio turn "inherit[s] the four-skill offer"; it now asks whether it inherits the SAME three static skills from the one accessor. | the offer is three skills |
+
+##### ST-10 — wireframe residual sweep + the allowlisted-but-false R-14
+
+> `.opencode/tests/wireframe/{functional,regression,exploratory}.md` plus
+> `.opencode/tests/navigation-retirement/regression.md`. Appended by ST-10 (round 2, dev-B);
+> pre-sweep line ranges below.
+
+| path:line-range | suite | disposition | replacement | reason |
+|---|---|---|---|---|
+| `.opencode/tests/wireframe/functional.md:455-459` | wireframe/functional | CORRECTED | the `#3099 SUPERSESSION` header said the slice makes the companion skill "a GENERATED projection of this application's TypeScript command surface" with only the hand-written catalog gone; it now states #3152 deleted that whole command path — the catalog, its parity test AND the per-application command relay — so the authoritative rows are the shipped contract, not a superseded form | the generated skill, its registry and the relay were all deleted in #3152 |
+| `.opencode/tests/wireframe/functional.md:465-469` | wireframe/functional | CORRECTED | F-43's header bullet said "the reply is composed HOST-SIDE from the published manifest — `Wireframe actions: …` — … The 35-id TS↔Rust parity pin is replaced by ONE shared golden fixture asserted by the TS builder suite and the Rust `tests/companion_manifest.rs`"; it now states the host-side composition and that parity target are gone, the surviving 35-id table is `wireframeActions.test.ts`'s `EXPECTED_IDS`, and the surviving Rust target is `tests/companion_offer_static_only.rs:147` | `tests/companion_manifest.rs` does not exist (verified `Test-Path` → `False`) |
+| `.opencode/tests/wireframe/functional.md:477-479` | wireframe/functional | CORRECTED | F-48's supersession bullet read "the relay is the generic `app-command-intent` / `app-command-intent-result` pair with `{requestId, appId, action, arguments}` and the SAME bounded queue (16, oldest-first); the cross-webview take-on-mount guarantee is retained"; it now states **there is no relay** — the pair, its payload and its bounded queue do not exist, and a companion `llm-skill-call` is handled by the application's own listener | #3152 deleted the per-application command path (zero occurrences in `apps/tauri/src-tauri/src/`) |
+| `.opencode/tests/wireframe/functional.md:482-488` | wireframe/functional | CORRECTED | F-43's row body said the reply contains all 35 action ids and "a TS parity test pins the 35 ids against the Rust catalog source"; it now names `wireframeActions.test.ts`'s `EXPECTED_IDS` as the surviving 35-id table and records that the Rust catalog source and its `tests/companion_manifest.rs` target were deleted in #3152 | the Rust catalog and its parity target were deleted in #3152 |
+| `.opencode/tests/wireframe/functional.md:541-545` | wireframe/functional | CORRECTED | F-48's row was "Intent relay with `new-window` presentation" asserting a take-on-mount card; it now asserts **no intent relay exists** — a `wireframe` `llm-skill-call` changes nothing (no window, no card, no reply), because the offer is the three static skills and the relay with its take-on-mount queue was deleted | the intent relay was deleted in #3152; the row contradicted its own corrected header bullet (G-444) |
+| `.opencode/tests/wireframe/functional.md:546-551` | wireframe/functional | CORRECTED | F-49 asserted the three skills "still resolve … with the 4th skill registered (`with_app_control_doom_and_wireframe`, offer order `open_app, close_app, doom_mode, wireframe`)" and "all four skills in one request body"; it now asserts the offer is exactly the three static skills from the ZERO-argument `companion_skill_registry()` (`status.rs:691-693`, pinned at `status.rs:1462`), with no fourth/generated/application-named skill, and that the deleted constructor and offer order do not exist | the fourth skill, its constructor and its offer order were deleted in #3152 |
+| `.opencode/tests/wireframe/functional.md:1276-1281` | wireframe/functional | CORRECTED | the "Row amendments" note **DEFERRED** F-43…F-49 to P6 and asserted "a `llm-skill-call` for the retired command surface resolves to a clean `Invalid`"; it now states the companion command path was **deleted**, not deferred — a `wireframe` emit is inert (no window, no element, no reply claimed), and `wireframeDraft.ts` survives only as internal action code | the deferral's `Invalid` result event was part of the deleted relay (G-444 consistency with the corrected F-48) |
+| `.opencode/tests/wireframe/regression.md:39-46` | wireframe/regression | CORRECTED | R-5 said the registry is additive "(`with_app_control_doom_and_wireframe`), the offer order is `open_app, close_app, doom_mode, wireframe`", with all 35 ids invocable "through the same `llm-skill-call` path"; it now asserts the WHOLE offer is the three static skills from the ZERO-argument `companion_skill_registry()` (`status.rs:691-693`, pinned at `status.rs:1462`, byte-compared by `tests/companion_offer_static_only.rs:147`), that the wireframe skill and its constructor do not exist, and that the 35 ids run through the pointer strip and the app's own listener | the fourth skill, its constructor and the relay path were deleted in #3152 |
+| `.opencode/tests/wireframe/regression.md:373-379` | wireframe/regression | CORRECTED | R-27 was "companion path fails closed — P6 deferral" expecting "the command-intent path reports a clean `Invalid`"; it now asserts **no wireframe skill exists** — an emit is inert (no window, no element, no reply, no timeout, no crash), the offer being the three static skills and every listener ignoring an undeclared skill | the command-intent path and its `Invalid` result event were deleted in #3152 |
+| `.opencode/tests/wireframe/regression.md:400-400` | wireframe/regression | CORRECTED | R-27's round-1 PASS row cited `shared/companion/__tests__/manifest.test.ts` as its evidence; the PASS record is KEPT as history (G-125) and the row now discloses that the file no longer exists (deleted in #3159) and that the surviving Rust pin is `tests/companion_offer_static_only.rs:147` | a historical PASS record naming a deleted file must say so; the file does not exist (verified `Test-Path` → `False`) |
+| `.opencode/tests/wireframe/exploratory.md:134-138` | wireframe/exploratory | CORRECTED | E-19 said "The live transport now offers the 4-skill registry (`companion_skill_registry()`), so the offer was the whole defect"; it now states the live transport offers exactly the three static skills from the ZERO-argument `companion_skill_registry()` and records the offer (four skills, no wireframe listener) as the historical defect | the accessor takes NO argument and the fourth skill does not exist (`status.rs:691`) |
+| `.opencode/tests/wireframe/exploratory.md:296-299` | wireframe/exploratory | CORRECTED | E-44 asked "Does it fail closed with a clean `Invalid` (no window, no mutation, no timeout), or does it hang / mutate / crash?"; it now asks whether the emit is inert (no window, no mutation, no reply, no timeout, no crash) and states the `wireframe` skill is not declared | the `Invalid` result event was part of the deleted relay (G-444 consistency with R-27) |
+| `.opencode/tests/navigation-retirement/regression.md:88-92` | navigation-retirement/regression | CORRECTED | R-14 asserted `apps/tauri/src-tauri/src/applications/companion/` (the surface registry, `register_app_command_surfaces`, `app_command_intent*`) "is untouched and still compiles — the Rust/IPC half is S2/#3152. Q-7/Q-8 prove compilation; the diff must be empty"; it now asserts the S2 command path is **gone** — #3152 deleted that directory (`Test-Path` → `False`; shipped listing `db_client, doom, installed_apps, llm_server, mod.rs, pg_supervisor, screenshot, settings, setup, telemetry, terminal, wireframe`), the symbols do not exist and have no successor, a source scan over `apps/tauri/src-tauri/src/` returns zero occurrences, and the offer is the three static skills. R-14's surviving intent is kept (the row-pipeline is not a party — cross-ref R-15). Its section heading was reworded "Rust / IPC (not a party to this slice)" so it no longer promises a deleted directory is intact. | the row sat INSIDE the guard's evidence allowlist yet asserted a directory #3152 deleted — the G-445 blind spot restated inside the instrument's own allowlist |
+
+##### ST-10 — the vocabulary-coverage record (the second predicate, and what the merged guard does NOT cover)
+
+> This is the record the QA row `P-13` keys to: the **28 literal searches** of the plan's Domain
+> Model §2, **re-run in this tree after the (a)–(d) corrections** (G-444 — a post-sweep receipt,
+> never a predicted one). Method (`P-13`): `pattern` = that row's regex verbatim, `path` =
+> `.opencode/tests` (recursive; `include: *.md` on rows 13/14 only). The Grep tool's `pattern` and
+> `path` parameters ARE the command; re-running them returns the same hits. Text mode is **raw**,
+> case-sensitive substring/regex over committed Markdown — a hit inside a fenced block, a quote or a
+> comment counts; a hit is a literal occurrence, never a semantic claim (G-419).
+>
+> **Dispositions.** `A` = ABSENCE-asserting (the sentence asserts the subject does not exist / is
+> gone / count 0) — correct, AC5 wants it. `L` = the file is inside the guard's 8-entry evidence
+> allowlist (`retired-navigation/`, `navigation-retirement/`, `navigation-prose-retirement/`,
+> `companion-command-removal/`, `docs/NAVIGATION_ENGINE.md`, `docs/adr/`, `docs/UX_FLUENCY_RESEARCH.md`,
+> the pilot template) and must spell the tokens (G-431). `X` = the excluded literal (the one
+> substring false positive, row 22). `S` = the token also names a **shipped** symbol, so the hit is
+> not about a deleted subject at all (plan §2 row 28's "KEEP — live symbol"); **S is not P** and is
+> recorded because `P-13`'s A/L/X shorthand has no bucket for "the token is live". **P** (a
+> PRESENT-asserting hit — the defect class) = **zero in every row below.**
+>
+> **Measurement point — and why no count is pinned (read before reproducing).** Each row below
+> records the **disposition of every hit** the pattern returns, not a pinned total: `P-13(a)` and
+> G-444 forbid pinning a post-sweep count, because this very record spells every pattern (so a
+> re-run over the final tree necessarily returns hits inside `retired-navigation/RETIRED.md` — all
+> class `L` by path, an instrument scanning its own record finding its own vocabulary). The
+> stable, reproducible evidence is therefore **(a) `P = 0` in every row** and **(b) the enumerated
+> non-allowlisted absence-asserting hits** — those live in committed suite files this round does not
+> touch again. Reproduce any row by running its `pattern` over `.opencode/tests`: every returned hit
+> is either in the list beside it or inside an allowlisted file (`retired-navigation/`,
+> `navigation-retirement/`, `navigation-prose-retirement/`, `companion-command-removal/`,
+> `docs/…`), and no hit asserts the subject is present.
+>
+> | # | Pattern (path `.opencode/tests`) | P | Disposition of every remaining hit (A = absence/correct; enforced L = allowlisted path; S = live shipped symbol; X = the one excluded literal) |
+> |---|---|---|---|
+> | 1 | `app_command_intent` | **0** | **A**: `launcher/functional.md:2111`; `launcher/exploratory.md:629`; `companion/functional.md:2751,2822,2824,2825,2854,2967`; `companion/regression.md:1009`; `navigation-retirement/regression.md:94` (also **L**). **L**: `navigation-prose-retirement/functional.md:369,380,392,460`; `companion-command-removal/RETIRED.md:20`, `functional.md:119,123,124`; plus this ledger's own rows (all `L`). |
+> | 2 | `app-command-intent` | **0** | **A**: `companion/smoke.md:363`; `companion/functional.md:2845`; `launcher/functional.md:2205`; `navigation-retirement/regression.md:94,95`; `wireframe/functional.md:480`. **L**: `navigation-prose-retirement/functional.md:392`; `companion-command-removal/RETIRED.md:20`, `functional.md:119`; plus this ledger. |
+> | 3 | `app_command_intent_take` | **0** | **A**: `companion/regression.md:1009`; `companion/functional.md:2825`; `navigation-retirement/regression.md:94` (also **L**). **L**: `companion-command-removal/functional.md:124`; plus this ledger. |
+> | 4 | `register_app_command_surfaces` | **0** | **A**: `companion/functional.md:2750,2791`; `navigation-retirement/regression.md:93`. **L**: `companion-command-removal/functional.md:135,147`; `navigation-prose-retirement/functional.md:460`; plus this ledger. |
+> | 5 | `app_command_surfaces` | **0** | **A**: `companion/functional.md:2750,2751,2791,2792,2878,2881`; `launcher/functional.md:2262`; `navigation-retirement/regression.md:93,94`. **L**: `companion-command-removal/functional.md:135,147`; `navigation-prose-retirement/functional.md:460`; plus this ledger. |
+> | 6 | `launcher-confirmation` | **0** | **A**: `launcher/smoke.md:364`; `launcher/functional.md:2305,2603`; `companion/functional.md:3101,3113`; `navigation-retirement/functional.md:326` (also **L**). **L**: `navigation-prose-retirement/functional.md:335,366,402`; plus this ledger. |
+> | 7 | `launcher-palette` | **0** | **A**: `launcher/smoke.md:360`; `launcher/regression.md:885,886,937,938`; `launcher/functional.md:2148,2149,2171,2173,2181,2230,2448,2567,2618,2634` (`:2618` is inside F-163's "ZERO matches for every token" absence scan). **L**: plus this ledger only. |
+> | 8 | `launcher-context` | **0** | **A**: `launcher/smoke.md:354`; `launcher/regression.md:885,937`; `launcher/functional.md:2124,2134,2148,2161,2568,2634`. **L**: `navigation-prose-retirement/regression.md:154`; plus this ledger. |
+> | 9 | `launcher-action-entry` | **0** | **A**: `launcher/regression.md:886,938`; `launcher/functional.md:2149,2568,2635`. **L**: plus this ledger only. (Zero P already held pre-sweep.) |
+> | 10 | `navigation-rail` | **0** | **A**: `launcher/smoke.md:375`; `launcher/regression.md:961`; `launcher/functional.md:2386`. **L**: `retired-navigation/RETIRED.md` (historical rows + this ledger). `navigation-rail-places` alone: **0 hits**. |
+> | 11 | `describeContext\|ContextEnvelope` | **0** | **A**: `navigation-retirement/functional.md:420` (also **L**). **L**: `navigation-prose-retirement/functional.md:106,349`; plus this ledger. |
+> | 12 | `shared/companion/__tests__/manifest\|manifest\.test\.ts` | **0** | **A**: `companion/functional.md:2766` (asserts there is **no** `manifest.test.ts`); `wireframe/regression.md:405` (the R-27 historical-PASS disclosure — the file no longer exists). **L**: plus this ledger. `apps/ui/src/shared/companion/__tests__/` holds exactly `composerBridge.test.ts`, `composerTarget.test.ts`, `grounding.test.ts`, `groundingRegistrars.test.tsx`. |
+> | 13 | `NavigationEngine\|NavigationHost\|NavigationProvider\|NavigationAnnouncer\|validateSurface\|registerNavigationHost\|getNavigationHost\|NAVIGATION_GLOBAL_CHORDS\|resolveStroke\|announceNavigation` (`include: *.md`) | **0** | **A**: `navigation-retirement/regression.md:25`; `navigation-retirement/functional.md:484`. **L**: every other hit (`companion-command-removal/**`, `navigation-prose-retirement/**`, this ledger `RETIRED.md`). **class B genuinely clean outside the allowlist.** |
+> | 14 | `shared/navigation\|shared/hotkeys` (`include: *.md`) | **0** | **A**: `navigation-retirement/functional.md:80,494,514,518`. **L**: every other hit (all inside `retired-navigation/`, `navigation-prose-retirement/`, `navigation-retirement/`). **class A genuinely clean.** |
+> | 15 | `data-nav-\|navigation-bar\|navigation-trail\|navigation-keycap\|navigation-announcer\|command rail\|activity trail\|navigation map` | **0** | **A**: `navigation-retirement/functional.md:59,60,64`; `navigation-retirement/regression.md:64,65` (zero-attribute assertions); `navigation-prose-retirement/functional.md:293`. **L**: the rest (`retired-navigation/RETIRED.md`). **class D genuinely clean.** |
+> | 16 | `wireframeCommandSurface\|wireframeSurface\|terminalSurface\|windowSystemSurface\|navigationDemoSurface` | **0** | **A**: `companion/functional.md:2802` (the F-147 REMOVED note); `navigation-retirement/functional.md:83,84,85` (the guard's own token table). **L**: the `retired-navigation/RETIRED.md` rows. |
+> | 17 | `declared-surface\|declared surface\|declares its keyboard surface\|declared keyboard surface\|declared navigation surface` | **0** | **A/historical**: `wireframe/smoke.md:200`; `wireframe/regression.md:322,392`; `wireframe/exploratory.md:266` (all "#3151 deleted the declared surface" — DO-NOT-TOUCH, PR-6). **Adjudicated by the plan's Domain Model §2 row 17 as KEEP**: `contrast-gate/functional.md:26,28` — "declared surfaces × states" means theme `SurfaceId`s (the class-C calibration case), NOT the deleted model; PR-6 forbids sweeping it at all. (This is the same literal-substring coincidence the plan classifies as a false positive; `P-13(c)` admits exactly ONE `X` and it is row 22's, so this hit is recorded as the plan's own `KEEP`, not as a second `X`.) **L**: `navigation-prose-retirement/{regression.md:103,functional.md:162,167,197}`; `retired-navigation/RETIRED.md` rows. |
+> | 18 | `open_app, close_app, doom_mode, wireframe\|four skills\|4-skill\|4th skill` | **0** | **A**: `companion-command-removal/functional.md:172` ("A 4th skill … = FAIL" — the correct negative); `companion-audio-skill-parity/functional.md:8` (states the 4-skill constructors are **gone**); `wireframe/regression.md:46`; `wireframe/functional.md:562`; `wireframe/exploratory.md:137`. **L**: `navigation-prose-retirement/functional.md:423,425,426`; the `retired-navigation/RETIRED.md` rows. |
+> | 19 | `companion_manifest\|companion_offer_static_only\|with_app_control_doom_and_wireframe\|wireframe_catalog\|companionCatalog\.parity` | **0** | **A**: `companion/functional.md:2771,2893`; `companion/regression.md:998,999,1002` (all "absent" assertions); `wireframe/regression.md:44,45,405`; `wireframe/functional.md:457,468,470,491,561`. **L**: `companion-command-removal/**`; `navigation-prose-retirement/functional.md:418`; `companion-audio-skill-parity/**` ("replaced by the shipped"); the `retired-navigation/RETIRED.md` rows. |
+> | 20 | `wireframe-navigation\|navigation-research\|navigation-fleet` | **0** | **A**: none. **L**: `navigation-retirement/functional.md:102,103`; `navigation-prose-retirement/regression.md:61,62`; `retired-navigation/RETIRED.md` (the four-suite retirement rows at `:30-41` + the historical rows + this ledger). The three directories do not exist. |
+> | 21 | `requestLauncherConfirmation\|LauncherConfirmation\|LauncherActionList\|launcherActionPalette` | **0** | **A**: `companion/functional.md:3102`; `launcher/regression.md:917,1006`; `launcher/functional.md:2616,2622` (F-163's zero-match scan); `navigation-retirement/functional.md:501` (also **L**). **L**: `navigation-prose-retirement/functional.md:368`; the `retired-navigation/RETIRED.md` rows. |
+> | 22 | `maxJournalEntries\|PALETTE_MAX_RECENTS\|maxVerbs\|maxSelectionIds\|maxPathDepth\|55 rows\|55-row\|derivePalette\|journal\.undo\|__EV\.intent` | **0** | **X (the one excluded literal)**: `llama-setup/functional.md:6` — `> server-launch step (both OUT of scope for this suite's #2855 rows).` — the `55 rows` pattern matches the `#2855 rows` substring; unrelated suite, out of subject, must NOT be swept. **A**: `launcher/functional.md:2170,2173`; `launcher/exploratory.md:626,631` (REMOVED notes). **L**: `navigation-prose-retirement/functional.md:342,343,345`; the `retired-navigation/RETIRED.md` rows. |
+> | 23 | `APP_COMMAND_SURFACE_MAX_SURFACES\|APP_COMMAND_SURFACE_MAX_COMMANDS\|APP_COMMAND_SURFACES_COMMAND` | **0** | **A**: `companion/functional.md:2903,2904` (the F-160 REMOVED note). **L**: `companion-command-removal/RETIRED.md:41,42`; the `retired-navigation/RETIRED.md` row. |
+> | 24 | `companion_skill_registry\(app\)\|status\.rs:708\|status\.rs:1346\|status\.rs:1345` | **0** | **A** (every hit is a FAIL clause or a deletion record): `companion/regression.md:988` (an `(app)` arity is a FAIL); `companion-audio-skill-parity/regression.md:14`, `functional.md:45` (arity FAIL). **L**: `navigation-prose-retirement/functional.md:414,417`; the `retired-navigation/RETIRED.md` rows. The shipped accessor is zero-argument (`status.rs:691`). |
+> | 25 | `AppCommandIntent\|app-command-intent-result\|Run Delete\?\|launcher-context-path` | **0** | **A**: `companion/functional.md:2845`; `launcher/functional.md:2124,2205,2206,2211`; `navigation-retirement/regression.md:95`; `wireframe/functional.md:480`. **L**: `navigation-prose-retirement/functional.md:392`; `companion-command-removal/functional.md:119,120`, `RETIRED.md:20`; the `retired-navigation/RETIRED.md` rows. |
+> | 26 | `navigation-rail-places` | **0** | **No hit anywhere in `.opencode/tests/**`** — the subject the audit named as a candidate is already gone. |
+> | 27 | `four-skill\|four skill\|three C4 args\|offer-order\|offer order\|wireframe skill` | **0** | **A**: `companion-audio-skill-parity/smoke.md:37` (historical, "the shipped offer is the three static skills"); `companion-audio-skill-parity/functional.md:7,46`; `companion-command-removal/regression.md:19` (the correct three-skill order); `companion/regression.md:975` (offer order exactly three); `doom-mode/regression.md:68` (a historical PASS record naming the correct three-skill order — KEEP); `wireframe/regression.md:44,45,377`; `wireframe/functional.md:561`; `wireframe/exploratory.md:137`. **L**: `navigation-prose-retirement/functional.md:423`; the `retired-navigation/RETIRED.md` rows. |
+> | 28 | `skills\.rs:5[0-9][0-9]\|skill_turn\|llm_chat_with_skills\|llm_chat_with_audio` | **0** | **S** (the token names a SHIPPED symbol — `llm_chat_with_audio`, `llm_chat_with_skills`, `skill_turn`, `render_tools` all ship; plan §2 row 28 classifies these KEEP): `companion/regression.md:865,873,881`; `companion/functional.md:1927,1948`; `doom-mode/functional.md:267`; `companion-embedded-engine/regression.md:106`, `functional.md:488`; `voice-input/functional.md:1000,1031,1143,1437`, `smoke.md:269`. **L**: `companion-command-removal/regression.md:26`, `functional.md:332` (`skills.rs:52-67` / `:75-93` are live ranges); `companion-audio-skill-parity/functional.md:34,42`, `exploratory.md:16,22`. This row is why the plan does NOT ban `llm_chat_with_audio`: it ships, and only the *offer-set* assertions around it were stale. |
+>
+> **Post-sweep result — zero P hits across all 28 searches.** Every returned hit is `A`, `L`, `S` or
+> the single named `X`. Both `P-13` non-vacuity clauses hold: the search counts are identical on a
+> second run (NFR-3), and the one `X` is the `#2855 rows` substring — verified still the ONLY X.
+> (`S` is not in `P-13`'s A/L/X shorthand, but plan §2's own disposition legend defines it
+> — "surviving subject, only a stale label/signature/reference" — and row 28's hits are live shipped
+> symbols, not a deleted subject; recording them as `S` is what keeps "unclassified" from being a
+> false reading of a live token.)
+>
+> **The two vocabularies — what the merged guard covers and what it does NOT (G-445).**
+> The round-1 guard `.opencode/scripts/check-navigation-prose-retired.ps1` is **byte-unchanged** by
+> this round (PR-7): 45 tokens across classes `A=3 B=19 C=8 D=8 E=7`, an 8-entry `$EvidenceAllowlist`,
+> seven controls, both text modes, its derived universe and the `docs-validate` CI job. It is
+> **AC1's instrument and is never credited for AC5 again.**
+>
+> - **COVERED** (the guard's zero-tolerance predicate): the S1 navigation engine — the module paths
+>   (`shared/navigation`, `shared/hotkeys`, `shared/navigation/ui`), the 19 engine symbols
+>   (`NavigationEngine`, `NavigationHost`, `NavigationProvider`, `NavigationAnnouncer`,
+>   `validateSurface`, `createNavigationHost`, `registerNavigationHost`, `getNavigationHost`,
+>   `describeContext`, `ContextEnvelope`, `CommandRail`, `NavigationMap`, `ActivityTrail`,
+>   `NavKeycap`, `NAVIGATION_GLOBAL_CHORDS`, `resolveStroke`, `announceNavigation`,
+>   `classifyFocusContext`, `onKeyDown adapter`), the 8 declared-surface phrases, the 8 surface
+>   phrases / DOM hooks, and the seven deleted `*Surface.ts` files.
+> - **NOT COVERED, and deliberately NOT extended**: (1) the S2 command path —
+>   `app_command_intent`, `app_command_intent_take`, `app_command_surfaces`,
+>   `register_app_command_surfaces`, `app-command-intent(-result)`, `CommandSurface`,
+>   `APP_COMMAND_SURFACE_MAX_*`, `companion_manifest`, `wireframe_catalog`; (2) the launcher/rail
+>   testids — `launcher-context`, `launcher-palette-*`, `launcher-action-entry`,
+>   `launcher-confirmation*`, `launcher-response`, `navigation-rail-ask`; (3) the companion offer
+>   shape ("four skills", the four-name offer order); (4) bare-filename / prose-only references
+>   (`wireframe-navigation/ F-N41`, `Run Delete?`, `55 rows`, `maxVerbs 64`, `maxJournalEntries (10)`,
+>   `PALETTE_MAX_RECENTS (5)`, `derivePalette`, `requestLauncherConfirmation`, `__EV.intent`);
+>   (5) a test target renamed out from under its reference (`tests/companion_manifest.rs` →
+>   `tests/companion_offer_static_only.rs`).
+> - **Why a token widening is the WRONG instrument — measured, not argued.** All five guard classes
+>   are ZERO-TOLERANCE: a hit outside the 8-entry allowlist is a FAIL. The plan's API Contracts §4
+>   measured that every candidate token is **already spelled by 41 CORRECT absence-asserting line hits
+>   in NON-allowlisted suites** at the plan's census (`launcher-context` 8, `launcher-palette` 14,
+>   `launcher-action-entry` 5, `launcher-confirmation` 3, `launcher-response` 2,
+>   `navigation-rail-ask` 2, `app_command_intent` 2, `app_command_surfaces` 1, `app-command-intent` 3,
+>   `with_app_control_doom_and_wireframe` 1). **The sweep increases that number** — every PRESENT row
+>   it corrects becomes one more absence assertion (rows 6–9 and 18 of this record enumerate them
+>   post-sweep), which is precisely the point: the corpus of correct absence hits grows as the defect
+>   class shrinks. Adding any of these tokens to a purge class would flag those rows — rows AC5
+>   *wants*, because they prove the subject is gone — and turn the guard permanently RED on a correct
+>   corpus. A narrowing that makes the instrument red on the truth is strictly worse than
+>   the gap it closes. A negation-aware class was rejected too: HTML/English negation ("NO
+>   `launcher-context`", "does not exist", "count 0", "absent", "is gone") cannot be classified by a
+>   substring guard without a fragile heuristic, and a guard that guesses at negation silently
+>   mis-classifies the PRESENT rows it exists to catch (the exact failure mode G-430 forbids).
+>   **The second predicate is the right instrument**: 28 per-SUBJECT literal searches, each read by an
+>   agent that can see the sentence — which reaches bare filenames, prose quantities, offer-set claims
+>   and renamed test targets that no token list can. **A green guard is evidence ONLY for the covered
+>   list.**

@@ -132,10 +132,10 @@ behaviour is wrong.
   canvas) — F-33 stays FAIL on the invariance clause. See E-21.
 - **E-18 unchanged.** A raw `llm-skill-call` reply still needs an in-flight skills generation.
 - **E-19 RESOLVED (offer).** The exact Gherkin sentence now opens the app from closed and drafts
-  `section{preset:'navbar'}` + `text{textStyle:'heading', text:'Reporter'}` +
-  `card{label:'Reporter reports'}` (count 3) via the REAL model path, and the reply names only
-  the performed steps. The live transport now offers the 4-skill registry
-  (`companion_skill_registry()`), so the offer was the whole defect.
+  `section{preset:'navbar'}` + `text{textStyle:'heading', text:'Reporter'}` + `card{label:'Reporter reports'}`
+  (count 3) via the REAL model path, and the reply names only the performed steps. The defect was the
+  offer: four skills were offered with no wireframe listener. The live transport now offers exactly
+  the three static skills from the ZERO-argument `companion_skill_registry()` (`status.rs:691-693`).
 - **[ ] E-20 (new, regression) An element drag pans the view.** `handlePanDragEnd`
   (`WireframeCanvasImpl.tsx:745-752`) is bound to the pan group and does not check
   `event.target === event.currentTarget`; Konva bubbles the element's `dragend` to it, so the
@@ -294,8 +294,9 @@ behaviour is wrong.
       walks back. The app-local history is bounded at `WIREFRAME_HISTORY_LIMIT = 100`
       (`store/wireframeHistory.ts:27`) — record the eviction shape as an observation, not a defect.
 - [ ] **E-44 Companion path after the deletion.** Emit the nested `llm-skill-call` from
-      `regression.md` R-27 with the app closed and open. Does it fail closed with a clean
-      `Invalid` (no window, no mutation, no timeout), or does it hang / mutate / crash? Report the
+      `regression.md` R-27 with the app closed and open. The offer is the three static skills, so
+      the `wireframe` skill is not declared: record whether the emit is inert (no window, no
+      mutation, no reply, no timeout, no crash) — it must never hang, mutate or crash. Report the
       exact result to the Orchestrator for the P6 hand-off.
 
 ## Teardown (run after this suite)
