@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Canonical companion-engine runtime payload for the Fredo installer (Spec #3158). This is the single machine-readable list of payload DLL names: .opencode/scripts/stage-engine-payload.ps1 stages exactly this set and .opencode/scripts/verify-installer-payload.ps1 asserts it inside the produced installer. Hand-authored from the shipped Cargo feature set (dynamic-link, Vulkan-only, mtmd) - never scraped from a build directory.",
+  "core": [
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu.dll",
+    "ggml-vulkan.dll",
+    "llama.dll",
+    "llama-common.dll",
+    "mtmd.dll",
+    "vulkan-1.dll"
+  ],
+  "toolModules": [
+    "llama-batched-bench-impl.dll",
+    "llama-bench-impl.dll",
+    "llama-completion-impl.dll",
+    "llama-fit-params-impl.dll",
+    "llama-perplexity-impl.dll",
+    "llama-quantize-impl.dll"
+  ],
+  "excluded": [
+    "ggml-cuda.dll",
+    "fredo_lib.dll"
+  ],
+  "vulkanLoader": "vulkan-1.dll",
+  "importClosure": {
+    "rootExact": [
+      "llama.dll",
+      "mtmd.dll"
+    ],
+    "rootPrefix": "ggml"
+  }
+}
