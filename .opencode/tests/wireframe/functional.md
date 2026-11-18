@@ -452,21 +452,23 @@
 
 ## R-6 / AC6 — Companion control
 
-> **#3099 SUPERSESSION (G-136 — history preserved, no row or PASS record deleted).** Spec #3099 makes
-> the companion skill a GENERATED projection of this application's TypeScript command surface, so the
-> hand-written catalog (`wireframe_catalog.rs`) and its parity test are gone and FOUR rows below are
-> re-pointed. The authoritative rows for the new contract are `.opencode/tests/companion/`
-> F-144..F-163 / R-70..R-75; the wording below is the superseded form kept for the record.
+> **#3099 SUPERSESSION (G-136 — history preserved, no row or PASS record deleted).** Spec #3099 made
+> the companion skill a GENERATED projection of this application's TypeScript command surface; #3152
+> then deleted that whole command path. The hand-written catalog (`wireframe_catalog.rs`), its parity
+> test and the per-application command relay are all **gone**, and FOUR rows below are re-pointed.
+> The authoritative rows for the shipped contract are `.opencode/tests/companion/` F-144..F-163 /
+> R-70..R-75; the wording below is the superseded form kept for the record.
 >
 > - **Emit shape (all rows below):** `llm-skill-call` now carries
 >   `{skill:"wireframe", arguments:{action:"<id>", arguments:{…}}}` — arguments are NESTED under
 >   `arguments`, and `action` is required by the generated schema. A flat
 >   `{action, app_name}` payload (the #3070 shape) is superseded.
 > - **F-43:** the listing id is the RESERVED `listActions` (not `wireframe.companion.listActions`,
->   which is no longer a command); the reply is composed HOST-SIDE from the published manifest —
->   `Wireframe actions: <id> — <description>; …` — and keeps working with the app closed. The 35-id
->   TS↔Rust parity pin is replaced by ONE shared golden fixture asserted by the TS builder suite and
->   the Rust `tests/companion_manifest.rs` (companion F-159).
+>   which is no longer a command) and keeps working with the app closed. The host-side manifest
+>   composition, the 35-id TS↔Rust parity pin and its `tests/companion_manifest.rs` target are all
+>   **gone** (#3152); the surviving 35-id table is `wireframeActions.test.ts`'s `EXPECTED_IDS`, and
+>   the Rust target that survives is `tests/companion_offer_static_only.rs:147`, which pins the
+>   three static skills byte-identically (companion F-159).
 > - **F-45:** the performed reply is now generic — `Performed in Wireframe: <description>, …`
 >   (supersedes `Started a new wireframe for Reporter: …`); it still names only what was performed
 >   and a stopped `draftApp` still lists only the prior steps.
@@ -474,16 +476,19 @@
 >   Nothing changed.` The undeclared-key rejection now happens in TypeScript (`executeCommand`)
 >   BEFORE `run`, fail-closed, with no window opened (companion F-153..F-155); the Rust validator
 >   still rejects the outer `{action, arguments}` shape.
-> - **F-48:** the relay is the generic `app-command-intent` / `app-command-intent-result` pair with
->   `{requestId, appId, action, arguments}` and the SAME bounded queue (16, oldest-first); the
->   cross-webview take-on-mount guarantee is retained (companion F-150).
+> - **F-48:** **there is no relay.** #3152 deleted the per-application command path, so the
+>   `app-command-intent` / `app-command-intent-result` pair, its `{requestId, appId, action,
+>   arguments}` payload and its bounded queue do **not** exist; a companion `llm-skill-call` is
+>   handled by the application's own listener (companion F-150's take-on-mount guarantee went with
+>   it).
 
 - [ ] **F-43 (R-6.1)** `wireframe.companion.listActions`.
       **Expected:** the reply contains all 35 action ids with a non-empty description each
       (the 25 Slice-1 ids + the 10 `wireframe.arrange.*` ids added by this slice); supported by
       a direct `llm-skill-call` emit
-      `{skill:"wireframe", arguments:{action:"wireframe.companion.listActions"}}`; a TS
-      parity test pins the 35 ids against the Rust catalog source.
+      `{skill:"wireframe", arguments:{action:"wireframe.companion.listActions"}}`; the surviving
+      35-id table is `wireframeActions.test.ts`'s `EXPECTED_IDS` (the Rust catalog source and its
+      `tests/companion_manifest.rs` parity target were deleted in #3152).
       **Edge:** a narrow reply surface (scroll, never truncate the id list); invoked while the
       app is closed.
 - [ ] **F-44a (R-6.2)** Invoke the 9 `wireframe.add.*` actions.
@@ -538,17 +543,25 @@
       from `Save As` + the document; count ≥ 3; the reply names only performed actions.
       **Edge:** the model supplies `app_name:"Reporter"`; app already open (no duplicate
       window/elements); the same sentence twice (record the declared behaviour).
-- [ ] **F-48 (R-6.2 cross-webview)** Intent relay with `new-window` presentation.
-      **Expected:** invoking `wireframe.add.card` before the `app-wireframe` webview mounts
-      yields exactly one card (take-on-mount path) and the reply names the performed action.
-      **Edge:** two emits before mount; window closed between intent and execution; main-window
-      host as the contrast leg.
+- [ ] **F-48 (R-6.2 cross-webview)** No intent relay exists.
+      **Expected:** with Wireframe closed, emitting `llm-skill-call {skill:"wireframe",
+      arguments:{action:"wireframe.add.card"}}` changes nothing — the offer is the three static
+      skills, no listener declares a `wireframe` skill, and the per-application relay with its
+      take-on-mount queue was deleted (#3152), so no window opens, no card appears and no reply is
+      claimed. The app still opens from the launcher and its 35 ids are driven by the pointer
+      strip.
+      **Edge:** two emits while closed; window open at emit time (still inert); main-window host
+      as the contrast leg (nothing to contrast — also inert).
 - [ ] **F-49 (R-6.2 additive registry)** Existing skills unchanged.
-      **Expected:** `open_app`, `close_app`, `doom_mode` still resolve and behave as before
-      with the 4th skill registered (`with_app_control_doom_and_wireframe`, offer order
-      `open_app, close_app, doom_mode, wireframe`); one listener per skill.
-      **Edge:** all four skills in one request body; a wireframe request while doom mode is
-      active.
+      **Expected:** `open_app`, `close_app`, `doom_mode` still resolve and behave as before, and
+      the offer is exactly those three static skills from the ZERO-argument
+      `companion_skill_registry()` (`applications/llm_server/status.rs:691-693`; pinned by
+      `the_turn_offer_is_exactly_the_three_static_skills`, `status.rs:1462`). There is no fourth,
+      generated or application-named skill: Wireframe has no companion skill and driving it is its
+      own pointer strip. `with_app_control_doom_and_wireframe` and the offer order
+      `open_app, close_app, doom_mode, wireframe` do **not** exist. One listener per skill.
+      **Edge:** all three skills in one request body; a Wireframe request while doom mode is
+      active — the strip is pointer-only, so nothing fires.
 
 ## Error / edge rows
 
@@ -1273,11 +1286,13 @@ does, and nowhere do they select a canvas element or align a selection — a tes
   the retired element-key reintroduction risk is covered by `wireframePointerControls.test.tsx`.
 - **F-42** — a bare key with an interactive control focused does nothing at the application level:
   standard widget behaviour only. Record the observed behaviour; do not fail the product.
-- **F-43…F-49** — **DEFERRED to P6 (recorded, Q-1).** The companion draft path is unchanged from
-  that deferral: a `llm-skill-call` for the retired command surface resolves to a clean `Invalid`
-  (no window opened, no element added, no timeout, no crash) and `wireframeDraft.ts`'s direct
-  draft operations still work as unit tests. Anything OTHER than a clean fail-closed is a FAIL. Do
-  not re-baseline these to "PASS by removal".
+- **F-43…F-49** — **the companion command path was deleted (#3152), not deferred.** The offer is
+  the three static skills (`open_app`, `close_app`, `doom_mode`) from the zero-argument
+  `companion_skill_registry()`, so no per-application skill and no relay exist: a `wireframe`
+  `llm-skill-call` is inert (no window opened, no element added, no reply claimed, no timeout, no
+  crash), and `wireframeDraft.ts`'s draft operations survive only as internal Wireframe action
+  code with no companion path. Anything that opens a window, mutates the document or crashes is a
+  FAIL. Do not re-baseline these to "PASS by removal".
 - **F-50/F-51/F-52** — unchanged except the open invoker is the `Open` row.
 - **F-53** — unchanged except the zoom invokers.
 - **F-54/F-55/F-56** — unchanged (console, CI parity, bundle).

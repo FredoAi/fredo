@@ -949,47 +949,48 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
 
 ---
 
-## #3099 extension — the published-surface slice must not change the shipped companion behaviour (G-136)
+## #3099 extension — the shipped companion offer must not drift (G-136)
 
-> Issue #3099 turns the per-application companion skill into a projection of the TS command surface
-> (published registry), deletes `wireframe_catalog.rs` + `companionCatalog.parity.test.ts`, and
-> replaces the wireframe-only relay/hooks with one generic relay + one generic hook pair. The SHIPPED
-> companion behaviour, the presence lifecycle, the reply surface and the `open_app`/`close_app`/
-> `doom_mode` skills are NON-GOALS. R-1..R-69 remain in force. Run alongside
-> `.opencode/tests/wireframe/` (supersession block added for #3099) and
-> `.opencode/tests/companion-audio-skill-parity/`. **Verification policy: live.**
-> **BASELINE (ST-1 step 0, on the untouched tip — capture BEFORE any #3099 edit lands):** save the
-> verbatim offer order + declarations + `validate` error strings from `infrastructure/companion/skills.rs:536-618`
-> and `applications/llm_server/status.rs:1345-1437` into `.opencode/tmp/3099/baseline/pins.txt`, and
-> record both suites green.
+> Issue #3099 turned the per-application companion skill into a projection of the TS command surface
+> (published registry) and replaced the wireframe-only relay with one generic relay.
+> **Spec #3152 deleted that whole path.** The SHIPPED companion behaviour, the presence lifecycle, the
+> reply surface and the `open_app`/`close_app`/`doom_mode` skills are NON-GOALS and are what this block
+> now protects. R-1..R-69 remain in force. Run alongside `.opencode/tests/wireframe/` (supersession
+> block added for #3099) and `.opencode/tests/companion-audio-skill-parity/`.
+> **Verification policy: live.**
+> **The shipped offer is the regression baseline:** `companion_skill_registry()` is ZERO-argument and
+> returns exactly `open_app`, `close_app`, `doom_mode` (`status.rs:691`), pinned by
+> `the_turn_offer_is_exactly_the_three_static_skills` (`status.rs:1462`). The retired published-surface
+> additions are gone, so "zero drift" now means the three static skills are byte-identical and nothing
+> else is offered.
 
 ## R-70 — `open_app` / `close_app` / `doom_mode`: offer + validation zero drift
 
-- [ ] R-70: Run the durable pin **`static_skills_are_byte_identical_to_the_pre_change_baseline`**
-      (`tests/companion_manifest.rs`, asserting the first three rendered tools deep-equal
-      `fixture.staticOffer` + re-running the `validate` matrix), diff the declarations/validator
-      (`git diff main..HEAD -- apps/tauri/src-tauri/src/infrastructure/companion/skills.rs`), read the
-      rewritten pins, then dispatch each of the three skills live (valid + invalid).
-  **Expected:** the durable pin is the PRIMARY proof (it does not depend on reading a diff); the diff
-      shows ONLY the deleted `with_app_control_doom_and_wireframe` + its wireframe imports, with
-      `OPEN_APP_*` / `CLOSE_APP_*` / `DOOM_MODE_*` and `validate` byte-identical; offer order still
-      `open_app, close_app, doom_mode[, one per published surface]`; `{app:string}` required for
-      open/close, `{action:string}` for `doom_mode` (`enter`/`exit` domain enforced frontend-side);
-      the same validation errors (`missing required argument 'app'`, `unexpected argument 'force'`,
+- [ ] R-70: Run the durable pin **`the_turn_offer_is_exactly_the_three_static_skills`**
+      (`status.rs:1462` — it asserts the accessor is zero-argument and the offer is exactly the three
+      names in order), diff the declarations/validator
+      (`git diff main..HEAD -- apps/tauri/src-tauri/src/`), then dispatch each of the three skills live
+      (valid + invalid).
+  **Expected:** the durable pin is the PRIMARY proof (it does not depend on reading a diff); no
+      per-application skill is offered or constructed anywhere; offer order is exactly
+      `open_app, close_app, doom_mode`; `{app:string}` required for open/close, `{action:string}` for
+      `doom_mode` (`enter`/`exit` domain enforced frontend-side); the same validation errors
+      (`missing required argument 'app'`, `unexpected argument 'force'`,
       `argument 'action' must be a string`); live dispatch opens/closes/enters-exits exactly as before.
-  - **Edge:** a tree with NO published surface (three-skill offer); an audio turn (R-71); a publish that
-    lands between two turns must not perturb the three static skills; a mutated `fixture.staticOffer`
-    (drop/reorder/rename) MUST fail the pin.
+  - **Edge:** a mutated static-skill declaration (drop/reorder/rename) MUST fail the pin; an audio turn
+    (R-71); an application opening or closing must not perturb the three static skills.
 
 ## R-71 — the ONE offer accessor still serves the typed AND the audio path
 
-- [ ] R-71: Read `companion_skill_registry(app)` call sites (`status.rs:726/795`, `skills.rs:427`,
-      `chat.rs:465`); run the rewritten `tests/voice_invariants.rs` scan.
-  **Expected:** every live offer site resolves the ONE accessor; the audio body's `tools` deep-equals
-      the typed body's `tools`; the rewritten scan is POSITIVE-CONTROLLED (it must SEE the builder /
-      accessor), so a scan matching nothing cannot pass; no second `SkillRegistry::with_*` construction
-      of a companion offer exists in production.
-  - **Edge:** a zero-surface registry; a publish between the typed and the audio request of one turn.
+- [ ] R-71: Read the `companion_skill_registry()` call sites; run the rewritten
+      `tests/voice_invariants.rs` scan.
+  **Expected:** every live offer site resolves the ONE **zero-argument** accessor
+      `companion_skill_registry()` (`status.rs:691`) — a `companion_skill_registry(app)` arity is a
+      FAIL; the audio body's `tools` deep-equals the typed body's `tools`; the rewritten scan is
+      POSITIVE-CONTROLLED (it must SEE the builder / accessor), so a scan matching nothing cannot pass;
+      no second `SkillRegistry::with_*` construction of a companion offer exists in production.
+  - **Edge:** no application registered at all (identical three-name offer); a turn between the typed
+    and the audio request of one exchange (identical `tools`).
 
 ## R-72 — the duplicate catalog and its owners are GONE (no second list)
 
@@ -998,20 +999,19 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
       anywhere; `companionCatalog.parity.test.ts`, `useWireframeSkill.ts` (+ test),
       `useWireframeIntent.ts`, `actions/wireframeCompanion.ts`, `actions/wireframeReply.ts` (+ test)
       absent with no dangling import (`pnpm build` + `cargo check` prove it); NO hand-copied action-id
-      list outside `wireframeActions.ts` and the ONE golden fixture; `with_app_control_doom_and_wireframe`
-      absent.
+      list outside `wireframeActions.ts`; `with_app_control_doom_and_wireframe` absent; the published
+      registry, its two IPC commands and the intent relay are absent too.
   - **Edge:** a comment-only mention is acceptable; a live code path is not. A green `test:run` that
     still EXECUTES one of the deleted suites is a FAIL.
 
-## R-73 — one bounded relay: 16 / oldest-first / per-`appId` take / no cross-app drain
+## R-73 — there is no relay: the intent commands do not exist
 
-- [ ] R-73: Push 19 intents for `wireframe` with no consumer, then `app_command_intent_take('wireframe')`;
-      separately push 1 for `wireframe` + 1 for `mission-monitor` and take each.
-  **Expected:** 16 returned, first = the 4th pushed, last = the 19th (oldest evicted); each `take`
-      drains ONLY its `appId` and preserves the remainder in order; no intent is dropped silently
-      (every drained intent is answered with a result); nothing executes on the host.
-  - **Edge:** 100 pushes; an intent for an app with no hook (queues forever, bounded); the Wireframe
-    window closed then opened (drain-on-mount, exactly once).
+- [ ] R-73: `invoke('app_command_intent', …)` and `invoke('app_command_intent_take', …)` from the
+      running webview; separately search `apps/tauri/src-tauri/src/` for both names.
+  **Expected:** both invokes fail as unknown commands and the source search returns ZERO matches — there
+      is no intent command, no `_take` command, no queue and no per-`appId` drain. Nothing executes, so
+      there is no drop, no duplicate and no cross-app leakage to test. Record the literal error text.
+  - **Edge:** with the Wireframe window closed and open (identical failure).
 
 ## R-74 — build gates, no new dependency, no `#[allow]`
 
@@ -1022,18 +1022,18 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
       `package.json` / `apps/ui/package.json` / `pnpm-lock.yaml` / `Cargo.toml` / `Cargo.lock`;
       `cargo nextest` absent locally ⇒ `cargo test --locked` with the substitution DISCLOSED and the
       env `Down` (target-binary lock).
-  - **Edge:** the golden fixture is read by BOTH suites from ONE path (F-159).
+  - **Edge:** the retired golden fixture is absent from BOTH suites (F-159); a re-introduced fixture is
+    a finding.
 
 ## R-75 — the Wireframe app itself is untouched
 
-- [ ] R-75: Open Wireframe and exercise: the 38 command ids, the 24-key root keymap
-      (`SELECT_KEYMAP_ORDER`), the four modes, `draftApp`'s deterministic script + `desktop` page
-      preset, and `wireframe.companion.listActions`'s retirement (it is NOT a command; the reserved
-      `listActions` answers from the manifest).
-  **Expected:** every command id and every key binding is unchanged; `draftApp` still performs
-      document.new → section(navbar) → heading text → card label; the list answer now comes from the
-      PUBLISHED registry read (`app_command_surfaces()`, host-side, no window) instead of the static
-      table; the Wireframe document store, file commands and canvas are byte/behaviour-identical.
-  - **Edge:** a command with a declared required arg reached from the TOOLBAR (not the companion) still
-      behaves as before (`fill` opens its prompt from the toolbar/hotkey); `wireframe.mode.draw.rect`
-      still arms the draw operator.
+- [ ] R-75: Open Wireframe and exercise: the pointer control strip (23 reachable controls), the
+      document store's bounded history (`WIREFRAME_HISTORY_LIMIT = 100`), the file commands and the
+      canvas.
+  **Expected:** every control and every pointer interaction is unchanged; undo/redo still reverts
+      exactly one entry at a time and is capped at 100; `wireframe.companion.draftApp` remains an
+      internal action id driven only by the app's own path (no companion turn can select it — there is
+      no `wireframe` skill); the `listActions` reply is gone (it was part of the published-surface
+      path); the Wireframe document store, file commands and canvas are byte/behaviour-identical.
+  - **Edge:** a command with a declared required arg reached from its control (not the companion) still
+    behaves as before; `wireframe.mode.draw.rect` still arms the draw operator.

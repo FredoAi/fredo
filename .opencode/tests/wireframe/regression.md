@@ -36,13 +36,13 @@
       query filter, arrow-key nav (clamp, no wrap), Enter/Space open and every other tile's
       `aria-label` are unchanged.
       Cross-ref `.opencode/tests/launcher/` R-33/R-36/R-7 and `.opencode/tests/app-icon/`.
-- [ ] **R-5 (Companion skills).** `open_app`, `close_app`, `doom_mode` behave identically with
-      the wireframe skill registered: the registry is additive
-      (`with_app_control_doom_and_wireframe`), the offer order is
-      `open_app, close_app, doom_mode, wireframe`, exactly one `llm-skill-call` listener per
-      skill, and the existing replies/copy are unchanged. The wireframe catalog has no dead
-      id: all 35 declared actions are invocable through the same `llm-skill-call` path (F-43,
-      F-44a–F-44c); a declared-but-unreachable id is a FAIL.
+- [ ] **R-5 (Companion skills).** `open_app`, `close_app`, `doom_mode` behave identically, and that
+      is the WHOLE offer: the ZERO-argument `companion_skill_registry()` (`status.rs:691-693`) returns
+      exactly those three static skills in that order, pinned by
+      `the_turn_offer_is_exactly_the_three_static_skills` (`status.rs:1462`) and byte-compared by
+      `tests/companion_offer_static_only.rs:147`. There is no wireframe skill and no
+      `with_app_control_doom_and_wireframe` / `... doom_mode, wireframe` order; one listener per
+      skill; the 35 catalog ids run through the pointer strip and the app's own listener.
       Cross-ref `.opencode/tests/companion/` R-50..R-52 and `.opencode/tests/doom-mode/`.
 - [ ] **R-6 (theme contract).** No hardcoded hex/`rgba(`/`hsla(` and no `var(--x)NN`
       alpha-append enters the new files; `allowlist.ts` gains no entry; Konva colours resolve
@@ -370,13 +370,13 @@
       Tauri capability/plugin; no `global-shortcut`; no persisted settings key; `Cargo.lock`
       unchanged.
 
-- [x] **R-27 (companion path fails closed — P6 deferral, never a silent removal).** With
-      Wireframe closed, emit `llm-skill-call {skill:"wireframe",
-      arguments:{action:"wireframe.add.card", arguments:{}}}`
-      (`#3099` nested shape). **Expected:** the command-intent path reports a clean `Invalid`
-      (no window opens, no element appears, no timeout, no crash) and the app still opens from
-      the launcher. `wireframeDraft.ts`'s direct draft operations still work in the unit suite.
-      **Edge:** an unknown id; an emit while the app is open (still Invalid, nothing changes).
+- [ ] **R-27 (no wireframe skill — an emit is inert, never a silent removal).** With Wireframe
+      closed, emit `llm-skill-call {skill:"wireframe", arguments:{action:"wireframe.add.card"}}`.
+      **Expected:** nothing happens — the offer is the three static skills
+      (`open_app`, `close_app`, `doom_mode`) and every shipped listener ignores a skill it does not
+      declare, so no window opens, no element appears, no reply is claimed, no timeout and no crash
+      occurs; the app still opens from the launcher and its 35 ids run through the pointer strip.
+      **Edge:** an unknown id; an emit while the app is open (still inert, nothing changes).
 
 ---
 
@@ -397,4 +397,4 @@ history (G-125), and the strip-based wording in each row is the current expectat
 | R-24 | PASS | The File menu's `New` row on a dirty document opened `wireframe-new-document-dialog` with copy `Discard unsaved changes? / Starting a new wireframe discards the current unsaved document.` and `-cancel` / `-discard`; focus landed on Cancel; Cancel left the document (count 6) and `dirty=true` intact. Owner component: `components/WireframeNewDocumentDialog.tsx`. |
 | R-25 | PASS | Guides hooks intact; one commit per gesture; console clean (#523); canvas lazy chunk present in `dist`; the canvas reads a derived view and never the history container (50 appends do not re-render). |
 | R-26 | PASS | `git diff --stat origin/main HEAD -- apps/ui/package.json pnpm-lock.yaml apps/tauri/src-tauri/Cargo.lock` → empty. |
-| R-27 | PASS (unit re-baseline only; P6 pre-authorized) | `shared/companion/__tests__/manifest.test.ts` green — the retired 39-command surface is asserted **not** republished; `WireframeFeature` declares no legacy command-surface opt-in (diff). The live `llm-skill-call` emit leg was **not** driven this round — out of scope by plan Q-1 (P6), recorded as pre-authorized. |
+| R-27 | PASS (unit re-baseline only; P6 pre-authorized) | `shared/companion/__tests__/manifest.test.ts` green — the retired 39-command surface is asserted **not** republished; `WireframeFeature` declares no legacy command-surface opt-in (diff). The live `llm-skill-call` emit leg was **not** driven this round — out of scope by plan Q-1 (P6), recorded as pre-authorized. *(Historical record, G-125 — the PASS stands for that round. Its cited file `shared/companion/__tests__/manifest.test.ts` no longer exists: it was deleted in #3159 with the command-surface model, and the surviving Rust pin is `apps/tauri/src-tauri/tests/companion_offer_static_only.rs:147`. Current expectation: R-27 above.)* |

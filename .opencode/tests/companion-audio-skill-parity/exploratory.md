@@ -8,20 +8,19 @@
 
 - [ ] Does the audio request body actually carry `tools` on the wire? Capture the outbound request and compare
       its `tools` array byte-for-byte with the typed body's — is the ONLY difference the last message's
-      `input_audio` part (`chat.rs:293-307`)?
+      `input_audio` part? Both should carry the three static skills.
 
-- [ ] What happens when the model selects `wireframe` on an audio turn but the arguments are malformed? The
-      fail-closed skill validator (`infrastructure/companion/skills.rs:304`) should refuse. **Non-AC** unless a
-      lever is named.
+- [ ] What happens when a turn selects `open_app` with malformed arguments on an audio turn? The fail-closed
+      skill validator should refuse and no window should open. **Non-AC** unless a lever is named.
 
-- [ ] Drive `llm_chat_with_audio` with an EMPTY `audioBase64` — the suppression refusal
-      (`commands.rs:827-834` / `status.rs:828-833`) should fire unchanged. Record the exact error.
+- [ ] Drive `llm_chat_with_audio` with an EMPTY `audioBase64` — the suppression refusal should fire
+      unchanged. Record the exact error.
 
-- [ ] Drive the SHIPPED dictation gesture with the L2 feed and a preceding typed wireframe request in the SAME
-      session — does the audio turn inherit the four-skill offer (it should, via `llm_chat_with_status`)?
+- [ ] Drive the SHIPPED dictation gesture with the L2 feed and a preceding typed request in the SAME
+      session — does the audio turn inherit the SAME three-skill offer (it should, from the one accessor)?
 
-- [ ] Does `llm_chat_with_skills` (`skills.rs:433`, no production caller) still behave identically after ST-2
-      collapses its constructor? Drive it via the bridge and compare the offer to the typed path.
+- [ ] Does `llm_chat_with_skills` (no production caller) still behave identically, offering the same three
+      static skills? Drive it via the bridge and compare the offer to the typed path.
 
 - [ ] Probe the `stt_start` / `stt_stop` lifecycle during a fed turn for any `llm-status` leak on the legacy
       command (the legacy path should emit none).

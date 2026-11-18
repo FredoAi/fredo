@@ -2729,291 +2729,193 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 
 ---
 
-## #3099 extension — the companion consumes the published command surfaces (one source of truth)
+## #3099 extension — the companion offer is the three static skills (published command surfaces RETIRED)
 
-> Spec #3099 makes the companion's per-application skill a GENERATED projection of the application's
-> TypeScript command surface (published to the Rust registry at boot/registration), retires the
-> hand-maintained `wireframe_catalog.rs` + its parity test, and replaces the wireframe-only relay and
-> hooks with one generic relay + one generic hook pair. Rows F-144..F-163 map onto the QA Plan
-> (Q-1..Q-29) in `.opencode/tmp/3099/triage.md` `## QA Expert`.
+> Spec #3099 built a per-application skill as a GENERATED projection of the application's TypeScript
+> command surface, published to a Rust registry and relayed back as an intent. **Spec #3152 deleted that
+> whole path**: the registry, the two IPC commands, the intent relay and the generated per-surface skill
+> offer are gone. **What ships:** the companion turn is offered exactly the three static skills
+> `open_app` / `close_app` / `doom_mode` from the ZERO-ARGUMENT `companion_skill_registry()`
+> (`applications/llm_server/status.rs:691`), each acting through its own shipped handler — nothing is
+> generated, no application contributes a skill, and there is no relay.
+> Rows F-144..F-163 are retained as the **regression record** for that retirement: they assert the
+> deleted path is absent and that the shipped offer still settles exactly once.
 > **Verification policy: live** — AC1/AC2/AC4 are provable only on a running companion. Every live row
-> records which path it used: **PATH-A** (real managed `llama-server` turn) or **FALLBACK-F**
+> records which path it used: **PATH-A** (a real in-process model turn) or **FALLBACK-F**
 > (`tauri_ipc_emit_event` on `llm-skill-call`) with the literal disclosure `model-turn not exercised`.
 > A static-only PASS is a FALSE PASS; the mandatory live receipt is F-162.
-> **Driving levers (no new seam):** `register_app_command_surfaces` / **`app_command_surfaces`**
-> (`APP_COMMAND_SURFACES_COMMAND` — the READ-ONLY registry view every row quotes) /
-> `app_command_intent*` via `tauri_webview_execute_js` → `window.__TAURI__.core.invoke(...)` (the MCP
-> bridge's `tauri_ipc_execute_command` supports only a subset — "Unsupported Tauri command" is NOT a
-> FAIL); `tauri_ipc_emit_event` for `llm-skill-call`; `location.reload()` to restore the real
-> published set (a re-publish UPSERTS the same `appId`, it never clears).
-> **Receipts per row:** `window.__EV` ({skill, done, err, intent, result}), the
-> `[data-testid="wireframe-root"]` dataset, `[data-testid="fredo-reply-surface"]` text,
-> `tauri_manage_window(action="list")`, one screenshot, `tauri_read_logs(source="console")`.
-> **Prerequisites:** spec-branch isolated env Up, companion ON at the seat, managed `llama-server`
-> healthy for PATH-A, Wireframe window CLOSED for F-148/F-150/F-152/F-157.
+> **Driving levers (no new seam):** `tauri_ipc_emit_event` on **`llm-skill-call`** with
+> `{skill:"open_app"|"close_app"|"doom_mode", arguments:{…}}` — the ONE shipped skill channel, which
+> now carries only those three names; the launcher command input for a real turn;
+> `location.reload()` to reset transient state. **There is no `register_app_command_surfaces` /
+> `app_command_surfaces` / `app_command_intent` lever to drive — those commands do not exist, and a row
+> that reaches for one is asserting a deleted subject.**
+> **Receipts per row:** the `llm-skill-call` payload and the settle it produces, the
+> `[data-testid="fredo-reply-surface"]` text, the companion `data-state` sequence,
+> `tauri_read_logs(source="console")`, and one screenshot.
+> **Prerequisites:** spec-branch isolated env Up, companion ON at the seat, the in-process engine
+> healthy for PATH-A.
 
-## F-144 (Q-1 / R-1a + R-1c) — the manifest is a pure projection of the TS command surface
+## F-144 (Q-1 / R-1a + R-1c, **static**) — the generated command-surface manifest path is GONE
 
-- [ ] F-144: Run `apps/ui/src/shared/companion/__tests__/manifest.test.ts`; read
-      `buildCompanionManifest` + `collectCompanionManifest` + `companionActionIds`.
-  **Expected:** one surface per registered navigation declaration whose `companion` block is
-      declared (P8 deletes the legacy command-surface projection),
-      **de-duplicated by `appId` FIRST-WINS** (`registerApplication` can push one feature twice; the
-      builder collapses it — the host still rejects a duplicate `appId` inside ONE publish, F-161);
-      `commands` = the surface's command ids **in declaration order**; `appName = feature.name`,
-      `skillName = feature.id`; an application with no `companion` block contributes NOTHING.
-      **R-1c:** a command whose `description` is ABSENT or BLANK is NOT published, and `title` is
-      never promoted to a capability sentence; for the shipped Wireframe surface
-      `manifest.commands.length === wireframeCommandSurface.commands.length` (**ZERO exclusions** —
-      a missing sentence fails CI instead of silently vanishing). `companionActionIds(surface)` =
-      published ids then `listActions` (reserved, never a command); Wireframe is the only published
-      surface (`grep -rn 'companion:' apps/ui/src/applications` → wireframe only). No DOM/IPC/clock
-      access in the builder (pure).
-  - **Edge:** a zero-command surface (skipped by the Rust builder → no generated skill); a feature
-      registered twice (ONE surface, first registration wins); a command with `description:"   "` or
-      no `description` (excluded, and the zero-exclusion count assertion must then FAIL for the
-      shipped surface — that is the point); a blank SURFACE `description` must not be emitted (the
-      host would `Err` the publish — record the resolved rule).
-  - **Data:** `wireframeCommandSurface.ts:356-359` (38 command ids on the tip — 33 `toolbar:true`
-      table rows + 5 surface commands; ST-3 promotes `draftApp` in, so the published count after the
-      slice is manifest-derived — never hard-code it), `applicationRegistry.ts:24-30`.
+- [ ] F-144: Search `apps/ui/src/shared/companion/` and `apps/tauri/src-tauri/src/` for the retired
+      builder and wire names; `Test-Path` each retired module.
+  **Expected:** `buildCompanionManifest`, `collectCompanionManifest`, `companionActionIds` and
+      `shared/companion/manifest.ts` do not exist; `apps/ui/src/shared/companion/__tests__/` holds
+      exactly `composerBridge.test.ts`, `composerTarget.test.ts`, `grounding.test.ts`,
+      `groundingRegistrars.test.tsx` — **no `manifest.test.ts`**. The shipped per-application seam is
+      `registerCompanionGrounding` / `readCompanionGrounding(appId)` (`shared/companion/grounding.ts`),
+      which carries a selection/dirty projection and **no command catalogue**. Zero hits for
+      `companion:` manifest blocks in `apps/ui/src/applications/**`.
+  - **Edge:** a token appearing in a comment or a doc string is not a use — confirm by exact-path read;
+    the retired `wireframe_catalog.rs` and its parity test are absent too.
+  - **Receipt:** the scan output + the exact-path absences.
 
-## F-145 (Q-2 / R-1b) — a publish is offered on the NEXT turn, no restart (live)
+## F-145 (Q-2 / R-1b) — a companion skill turn is offered ONLY the three static skills (live)
 
-- [ ] F-145: Companion ON. Install the `window.__EV` listener. Publish a probe Wireframe surface
-      (`commands:[{id:"wireframe.qa.probe.<nonce>",label:"QA probe <nonce>",description:"Temporary QA
-      probe",args:[]}]` — a NON-BLANK description is mandatory, R-1c + the host rule — surface
-      description directing the model to it) via
-      `__TAURI__.core.invoke('register_app_command_surfaces',{manifest})`, then confirm
-      `__TAURI__.core.invoke('app_command_surfaces')` returns it. Read the env manifest PID.
-      Then (PATH-A) send from `[data-testid="launcher-command-input"]`:
-      `Use the wireframe tool with action "wireframe.qa.probe.<nonce>".` — or (FALLBACK-F) emit
-      `{skill:"wireframe",arguments:{action:"wireframe.qa.probe.<nonce>",arguments:{}}}`.
-  **Expected (PATH-A):** **no TS edit and no reload were needed** — the dispatcher validates against
-      the PUBLISHED registry read, so the next turn's `llm-skill-call` carries `skill:"wireframe"` +
-      `action:"wireframe.qa.probe.<nonce>"` (a value the model cannot invent) and the hook does NOT
-      reject it as unknown; `__EV.done` delta = 1; the env-manifest `processes[].pid` is UNCHANGED (no
-      restart) and no source file changed. **(FALLBACK-F):** the same payload path is driven by the
-      emit; the row MUST state `model-turn not exercised` (offer-shape half covered by F-144 + the
-      Rust offer assertion in F-160).
-  - **Edge:** the model refuses to call it ⇒ re-prompt ONCE with the exact sentence and record the raw
-      transcript (a refusal is a FAIL of AC1's offer half, not "model non-determinism"); a
-      zero-command probe surface must produce NO generated skill AND the id must be unknown to the
-      dispatcher.
+- [ ] F-145: Companion ON. Install the event listener. Read the offer the turn carries (PATH-A: ask one
+      real question and capture the request's `tools`; FALLBACK-F: emit
+      `{skill:"open_app",arguments:{app:"Wireframe"}}`).
+  **Expected (PATH-A):** the turn's `tools` array contains EXACTLY `open_app`, `close_app`,
+      `doom_mode` in that order — no fourth name, no application-named skill, nothing generated. The
+      offer is rebuilt FRESH each turn by the zero-argument `companion_skill_registry()`; no restart
+      and no reload is needed because nothing is published. **(FALLBACK-F):** the same three-name
+      contract is asserted on the Rust side by the shipped pin
+      `the_turn_offer_is_exactly_the_three_static_skills` (`status.rs:1462`), and the row MUST state
+      `model-turn not exercised`.
+  - **Edge:** an application opening or closing mid-session must NOT change the offer (there is no
+    publishing path to re-read); a second turn offers the identical three names byte-for-byte.
 
-## F-146 (Q-3 / R-1b + R-5b) — the offer is re-read per turn; a re-publish UPSERTS the app's entry
+## F-146 (Q-3 / R-1b + R-5b) — no publish/upsert path exists to re-read
 
-- [ ] F-146: Repeat F-145 with `wireframe.qa.probe.<nonce2>` — no restart, no reload, no code change.
-  **Expected:** the second turn emits `<nonce2>`; the SAME app's re-publish **upserts its entry in
-      place** (insertion order kept, every other `appId` untouched), so `<nonce>` is GONE and
-      `<nonce2>` is offered — `invoke('app_command_surfaces')` shows exactly ONE `wireframe` surface
-      carrying only `<nonce2>`. Two distinct nonces in one un-restarted session prove the offer is
-      assembled per turn, never cached at boot (`run_tools_attempt` → `companion_skill_registry(app)`).
-  - **Edge:** publish while a turn is in flight (the in-flight turn keeps the offer it started with —
-      record which one the model saw); a publish that also touches another `appId` (that entry must
-      stay byte-identical).
+- [ ] F-146: Attempt `__TAURI__.core.invoke('register_app_command_surfaces', {manifest:{…}})` and
+      `invoke('app_command_surfaces')` in the running webview.
+  **Expected:** both calls fail as unknown commands — the IPC surface does not exist, so there is no
+      publish, no upsert and no read. The companion offer is therefore identical on every turn for the
+      life of the session; the absence of a re-publish path (not a cached snapshot) is what makes that
+      true. Record the literal error text for each call.
+  - **Edge:** a same-app second turn (identical three-name offer); a turn taken while an application
+    window opens or closes (offer unchanged).
 
-## F-147 (Q-4 / R-1) — literal "add a command to the TS surface" leg (opportunistic)
+## F-147 (Q-4 / R-1) — **REMOVED**: the "add a command to the TS surface" leg has no surface
 
-- [ ] F-147: Only if the tester may write `apps/ui/**`: add
-      `{id:'wireframe.qa.probe.<nonce>', title:'QA probe', description:'Temporary QA probe', args:[],
-      run: () => runWireframeAction('wireframe.add.card')}`
-      to `wireframeCommandSurface.ts` (the `description` is MANDATORY — R-1c: a blank/absent one is
-      excluded from the manifest and the probe would never be offered), let the module reload, then
-      F-145's prompt.
-  **Expected:** the id is offered AND the command performs (`data-wireframe-element-count` +1,
-      `data-wireframe-stacking` gains one id), the reply names it, `git diff --name-only --
-      apps/tauri/src-tauri` is EMPTY (zero Rust edits), same app PID (no restart). Revert the file
-      afterwards (`git checkout -- …`) and confirm a clean `git status --short`.
-  - **Edge:** sandbox denies `apps/ui/**` ⇒ record `TS-surface edit leg not drivable (sandbox)` and
-      rely on F-144 (builder) + F-145 (publish→offer→turn). Never mark AC1 PASS from F-144 alone.
+> **REMOVED (Spec #3153 round 2).** F-147 added a command to `wireframeCommandSurface.ts` and asserted
+> it was offered on the next turn. That file and the whole published-command path were deleted in
+> #3152; there is no surface to extend and no offer to observe. The surviving requirement — a turn is
+> offered exactly the three static skills — is carried by F-145 and the shipped Rust pin.
 
-## F-148 (Q-6 / R-2) — closed app + declared arguments opens, performs once, replies
+## F-148 (Q-6 / R-2) — **REMOVED**: no declared-argument command path exists
 
-- [ ] F-148: Wireframe CLOSED. PATH-A prompt: `Create a wireframe for the Reporter app; the summary
-      is "visualize reports".` (or FALLBACK-F `{action:"wireframe.companion.draftApp",
-      arguments:{app_name:"Reporter",summary:"visualize reports"}}`).
-  **Expected:** exactly one `app-wireframe` window (no duplicate); `[data-testid="wireframe-root"]`
-      `data-wireframe-element-count="4"` (document.new → section/navbar → heading text `Reporter` →
-      card labeled `…reports`); `document.body` has NO `data-fredo-command-prompt` (no human prompt);
-      the reply is **VERBATIM** `` `Performed in Wireframe: <descriptions joined by ", ">.` `` —
-      comma-joined DESCRIPTIONS (never ids), ASCII quotes, TERMINAL PERIOD (UI/UX binding) — pushed
-      with `kind: 'success'` (happy beat); `__EV.done` delta = 1; console clean.
-  - **Edge:** app already open (no second window, no duplicate elements); `summary` omitted; the same
-      request twice in two turns (8 elements total — never 8 from ONE turn); a failing step stops the
-      script and the reply names only prior steps (still one sentence, one period).
+> **REMOVED (Spec #3153 round 2).** F-148 drove `wireframe.companion.draftApp` through the deleted
+> per-application skill and asserted a four-element draft. No application skill is offered any more, so
+> the row has no lever. `wireframe.companion.draftApp` still exists as an internal Wireframe action id
+> (`applications/wireframe/actions/wireframeActions.ts`) driven by the app's own pointer controls, but
+> **no companion turn can select it**. Its command-path assertion is retired with the relay.
 
-## F-149 (Q-7 / R-2) — exactly once with explicit arguments (geometry proof)
+## F-149 (Q-7 / R-2) — **REMOVED**: no exactly-once relay execution to prove
 
-- [ ] F-149: Wireframe CLOSED. Emit/prompt `action:"wireframe.element.create"` with
-      `arguments:{shape:"rect",x:120,y:140,width:300,height:180}`.
-  **Expected:** `data-wireframe-element-count` 0→**1** (2 would prove a double execute);
-      `data-wireframe-selection-type="shape"`, `-selection-shape="rect"`,
-      `-selection-geometry="120,140,300,180"` (`formatGeometry` = `x,y,w,h` 1dp,
-      `model/geometry.ts:67-74`); the reply names the action once.
-  - **Edge:** below-minimum rect (`width:2`) ⇒ `run` false ⇒ `noop` reply, count unchanged; a second
-      turn creates a SECOND element (per-turn execution, not per-session de-dup).
+> **REMOVED (Spec #3153 round 2).** F-149 proved that a relayed `wireframe.element.create` executed
+> exactly once by reading `data-wireframe-element-count`. With no relay there is no exactly-once
+> obligation to assert. The surviving behavioural equivalent — a pointer `Delete`/insert applies once
+> with exactly one history entry — is covered by `launcher` F-141 and F-145.
 
-## F-150 (Q-8 / R-2a) — intent broadcast before the listener is queued and drained once
+## F-150 (Q-8 / R-2a) — the intent queue is GONE (no `app_command_intent` / `_take`)
 
-- [ ] F-150: Wireframe CLOSED. `invoke('app_command_intent',{requestId:'qa-f150',appId:'wireframe',
-      action:'wireframe.add.card',arguments:{}})`; then `invoke('app_command_intent_take',
-      {appId:'wireframe'})` WITHOUT opening the app; then open Wireframe normally.
-  **Expected:** `take` returns exactly `[qa-f150]` and a second `take` returns `[]` (host queue is
-      authoritative); after the editor mounts the card exists ONCE (`element-count` +1, never +2 — the
-      module-scoped handled-id ledger keeps it exactly-once).
-  - **Edge:** two intents before mount (both execute, in order); `take` for another `appId` must not
-      drain wireframe's; the window closed between intent and drain.
+- [ ] F-150: `invoke('app_command_intent', {requestId:'qa-f150', appId:'wireframe',
+      action:'wireframe.add.card', arguments:{}})` then `invoke('app_command_intent_take',
+      {appId:'wireframe'})`.
+  **Expected:** both calls fail as unknown commands — there is no intent command, no `_take` command
+      and no host queue, so no intent can be queued, drained or replayed. Nothing opens and no element
+      is created. Record the literal error text for each call.
+  - **Edge:** the same calls with the Wireframe window closed and open (identical failure).
 
-## F-151 (Q-9 / R-2b) — no result within 10 s settles exactly one failure reply
+## F-151 (Q-9 / R-2b) — **REMOVED**: no synthetic-surface timeout to observe
 
-- [ ] F-151: Publish a synthetic surface for the real feature `mission-monitor` (no intent hook
-      mounted there) with command `mission-monitor.qa.timeout` (NON-BLANK description — R-1c + the
-      host rule); emit `{skill:"mission-monitor",arguments:{action:"mission-monitor.qa.timeout",
-      arguments:{}}}`; start a stopwatch and count replies.
-  **Expected:** Mission Monitor opens, nothing ever answers, and at **≤10 s** exactly ONE reply
-      `I couldn't do that in Mission Monitor. Nothing changed.` appears with `kind: 'failed'`
-      (below the 15 s watchdog); `__EV.done`/reply counts stay 1. A second reply, a hung bubble, or a
-      15 s watchdog fire is a FAIL.
-  - **Edge:** app already open; a re-upsert of the same `appId` mid-wait; two timeouts back-to-back
-      (each settles once, no cross-settle); the synthetic surface stays in the offer until the restore
-      `location.reload()` (expected, not a defect).
+> **REMOVED (Spec #3153 round 2).** F-151 published a synthetic `mission-monitor` surface and measured
+> the ≤10 s failure settle. There is no publish path, so no synthetic surface can exist and no
+> host-side timeout can be induced. The surviving settle discipline (exactly one reply per turn,
+> `llm-done` always last) is carried by F-161.
 
-## F-152 (Q-10 / R-3a) — unknown command id changes nothing and says so
+## F-152 (Q-10 / R-3a) — an unknown skill name is not offered, so nothing is dispatched
 
-- [ ] F-152: Wireframe CLOSED. Emit `{skill:"wireframe",arguments:{action:"wireframe.qa.unknown.<nonce>",
-      arguments:{}}}`; confirm the id is absent from `invoke('app_command_surfaces')`.
-  **Expected:** reply EXACTLY `I don't know the Wireframe action "wireframe.qa.unknown.<nonce>".
-      Nothing changed.` with `kind: 'unknown'` (error beat, never a celebration); the HOST rejects —
-      `window.__EV.intent` receives NOTHING (no relay), NO `app-command-intent-result` exists, NO
-      window opens; exactly one reply.
-  - **Edge:** with the app OPEN the `wireframe-root` dataset is byte-identical before/after
-      (`element-count`, `stacking`, `dirty`, `document-path`, `page`, `selection-ids`); blank `action`
-      (`""`) ⇒ nothing-changed reply with no relay.
+- [ ] F-152: Emit `{skill:"wireframe", arguments:{action:"wireframe.qa.unknown.<nonce>",
+      arguments:{}}}` on `llm-skill-call`.
+  **Expected:** the descriptor is not one of the three static skills, so the companion's dispatcher
+      does not act on it: no window opens, no element changes, no reply claims an action, and no
+      `app-command-intent-result` event exists. The dataset of an already-open Wireframe is
+      byte-identical before/after (`element-count`, `stacking`, `dirty`, `document-path`, `page`,
+      `selection-ids`).
+  - **Edge:** with the app CLOSED (still nothing opens); a blank `skill` (`""`) — the same no-action
+    path; a `doom_mode` call with a bad `action` (fail-closed, no action).
 
-## F-153 (Q-11 / R-3b + R-3d) — an undeclared argument key is rejected at BOTH layers
+## F-153 (Q-11 / R-3b + R-3d) — **REMOVED**: there is no two-layer argument validation to prove
 
-- [ ] F-153: Open Wireframe, snapshot the dataset, emit `{action:"wireframe.add.text",
-      arguments:{bogus:1}}` (layer 1, host). Then BYPASS the hook:
-      `invoke('app_command_intent',{requestId:'qa-f153-l2',appId:'wireframe',
-      action:'wireframe.add.text',arguments:{bogus:1}})` (layer 2, app).
-  **Expected:** layer 1 — dataset UNCHANGED (identical `element-count`/`stacking`/`dirty`), NO window
-      if closed, NO `app-command-intent` emitted, reply `I couldn't do that in Wireframe. Nothing
-      changed.` (`kind: 'failed'`). Layer 2 (R-3d) — the app re-runs the SAME `validateCommandArgs`
-      inside `executeCommand` before `run`: `outcome:"Invalid"`, `performed:[]`, dataset still
-      unchanged (`run` never invoked — a bypassed relay cannot corrupt the document).
-  - **Edge:** app CLOSED for layer 1 (fail-closed ordering); an undeclared key on a no-arg command
-      (`wireframe.edit.undo`) at both layers; `arguments` a nested array.
+> **REMOVED (Spec #3153 round 2).** F-153 proved an undeclared argument key was rejected at BOTH the
+> host layer and the app layer, the second by bypassing the hook with a direct `app_command_intent`. The
+> host layer, the hook and the relay bypass are all deleted; there is no second layer to test. The
+> surviving validation is the Rust skill `validate` on the three static skills' own arguments, covered
+> by `companion-command-removal` (S2's suite).
 
-## F-154 (Q-12 / R-3b + R-3d) — a missing required declared argument changes nothing
+## F-154 (Q-12 / R-3b + R-3d) — **REMOVED**: same reason as F-153
 
-- [ ] F-154: Emit `{action:"wireframe.companion.draftApp", arguments:{}}` (`app_name` is required);
-      repeat via the direct `app_command_intent` bypass.
-  **Expected:** layer 1 — dataset unchanged (no document reset, count unchanged), NO window, NO
-      relay, nothing-changed reply (`kind: 'failed'`). Layer 2 — `outcome:"Invalid"`,
-      `performed:[]`, dataset unchanged. A 4-element draft is a FAIL at EITHER layer.
-  - **Edge:** `app_name:""` / `"   "` / `null` (blank and missing are distinct reasons, one reply
-      each); `summary` alone.
+> **REMOVED (Spec #3153 round 2).** F-154's missing-required-argument leg ran through the deleted
+> published-command path and its direct-intent bypass. That path does not exist; see F-153.
 
-## F-155 (Q-13 / R-3b + R-3d) — a non-string declared argument changes nothing
+## F-155 (Q-13 / R-3b + R-3d) — **REMOVED**: same reason as F-153
 
-- [ ] F-155: Emit `{action:"wireframe.element.create", arguments:{shape:42,x:120,y:140,width:300,
-      height:180}}`; repeat via the bypass.
-  **Expected:** layer 1 — dataset unchanged, NO window, NO relay, nothing-changed reply
-      (`kind: 'failed'`). Layer 2 — `outcome:"Invalid"`, `performed:[]`, dataset unchanged.
-  - **Edge:** `width:"abc"`; `x:null`; `arguments:[1,2]` or `"text"` ⇒ host step 5 (`not a plain
-    object`) ⇒ nothing-changed with NO relay; a non-object `arguments` at the SKILL level is still
-    rejected by Rust `validate` (`skills.rs:304-331`) ⇒ `llm-error` + `llm-done`, no `llm-skill-call`.
+> **REMOVED (Spec #3153 round 2).** F-155's non-string argument leg ran through the deleted
+> published-command path and its direct-intent bypass. That path does not exist; see F-153.
 
-## F-156 (Q-14 / R-3c) — an honest no-op is reported as nothing changed
+## F-156 (Q-14 / R-3c) — **REMOVED**: no command `run`/`Noop` outcome to report
 
-- [ ] F-156: With no selection, emit `{action:"wireframe.element.duplicate", arguments:{}}`
-      (`run` returns false — `wireframeActions.ts:444`, `:663-667`).
-  **Expected:** dataset unchanged; `outcome:"Noop"`; reply **VERBATIM** `I couldn't do that in
-      Wireframe. Nothing changed.` with `kind: 'failed'` (a no-op is never a success); never reported
-      as performed.
-  - **Edge:** `edit.redo` with an empty redo stack; `zoom.out` at the 10 % clamp; a `run` that THROWS
-      ⇒ `outcome:"Failed"` with the SAME nothing-changed reply (never a stack/raw string in the bubble).
+> **REMOVED (Spec #3153 round 2).** F-156 asserted `outcome:"Noop"` for a command whose `run` returned
+> false. The command-result outcome vocabulary was part of the deleted relay. A no-op pointer control
+> simply does nothing (covered by `launcher` F-141's delete-on-empty-selection edge).
 
-## F-157 (Q-15/Q-16 / R-4a/R-4b) — the action list is composed from the PUBLISHED registry, app closed
+## F-157 (Q-15/Q-16 / R-4a/R-4b) — there is no per-application action list to compose
 
-- [ ] F-157: Wireframe CLOSED, emit `{skill:"wireframe",arguments:{action:"listActions"}}`; separately
-      read `invoke('app_command_surfaces')`. Repeat after publishing a surface with
-      `listLabel:"Wireframe capabilities"`, and after publishing one with `listLabel` absent.
-  **Expected:** the reply is **VERBATIM** the shipped format
-      `` `Wireframe actions: <id> — <description>; <id> — <description>; …` `` (default
-      `<appName> actions`) or `Wireframe capabilities: …` (override) — every published id in
-      declaration order, each with a NON-EMPTY description, `; ` join, U+2014 em dash, **NO trailing
-      period** — pushed with `kind: 'success'`. The text must equal what the `app_command_surfaces()`
-      READ yields (D12: never a local rebuild — a probe-published command appears/disappears in the
-      list exactly as the read shows). `listActions` itself is not listed; NO window opens;
-      `__EV.intent` empty (no relay, no app mount).
-  - **Edge:** app already open (same text, still no relay); a one-command surface; an empty
-    `listLabel` (treat as absent — a bare `: <id>` prefix is a finding); a `listLabel` ending in `:`
-    (no doubled colon); a publish landing between two list requests (the next list reflects the upsert).
+- [ ] F-157: Wireframe CLOSED, emit `{skill:"wireframe", arguments:{action:"listActions"}}`; separately
+      call `invoke('app_command_surfaces')`.
+  **Expected:** the `wireframe` skill is not offered and `listActions` is not one of the three static
+      skills, so NO action list is composed: no `Wireframe actions: …` reply is produced and the
+      `app_command_surfaces` command fails as unknown. No window opens. Record the literal error text.
+  - **Edge:** with the app OPEN (identical); an empty `arguments` object (identical).
 
-## F-158 (Q-17 / R-5b) — a removed id is rejected on the next turn (UPSERT)
+## F-158 (Q-17 / R-5b) — **REMOVED**: no upsert path to observe a removed id
 
-- [ ] F-158: Publish v1 of the wireframe surface INCLUDING `<probe>` (F-145); then re-publish the SAME
-      `appId` with a SMALLER command list that omits `<probe>` (two real ids + descriptions); emit
-      `<probe>` again (and, PATH-A, ask once).
-  **Expected:** the re-publish UPSERTS the wireframe entry IN PLACE (order preserved, every other
-      `appId` byte-identical); `invoke('app_command_surfaces')` shows the smaller list with `<probe>`
-      absent; the id is then rejected — reply `I don't know the Wireframe action "<probe>". Nothing
-      changed.` (`kind:'unknown'`), NO window, NO relay; a PATH-A turn does not offer it. No union of
-      stale ids.
-  - **Edge:** **`{surfaces: []}` is a NO-OP, never a clear** — assert `app_command_surfaces()` is
-    byte-identical before/after such a publish. **Whole-surface removal is OUT OF SCOPE this slice**
-    (no shipped app stops declaring `companion` at runtime) — do NOT use an empty publish as a
-    removal mechanism. Shrinking to ZERO commands ⇒ the generated skill disappears while the three
-    static skills remain (the surface entry itself stays).
+> **REMOVED (Spec #3153 round 2).** F-158's removed-id rejection depended on the upsert publish path,
+> which is deleted. There is no surface to shrink and no offer to re-read; see F-146/F-150.
 
-## F-159 (Q-18 / R-5) — ONE golden fixture asserted on BOTH sides
+## F-159 (Q-18 / R-5) — the golden-fixture parity path is GONE; the shipped offer has its own pin
 
-- [ ] F-159: Run `manifest.test.ts` and the Rust `tests/companion_manifest.rs`.
-  **Expected:** TS reads `apps/ui/src/shared/companion/fixtures/wireframe.companion.golden.json` via
-      `resolve(process.cwd(),'src/shared/companion/fixtures/…')` and asserts
-      `buildCompanionManifest(allRegisteredFeatures)` deep-equals `fixture.manifest`. Rust
-      `include_str!`s the SAME path (`CARGO_MANIFEST_DIR` = `apps/tauri/src-tauri` + `../../ui`) and
-      asserts `render_tools(build_companion_skill_registry(&fixture.manifest.surfaces))` contains
-      `fixture.offer` verbatim (name, description, enum ending in `listActions`,
-      `required:["action"]`, open `arguments` object) AND
-      **`static_skills_are_byte_identical_to_the_pre_change_baseline`** passes: the first three
-      rendered tools deep-equal `fixture.staticOffer` (name + description + parameters, in order) and
-      re-run the `validate` matrix (missing / blank / non-string / undeclared key).
-      `grep -rn 'companion.golden.json' apps` → exactly ONE file, TWO readers. A second fixture or a
-      hand-edited fixture is a FAIL.
-  - **Edge:** enum order drift ⇒ Rust FAIL; builder drift ⇒ TS FAIL; a `staticOffer` block re-derived
-    instead of captured at ST-1 step 0 ⇒ FAIL (`git show` the baseline commit).
+- [ ] F-159: `Test-Path` the retired fixture and Rust target; run the shipped offer pin.
+  **Expected:** `apps/ui/src/shared/companion/fixtures/wireframe.companion.golden.json` and
+      `apps/tauri/src-tauri/tests/companion_manifest.rs` do not exist (the parity fixture and its two
+      readers were deleted with the manifest). The shipped equivalent is the Rust pin
+      `the_turn_offer_is_exactly_the_three_static_skills` (`status.rs:1462`), which asserts the offer
+      is exactly `["open_app","close_app","doom_mode"]` and that the accessor is zero-argument; run it
+      and record PASS.
+  - **Edge:** a re-introduced fixture file is a finding (a second source of truth); the pin must read
+    the accessor, never a hand-built list.
 
-## F-160 (Q-19 / R-5a) — registry contract: bounds, rejection matrix, read fidelity
+## F-160 (Q-19 / R-5a) — **REMOVED**: the registry bounds and rejection matrix have no subject
 
-- [ ] F-160: (a) Snapshot `invoke('app_command_surfaces')`. (b) Publish 33 surfaces
-      (`APP_COMMAND_SURFACE_MAX_SURFACES = 32`), then a 513-command surface
-      (`APP_COMMAND_SURFACE_MAX_COMMANDS = 512`). (c) Run the rejection matrix: `skillName != appId`;
-      reserved `skillName` (`open_app` / `close_app` / `doom_mode` / `listActions`); duplicate `appId`
-      in ONE publish; duplicate command ids in one surface; blank `appId` / `appName` / `skillName` /
-      surface `description` / command `id` / command `description` (`""` and `"   "`). (d) Re-read
-      `app_command_surfaces()` after every case.
-  **Expected:** (a) the read returns EXACTLY what `register_app_command_surfaces` stored (same
-      surfaces, same order, same fields). (b)+(c) every case returns `Err` with NO partial write.
-      (d) after EACH rejected publish the read is **byte-identical** to (a) — a following F-157 list
-      and F-145 offer are unchanged (no truncation).
-  - **Edge:** exactly 32 / 512 (accepted AT the bound); **an empty `surfaces: []` is ACCEPTED as a
-    NO-OP and the previous registry is unchanged** (never a clear); a legal publish that omits an
-    existing `appId` leaves that app's entry untouched (upsert, not replace-all); a blank `listLabel`
-    (treat as absent).
+> **REMOVED (Spec #3153 round 2).** F-160 asserted `APP_COMMAND_SURFACE_MAX_SURFACES = 32`,
+> `APP_COMMAND_SURFACE_MAX_COMMANDS = 512` and a whole rejection matrix over the published registry.
+> The registry, both bounds and the matrix were deleted in #3152. The surviving offer bound is the
+> three-name contract in F-145/F-159.
 
 ## F-161 (Q-21 / NFR-2) — exactly one `llm-done` per turn
 
-- [ ] F-161: `__EV.done` delta across (a) a Wireframe skill turn, (b) a plain chat turn, (c) a rejected
-      listing turn. Run the existing pin `every_backend_path_settles_with_exactly_one_done`.
+- [ ] F-161: `__EV.done` delta across (a) an `open_app` turn, (b) a plain chat turn, (c) a
+      malformed-skill turn. Run the existing pin `every_backend_path_settles_with_exactly_one_done`.
   **Expected:** delta exactly 1 in every case and `llm-done` is the LAST event (no `llm-token` after
       it); the Rust pin green.
-  - **Edge:** the F-151 timeout leg still settles once; a parse-failure turn is covered by the unit pin
-    only (the model never emits malformed JSON).
+  - **Edge:** a skill turn whose name is unknown still settles once (F-152); a parse-failure turn is
+    covered by the unit pin only (the model never emits malformed JSON).
 
 ## F-162 (Q-29 / LIVE) — mandatory `telemetry_spans` receipt
+
 
 - [ ] F-162: Same run as F-145..F-161: `fredo emit --event-type chat` + `--event-type tool_use` with
       distinct session ids; query `telemetry_spans` + `chat_rows`/`tool_use_rows` through the
@@ -3042,7 +2944,8 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 > **HUMAN-DIRECTED RESCOPE.** The launcher-only conversation (old AC7) is REPLACED: the companion's
 > ONE conversation surface is an instruction composer attached to Fredo's teleport. Rows map 1:1 to
 > `.opencode/tmp/3120/triage.md` `## QA Expert` keyed **R-3**, **R-4** (natural-language leg) and
-> **R-7** (the trail/undo legs live in `wireframe-navigation` F-N41..F-N43).
+> **R-7** (the surviving undo/attribution coverage lives in `.opencode/tests/navigation-retirement/`
+> Q-29 / Q-41).
 > **Verification policy: live** — every row is provable only on the running app. Evidence per case:
 > `tauri_webview_dom_snapshot` / `tauri_webview_execute_js` / `tauri_webview_screenshot` /
 > `tauri_webview_interact` / `tauri_read_logs(source="console")`; the mandatory live receipt is F-178
@@ -3060,14 +2963,14 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 >
 > **Reach recipes.** Same-window teleport = `mousedown {button:2, ctrlKey:true}` on
 > `.fredo-companion-avatar`; cross-window = the shipped `companion-teleport` event into
-> `run-cli-terminal` (`tauri_ipc_emit_event`); scripted routed intent =
-> `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-c<n>",
-> appId:"wireframe", action:"<verbId>", arguments:{…}}})` (actor `companion`, the SAME funnel the
-> composer's turn uses); model turn = a real managed `llama-server`.
+> `run-cli-terminal` (`tauri_ipc_emit_event`); the composer's own submit is the ONE funnel for a
+> companion turn (there is no `app_command_intent` command to drive — it does not exist); model turn =
+> a real in-process engine turn.
 >
 > **Supersession.** Launcher rows F-144..F-151 (launcher-only conversation / undo routing /
-> `/ Ask` → launcher / no-chat-panel) are SUPERSEDED by F-164..F-178 and `wireframe-navigation`
-> F-N41..F-N43. F-7/F-8/F-9/F-10 (click/joke, game, teleport), F-31/F-32 (states),
+> `/ Ask` → launcher / no-chat-panel) are SUPERSEDED by F-164..F-178 here, with the surviving
+> retire-and-verify coverage in `.opencode/tests/navigation-retirement/` (Q-29 / Q-41). F-7/F-8/F-9/F-10
+> (click/joke, game, teleport), F-31/F-32 (states),
 > F-99/F-100/F-102 (skill contract, reply copy, stability) and F-79..F-98 (reply surface growth /
 > never-cover / scroll) remain IN FORCE and are the regression baseline for the reply path.
 
@@ -3190,28 +3093,27 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
     (restore per the contract; record); the composer not open (no-op).
   - **Receipt:** E-DOM (activeElement before/after) + E-SHOT.
 
-- [ ] **F-172 (R-3.9) — the destructive and external confirmation policy is preserved on the teleport path.**
-  **Steps:** one element selected in Wireframe; relay `wireframe.element.delete` through the SAME
-  companion funnel the composer turn uses (`app_command_intent`); read the dialog; Cancel; then repeat
-  with Accept. Then relay `place.exportPng` (external) and Cancel only.
-  **Expected:** a destructive verb reaches `requestLauncherConfirmation` and renders
-  `[data-testid="launcher-confirmation"]` (`role="alertdialog"`) with verb/target/consequence/undo and
-  **Cancel focused**; NOTHING is applied before accept (element present, journal unchanged); Accept
-  applies exactly ONE mutation + one journal entry (undo restores); Cancel/Esc/outside-click journal
-  nothing and the element stays; the external verb is cancel-only (never press Accept — it opens an OS
-  save dialog) and reports `Not undoable`.
-  - **Edge:** a second destructive intent while one is pending; the dialog while the composer is open;
-    a companion-origin destructive intent with no launcher mounted (resolves `false`, nothing applied).
-  - **Receipt:** E-DOM (dialog + post-cancel/accept journal) + E-SHOT.
+- [ ] **F-172 (R-3.9) — a destructive action has NO confirmation host, on any path.**
+  **Steps:** one element selected in Wireframe; submit an instruction through the composer that would
+  target a destructive verb (or apply the same verb from its pointer row); read the launcher region and
+  any dialog; then delete and undo from the shipped controls. Then attempt an external verb and read
+  what is reported.
+  **Expected:** `[data-testid="launcher-confirmation"]` count **0** — no `role="alertdialog"` is
+  rendered and `requestLauncherConfirmation` does not exist (R-86), so a destructive verb applies
+  immediately with exactly ONE history entry (one `wireframe-undo` restores it) and nothing is
+  confirmed anywhere. No external-verb confirmation channel exists either; record what the app actually
+  reports for a non-undoable action.
+  - **Edge:** a second destructive action while the first is settling (both apply, each one entry); the
+    composer open (no dialog); no launcher mounted (same behaviour — there is no host at all).
+  - **Receipt:** E-DOM (the absent dialog + the history entries) + E-SHOT.
 
 - [ ] **F-173 (R-3.10) — safe and mutating turns auto-apply and journal exactly one entry.**
   **Steps:** with one element selected, submit a SAFE instruction (e.g. `fit the page`) and a MUTATING
-  instruction (e.g. `lock it`) through the composer (real model) and, deterministically, relay the same
-  verbs; read the dialog absence + the journal.
-  **Expected:** NO `launcher-confirmation` node for either class; each applies immediately and appends
-  exactly ONE journal entry (safe → effect `navigation`, no patch; mutating → effect `mutation` with a
-  real patch); the change is visible after the composer closes; the attribution is `Companion`
-  (F-N41).
+  instruction (e.g. `lock it`) through the composer and read the dialog absence + the history.
+  **Expected:** NO `launcher-confirmation` node for either class (there is no confirmation host); each
+  applies immediately and appends exactly ONE history entry; the change is visible after the composer
+  closes. The history entry attribution is the app-local history's own (there is no companion/`Companion`
+  attribution channel — it was deleted with the journal).
   - **Edge:** a `did-nothing` mutating verb (no entry); double Enter must not double-apply; a safe verb
     that changes no document state.
   - **Receipt:** E-DOM (journal + document) + E-SHOT.

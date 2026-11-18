@@ -2541,8 +2541,8 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 > global commands; the `>` palette, the app-scoped navigation palette and the launcher-only
 > conversation are REMOVED. Rows map 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` keyed
 > **R-2** and **R-8**; the reworked conversation surface lives in
-> `.opencode/tests/companion/functional.md` F-164..F-178 and the bottom command bar in
-> `.opencode/tests/wireframe-navigation/functional.md` F-N25..F-N45.
+> `.opencode/tests/companion/functional.md` F-164..F-178 and the surviving retire-and-verify rows in
+> `.opencode/tests/navigation-retirement/functional.md` (Q-13 / Q-19 / Q-29).
 >
 > **Verification policy: live**, except **F-166** which is `static` (a prove-a-negative source sweep —
 > G-408). Every live row needs a rendered-webview receipt (DOM snapshot / screenshot / measured
@@ -2555,9 +2555,9 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 > F-146, F-147, F-148, F-149, F-150, F-151, F-152, F-153, F-154, F-155, F-156, F-157, F-158, F-159**
 > (context header, palette projection/render, app-scoped Enter route, launcher-only conversation, undo
 > routing, `/ Ask` → launcher, the palette instrument rows, palette announcer/a11y/reduced-motion/perf).
-> Their mechanisms are replaced by F-163..F-167 here, `companion` F-164..F-178 and
-> `wireframe-navigation` F-N40..F-N43, F-N45; the pilot instrument (F-152..F-154) is replaced by
-> `navigation-research` F-8..F-10. **Kept and still binding:** F-132 (routed-intent parity),
+> Their mechanisms are replaced by F-163..F-167 here and `companion` F-164..F-178; the retire-and-verify
+> coverage for the behaviours they named lives in `.opencode/tests/navigation-retirement/functional.md`
+> (Q-13 / Q-19 / Q-29 / Q-41). **Kept and still binding:** F-132 (routed-intent parity),
 > F-136..F-143 (manifest/companion intent/risk policy/confirmation), **F-160 (envelope cap)**,
 > **F-161 (build/suite)**, **F-162 (live receipt)**.
 
@@ -2593,23 +2593,21 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
     launch Settings.
   - **Receipt:** E-DOM (grid + row per query) + the window list before/after Enter.
 
-- [ ] **F-165 (R-2.3) — global commands survive: Ctrl+Space, voice, and the confirmation host; no palette handler is registered.**
+- [ ] **F-165 (R-2.3) — global commands survive: Ctrl+Space, voice, and NO confirmation host; no palette handler is registered.**
   **Steps:** record `document.activeElement`; press `Ctrl+Space` twice; focus the searchbox and hold
-  Space (`down` → wait → `up`) to start dictation; release; then drive a destructive companion intent
-  with one element selected —
-  `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-launcher-confirm",
-  appId:"wireframe", action:"wireframe.element.delete", arguments:{}}})` — and read the launcher.
+  Space (`down` → wait → `up`) to start dictation; release; then apply a destructive action from a
+  pointer `Delete` row in `wireframe-arrange` with one element selected, and read the launcher.
   **Expected:** `Ctrl+Space` opens ONCE and closes ONCE per press (searchbox focused on open, focus
   restored on close); the voice/dictation path is unchanged (a listening indicator renders and the
-  transcript is a message to Fredo — never a palette); the confirmation host still mounts:
-  `[data-testid="launcher-confirmation"]` (`role="alertdialog"`) renders for the destructive intent
-  with **Cancel focused**, and Cancel leaves the document and journal unchanged; NO handler is
-  registered for `fredo.palette.openActions` (typing `>` produces no palette — F-163; the source half
-  is F-166).
+  transcript is a message to Fredo — never a palette); there is NO confirmation host —
+  `[data-testid="launcher-confirmation"]` count **0**, no `role="alertdialog"` is rendered for the
+  destructive action, and the `Delete` row applies immediately because no confirmation requester
+  exists (R-86, F-141); NO handler is registered for `fredo.palette.openActions` (typing `>` produces
+  no palette — F-163; the source half is F-166).
   - **Edge:** Ctrl+Space while a text control is focused (must not fire); Esc closes the launcher;
-    Cancel / Esc / outside-click on the confirmation (nothing applied); the confirmation while the
-    launcher is closed (request resolves `false`, nothing applied).
-  - **Receipt:** E-DOM (launcher + dialog) + the window/generation counts.
+    the `Delete` row with a locked element (still applies, still no dialog); delete then undo restores
+    the same element id and geometry.
+  - **Receipt:** E-DOM (launcher + the absent dialog) + the window/history counts.
 
 - [ ] **F-166 (R-2.4 / R-8 static half) — source sweep: the retired palette/route/bridge tokens are absent from `apps/ui/src`.**
   **Steps:** on the tested tip, strip comments and the literal TEXT of string/template literals (keep

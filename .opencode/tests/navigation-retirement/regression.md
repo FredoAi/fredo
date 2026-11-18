@@ -85,10 +85,20 @@ is a capability loss, not a cosmetic change.**
 - [ ] **R-13 (static).** `apps/ui/src/index.ts` keeps every export except the two additive
   navigation barrel lines (`:91`, `:94`). Any other export lost from the app barrel is a FAIL.
 
-## Rust / IPC (out of scope — must simply not move)
+## Rust / IPC (not a party to this slice)
 
-- [ ] **R-14 (static).** `apps/tauri/src-tauri/src/applications/companion/` (the surface registry,
-  `register_app_command_surfaces`, `app_command_intent*`) is untouched and still compiles — the
-  Rust/IPC half is S2/#3152. Q-7/Q-8 prove compilation; the diff must be empty.
+- [ ] **R-14 (static).** The S2 Rust command path is **gone**, not preserved: #3152 deleted
+  `apps/tauri/src-tauri/src/applications/companion/` entirely (`Test-Path` → `False`; the shipped
+  `applications/` listing is `db_client, doom, installed_apps, llm_server, mod.rs, pg_supervisor,
+  screenshot, settings, setup, telemetry, terminal, wireframe`), so `register_app_command_surfaces`,
+  `app_command_intent`, `app_command_intent_take`, `app_command_surfaces`, `app-command-intent` /
+  `app-command-intent-result` and the per-application relay no longer exist and have no successor.
+  **Expected:** a source scan over `apps/tauri/src-tauri/src/` returns zero occurrences of any of
+  those symbols, and the companion offer is exactly the three static skills from the ZERO-argument
+  `companion_skill_registry()` (`open_app`, `close_app`, `doom_mode`). A resurrected command surface
+  is a FAIL. Q-7/Q-8 still prove the shipped tree compiles and lints clean. Cross-ref R-15 below:
+  the row-pipeline is still not a party to this slice.
+  *(Supersedes this row's earlier "is untouched and still compiles — the Rust/IPC half is S2/#3152",
+  which was true only until that slice landed.)*
 - [ ] **R-15 (static).** `infrastructure/comm/` and `infrastructure/rtdb/` are untouched (NFR-6,
   Q-47) — the row-pipeline is not a party to this slice.
