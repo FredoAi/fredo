@@ -172,6 +172,16 @@ A local build produces an installer for your current OS in `apps/tauri/src-tauri
 > the maintainer must review before it's public — see [release-process.md](release-process.md).
 > Local `pnpm build:tauri` is for development and works on any host OS.
 
+### Companion engine payload
+
+The companion engine is **not** linked into `fredo.exe`: the `dynamic-link` build produces the ggml/llama/mtmd runtime as DLLs, and `build.beforeBundleCommand` runs `.opencode/scripts/stage-engine-payload.ps1`, which stages the canonical allowlist (`.opencode/scripts/payload-manifest.json`) into `apps/tauri/src-tauri/engine-payload/`. `bundle.resources` (`{"engine-payload/": ""}`) installs that tree **beside `fredo.exe` in the install directory**, so the 8 core payload DLLs live next to the binary — not in a separate program and not behind a second install step.
+
+The release pipeline refuses to publish a draft whose installer is missing any of those DLLs: `.opencode/scripts/verify-installer-payload.ps1` extracts the produced NSIS `.exe` and asserts every core payload name is present with bytes > 0. To verify a local installer the same way:
+
+```bash
+powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
+```
+
 ### App icons
 
 The shipped OS icon set under `apps/tauri/src-tauri/icons/` is generated from the canonical Fredo
@@ -188,11 +198,19 @@ contract, and which platform sets are shipped vs explicitly scoped out.
 
 ## After Installation
 
-The installer adds the `fredo` binary to your system PATH. Verify:
+The installer adds the `fredo` binary to your system PATH and installs the companion engine payload **beside `fredo.exe` in the install directory** (the same folder as the binary). Verify the CLI:
 
 ```bash
 fredo --help
 ```
+
+To confirm an installer carries the engine payload, run the artifact gate on the `.exe` itself:
+
+```bash
+powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
+```
+
+`RESULT=PASS` means every core payload DLL was found inside the extracted install; `PAYLOAD_MISSING=<name>` with exit 1 means the installer is incomplete.
 
 ## Headless Ingest (capturing telemetry with the GUI closed)
 
