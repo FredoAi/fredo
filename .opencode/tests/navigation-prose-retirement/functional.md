@@ -2,10 +2,14 @@
 
 Durable functional suite for the **retirement of the navigation ENGINE's prose** (Issue #3153,
 slice 3 of 3 — documentation, ADR status, engineering rules and test-suite prose only). Rows map
-1:1 to the QA Plan in `.opencode/tmp/3153/triage.md` `## QA Expert` (`P-1` … `P-12`), keyed to the
-Software Architect's EARS ids `R-1.1` … `R-5.3` and NFR-1 … NFR-6. Names bind verbatim to the
-`### API Contracts & Data Models` block — do not invent alternative script names, line shapes or
-paths.
+1:1 to the QA Plan's `## QA Expert` section, keyed to the Software Architect's EARS ids. Names bind
+verbatim to the plan's `### API Contracts & Data Models` block — do not invent alternative script
+names, line shapes or paths.
+
+- **`P-1` … `P-12`** — round 1, AC1–AC4 + the first AC5 sweep, keyed `R-1.1` … `R-5.3` and
+  NFR-1 … NFR-6.
+- **`P-13` … `P-18`** — round 2 (audit restart, root cause `scope`), the **AC5 remainder**, keyed
+  `R-5.4` … `R-5.9`. AC1–AC4 are merged (PR #3164) and their rows are not re-planned.
 
 > **Verification policy: `static` — every row.** Every one of AC1–AC5 is a predicate over
 > **committed prose and committed scripts**, so there is no runtime behaviour to observe and a live
@@ -298,6 +302,176 @@ paths.
   origin, no backend commands, cannot declare commands) — it must not mention a keyboard/navigation
   surface at all.
 
+## AC5 remainder — the round-2 residual sweep (audit restart, root cause `scope`)
+
+> **Scope.** AC1–AC4 passed the audit and are merged (PR #3164); P-1…P-12 stand and are **not**
+> re-planned. These six rows are the AC5 **remainder**: the executed enumeration (round-1 plan's
+> Domain Model §2) found **15 files** still carrying PRESENT-asserting rows about deleted subjects —
+> the 8 the auditor named plus 7 more, including a whole surviving suite
+> (`companion-audio-skill-parity/`, 4 files) and a false row **inside the guard's own allowlist**
+> (`navigation-retirement/regression.md:88-92`, R-14). The round-1 sweep set was enumerated from an
+> illustrative list rather than executed (G-444); P-13 is the executed instrument and its post-sweep
+> re-run is the acceptance receipt.
+
+- [ ] **P-13 (R-5.4 / R-5.5 / R-5.7 + R-5.6's offer-set half) — the 28-search predicate, re-run POST-sweep (the second instrument).**
+  Run **all 28** searches of the plan's Domain Model §2 (the `## Triage Plan` comment carries the
+  table) with the **Grep tool** — `pattern` = that row's regex **verbatim**, `path` =
+  `.opencode/tests` (recursive; add `include: *.md` only on rows 13/14, which declare it). The Grep
+  tool's `pattern` + `path` **are** the command; re-running the pair reproduces the count. Run them
+  in §2's numbered order, one line each.
+  **Expected:** for **each** search record exactly four things — (a) the `pattern` string, (b) `path`,
+  (c) the tool's reported **hit count**, (d) the **COMPLETE `file:line` list** of returned hits
+  (every hit, never a sample). Then **classify every returned hit**: **A** = ABSENCE-asserting (the
+  sentence asserts the subject does NOT exist / is gone / count 0 — correct, AC5 wants it);
+  **L** = the hit's file is inside the guard's 8-entry evidence allowlist **and** the line must spell
+  the tokens (ledger / S1 / S2 / seeded suite; G-431); **X** = the ONE named substring false positive
+  (Edge (d)); **P** = PRESENT-asserting (asserts the subject renders / drives / lists / is current).
+  **PASS = zero remaining P hits across all 28 searches AND every returned hit carries one of
+  A / L / X.** An **unclassified hit is a FAIL** (G-444: every line of the result is either owned or
+  dispositioned). The receipt is the counts + the complete lists + the classification in the POSTED
+  `## Tests Runs` (G-415).
+  **Edge:** (a) **The pre-sweep counts in §2 are the BASELINE, not the target** — the sweep
+  *corrects* most sites rather than deleting them, so a corrected row still contains the token (e.g.
+  `launcher/functional.md:2305` must still read "`launcher-confirmation` does not exist"). A
+  post-sweep count is therefore **expected to differ** from §2's: **do not pin any post-sweep count**
+  (G-444 — re-run, don't predict). (b) **`L` is a path fact, `A` is a content fact — do not conflate
+  them.** `navigation-retirement/regression.md` is allowlisted, so a hit there is *path-L*; after
+  P-18 corrects R-14 its content is absence-asserting, so record it **A** with the allowlist noted.
+  Recording it as "L, no further check" is exactly the blind spot this row closes. (c) **`X` is
+  mandatory, not a loophole** — the only admissible X is the literal substring false positive below;
+  any other X is a FAIL. (d) **The known X:** the row-22 pattern contains `55 rows`, which matches
+  `llama-setup/functional.md:6` — the text `#2855 rows` — a substring coincidence in an unrelated
+  suite that no sub-task owns and which must **NOT** be swept; record it
+  `X — "#2855 rows" substring, out of subject` with the line quoted. (e) **Text mode (G-419):** the
+  Grep tool regex is a raw, **case-sensitive** match over committed Markdown — a token inside a fenced
+  code block, a quoted example or a comment **counts**; a hit is a literal occurrence, never a
+  semantic claim. (f) **The QA suite itself is an L hit** — the row-11/13 alternatives
+  (`describeContext`, `NavigationHost`, `NavigationEngine`, `validateSurface`) are spelled by
+  `.opencode/tests/navigation-prose-retirement/functional.md:102,106,138,157,163` and
+  `exploratory.md:18`; classify **L** (allowlist entry #7), never P — a tester who classifies them P
+  fails the round on its own suite. (g) A hit outside the 15-file P-set that is neither A, L nor the
+  named X is a FAIL: a missed P site or a false positive to adjudicate in the verdict — never
+  silently dropped. (h) Run each search **twice** in the same tree: identical counts both times
+  (NFR-3 determinism); a count that moves is a FAIL.
+  **Receipt:** the per-search table (pattern / path / count / `file:line` list / dispositions) in the
+  POSTED `## Tests Runs`.
+
+- [ ] **P-14 (R-5.9) — the internal-consistency read of `launcher/functional.md` (the row that would have caught the round-1 defect).**
+  `Read` **F-165** at `launcher/functional.md:2596-2612` in full (including its `- **Edge:**` lines at
+  `:2609-2611` and its `Receipt` at `:2612`), then `Read` the siblings **F-141** (`:2302-2310`),
+  **F-132** (`:2203-2213`), **F-163** (`:2564-2578`), **F-167** (`:2633-2645`) and `Read` **R-86** at
+  `.opencode/tests/launcher/regression.md:1000-1008`. Compare their **expected observables**, not
+  their vocabulary.
+  **Expected:** all six rows mutually consistent, asserted one clause at a time — (a) **F-165 says the
+  confirmation host does NOT exist**: `[data-testid="launcher-confirmation"]` count **0**, matching
+  F-141 (`:2305`, "NO confirmation dialog … does not exist") and R-86 (`:1006-1007`,
+  "`requestLauncherConfirmation` does not exist … was its only host"); (b) **F-165 does NOT drive
+  `app_command_intent`** and asserts no relay / no result event, matching F-132 (`:2207-2210`, zero
+  matches in `apps/`); (c) **F-165 names no palette and no action list**, matching F-163
+  (`:2567-2569`) and F-167 (`:2636-2637`, all three counts **0**); (d) **F-165's surviving clauses are
+  preserved verbatim** — `Ctrl+Space` opens once and closes once per press with focus restored, the
+  voice/dictation path is unchanged (a listening indicator renders; the transcript is a message to
+  Fredo), and no handler is registered for `fredo.palette.openActions`; (e) F-165's `Edge` no longer
+  asserts a "request resolves `false`" path (that presupposes a requester). PASS = (a)–(e) all hold
+  simultaneously in the same file.
+  **Edge:** (a) **A newly authored row contradicting a sibling reconciled row is a defect in the NEW
+  row until the reverse is proven** (G-444) — if F-165 and F-141 disagree, F-165 is wrong by
+  construction, not "the file has a conflict". (b) **This is an assertion comparison, not a token
+  scan** — F-132's scan target is `apps/`, so F-165 merely *mentioning* `app_command_intent` inside a
+  sentence that says it does not exist is **not** a violation; the FAIL is F-165 asserting the
+  command **works** or the confirmation host **mounts**. Stated so a literal tester does not fail a
+  correct absence sentence. (c) **Deleting F-165 is a FAIL** — its surviving half is true and its
+  coverage must remain (successor `Q-19`); the row is corrected, not removed. (d) A PASS here with
+  P-13 still reporting a P hit on `:2596-2612` is a contradiction to re-read before recording either.
+  **Receipt:** the six quoted rows + the clause-by-clause comparison in the POSTED `## Tests Runs`.
+
+- [ ] **P-15 (R-5.8) — F-165's post-correction assertions.**
+  Read/drive `launcher/functional.md:2596-2612` as written.
+  **Expected:** **text (static, `Read`)** — the row asserts the confirmation host is **absent** (count
+  **0**; no `role="alertdialog"` for the destructive companion intent) and that **no**
+  `app_command_intent` / `app-command-intent` / `app-command-intent-result` drive remains in its Steps
+  or `Edge`; it **keeps** the three surviving clauses of P-14(d) verbatim; its title states the
+  shipped reality rather than claiming the confirmation host survives. **Behaviour (only if the row
+  keeps a driver)** — `Ctrl+Space` twice toggles once per press; holding Space in the focused
+  searchbox starts dictation and the transcript lands as a message, never a palette; typing `>`
+  produces no palette node. PASS = the absence clause present **and** the three preserved clauses
+  byte-identical to their pre-sweep wording **and** no present-asserting relay clause.
+  **Edge:** (a) **`R-5.8` says "preserved verbatim"** (G-411) — a reworded surviving clause is a FAIL
+  even if the prose is nicer. (b) A purely static rewrite of F-165 is admissible (the row's subject is
+  absence) **provided** it is executable by `Read` alone with no dangling live-receipt requirement.
+  (c) A `launcher-confirmation` count asserted for a *different* intent than the destructive companion
+  intent is a FAIL — that intent is the subject. (d) If the dictation leg is dropped, the row must say
+  so rather than leaving an orphan receipt.
+  **Receipt:** the quoted row + the four observations in the POSTED `## Tests Runs`.
+
+- [ ] **P-16 (R-5.6) — the offer set is the three static skills, and parity survives (the audio-parity suite is CORRECTED, not retired).**
+  `Read` the corrected `companion-audio-skill-parity/{functional,smoke,regression,exploratory}.md`
+  rows (`functional.md:5-13,16,26-28,40,41,43,45,49,50,52`; `smoke.md:20-23`;
+  `regression.md:9-20`; `exploratory.md:13,20`); `Test-Path` all four files.
+  **Expected:** (a) every sentence stating the offered skill set names **exactly** `open_app`,
+  `close_app`, `doom_mode` **in that order** — no `wireframe`, no fourth name, no generated or
+  application-named skill; (b) the accessor is named **zero-argument**: `companion_skill_registry()`
+  (`status.rs:691`) — a `companion_skill_registry(app)` arity is a FAIL; (c) the deleted pins are
+  replaced by the **surviving** pin `the_turn_offer_is_exactly_the_three_static_skills`
+  (`status.rs:1462`) — citing
+  `the_live_offer_carries_the_wireframe_skill_with_its_directive_description` (`status.rs:1346`) or
+  `companion_manifest.rs` is a FAIL; (d) **the parity requirement is preserved unweakened** — a row
+  still asserts that the typed turn and the audio turn obtain the SAME offer from the ONE accessor
+  (byte-equal `tools`), and the CI-parity rows (F-8 / F-9 / F-12) are unchanged; (e) `Test-Path` the
+  suite's four files → **all `True`** (the suite is **not** retired).
+  **Edge:** (a) **Retiring the suite to go green is a FAIL** — `R-5.6` forbids weakening it; only the
+  content assertion moves (four skills → three), the invariant does not. (b) A row that drops the
+  audio leg and keeps only the typed leg is a FAIL (parity is the subject). (c) A three-skill claim
+  that **reorders** the names is a FAIL. (d) The 4-skill **negative** assertion at
+  `companion-command-removal/functional.md:172` ("A 4th skill … = FAIL") is CORRECT and must stay — do
+  not "harmonise" it.
+  **Receipt:** the quoted rows + the four `Test-Path` booleans in the POSTED `## Tests Runs`.
+
+- [ ] **P-17 (R-5.4 / R-5.5 / R-5.7 + the AC5 ledger clause) — the ledger: one row per corrected/removed site, append-only.**
+  `Read` `.opencode/tests/retired-navigation/RETIRED.md` from `:237` (the
+  `### #3153 — prose dispositions (slice 3 of 3)` parent heading) to EOF, plus the round-2
+  `#### ST-8..ST-10 — the round-2 residual sweep …` sub-heading; cross-check against each sub-task's
+  corrected sites; then `git diff main...HEAD -- .opencode/tests/retired-navigation/RETIRED.md`.
+  **Expected:** (a) **one row per corrected/removed site**, schema
+  `| path:line-range | suite | disposition | replacement | reason |`, `path:line-range` = the
+  **pre-sweep** location; (b) `disposition` ∈ **`CORRECTED`** or **`REMOVED`** only — **no
+  `SUPERSEDED` for any non-allowlisted suite** (`R-5.2`; `SUPERSEDED` is docs-only); (c) every site
+  this round corrected or removed has **exactly one** row, and each row's quoted claim matches the
+  pre-sweep text at that range; (d) **`RETIRED.md:1-391` is byte-unchanged** — the diff is **additions
+  only**, no deletion and no re-stamped existing row (`PR-4`); the file's pre-round length is **391
+  lines**; (e) the ledger row for the allowlisted-but-false `navigation-retirement/regression.md` site
+  is present too (a false row inside an allowlist is still a dispositioned site).
+  **Edge:** (a) A row whose `path:line-range` no longer matches the file's content is a FAIL (the row
+  must quote the deleted claim). (b) `SUPERSEDED` anywhere outside `docs/adr/**` /
+  `docs/NAVIGATION_ENGINE.md` = FAIL. (c) A site **silently deleted** without a `REMOVED` row = FAIL —
+  "no row's outcome is weakened *or deleted*". (d) A **rewritten** existing row (not appended) is a
+  FAIL even if the new text is better: the ledger is the record and `1-391` is frozen. (e) An
+  in-place `SUPERSEDED` marker left inside a non-allowlisted suite file instead of a ledger row is a
+  FAIL.
+  **Receipt:** the `git diff` output + the new sub-heading's rows in the POSTED `## Tests Runs`.
+
+- [ ] **P-18 (R-5.4 / R-5.7) — `navigation-retirement/regression.md` R-14 is corrected (the allowlisted-but-false row).**
+  `Read` `.opencode/tests/navigation-retirement/regression.md:88-92` and the section heading at `:88`;
+  `Test-Path apps/tauri/src-tauri/src/applications/companion`; `Read` the directory listing of
+  `apps/tauri/src-tauri/src/applications/`.
+  **Expected:** (a) `Test-Path` → **`False`** (the directory was deleted in #3152; the shipped listing
+  is `db_client, doom, installed_apps, llm_server, mod.rs, pg_supervisor, screenshot, settings, setup,
+  telemetry, terminal, wireframe`); (b) R-14 **no longer asserts** that
+  `register_app_command_surfaces` / `app_command_intent*` "is untouched and still compiles" — it
+  asserts the shipped truth: the commands and the relay are **gone**, and the three static skills are
+  the whole offer; (c) R-14's **surviving intent is kept** — the row-pipeline is still not a party to
+  that slice (cross-ref R-15 at `:93-94`); (d) a ledger row exists for the site (P-17); (e) the
+  heading at `:88` either survives as a corrected scope statement or is reworded — it must not still
+  read as a promise that a deleted directory is intact.
+  **Edge:** (a) **This row sits inside the guard's allowlist, so the guard is blind to it by design** —
+  a green P-1 / P-13-clean result is **NOT** evidence about R-14; recording "the guard is green
+  therefore R-14 is fine" is the G-445 error restated. (b) Deleting R-14 outright is a FAIL unless its
+  surviving intent (R-15's row-pipeline scope) is demonstrably still carried — prefer CORRECT over
+  REMOVE. (c) `Test-Path` on the directory, **never** `Glob` (G-024 — a glob false negative proves
+  nothing). (d) The row must not be re-aimed at `infrastructure/rtdb/` — that is R-15's subject.
+  **Receipt:** the quoted row + the `Test-Path` boolean + the directory listing in the POSTED
+  `## Tests Runs`.
+
 ## Test data
 
 - **T1 — the spec PR head tree** (the built tree; `spec/3153` tip == the PR head SHA). Every row
@@ -307,8 +481,9 @@ paths.
   is the discriminator** — two different commits cannot produce an equality receipt (G-443).
 - **The guard itself** — `.opencode/scripts/check-navigation-prose-retired.ps1` (ST-1) plus
   `.opencode/scripts/run-exitcode.ps1` (exists, `:1-39`).
-- **The ledger** — `.opencode/tests/retired-navigation/RETIRED.md` (236 lines at planning;
-  append-only).
+- **The ledger** — `.opencode/tests/retired-navigation/RETIRED.md` (**391 lines** at round-2 start;
+  append-only). Round 1's "236 lines at planning" was the pre-round-1 length — round 1 appended its
+  own `### #3153` section at `:237`. **The binding anchor is 391** (P-17(d), `regression.md` PR-4).
 - No fixtures, no mocks, no telemetry lease, no live environment. **G-172 satisfied**: every
   artifact above is in-repo and committed.
 
