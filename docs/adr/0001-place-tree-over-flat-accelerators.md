@@ -1,14 +1,14 @@
 # ADR-1: Place Tree Over Flat Accelerators
 
 - **Status:** Superseded (Spec #3153, slice 3 of 3) — the place tree and the place-scoped
-  key grammar are deleted with the NavigationEngine (#3151). The direction reversed: the
-  **companion** is the interaction surface for directing Fredo conversationally, not the
-  keyboard. The product went to a pointer-first application surface plus a deliberately tiny
-  keyboard seam — three platform chords (`primary+space` toggles the launcher,
-  `primary+tab` / `primary+shift+tab` move window focus, in
-  `apps/ui/src/shared/window-system/platformChords.ts`) and the plain `Tab`/`Shift+Tab`
-  window-boundary hand-off (`traversal.ts`). No verb is reachable from a place path,
-  because no place tree exists.
+  key grammar are deleted with the NavigationEngine (#3151). The direction this record chose
+  (depth made explicit in a tree, keys scoped to a place) was reversed: directing Fredo is the
+  **companion**'s job now, and the keyboard is not the interaction surface. The product went to
+  a pointer-first application surface plus a deliberately tiny keyboard seam — three platform
+  chords (`primary+space` toggles the launcher, `primary+tab` / `primary+shift+tab` move window
+  focus, in `apps/ui/src/shared/window-system/platformChords.ts`) and the plain
+  `Tab`/`Shift+Tab` window-boundary hand-off (`traversal.ts`). No verb is reachable from a
+  place path, because no place tree exists.
 
 ## Context
 

@@ -1,14 +1,15 @@
 # ADR-7: Adapters During Migration Only
 
 - **Status:** Superseded (Spec #3153, slice 3 of 3) — P8 closed and every `ADP-` id is gone, and
-  the `validateSurface()` result this record makes authoritative went with them (#3151). The
-  direction reversed: the **companion** is the interaction surface for directing Fredo
-  conversationally, not the keyboard. The adapter programme's deadline model is therefore
-  **moot**: the migration it existed to bound ended in deletion, not in a completed migration, so
-  no adapter outlived its phase. Where the product went instead, in this record's own terms:
-  the migration order's one surviving half — window traversal — is now the plain `Tab` /
-  `Shift+Tab` window-boundary hand-off in `apps/ui/src/shared/window-system/traversal.ts`, and
-  there is nothing left for an adapter to translate.
+  the `validateSurface()` result this record makes authoritative went with them (#3151). Its
+  direction — a dated seam that lets the keyboard engine land — is void twice over: there was no
+  migration to serve, and the keyboard is not the interaction surface. The **companion** is.
+  The adapter programme's deadline model is therefore **moot**: the migration it existed to bound
+  ended in deletion, not in a completed migration, so no adapter outlived its phase. Where the
+  product went instead, in this record's own terms: the migration order's one surviving half —
+  window traversal — is now the plain `Tab` / `Shift+Tab` window-boundary hand-off in
+  `apps/ui/src/shared/window-system/traversal.ts`, and there is nothing left for an adapter to
+  translate.
 
 ## Context
 

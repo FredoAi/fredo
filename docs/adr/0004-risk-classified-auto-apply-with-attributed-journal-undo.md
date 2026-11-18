@@ -2,8 +2,10 @@
 
 - **Status:** Superseded (Spec #3153, slice 3 of 3) — the shared journal, its `journal.undo`
   query and the risk-gated auto-apply funnel are deleted with the NavigationEngine (#3151), and
-  the launcher confirmation has no requester. The direction reversed: the **companion** is the
-  interaction surface for directing Fredo conversationally, not the keyboard. The product went
+  the launcher confirmation has no requester. This record's direction — reversible, attributable
+  mutation driven from the keyboard — is void: the **companion** is the interaction surface for
+  directing Fredo, not the keyboard, so there is no keyboard-driven mutation path left to
+  journal. The product went
   to an **application-local bounded history**: Wireframe owns its own undo/redo bounded at
   `WIREFRAME_HISTORY_LIMIT = 100`
   (`apps/ui/src/applications/wireframe/store/wireframeHistory.ts`), reachable by pointer, with
