@@ -180,9 +180,7 @@ fredo companion probe [--prompt <TEXT>]
   "backend": "cpu",
   "backendMode": "auto",
   "gpuLayers": 0,
-  "devices": [
-    { "name": "CPU", "deviceType": "cpu", "memoryFreeBytes": 0, "memoryTotalBytes": 0 }
-  ],
+  "devices": [],
   "modelId": "gemma-4-E2B-it-qat-UD-Q4_K_XL",
   "replyChars": 42,
   "detail": "the companion engine is ready."
@@ -200,6 +198,8 @@ fredo companion probe [--prompt <TEXT>]
 | `replyChars` | Characters in the assistant reply (`0` on a failure) |
 | `detail` | The engine's curated detail string |
 | `code` | Present only on a typed engine failure (e.g. `modelMissing`, `gpuUnavailable`, `startTimeout`) |
+
+> On a host with no usable accelerator the device set is empty (`[]`) — ggml's model split selection is empty there; a single `CPU` entry appears only under the test-only `FREDO_COMPANION_FORCE_CPU` seam and is not a product state.
 
 **Exit codes**
 
