@@ -1,8 +1,14 @@
-> **SUPERSEDED (P8, #3122).** This is the historical navigation-fluency research record from
-> spike #3115. The product no longer ships the flat-key model it tears down: every surface
-> declares a place tree + verbs, and ONE navigation dispatch funnel serves keyboard, pointer,
-> launcher, voice, agent and system. The citations below are retained as the record of what was
-> measured at the time; they point at code that has since been deleted or relocated.
+> **SUPERSEDED (P8 #3122; re-pointed 2026-11-17 by Spec #3153, slice 3 of 3).** This is the
+> historical navigation-fluency research record from spike #3115. The product no longer ships the
+> flat-key model it tears down — **and it no longer ships the declared-surface navigation engine
+> this banner used to point at either**: that engine was deleted in #3151. The direction reversed:
+> the **companion** is the interaction surface for directing Fredo conversationally (`open_app` /
+> `close_app` / `doom_mode`), the pointer is the ordinary surface inside an application, and the
+> keyboard seam is deliberately small — three platform chords
+> (`apps/ui/src/shared/window-system/platformChords.ts`) plus the plain `Tab`/`Shift+Tab`
+> window-boundary hand-off (`traversal.ts`), with a focused terminal receiving every keystroke by
+> focus. The citations below are retained as the record of what was measured at the time; they
+> point at code that has since been deleted or relocated.
 
 > **Status:** Desk research, clickable prototype and reusable session kit delivered. User evidence
 > and the numeric Gate H go/no-go decision are **deferred to #3120** (real-pilot evaluation); the

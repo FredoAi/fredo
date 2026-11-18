@@ -4731,7 +4731,8 @@ $scripts = @(
   "wait-telemetry.ps1",
   "process-hygiene.ps1",
   "launch-artifact-probe.ps1",
-  "inspect-webview-config.ps1"
+  "inspect-webview-config.ps1",
+  "check-navigation-prose-retired.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4742,6 +4743,100 @@ if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
+}
+
+# --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---
+# The guard is RED over the corpus until every prose sweep lands, so this block
+# asserts the instrument first (-SelfTest, all seven controls) and then asserts
+# the OUTCOME (the plain run is clean). The plain-run leg lands with ST-7 - the
+# sub-task that drives the corpus to zero - because landing it earlier would red
+# the harness for every developer in the slice and blur a real regression against
+# the known interim state (ST-2's ordering constraint).
+Write-Host "Navigation prose absence guard (Spec #3153):" -ForegroundColor Cyan
+$navProseGuard = ".opencode/scripts/check-navigation-prose-retired.ps1"
+
+Test-Script "guard: -SelfTest passes all seven controls" {
+  $out = & powershell -NoProfile -File $navProseGuard -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - POSITIVE",
+    "CONTROL 2 - NEGATIVE",
+    "CONTROL 3 - SEEDED ROOT",
+    "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+    "CONTROL 5 - IGNORED NON-SCAN",
+    "CONTROL 6 - SELF-REFERENCE",
+    "CONTROL 7 - ALLOWLIST AUDIT"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "seven controls pass (instrument proven; the corpus is ST-3..ST-7)"
+}
+
+# Durability leg (Spec #3153 round 2, F-4). The leg above runs in a DEV tree,
+# where `.opencode/tmp/` always exists - which is exactly how a control that
+# could not create a gitignored probe directory shipped green. A DETACHED
+# worktree at HEAD reproduces the pristine condition faithfully: it has no
+# `.opencode/tmp/`, and it HAS a `.git` marker, so `git check-ignore` still
+# answers (a hand-built scratch root or `git archive` would make every control
+# fail for the wrong reason). Bounded: one leg, one worktree, removed in finally.
+Test-Script "guard: -SelfTest passes in a pristine detached worktree" {
+  $scratch = Join-Path $env:TEMP ("fredo-navprose-" + [Guid]::NewGuid().ToString("N"))
+  $created = $false
+  try {
+    & git worktree add --detach $scratch HEAD 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      # Never skip: a leg that cannot establish its precondition must fail
+      # loudly (G-435), not report PASS by doing nothing.
+      throw "could not create the pristine worktree at ${scratch} (git exit $LASTEXITCODE)"
+    }
+    $created = $true
+    # The whole point: this tree must NOT already have the gitignored scratch dir.
+    if (Test-Path -LiteralPath (Join-Path $scratch ".opencode/tmp")) {
+      throw "the detached worktree unexpectedly carries .opencode/tmp - it is not pristine"
+    }
+    $out = & powershell -NoProfile -File $navProseGuard -SelfTest -Root $scratch 2>&1
+    $code = $LASTEXITCODE
+    $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($code -ne 0) { throw "pristine-tree self-test failed with exit ${code}: $text" }
+    foreach ($control in @(
+      "CONTROL 1 - POSITIVE",
+      "CONTROL 2 - NEGATIVE",
+      "CONTROL 3 - SEEDED ROOT",
+      "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+      "CONTROL 5 - IGNORED NON-SCAN",
+      "CONTROL 6 - SELF-REFERENCE",
+      "CONTROL 7 - ALLOWLIST AUDIT"
+    )) {
+      if (-not $text.Contains($control)) { throw "pristine-tree self-test is missing '$control'" }
+    }
+    if (-not $text.Contains("SELFTEST: PASS")) { throw "pristine-tree self-test did not report SELFTEST: PASS" }
+    return "self-test green in a detached worktree with no .opencode/tmp (the T2 that failed)"
+  }
+  finally {
+    if ($created) { & git worktree remove --force $scratch 2>&1 | Out-Null }
+    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
+  $out = & powershell -NoProfile -File $navProseGuard 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "plain guard run exited ${code} (expected 0): $text" }
+  # The guard reports `HITS: <total> (<n> not covered by the evidence allowlist)`.
+  # AC1's predicate is ZERO non-allowlisted hits; RESULT: CLEAN is the guard's own
+  # expression of that (a bare `HITS: 0` would mean the allowlisted corpus vanished).
+  if ($text -notmatch "HITS: \d+ \(0 not covered by the evidence allowlist\)") {
+    throw "plain guard run did not report zero non-allowlisted hits"
+  }
+  if ($text -notmatch "RESULT: CLEAN") { throw "plain guard run did not report 'RESULT: CLEAN'" }
+  if ($text -notmatch "Scanned files:") { throw "plain guard run printed no 'Scanned files:' line" }
+  if ($text -notmatch "Ignore filter:") { throw "plain guard run printed no 'Ignore filter:' line" }
+  return "AC1's absence predicate holds: zero non-allowlisted deleted-navigation references"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).

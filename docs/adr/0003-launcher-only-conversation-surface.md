@@ -3,6 +3,15 @@
 - **Status:** Superseded by [ADR-8](0008-teleport-attached-companion-turn.md)
   (the launcher is no longer the conversation surface; the teleport-attached instruction box is,
   and the launcher is launch/search + global commands only)
+  **and superseded a second time by Spec #3153 (slice 3 of 3)** for the vocabulary this record
+  presumes: `describeContext(appId)` and the single `dispatch(intent)` entry point named in
+  *Decision* and *Consequences* were deleted with the NavigationEngine (#3151). The direction
+  reversed: the **companion** is the interaction surface for directing Fredo conversationally,
+  not the keyboard; its grounding is the surviving module-scoped seam
+  `registerCompanionGrounding` / `readCompanionGrounding` in
+  `apps/ui/src/shared/companion/grounding.ts`, and the turn composer submits through the
+  existing skill-aware `ask` path. The *no per-application chat panel* rule ADR-8 inherited
+  from this record still holds.
 
 ## Context
 

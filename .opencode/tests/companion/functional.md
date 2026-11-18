@@ -3124,10 +3124,11 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
   desktop while the focused window is Wireframe; repeat in a standalone app window whose root carries
   `data-fredo-app-id`.
   **Expected:** resolution order `requestedAppId → topmost frame containing the landing point →
-  windowAppId → focusedAppId → null`; the chip reads `for Wireframe`; the submitted turn's envelope
-  equals `describeContext('wireframe')` (path/selection — the live grounding plus the unit pin
-  `composerTarget.test.ts`); `explicit === false`; with NO resolvable app the chip reads
-  `No app in front of Fredo` and submit sends the shipped UNGROUNDED turn (envelope null).
+  windowAppId → focusedAppId → null`; the chip reads `for Wireframe`; the submitted turn's grounding
+  equals `readCompanionGrounding('wireframe')` (`version`/`appId`/`appName`/`selection`/`dirty` —
+  the live grounding plus the unit pin `composerTarget.test.ts`); `explicit === false`; with NO
+  resolvable app the chip reads `No app in front of Fredo` and submit sends the shipped UNGROUNDED
+  turn (the `context` key absent).
   - **Edge:** overlapping frames (the TOPMOST by z at the landing point wins); a minimized window
     (not focused → fall through); a frame of a non-showable app (the default rule does NOT filter
     showable — record); a landing point exactly on a frame edge.
@@ -3140,30 +3141,29 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
   **Expected:** `resolveNamedAppMention` is whole-word, case-insensitive, longest match over `name` AND
   `id`; when the named app is showable and DIFFERENT from the default, the chip reads
   `for Mission Monitor` and `explicit === true`; the turn grounds on
-  `describeContext('mission-monitor')` (null if unregistered) and executes through the SAME dispatch
-  (F-169); naming the SAME app as the default does not set `explicit`; an AMBIGUOUS mention (2+
+  `readCompanionGrounding('mission-monitor')` (`null` if the app registered no source) and executes
+  through the SAME composer submit path (F-169); naming the SAME app as the default does not set
+  `explicit`; an AMBIGUOUS mention (2+
   distinct matches) resolves `null` and the default target is used; a mention of a NON-showable app
   does not match; a partial word (`mission`) does not match (`Mission Monitor` is whole-word).
   - **Edge:** case variants; the app `id` instead of its name; two apps whose names share a prefix; an
     instruction naming two different apps (ambiguous → default).
   - **Receipt:** E-DOM (chip + explicit flag) per leg + the unit `composerTarget.test.ts` summary.
 
-- [ ] **F-169 (R-3.6) — submit grounds the turn in `describeContext(targetApp)` and executes through the one `dispatch` funnel as the companion.**
+- [ ] **F-169 (R-3.6) — submit grounds the turn in `readCompanionGrounding(targetApp)` and runs the composer's one submit path.**
   **Steps:** target Wireframe with one CARD selected; type `change the card label to Reports` in the
-  composer; press Enter; capture the generation, the grounding envelope (unit pin / routed-intent
-  result) and the journal.
-  **Expected:** exactly ONE generation; the grounding envelope is `describeContext('wireframe')`
-  (path `Canvas`, the selected card's id/label) — one envelope per turn; the selected application
-  command executes through the ONE `dispatch` funnel with `actor:'companion'` (the relay result
-  `outcome:"Performed"`, `performed` naming the text verb) — the composer adds NO second dispatch
-  path; the card's `label` becomes `Reports`; exactly ONE journal entry attributed `Companion`; undo
-  reverts it. **The natural-language leg is scored on the AC's observable (the label becomes
-  `Reports`), not on a particular verb id** — any declared text verb that produces the label is
-  acceptable (quote the selected verb); a turn that selects no text verb and leaves the label
+  composer; press Enter; capture the generation, the grounding payload (unit pin / the turn's
+  `context`) and the resulting document.
+  **Expected:** exactly ONE generation; the grounding payload is `readCompanionGrounding('wireframe')`
+  (the selected card's id/label) — one payload per turn; the companion performs the change through its
+  own shipped skill path with the grounded turn, and the composer adds NO second execution path; the
+  card's `label` becomes `Reports`; exactly ONE history entry; undo reverts it. **The
+  natural-language leg is scored on the AC's observable (the label becomes
+  `Reports`), not on a particular verb id** — any path that produces the label is
+  acceptable (quote the selected action); a turn that leaves the label
   unchanged is a FAIL of R-4's natural-language clause.
-  - **Edge:** the model selects `setField` instead of `setLabel` (acceptable if the label becomes
-    `Reports`); a target with no registered host (envelope null → ungrounded, nothing performed);
-    Shift+Enter inserts a newline and submits nothing; one generation per submit.
+  - **Edge:** a target with no grounding source (ungrounded turn, `context` omitted, nothing
+    performed); Shift+Enter inserts a newline and submits nothing; one generation per submit.
   - **Receipt:** E-DOM (label + journal + actor) + the grounding envelope + the reply transcript.
 
 - [ ] **F-170 (R-3.7) — an empty submit is a no-op.**
