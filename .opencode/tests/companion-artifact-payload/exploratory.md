@@ -59,7 +59,7 @@
   a host where the Vulkan SDK lookup succeeds."* Do **not** substitute `cargo run`, `pnpm
   dev:tauri`, `pnpm dev:tauri:release`, a `target/<profile>` run, or a build-log line.
 
-- **E-7 — the release gate step's own failure mode.** Read the new `release.yml` step and ask: if
+- **E-7 — the release gate step's own failure mode.** Read the gate step in `release.yml` and ask: if
   `verify-installer-payload.ps1` exits 2 (`EXTRACTOR_MISSING`) on the `windows-latest` runner, does
   the job fail, or does a `$LASTEXITCODE` check pass it through? A gate that treats exit 2 as
   success would let an unverified artifact publish — a **blocker-class finding** (promote to F-22).
