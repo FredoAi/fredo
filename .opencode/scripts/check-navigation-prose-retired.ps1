@@ -144,6 +144,14 @@
                          cannot establish its own precondition asserts nothing).
                          The plan's literal path `.opencode/tmp/...` is verified
                          ignored too, and both probes are deleted in try/finally.
+                         BOTH probe parents are CREATED when absent: the plan
+                         path's `.opencode/tmp/` is gitignored, so no fresh clone
+                         or CI checkout has it - creating it is what makes this
+                         control tree-agnostic.  Its parent is DERIVED from the
+                         probe path and removed only when this control created it
+                         and left it empty, so a live `.opencode/tmp/<issue>/`
+                         survives.  A failed probe write fails LOUDLY instead of
+                         reaching the cleanup tail as a quiet pass.
     (6) SELF-REFERENCE   the guard's own source spells EVERY token and lives
                          OUTSIDE both roots, and no plain-run hit originates
                          from the guard itself.  The reservation in
@@ -910,16 +918,39 @@ if ($SelfTest) {
         $ignoredProbeFull = Join-Path $Root $IgnoredProbeRelPath
         $ignoredDirFull = Join-Path $Root $IgnoredProbeDirRel
         $planProbeFull = Join-Path $Root $IgnoredPlanProbeRelPath
+        # DERIVED from the probe path, never a second literal that could drift from
+        # the token table. The plan path lives under `.opencode/tmp/`, which is
+        # gitignored (.gitignore) and therefore ABSENT in every fresh clone and CI
+        # checkout - so this control must create it before writing, or
+        # `WriteAllText` throws DirectoryNotFoundException on exactly the machine
+        # that has to run the self-test.
+        $planProbeDirFull = Split-Path -Parent $planProbeFull
         $dirPreExisted = Test-Path -LiteralPath $ignoredDirFull
         # Only remove what this control CREATED - a pre-existing file is never
         # deleted by a control.
         $planProbePreExisted = Test-Path -LiteralPath $planProbeFull
+        $planDirPreExisted = Test-Path -LiteralPath $planProbeDirFull
         $ignoredOk = $false
+        $writesOk = $true
         try {
-            if (-not $dirPreExisted) { [void](New-Item -ItemType Directory -Path $ignoredDirFull -Force) }
-            [System.IO.File]::WriteAllText($ignoredProbeFull, ($probeLine + "`r`n"))
-            if (-not $planProbePreExisted) {
-                [System.IO.File]::WriteAllText($planProbeFull, ($probeLine + "`r`n"))
+            # A failed write must fail LOUDLY: an aborted try body would otherwise
+            # reach the "removed" tail and read as a quiet pass (F-3).
+            try {
+                if (-not $dirPreExisted) { [void](New-Item -ItemType Directory -Path $ignoredDirFull -Force) }
+                if (-not $planDirPreExisted) { [void](New-Item -ItemType Directory -Path $planProbeDirFull -Force) }
+                [System.IO.File]::WriteAllText($ignoredProbeFull, ($probeLine + "`r`n"))
+                if (-not $planProbePreExisted) {
+                    [System.IO.File]::WriteAllText($planProbeFull, ($probeLine + "`r`n"))
+                }
+            }
+            catch {
+                # NO rethrow: the remaining controls must still run and print. The
+                # failure is recorded here and counted by the single
+                # `if (-not $ignoredOk)` at the end of this control - no second
+                # $failures++.
+                Write-Output ('  [FAIL] the control could not write its probes: {0}' -f $_.Exception.Message)
+                $ignoredOk = $false
+                $writesOk = $false
             }
             Write-Output ('  wrote ignored probe: {0}' -f $IgnoredProbeRelPath)
             Write-Output ('  wrote ignored plan probe: {0}' -f $IgnoredPlanProbeRelPath)
@@ -927,6 +958,11 @@ if ($SelfTest) {
             $withIgnored = Invoke-NavProseScan -RepoRoot $Root
             if (-not $withIgnored.Ok) {
                 Write-Output ('  [FAIL] the scan could not run with the ignored probe present: {0}' -f $withIgnored.Reason)
+            }
+            elseif (-not $writesOk) {
+                # The probes were not written, so a zero-hit result would assert
+                # nothing. Do not read it as a pass.
+                Write-Output '  [FAIL] the probe scan was skipped because the probes could not be written'
             }
             else {
                 $ignoredHits = @($withIgnored.Hits | Where-Object { $_.Path -eq $IgnoredProbeRelPath })
@@ -956,6 +992,13 @@ if ($SelfTest) {
                 $left = @(Get-ChildItem -LiteralPath $ignoredDirFull -Force -ErrorAction SilentlyContinue)
                 if ($left.Count -eq 0) { Remove-Item -LiteralPath $ignoredDirFull -Force }
             }
+            # Remove the plan probe's derived parent ONLY when this control created
+            # it AND it is empty - a live `.opencode/tmp/<issue>/` from this very run
+            # must survive this cleanup.
+            if ((-not $planDirPreExisted) -and (Test-Path -LiteralPath $planProbeDirFull)) {
+                $planLeft = @(Get-ChildItem -LiteralPath $planProbeDirFull -Force -ErrorAction SilentlyContinue)
+                if ($planLeft.Count -eq 0) { Remove-Item -LiteralPath $planProbeDirFull -Force }
+            }
         }
         $leftover = $false
         foreach ($p in @($ignoredProbeFull)) {
@@ -978,6 +1021,18 @@ if ($SelfTest) {
         }
         else {
             Write-Output ('  probe dir created by this control removed: {0} (path absent)' -f $IgnoredProbeDirRel)
+        }
+        # The plan probe's parent gets the SAME three-way report: a dir this control
+        # created and failed to remove is a defect, never a silent pass.
+        if ($planDirPreExisted) {
+            Write-Output ('  pre-existing plan probe dir untouched: {0}' -f $planProbeDirFull)
+        }
+        elseif (Test-Path -LiteralPath $planProbeDirFull) {
+            Write-Output ('  [FAIL] the plan probe dir this control created was not removed (not empty): {0}' -f $planProbeDirFull)
+            $failures++
+        }
+        else {
+            Write-Output ('  plan probe dir created by this control removed: {0} (path absent)' -f $planProbeDirFull)
         }
         if (-not $ignoredOk) { $failures++ }
     }

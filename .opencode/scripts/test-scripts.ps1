@@ -4775,6 +4775,53 @@ Test-Script "guard: -SelfTest passes all seven controls" {
   return "seven controls pass (instrument proven; the corpus is ST-3..ST-7)"
 }
 
+# Durability leg (Spec #3153 round 2, F-4). The leg above runs in a DEV tree,
+# where `.opencode/tmp/` always exists - which is exactly how a control that
+# could not create a gitignored probe directory shipped green. A DETACHED
+# worktree at HEAD reproduces the pristine condition faithfully: it has no
+# `.opencode/tmp/`, and it HAS a `.git` marker, so `git check-ignore` still
+# answers (a hand-built scratch root or `git archive` would make every control
+# fail for the wrong reason). Bounded: one leg, one worktree, removed in finally.
+Test-Script "guard: -SelfTest passes in a pristine detached worktree" {
+  $scratch = Join-Path $env:TEMP ("fredo-navprose-" + [Guid]::NewGuid().ToString("N"))
+  $created = $false
+  try {
+    & git worktree add --detach $scratch HEAD 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      # Never skip: a leg that cannot establish its precondition must fail
+      # loudly (G-435), not report PASS by doing nothing.
+      throw "could not create the pristine worktree at ${scratch} (git exit $LASTEXITCODE)"
+    }
+    $created = $true
+    # The whole point: this tree must NOT already have the gitignored scratch dir.
+    if (Test-Path -LiteralPath (Join-Path $scratch ".opencode/tmp")) {
+      throw "the detached worktree unexpectedly carries .opencode/tmp - it is not pristine"
+    }
+    $out = & powershell -NoProfile -File $navProseGuard -SelfTest -Root $scratch 2>&1
+    $code = $LASTEXITCODE
+    $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($code -ne 0) { throw "pristine-tree self-test failed with exit ${code}: $text" }
+    foreach ($control in @(
+      "CONTROL 1 - POSITIVE",
+      "CONTROL 2 - NEGATIVE",
+      "CONTROL 3 - SEEDED ROOT",
+      "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+      "CONTROL 5 - IGNORED NON-SCAN",
+      "CONTROL 6 - SELF-REFERENCE",
+      "CONTROL 7 - ALLOWLIST AUDIT"
+    )) {
+      if (-not $text.Contains($control)) { throw "pristine-tree self-test is missing '$control'" }
+    }
+    if (-not $text.Contains("SELFTEST: PASS")) { throw "pristine-tree self-test did not report SELFTEST: PASS" }
+    return "self-test green in a detached worktree with no .opencode/tmp (the T2 that failed)"
+  }
+  finally {
+    if ($created) { & git worktree remove --force $scratch 2>&1 | Out-Null }
+    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
   $out = & powershell -NoProfile -File $navProseGuard 2>&1
   $code = $LASTEXITCODE
