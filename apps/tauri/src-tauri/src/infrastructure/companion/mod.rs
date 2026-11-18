@@ -16,7 +16,6 @@ pub mod download;
 pub mod models;
 pub mod performance_mode;
 pub mod skills;
-pub mod surface_registry;
 
 pub use doom_decision::{
     DoomDecision, DoomDecisionError, DoomDecisionSource, DoomDecisionSourceState,

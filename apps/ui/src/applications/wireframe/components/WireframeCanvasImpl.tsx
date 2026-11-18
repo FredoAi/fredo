@@ -186,8 +186,7 @@ const TRANSFORMER_ANCHORS = [
   'bottom-right',
 ] as const;
 
-const EMPTY_HINT =
-  'Add an element from Insert, or ask the Companion to draft a wireframe.';
+const EMPTY_HINT = 'Add an element from Insert to start your wireframe.';
 const CANVAS_INSTRUCTIONS =
   'Select an element by clicking it and drag or resize it on the canvas. Insert adds elements, the details view edits the selection, and the Arrange, View and File controls group, align, zoom and save the document.';
 

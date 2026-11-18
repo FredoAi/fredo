@@ -1,4 +1,3 @@
-pub mod app_command;
 pub mod app_open;
 pub mod app_window;
 pub mod cli;

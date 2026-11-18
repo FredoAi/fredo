@@ -68,31 +68,48 @@ guard paths, roots, exit codes, testids or test titles.
 
 - [ ] **Q-2 (R-1a, static, Env S).** Self-test:
   `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/check-companion-commands-retired.ps1 -SelfTest"`.
-  **Expected:** `EXITCODE=0` AND the output shows **all five controls** PASS:
+  **Expected:** `EXITCODE=0` AND the output shows **all seven controls** PASS:
   (1) positive-per-token with `legs executed == tokens declared` = **22**;
   (2) negative (a comment-only mention flags nothing; for the code-only classes a quoted string
   literal flags nothing either);
   (3) seeded-root probe flagged at the exact `path:line`;
   (4) out-of-root probe **not** scanned;
+  (6) ignored-path non-scan — a probe inside a gitignored build-output dir is **not** scanned
+  (the ignore filter is engaged, not inert);
+  (7) gen-coverage — a probe under `apps/tauri/src-tauri/gen/` **IS** scanned (the tracked
+  `gen/schemas/*` are visible to the guard, so a name-based walk prune may never hide tracked
+  source; the control fails loudly if `gen` is pruned again, and fails with an explicit message if
+  its probe produces no hit);
   (5) self-reference (plain run clean while the token table spells all 22).
-  **Edge:** record the five per-control lines, never only the exit code — an exit `0` without a
+  **Edge:** record the seven per-control lines, never only the exit code — an exit `0` without a
   control line is a **suite defect** (G-430). **Probe cleanup:** assert `Test-Path` is `False` on
   the probe paths **the guard itself prints** — do not pin an invented seeded-root filename (its
   name is the guard's to choose). The out-of-root probe *is* pinned by the names block at
   `apps/tauri/__companion_absence_probe_outside__.ts` (`-SelfTest` control 4). A leftover probe is
   a FAIL even at exit `0`. Control 4 writes its probe as a **sibling of the scanned root** — a probe
-  written *inside* the root would make control 4 vacuous.
+  written *inside* the root would make control 4 vacuous. Control 3 is the mirrored assertion for
+  the ignore filter: its probe is untracked and **not** ignored, so the filter must leave it
+  visible — a filter that hid it would be vacuity, not scoping.
 
 - [ ] **Q-3 (R-1a, static, Env S).** Read the guard header + allowlist block of
   `.opencode/scripts/check-companion-commands-retired.ps1`.
   **Expected:** exactly **two** scanned roots (`apps/tauri/src-tauri`, `apps/ui/src`); the skip-dir
-  list (`target`, `gen`, `node_modules`, `dist`, `.git`); the text-extension list
+  list (`target`, `node_modules`, `dist`, `.git` — **`gen` is NOT pruned**); the text-extension list
   (`.rs .toml .json .ts .tsx .js .jsx .mjs .cjs .css`); 22 tokens in 4 classes with the
   **per-class text mode** (class A + relay raw = comment-stripped raw substring; class B + relay
   symbols = code-only with identifier boundaries); an evidence allowlist containing **exactly one**
   entry normalising to `.opencode/tests/companion-command-removal/`.
   `Test-Path .opencode/tests/companion-command-removal` is `True`. **No** `apps/**` path is in the
   allowlist; the guard exits `2` if one is.
+  **Also expected — the ignore filter:** paths `.gitignore` marks as untracked-and-ignored are **not
+  scanned** (the plain run prints the excluded count, `Ignore filter: N path(s) excluded (git
+  check-ignore)`). This is the authoritative scoping mechanism. The skip-dir list is only a
+  fast-path walk prune, and a skip-dir name is legitimate **only** when every tracked
+  text-extension file beneath it is already git-ignored (or there is none) — the prune may only
+  **duplicate** a rule the repository itself makes, never be the reason a tracked, non-ignored file
+  is unread. `gen/` is tracked and not ignored, so it is scanned (self-test control 7 asserts this).
+  If the ignore query cannot be applied the guard exits `2` — it never falls
+  back to the unfiltered walk.
   **Edge:** a maintainer widening a root to `.opencode/tests` makes this entry *live* rather than
   inert — assert the entry **resolves**, not that it is unnecessary.
 
@@ -189,10 +206,16 @@ guard paths, roots, exit codes, testids or test titles.
 
 ## AC3 / R-3 — a companion turn is unharmed (Env L, requires the model)
 
-- [ ] **Q-11 (R-3a, live, Env L).** Open the composer, then a plain conversational turn:
-  (1) click `.fredo-companion-avatar` **once** (`CompanionEntity.tsx:1862`; single click opens the
-  composer, `:1610-1650`); (2) wait ≥250 ms for the armed single-click timer (an immediate re-read
-  finds 0 composers and is a **FALSE FAIL**); (3) type a greeting into
+- [ ] **Q-11 (R-3a, live, Env L).** Open the composer, then a plain conversational turn.
+  **The composer mounts ONLY on the `overlay` surface** (`CompanionEntity.tsx:1833`:
+  `surface === 'overlay' && composerOpen`), and the home **seat** never renders it — so a click on
+  `.fredo-companion-avatar` at the seat fires the shipped joke and CANNOT open the composer. The
+  shipped pointer path from the seat is the **Ctrl+right-click teleport** (`FredoCompanion.tsx:192-215`:
+  `e.button === 2 && e.ctrlKey` -> `entity.requestTeleport(...)`; the destination overlay settles the
+  open, `CompanionEntity.tsx:767-774`). Recipe:
+  (1) Ctrl+right-click the companion to teleport it into an overlay; (2) wait until
+  `[data-testid="fredo-companion-composer"]` has count **1** (an immediate re-read finds 0 composers
+  and is a **FALSE FAIL**); (3) type a greeting into
   `[data-testid="fredo-companion-composer-input"]`; (4) click
   `[data-testid="fredo-companion-composer-submit"]`.
   **Expected:** `[data-testid="fredo-reply-surface"]` (`SpeechBubble.tsx:102`) renders **non-empty**
@@ -247,7 +270,9 @@ guard paths, roots, exit codes, testids or test titles.
   `CompanionEntity.tsx:1154-1159`).
 
 - [ ] **Q-15 (R-2b, live, Env L).** **No publisher, no crash.** On a freshly booted env, **before
-  any application has ever been opened**, drive one plain conversational turn from the composer.
+  any application has ever been opened**, drive one plain conversational turn from the composer —
+  same opener as Q-11 (the composer mounts only on the `overlay` surface, so reach it from the home
+  seat with the Ctrl+right-click teleport gesture, `FredoCompanion.tsx:192-215`).
   **Expected:** the turn produces a normal reply (as Q-11) with no error settle, and
   `document.querySelectorAll('[data-testid^="window-frame-"]').length === 0` **before** the turn.
   **Edge:** drive the trigger from the pre-feature state (G-265) — opening an app first and then

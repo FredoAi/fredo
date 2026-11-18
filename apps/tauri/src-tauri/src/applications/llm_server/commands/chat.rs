@@ -65,7 +65,7 @@ pub fn llm_chat_with_audio(
 /// guarantees exactly one trailing `llm-done`.
 pub fn spawn_chat(app: AppHandle, messages: Vec<LlmMessage>, image_base64: Option<String>) {
     tauri::async_runtime::spawn(async move {
-        let registry = status::companion_skill_registry(&app);
+        let registry = status::companion_skill_registry();
         let turn = skills::skill_turn(messages, &registry, None, image_base64.as_deref());
         let _ = skills::run_skill_stream(&app, &registry, turn).await;
     });
@@ -78,7 +78,7 @@ pub fn spawn_chat(app: AppHandle, messages: Vec<LlmMessage>, image_base64: Optio
 /// readable `llm-error` before it on failure) — never a hang.
 pub fn spawn_audio_chat(app: AppHandle, messages: Vec<LlmMessage>, audio_base64: String) {
     tauri::async_runtime::spawn(async move {
-        let registry = status::companion_skill_registry(&app);
+        let registry = status::companion_skill_registry();
         let turn = skills::skill_turn(messages, &registry, Some(&audio_base64), None);
         let _ = skills::run_skill_stream(&app, &registry, turn).await;
     });
