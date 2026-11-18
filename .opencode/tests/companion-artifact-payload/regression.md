@@ -19,7 +19,9 @@
 >   pins `bundle.externalBin == []`; F-27 there is the additive payload row this spec adds — F-2 must
 >   survive **byte-identical**).
 > - `.opencode/tests/release-pipeline/` — the release line's workflow/config contract (`release.yml`
->   triggers, CODEOWNERS, `releaseDraft: true`). The new gate step must be ADDITIVE.
+>   triggers, CODEOWNERS, the build-only `tauri-apps/tauri-action` step + the single draft publish). The
+>   build-only → locate → gate → single-draft-publish sequence must be ADDITIVE to the
+>   trigger/CODEOWNERS contract.
 > - `.opencode/tests/ci-pipeline/` — the `validate` merge gate on `main`.
 > - `.opencode/tests/llama-setup/` and `.opencode/tests/setup/` — model acquisition/readiness (the
 >   GGUF trio stays OUT of the payload).
@@ -71,12 +73,22 @@
 
 - [ ] **R-4.** Read `.github/workflows/release.yml`.
   - **Expected:** `on.push.branches` is still exactly `['release/stable']` (+ `workflow_dispatch`);
-    no `pull_request` trigger and no `main` trigger; `releaseDraft: true` unchanged; every `uses:`
-    still SHA-pinned; `pnpm install --frozen-lockfile` present; `projectPath:
-    apps/tauri/src-tauri` and `tagName: app-v__VERSION__` unchanged; **exactly one** new step (the
-    payload gate) appears, positioned after `tauri-apps/tauri-action`.
-  - **Edge:** an unpinned action, a changed trigger, or `releaseDraft: false` ⇒ **FAIL**. A second
-    new step that publishes/auto-merges ⇒ **FAIL** (out of scope).
+    no `pull_request` trigger and no `main` trigger; every `uses:` still SHA-pinned;
+    `pnpm install --frozen-lockfile` present; `projectPath: apps/tauri/src-tauri` unchanged; the
+    SHA-pinned `tauri-apps/tauri-action` step carries **no** `tagName`, `releaseName`, `releaseBody`,
+    `releaseDraft` or `releaseId` (build-only ⇒ no release call — moving `tagName: app-v__VERSION__` /
+    `releaseDraft: true` **off the action** is the fix, not a regression); strictly **after** it, a
+    **locate** step for the newest `apps/tauri/src-tauri/target/release/bundle/nsis/*-setup.exe`
+    (taken from `steps.tauri.outputs.artifactPaths`, newest-by-mtime directory fallback) and exactly
+    **one gate** step that invokes `verify-installer-payload.ps1` and fails the job with
+    `::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT`; the workflow's **only** publish step is a later
+    `gh release create "app-v<version>" <installer> --draft` guarded by `if: success()`.
+  - **Edge:** a `tagName`/`releaseName`/`releaseBody`/`releaseDraft`/`releaseId` present on the
+    `tauri-action` step ⇒ **FAIL** (that is the `app-v0.2.0` mode: the draft is created inside the build
+    step, before any gate). A gate step placed **before** `tauri-action` ⇒ **FAIL** (nothing to gate
+    yet). An unpinned action or a changed trigger ⇒ **FAIL**. A publishing step other than the single
+    `gh release create "app-v<version>" <installer> --draft`, or one not guarded by `if: success()`
+    ⇒ **FAIL** (out of scope).
 
 ## R-5 — Main's `validate` gate and CODEOWNERS unchanged
 
