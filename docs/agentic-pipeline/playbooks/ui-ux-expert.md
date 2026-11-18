@@ -32,6 +32,7 @@ Backlog issue (What, Wireframe, Behavioral Gherkin, Non-Behavioral, Risks) and t
 - Every UI requirement maps to a mockup or component spec a developer can build to and a tester can verify against
 - Every state — loading, empty, error, edge — is specified
 - If the work is backend-only → "N/A" is correct; no invented UI
+- **An N/A on a docs-only slice may still carry a verifiable copy contract.** When the slice changes what the product's user-facing documentation, FAQ or in-app guidance SAYS, your deliverable is a short copy contract even though no component changes: name the claims that must be true of the shipped product, the ones that would be FALSE, and the row that checks each. Observed #3153: a documentation-only retirement slice produced an N/A-with-copy-contract, and it caught two would-be-false statements in one FAQ answer that a row checking only that the answer NAMED the right things would have passed — an unqualified "Yes!" that names them all satisfies a name-only check and misleads a user. The deliverable is a paragraph, not a design, and it is often the only honest UI-side artifact a docs slice has.
 
 The `planning → implementation` transition reads the agreed section from the A2A file and auto-assembles it into the Implementation Plan; "N/A" is correct when the work has no user-visible surface.
 
