@@ -1687,6 +1687,35 @@ Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
   return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
 }
 
+# An agent that must EVIDENCE a committed absence guard must be able to RUN it (#3153).
+# The AUTHORING role (developer) needs the guard DIRECT (it writes the script and re-runs
+# it) plus the run-exitcode wrapper (its numeric EXITCODE/HITS receipt); the VERIFYING
+# role (tester) drives it through the wrapper, which is how its rows are written (G-399).
+# The grant must stay NARROW: per-script globs, never a general `.opencode/scripts/*`.
+Test-Script "Guard-evidence roles can run the retirement/prose guards they must prove (#3153)" {
+  $guard = "check-navigation-prose-retired.ps1"
+  $direct = "powershell -File .opencode/scripts/$guard"
+  $viaWrapper = "powershell -File .opencode/scripts/run-exitcode.ps1 -Command `"$direct`""
+  $failures = @()
+  # developer: direct + wrapper (both required — it authors the guard and needs the receipt).
+  foreach ($cmd in @($direct, $viaWrapper)) {
+    if ((Get-BashEffect "developer" $cmd) -ne "allow") { $failures += "developer cannot run '$cmd'" }
+  }
+  # tester: the wrapper route its rows are written in (direct access is deliberately not needed).
+  if ((Get-BashEffect "tester" $viaWrapper) -ne "allow") { $failures += "tester cannot drive the guard through run-exitcode" }
+  # Negatives: the grant must not generalise to other scripts, and the read-only
+  # auditor stays denied by deliberate decision (it judges the record, not the tree).
+  foreach ($cmd in @(
+    "powershell -File .opencode/scripts/dev-env.ps1 -Action Status",
+    "powershell -File .opencode/scripts/check-another-retired.ps1"
+  )) {
+    if ((Get-BashEffect "developer" $cmd) -ne "deny") { $failures += "developer grant over-broad: '$cmd' NOT denied" }
+  }
+  if ((Get-BashEffect "auditor" $direct) -ne "deny") { $failures += "auditor guard-execution must stay denied (judges the record, not the tree)" }
+  if ($failures.Count -gt 0) { throw "Guard-evidence gap: $($failures -join '; ')" }
+  return "developer: $guard direct + via run-exitcode; tester: via run-exitcode; grant narrow, auditor denied"
+}
+
 # Orchestrator may merge a FEATURE branch but never main/master (incl. --ff-only)
 Test-Script "SI git merge: feature allowed, main/master denied" {
   $feature = (Get-BashEffect "orchestrator" "git merge spec/633") -eq "allow"
