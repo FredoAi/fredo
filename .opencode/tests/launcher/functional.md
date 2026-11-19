@@ -2084,13 +2084,14 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 
 ---
 
-## #3120 extension — launcher + agent bridge (NavigationEngine P6, live)
+## #3120 extension — launcher + agent bridge (SHIPPED: launch/search only, live)
 
-> Issue #3120 grounds the launcher in the active application's navigation context and makes the
-> companion able to change what you are looking at with visible, undoable attribution. Cases map
-> 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` (R-1.1…R-9.4 + NFR), keyed to the
-> Architect's BINDING NAMES BLOCK §3.1–3.12 and the UI/UX §2.x/§4/§5 bindings.
-> **Verification policy: live** (R-8.x are the only `static` rows — committed template content).
+> Issue #3120 briefly grounded the launcher in an active application's navigation context and let
+> the companion change what you are looking at. The human-directed rescope rejected that
+> experience, and the navigation engine itself is deleted in #3151. **What ships:** the launcher is
+> app launch / search, the open-apps row and the global command bar — nothing else. There is no
+> context header, no `>` palette, no app-scoped command palette and no launcher-only conversation.
+> **Verification policy: live.**
 > A static-only PASS is a FALSE PASS: every live row needs E-DOM/E-SHOT and the round needs the
 > `telemetry_spans` receipt (F-162).
 > **Evidence record:** the POSTED `## Tests Runs (round N)` comment — never a
@@ -2098,588 +2099,423 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 >
 > **Shared levers (use these, do not improvise):**
 > **L1** open the pilot — type `wire` in `[data-testid="launcher-command-input"]` + Enter (the
-> shipped prefix match opens Wireframe; `feature.id` = `wireframe` = `wireframeSurface.tree.appId`).
+> shipped prefix match opens Wireframe).
 > **L2** reset — the Wireframe document is session-scoped (module store); reload to reset. Only
-> ever drive destructive verbs on a scratch document.
-> **L3** element + selection — in Wireframe press `c` (Create), `r` (arm Rectangle), drag one
-> rectangle, `Escape`, then `ArrowRight` in the root place (`wireframe.selection.next`).
-> **L4** palette — `Ctrl+Space` (or `/ Ask`) then `> <term>`.
-> **L5** companion channel (deterministic, no model) —
-> `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-<n>", appId:"wireframe", action:"<verbId>", arguments:{}}})`;
-> the mounted Wireframe executes it via `useAppCommandIntent` →
-> `host.runIntent({channel:'agent', actor:'companion'})` and answers
-> `app-command-intent-result`. This is the sanctioned **scripted routed intent** (no transcript
-> exists — the audio clip is the turn input).
-> **L6** confirmation — destructive/external from `launcher|voice|agent` reaches
-> `requestLauncherConfirmation`; the dialog renders with **Cancel focused**.
+> ever drive destructive actions on a scratch document.
+> **L3** element + selection — click `wireframe-insert` → Elements → `Rectangle`, drag on the
+> canvas, then click the shape on the canvas; read `data-wireframe-selection-*`.
+> **L4** launcher query — `Ctrl+Space`, then type the app or text to search.
+> **L5** companion channel — the companion's turn offer is exactly the three static skills
+> `open_app` / `close_app` / `doom_mode` from the zero-argument `companion_skill_registry()`
+> (`applications/llm_server/status.rs:691`). Drive a skill through the SHIPPED `llm-skill-call`
+> path; there is no per-application command relay and no `app_command_intent` surface.
+> **L6** companion grounding — the composer's turn carries
+> `readCompanionGrounding(appId)` (`shared/companion/grounding.ts:101`) when the target app
+> registered a source; an ungrounded turn omits the `context` key entirely.
 >
-> **Shipped literals these rows assert** (re-derived from source, G-316): 7 places / **55** verbs
-> (`wireframeSurface.ts`; 6 `publish:false` entry verbs → **49** published); declared risk classes
-> over the 55 verbs: **safe 18 / mutating 35 / destructive 1 / external 1** (`place.exportPng`,
-> reclassified to `external` by ST-4 per QA Q-2); `formatPlacePathLabel`
-> joins with `' › '`;
-> `formatKeyHint(['x'])` = `X`; `NAV_RISK_LABELS` = `Safe/Changes/Destructive/External`;
-> `NAV_ACTOR_LABELS` = `You/Companion/System`; `PALETTE_MAX_RECENTS` = 5; `maxContextBytes` = 16384;
-> `maxVerbs` = 64.
+> **Shipped literals these rows assert** (re-derived from source, G-316): the grounding payload
+> `version`/`appId`/`appName`/`selection{count,kinds,label,ids}`/`dirty`
+> (`grounding.ts:31,43-60`); `COMPANION_CAPABILITY_LIMITS.maxContextBytes` = **16384**
+> (`grounding.ts:38-39`); the three static skills in that order (`status.rs:1462-1474`).
 
-## F-126 (R-1.1) — Ctrl+Space over Wireframe renders the context header before any query
+## F-126 (R-1.1) — Ctrl+Space over a Wireframe window renders NO context header
 
-- [ ] F-126: L1, then `Ctrl+Space` and read the context region **without typing**.
-  **Expected:** `[data-testid="launcher-context"]` (`role="group"`, `aria-label="Current context"`)
-  is present; `launcher-context-path` text === `formatPlacePathLabel(envelope.placePath)`
-  (`Canvas` at root); `launcher-context-selection` === the selected element's `label` (the node is
-  hidden when `selection.count === 0`); `launcher-context-verb` chips = the FIRST 3 of
-  `describeContext('wireframe').verbs.filter(v => v.available)` in declaration order, each with
-  `data-nav-verb-id` and its `title`, plus a `+{n-3}` counter when more than 3 are available.
-  **Edge:** no selection (count 0 → no selection node); multi-select; transient place
-  (`Canvas › Create`); empty envelope → one muted `No context` line, no selection/verbs rows.
-  **Receipt:** E-DOM (the region subtree) + E-SHOT + the derived available-verb list.
-- [ ] F-126 root-leg (R-1.1, **selection changed AFTER the last dispatch** — the round-2 coverage
-  gap): L1 fresh load → open Wireframe at the ROOT place (`data-wireframe-place="wireframe.canvas"`);
-  have exactly one shape; deselect it with a **canvas pointer click on empty stage** (store-only
-  `clearSelection`); force ONE host commit while the selection is empty (enter `f` →
-  `Canvas › File`, `Escape` back) so the header memo's last envelope is the no-selection one; then
-  **pointer-click the rectangle on the canvas** (store-only `select()` — no place dispatch) and
-  `Ctrl+Space`. Record the surface state (`data-wireframe-place`, `data-wireframe-selection-count`,
-  `data-wireframe-selection-id`/`-type`) **separately** from the launcher read so place and selection
-  cannot be conflated.
-  **Expected:** `launcher-context` present with `pathText === 'Canvas'`; `launcher-context-selection`
-  **PRESENT** and equal to the element's label (`rect`); verb chips = the first 3 of the
-  *with-selection* availability set and overflow **`+44` (47 available)** — NOT `+28` / 31 (the
-  no-selection set). This is the resident defect the round-2 PASS missed: F-126/F-128 previously
-  proved only dispatch-driven freshness (place entry), and a store-only selection change left the
-  header and the companion grounding envelope on the empty-selection snapshot. The fix is
-  `NavigationHost.refreshContext()` (value fingerprint over `appId`/`placePath`/`selection.*`/`dirty`,
-  silent ONE-epoch advance) published by the Wireframe provider's store subscription.
-  **Edge:** deselect store-only at the root → the header drops the selection node and returns to the
-  no-selection set (`+28`); reselect → it returns without a reload.
-  **Receipt:** E-DOM (the exact `hasContext`/`pathText`/`selectionPresent`/`selectionText`/`overflow`
-  object) + E-SHOT + the separate surface-state read.
-- [ ] F-126 edge: a MINIMIZED Wireframe window is not the active app — the launcher falls back
-  (F-127), never a stale header.
+- [ ] F-126: L1, then `Ctrl+Space` and read the launcher region **without typing**.
+  **Expected:** `[data-testid="launcher-context"]` count **0** and `launcher-context-path` /
+  `-selection` / `-verb` count **0** — the launcher does not read an application's context and has no
+  header. The shipped command bar (`launcher-command-bar`), its input
+  (`launcher-command-input`) and the grid are present and usable. The retired header was the only
+  consumer of a navigation host; no application registers one.
+  **Edge:** no selection; multi-select; a minimized Wireframe window; two apps open — the launcher
+  DOM is identical in every case.
+  **Receipt:** E-DOM (the absence + the shipped nodes) + E-SHOT.
+- [ ] F-126 root-leg (R-1.1 — the retirable-lever check): L1 fresh load, select and deselect an
+  element with **canvas pointer clicks** (store-only), then `Ctrl+Space`.
+  **Expected:** `launcher-context` count **0** in BOTH states and after any number of store-only
+  selection changes — there is no header, no host epoch and nothing to refresh. Record the surface
+  state (`data-wireframe-selection-count`, `-selection-id`) separately from the launcher read so the
+  two cannot be conflated.
+  **Edge:** pan/zoom (`setView`) with an unchanged selection; a reload mid-session.
+  **Receipt:** E-DOM (the absence in both states) + E-SHOT + the separate surface-state read.
+- [ ] F-126 edge: a MINIMIZED Wireframe window is not the active app — the launcher is unchanged
+  (F-127).
 
-## F-127 (R-1.2) — a no-surface app renders today's launcher, unchanged
+## F-127 (R-1.2) — the launcher is identical whatever app is focused
 
-- [ ] F-127: Focus Mission Monitor (no registered navigation host), `Ctrl+Space`, then type `> set`,
-  then type `undo the last change` + Enter.
-  **Expected:** `launcher-context` count 0; `launcher-palette-announcer` NOT mounted; no
-  `launcher-palette-list`; `>` renders the shipped `LauncherActionList` (`launcher-action-entry`
-  rows) and Enter still runs the hotkey action's own side effect; `undo the last change` takes the
-  **shipped send path** (one companion generation, zero journal entries, zero palette) — the undo
-  matcher / `resolveLauncherRoute` is not consulted (UI/UX D1).
-  **Edge:** plain query (grid filters, shipped Enter); `>` then clearing back to a plain query; a
-  no-surface app while Wireframe is open behind.
-  **Receipt:** E-DOM (absence + the shipped rows) + E-SHOT + the generation count.
+- [ ] F-127: Focus Mission Monitor, `Ctrl+Space`, then type `> set`, then type
+  `undo the last change` + Enter.
+  **Expected:** the launcher DOM over Mission Monitor is **byte-identical** to over an open Wireframe
+  window (F-126/F-167): no `launcher-context`, no `launcher-palette-announcer`, no
+  `launcher-palette-list`, no `launcher-action-entry`. `>` stays literal query text in
+  `launcher-command-input` (kept, never stripped) and the results region renders the shipped grid /
+  open-apps row only; Enter on `> set` takes the shipped `resolveEnterAction` path against the
+  literal text (no palette, no action dispatch); `undo the last change` is ordinary query text that
+  finds no app and launches nothing (the text is retained).
+  **Edge:** plain query (grid filters, shipped Enter); `>` then clearing back; a no-app environment.
+  **Receipt:** E-DOM (the two identical structures) + E-SHOT.
 
-## F-128 (R-1.3) — the header reads a FRESH envelope and updates while the launcher stays open
+## F-128 (R-1.3) — there is no live header to refresh
 
-- [ ] F-128: L1, `Ctrl+Space`, then L4 with `create` + Enter (the `wireframe.create` entry verb is a
-  **navigation** effect, so the launcher stays open per UI/UX §1.5).
-  **Expected:** `launcher-context-path` becomes `Canvas › Create` **without remount or reload**
-  within one host notification (≤ 500 ms); the announcer carries
-  `navPlaceEnterMessage('Create', n)` = `Create — n actions`; the value is the fresh envelope (a
-  stale read would still show `Canvas` — the store publishes `placePath` only on provider mount).
-  **Edge:** then dispatch a mutating verb from the transient place → exactly one level popped back
-  to `Canvas`; several navigation dispatches in a row; `Ctrl+Space` reopen after a dispatch.
-  **Receipt:** E-DOM before/after (both texts) + E-SHOT.
-- [ ] F-128 store-only (R-1.1/R-1.3 — freshness without a dispatch): **alongside** the place-entry
-  refresh above, prove the OTHER freshness source. With the launcher CLOSED and the app at the
-  root `Canvas` place, change the selection with a **canvas pointer click** (select an element /
-  clear the selection) — a store-only mutation that dispatches no verb and writes no journal entry —
-  then `Ctrl+Space`.
-  **Expected:** the header reflects the POST-change envelope on open (`launcher-context-selection`
-  present + the new label, or absent when the selection was cleared), with the path unchanged
-  (`Canvas`) and no page reload; the companion grounding envelope carries the same
-  `selection.count`/`ids`/`kinds`/`label`. While the launcher is OPEN a store-only change cannot be
-  made by pointer (the launcher overlays the canvas), so the in-open no-remount proof is the
-  deterministic pin: `LauncherShell.navigationPalette.test.tsx` (`root selection freshness …`) asserts
-  the header updates on `host.refreshContext()` and `launcher-context` stays the **same DOM node**
-  (E-UNIT), and `host.test.ts` `N-04b` pins value-fingerprinting, the ONE-epoch advance, the silent
-  no-op and `describeContext()` never advancing the epoch. A store-only change must never write a
-  journal entry.
-  **Edge:** pan/zoom (`setView`) fires store notifications with an unchanged selection — the provider
-  pre-filter must not advance the host epoch (no header churn, no announcement).
-  **Receipt:** E-DOM before/after + E-SHOT + the named unit pins.
+- [ ] F-128: L1, `Ctrl+Space`, then type `create` + Enter, then a mutating action, then `Ctrl+Space`
+  again.
+  **Expected:** `launcher-context` count **0** at every step; no announcer text; no node is added or
+  removed as the app's state changes. There is no host registry, no context-refresh call, no value
+  fingerprint and no host epoch, so there is nothing to go stale and no unit pin to name.
+  **Edge:** several app-state changes in a row; a reopen after an action; a theme switch while open.
+  **Receipt:** E-DOM before/after (the absence in both) + E-SHOT.
 
-## F-129 (R-2.1 projection) — grouped Place→Verb model: parity, order, path/key/risk, recents
+## F-129 (R-2.1 projection) — no palette projection exists
 
-- [ ] F-129: `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/launcherNavigationPalette.test.ts`.
-  **Expected:** over `wireframeSurface` + an empty snapshot + `recents: []` —
-  `rows.length === surface.verbs.length` (**55** shipped) and `rows.map(r => r.verbId)` deep-equals
-  `derivePalette(surface, snapshot, []).map(r => r.verbId)` (the shipped P3 order); group path
-  labels include `Canvas › Create` … `Canvas › File`; `wireframe.element.delete` → `pathLabel
-  'Canvas › Edit'`, `key 'x'`, `keyHint 'X'`, `risk 'destructive'`, `riskLabel 'Destructive'`,
-  `available false` with `reason === NAV_UNAVAILABLE_REASON`; `wireframe.zoom.in` → `keyHint '+'`,
-  `riskLabel null`; `wireframe.element.toggleLock` → `riskLabel 'Changes'`. Recents:
-  `['wireframe.element.toggleLock','wireframe.element.toggleLock','stale.verb']` →
-  `rows[0].verbId` = `wireframe.element.toggleLock`, `section 'recent'`, `recentsCount 1`, row
-  count unchanged; >5 valid recents → `recentsCount === PALETTE_MAX_RECENTS` (**5**).
-  **Edge:** unbound verb (`keyHint ''`); `key`/`keyHint` compared against
-  `firstKeyInPlace(reg, primaryPlaceId, verbId)`, never a global lookup; the assertion must read the
-  PROJECTION's fields, not the source verb (G-418).
-  **Receipt:** the vitest summary quoted in `## Tests Runs` (E-UNIT).
+- [ ] F-129: `pnpm --filter @fredo/ui test:run applications/home/components/launcher`.
+  **Expected:** `launcherNavigationPalette.ts` (and its test), `derivePalette`, `firstKeyInPlace` and
+  every `launcher-palette-*` module are ABSENT from the tree; the launcher tests that DO run are the
+  shipped ones (`LauncherShell.openApps`, `launcherEnterAction`, the open-apps/installed-apps
+  suites). A surviving `launcher-palette-*` module or a passing suite that asserts a 55-row
+  Place→Verb projection is a FAIL.
+  **Edge:** an exact-path read of each retired module (never a glob — G-024).
+  **Receipt:** the vitest summary + the exact-path absences.
 
-## F-130 (R-2.1 live) — the rendered `>` palette is grouped, teaching and risk-labelled
+## F-130 (R-2.1 live) — `>` renders ordinary results, not a palette
 
 - [ ] F-130: L1, `Ctrl+Space`, type `>`.
-  **Expected:** `launcher-palette-list` (`role="listbox"`, `aria-label="Places and actions"`)
-  replaces the tiles; one `launcher-palette-group` per place with `launcher-palette-group-path` = the
-  **full** path (never a bare place label); the Delete row carries `launcher-palette-row-risk` =
-  `Destructive`, `launcher-palette-row-key` = `X`, `data-nav-risk="destructive"`,
-  `data-nav-availability="disabled"` (no selection), `data-launcher-section="place"`; a safe row
-  (`Zoom in`) has **no** risk chip.
-  **Edge:** filter to zero rows → `LAUNCHER_PALETTE_EMPTY_COPY` ('No places or actions match') inside
-  the list root; filter by path (`edit`) and by key hint (`x`); the 55-row list scrolls internally
-  (`min(52vh, 420px)`).
-  **Receipt:** E-DOM (rows + group paths) + E-SHOT.
+  **Expected:** NO `[data-testid^="launcher-palette-"]` node at any point;
+  `launcher-command-input.value === '>'`; the results region renders the shipped app grid /
+  open-apps row (or the shipped empty state when `>` matches nothing); no risk chip, no key hint, no
+  group path. The `>` is never treated as a prefix that swaps the surface.
+  **Edge:** `>` alone; `>` mid-query (`set >`); leading whitespace; `>` typed then cleared (the grid
+  returns in full).
+  **Receipt:** E-DOM (one structure snapshot per input) + E-SHOT.
 
-## F-131 (R-2.2) — a plain query is sent to the companion grounded on the envelope
+## F-131 (R-2.2) — a plain query is ordinary text; no grounding envelope is sent
 
-- [ ] F-131: `pnpm --filter @fredo/ui exec vitest run shared/components/companion/__tests__/CompanionEntity.dispatch.test.tsx`
-  and `.../companionDispatch.test.ts`; then live: `Ctrl+Space` over Wireframe with a plain query.
-  **Expected (unit):** with `{context}` the entity prepends **exactly one** `system` message whose
-  content is `JSON.stringify(context)` before the persona + user turn and adds no history; without
-  `context` → zero system messages, legacy messages byte-identical. **Live:** the grid branch stays
-  (no `launcher-palette-list`), Enter routes to `askActiveCompanion(query, {context})` (exactly one
-  generation), the context header stays rendered, and at most **one** envelope is sent per turn.
-  **Edge:** empty query (never a send); companion OFF/away (shipped no-op, text preserved); `set` →
-  shipped launch, 0 generations; the header must not move the reply band (`barrierTop` = bar top
-  edge).
-  **Receipt:** E-UNIT + E-DOM + the generation count. (The model's *use* of the envelope is not
-  machine-assertable — A2.)
+- [ ] F-131: `pnpm --filter @fredo/ui test:run shared/components/companion`; then live: `Ctrl+Space`
+  over Wireframe with a plain query.
+  **Expected (unit):** `buildCompanionTurnMessages` (`companionDispatch.ts:184`) prepends exactly ONE
+  `system` message only when a `context` is supplied, and returns the byte-identical legacy
+  `[persona, user]` pair when it is not; `companionGroundingContent({context: undefined})` is `null`
+  and an oversized payload is `null` (never truncated JSON). **Live:** the plain query is ordinary
+  search text — it filters the grid and launches on an exact app name; it never becomes a grounded
+  companion turn from the launcher. The composer (not the launcher) is the conversational surface,
+  and it grounds through `readCompanionGrounding` (L6).
+  **Edge:** an empty query (never a send); companion OFF/away; an over-cap payload (Q-39).
+  **Receipt:** E-UNIT + E-DOM.
 
-## F-132 (R-2.3) — voice parity at the routed-intent seam (typed vs scripted voice origin)
+## F-132 (R-2.3) — no routed-intent seam exists
 
-- [ ] F-132: Reset (L2), L3 one element, then run `wireframe.element.toggleLock` twice: **typed**
-  (L4 `> lock` + Enter) and **scripted voice** (L5, `requestId:"qa-3120-voice-1"`).
-  **Expected:** both legs report `status:'performed'`, same `verbId`, same `args`, exactly ONE
-  journal entry each, and the **same document state** (the element's `locked` flag equal after each
-  leg); the relay result event is `outcome:"Performed"`, `performed:["wireframe.element.toggleLock"]`.
-  The entries differ **only** in `channel` (`launcher` vs `agent`) and `actor` (`human` vs
-  `companion`) — the allowed difference (A2). No transcript artifact is demanded.
-  **Edge:** identical invalid args on both origins → identical `invalid-args`; a verb unavailable at
-  dispatch (`wireframe.element.delete` with no selection) → identical `unavailable`; the relay to a
-  closed window (queued `_take` on mount, ≤16 entries).
-  **Receipt:** E-DOM (journal entries + document flag) for both legs.
+- [ ] F-132: `rg` `apps/` for `app_command_intent`, `app-command-intent-result`,
+  `useAppCommandIntent` and `runIntent`.
+  **Expected:** ZERO matches — there is no per-application command relay and no result event. The
+  companion's only application influence is the three static skills (`open_app` / `close_app` /
+  `doom_mode`, `status.rs:691`), each of which acts through its own shipped handler. A surviving
+  relay module or result event is a FAIL.
+  **Edge:** an exact-path read of `shared/companion/useAppCommandIntent.ts` → does not exist
+  (RETIRED.md names it).
+  **Receipt:** the scan output + the exact-path absence.
 
-## F-133 (R-3.1) — Enter runs the row through the ONE dispatch funnel
+## F-133 (R-3.1) — Enter runs the shipped app-open / no-match path
 
-- [ ] F-133: `Ctrl+Space` over Wireframe at `Canvas` → L4 `fit page` + Enter (**safe/navigation**);
-  then L3 → L4 `lock` + Enter (**mutating**).
-  **Expected:** `fit page` → the launcher **stays open**, journal gains exactly one entry
-  (`verbId 'wireframe.view.fitPage'`, `effect 'navigation'`, `channel 'launcher'`, `actor 'human'`),
-  no confirmation. `lock` → the launcher **closes** (mutation close, UI/UX §1.5), focus restored,
-  exactly one entry (`wireframe.element.toggleLock`, `effect 'mutation'`), the element is `locked` in
-  the visible document, a new trail entry exists. No `runHotkeyAction` side effect fires (no
-  `launcher-action-entry` renders, no hotkey action runs) — the nav source is mutually exclusive.
-  **Edge (D6):** a live launcher-origin capture + a `>` query + Enter → NOTHING dispatches (no
-  palette action, no journal entry). Enter on an unavailable row → no dispatch, no entry, row
-  announced with `NAV_UNAVAILABLE_REASON`. Palette args are always `{}`.
-  **Receipt:** E-DOM (journal + document) + E-SHOT.
+- [ ] F-133: `Ctrl+Space`, type `set` + Enter; then type `wireframe` + Enter; then type
+  `zzzznomatch` + Enter.
+  **Expected:** `set` opens the Settings window (exactly one window added); `wireframe` opens
+  Wireframe; `zzzznomatch` launches nothing and leaves the text in the bar. In every case the route
+  is `resolveEnterAction` (`__tests__/launcherEnterAction.test.ts`) — there is no dispatch funnel,
+  no journal, no palette branch and no corrective flood.
+  **Edge:** a partially-typed app name (prefix match); Enter on an empty bar (no-op); Enter while the
+  companion is busy (the shipped queue semantics, R-93/F-109).
+  **Receipt:** E-DOM (the window set) + the `resolveEnterAction` unit summary.
 
-## F-134 (R-3.2) — Cmd/Ctrl+K opens the row's secondary actions; toggle back
+## F-134 (R-3.2) — there is no row-actions panel
 
-- [ ] F-134: Focus the `wireframe.element.delete` row → `Ctrl+K`; read the panel; press `Ctrl+K`
-  again.
-  **Expected:** `launcher-palette-secondary` (`role="listbox"`, `aria-label="Row actions"`) replaces
-  the list; its `launcher-palette-secondary-item` set equals `buildLauncherRowActions(row,
-  journal.entries())` mapped to `kind:verbId|placeId` (no synthetic "Run" row, no third level);
-  `data-launcher-action-kind` present (D2; fallback: item icon + label). `Ctrl+K` again pops back to
-  the palette with the **same row re-selected**. Enter on a `run` item dispatches that verbId via
-  `host.runIntent`; a `map` item closes the launcher and opens the `navigation-map` dialog.
-  **Edge:** `buildLauncherRowActions` → `[]` → nothing opens (no empty panel); an `undo` item only
-  when an undoable entry for that verb exists; Cmd vs Ctrl; `Ctrl+K` outside the palette is unbound
-  (no hotkey action fires).
-  **Receipt:** E-DOM (panel items) + E-SHOT.
+- [ ] F-134: `Ctrl+Space`, type an app name, press `Ctrl+K`.
+  **Expected:** NO `launcher-palette-secondary` panel opens — no row has secondary actions in the
+  launcher any more. `Ctrl+K` is unbound in the launcher (no application command fires, no panel, no
+  error). The grid selection is unchanged.
+  **Edge:** `Ctrl+K` with the grid empty; `Ctrl+K` with the launcher closed; `Ctrl+K` twice.
+  **Receipt:** E-DOM (the absence + unchanged selection).
 
-## F-135 (R-3.3) — the Esc stack pops one level; top-level Esc restores focus
+## F-135 (R-3.3) — Esc closes the launcher and restores focus
 
-- [ ] F-135: Record `document.activeElement` → `Ctrl+Space` → L4 → `Ctrl+K` (secondary) → `Esc`; then
-  `Esc` again.
-  **Expected:** first `Esc` pops **exactly one** level (secondary gone, palette list back, same row
-  selected + announced, launcher still open); second `Esc` closes the launcher and focuses the
-  recorded pre-open element (not `body`); no focus trap (Tab from the last launcher control reaches
-  page chrome).
-  **Edge:** confirmation pending + `Esc` → the confirmation cancels only (launcher stays open, the
-  palette returns, nothing applied); live-capture `Esc` → the shipped dictation-cancel branch;
-  pre-open element removed while open → graceful blur, no crash; `Esc` never co-fires a second close.
-  **Receipt:** E-DOM (each level) + the focused element before/after.
+- [ ] F-135: Record `document.activeElement` → `Ctrl+Space` → `Esc`.
+  **Expected:** ONE `Esc` closes the launcher and focuses the recorded pre-open element (never
+  `body`); there is no level stack to pop because no palette/secondary/confirmation level exists. No
+  focus trap: `Tab` from the last launcher control reaches page chrome.
+  **Edge:** pre-open element removed while open → graceful blur, no crash; `Esc` while a dictation
+  capture is live → the shipped dictation-cancel branch; a double `Esc` never co-fires a second
+  close.
+  **Receipt:** E-DOM (the focused element before/after) + E-SHOT.
 
-## F-136 (R-4.1 projection) — the unified manifest publishes every declared verb with all six fields
+## F-136 (R-4.1 projection) — the companion offer is the three static skills
 
-- [ ] F-136: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/manifest.test.ts shared/companion/__tests__/manifest.test.ts shared/companion/__tests__/publisher.test.ts`.
-  **Expected:** one command per Wireframe verb with `publish === true` (re-derived = **49**) in
-  declaration order, then `ENGINE_COMPANION_UNDO_COMMAND` (`id 'journal.undo'`, `risk 'mutating'`,
-  `aliases ['undo','revert']`, optional args `actor`/`count`), then `listActions`;
-  `commands.length` = 50, `actionIds.length` = 51. **Every command carries all six fields ON THE
-  PROJECTION** — `id`, `label`, `description`, `risk`, `args`, `aliases` — read from the projected
-  command, never the source verb (G-418); `shared/companion/fixtures/wireframe.companion.golden.json`
-  deep-equals the projection.
-  **Edge:** a navigation-declared surface with zero described commands; duplicate `appId`
-  (first-wins); `journal.undo` before `listActions`, never duplicated.
-  **Receipt:** E-UNIT summary + the golden file's empty diff.
+- [ ] F-136: `pnpm --filter @fredo/ui test:run shared/companion`; then read the shipped turn offer.
+  **Expected:** the offer is exactly `open_app`, `close_app`, `doom_mode` from the ZERO-argument
+  `companion_skill_registry()` (`applications/llm_server/status.rs:691`), pinned by
+  `the_turn_offer_is_exactly_the_three_static_skills` (`:1462-1474`): three names in that order, no
+  application-named skill, nothing generated. `shared/companion/__tests__/` has the shipped
+  grounding/composer suites (`grounding.test.ts`, `groundingRegistrars.test.tsx`,
+  `composerBridge.test.ts`, `composerTarget.test.ts`) and no manifest-projection suite.
+  **Edge:** reading the registry twice returns the same three names (`:1478`); Wireframe's
+  `wireframe.companion.listActions` action exists in `WIREFRAME_ACTIONS` but does not add a skill.
+  **Receipt:** the vitest + cargo summaries and the registry names.
 
-## F-137 (R-4.1 wire) — `risk`/`aliases` cross the Rust wire as ABSENT keys, never null
+## F-137 (R-4.1 wire) — no command-surface wire type exists
 
-- [ ] F-137: run the ST-2 producing + consuming tests (`cargo test` for `surface_registry` in
-  `apps/tauri/src-tauri` plus the TS golden).
-  **Expected (producer):** a navigation command **serializes** `risk` present (e.g.
-  `"risk":"destructive"`); `aliases` present only when non-empty — `journal.undo` carries
-  `["undo","revert"]`, every Wireframe verb (`aliases: []`) **omits** the key; a legacy
-  command-surface command **omits** `risk`. No `null` for either field anywhere.
-  **Expected (consumer):** both wire shapes (navigation + legacy) deserialize into
-  `app_command_surfaces` / the registry without error and round-trip byte-identically.
-  **Edge:** an explicit `null` `risk`/`aliases` on the wire must be rejected/fail the deserializer —
-  an authoring-side type is not the wire (G-413).
-  **Receipt:** the two serialized JSON snippets + the cargo test summary.
+- [ ] F-137: `rg` `apps/tauri/src-tauri/src` for `app_command_surfaces`, `CommandSurface`,
+  `publish`, `risk` and `aliases` in a command-surface context.
+  **Expected:** ZERO matches — the per-application command-surface wire and its `risk`/`aliases`
+  fields are gone with the engine (RETIRED.md names the deleted modules). The companion's Rust side
+  carries only `companion_skill_registry()` and the three static skills.
+  **Edge:** an exact-path read of the retired registry modules → absent.
+  **Receipt:** the scan output + the exact-path absences.
 
-## F-138 (R-4.1 live) — a companion-channel intent mutates the same state as the human path
+## F-138 (R-4.1 live) — a companion skill acts through its own handler
 
-- [ ] F-138: L5 relay a safe verb and a mutating verb (`wireframe.view.fitPage`,
-  `wireframe.element.toggleLock` with one element selected) and compare each with its L4 typed
-  equivalent.
-  **Expected:** each relay reports `outcome:"Performed"` with the dispatched id; the resulting state
-  matches the typed leg (navigation path / `locked` flag); one journal entry each with
-  `actor:'companion'`, `channel:'agent'`. The offer contained every published id (F-136), so every
-  declared verb is invocable by name.
-  **Edge:** a relayed verb is addressed by **id** (not label); a repeated relay of the same mutating
-  verb toggles twice (two entries, state returns).
-  **Receipt:** E-DOM (both legs' entries + state) + the two result events.
+- [ ] F-138: Ask the companion to open Wireframe (a skill turn). Read the window set and the reply.
+  **Expected:** `open_app` opens exactly one Wireframe window through its own shipped handler and
+  returns one reply naming what it did. There is no routed intent, no relay result event and no
+  journal entry from the companion. A second request to open an already-open app focuses it rather
+  than opening a duplicate (the shipped `open_app` semantics).
+  **Edge:** an unknown app name → honest refusal, nothing opens; two turns → two replies, no
+  duplicate window.
+  **Receipt:** E-DOM (the window set) + the reply text.
 
-## F-139 (R-4.2) — unknown / unavailable / invalid arguments apply nothing and report the code
+## F-139 (R-4.2) — an unavailable action applies nothing
 
-- [ ] F-139: L5 relay three bad intents: `wireframe.nope`; `wireframe.element.delete` with an empty
-  selection; `wireframe.create.rect` with `arguments:{x:"   "}`.
-  **Expected:** each result event `outcome:"Invalid"`, `detail` = the typed code (`unknown-verb` /
-  `unavailable` / `invalid-args`); the document and journal are unchanged (entry count + element set
-  identical); on the launcher path the S6 line renders with `data-launcher-code` = the code (D2;
-  fallback: the response text) and the launcher stays open.
-  **Edge:** `actor-spoof` is proven only at the unit `dispatch` level (the relay asserts the actor);
-  repeated identical rejects; a reject while a confirmation is pending must not resolve the other.
-  **Receipt:** E-DOM (three result events + before/after counts) + E-UNIT
-  (`shared/companion/__tests__/useAppCommandIntent.test.tsx`).
+- [ ] F-139: With no element selected, click the `Delete` row in `wireframe-arrange`.
+  **Expected:** the row is `disabled` and activating it is a no-op that returns `false`
+  (`runWireframeAction`); the document and history are unchanged (element set + entry count
+  identical); no confirmation and no error line appears anywhere.
+  **Edge:** repeated presses on the disabled row; a locked-but-selected element (delete still
+  applies, one entry).
+  **Receipt:** E-DOM (before/after counts) + the `runWireframeAction` unit summary.
 
-## F-140 (R-5.1) — safe and mutating launcher/companion intents apply with NO confirmation
+## F-140 (R-5.1) — every action applies with no confirmation
 
-- [ ] F-140: L4 `fit page` (safe) and L4 `lock` (mutating, L3 selection); then L5 `toggleLock`.
-  **Expected:** no `launcher-confirmation` node is created for any leg; each applies immediately and
-  writes **exactly one** journal entry (safe → `effect 'navigation'`, no patch; mutating →
-  `effect 'mutation'` with a real patch); the mutating change is visible after the launcher closes;
-  the companion leg also applies silently (the policy gates only destructive/external).
-  **Existing pin to keep green:** `shared/navigation/__tests__/riskPolicy.test.ts` —
-  `'safe and mutating apply without confirmation and journal once'` (its sync `confirm` harness
-  must survive the widened signature — ST-1).
-  **Edge:** a `noop` mutating verb (patch `null`) writes NO entry and reports `did-nothing`; double
-  Enter must not double-apply.
-  **Receipt:** E-DOM (journal + document) + E-SHOT.
+- [ ] F-140: Click `Fit page` (a view row) and then `Lock group` (an arrange row) with a group
+  selected.
+  **Expected:** NO confirmation dialog is created for either; each applies immediately and writes
+  exactly one history entry where it is a document change (`Fit page` is editor state and writes
+  none); the change is visible in the visible document.
+  **Edge:** a row whose action makes no change (value-equal) writes no entry and returns `false`;
+  a double activation does not double-apply.
+  **Receipt:** E-DOM (history + document) + E-SHOT.
 
-## F-141 (R-5.2 destructive) — the confirmation names verb/target/consequence/undo and applies nothing first
+## F-141 (R-5.2 destructive) — a destructive action has no confirmation host
 
-- [ ] F-141: L2 reset → L3 one element → L4 `delete` + Enter (destructive).
-  **Expected:** `launcher-confirmation` (`role="alertdialog"`, `aria-modal="true"`, name
-  `launcherConfirmTitle('Delete')` = `Run Delete?`); `launcher-confirmation-verb` = `Delete`;
-  `launcher-confirmation-target` contains the selected element's id (the shipped
-  `ConfirmationRequest.targetLabels` value); `launcher-confirmation-consequence` is **present and
-  non-empty** (ST-4 authors the consequence for `wireframe.element.delete` — Q-3; read the exact
-  text at runtime, never hardcode it); `launcher-confirmation-undo` = `Undo available`; accept label
-  `Apply Delete`; cancel `Cancel` and **Cancel holds focus**. Before accept: element present, journal
-  unchanged. After accept: launcher closes, element removed, exactly one entry, the trail shows it,
-  `journal.undo` restores it.
-  **Edge:** targetless verb (target row hidden); `targetOverflow > 0` → `+n`; Esc / outside click =
-  cancel (F-143); a second destructive intent while one is pending (E-84).
-  **Receipt:** E-DOM (all five testids + focus) + E-SHOT of the dialog.
+- [ ] F-141: Select an element, click the `Delete` row in `wireframe-arrange`.
+  **Expected:** NO confirmation dialog (`launcher-confirmation` does not exist); the element is
+  removed immediately, `-element-count` decrements by one, exactly one history entry is added, and
+  one `wireframe-undo` click restores the same element id and geometry. There is no confirmation
+  requester, no `ConfirmationRequest` and no risk policy.
+  **Edge:** delete with two selected (count −2, ONE entry); delete then undo then redo.
+  **Receipt:** E-DOM (count + history) + E-SHOT.
 
-## F-142 (R-5.2 external) — the external class is LIVE (cancel-only) on `place.exportPng`; accept-render on the fixture
+## F-142 (R-5.2 external) — Export PNG writes at the seam, no dialog
 
-- [ ] F-142: L2 reset → L4 `> export png` (bind the row by `verbId 'place.exportPng'`; if the
-  runtime label differs, select by the row's `data-nav-verb-id` — never by copy) → Enter → read the
-  dialog → **Cancel** (never Accept: it opens the OS save dialog). Then the accept-render unit leg:
-  `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/LauncherConfirmation.test.tsx shared/navigation/__tests__/dispatch.test.ts`.
-  **Expected (live, external — ST-4 reclassifies `place.exportPng` to `risk:'external'`, Q-2):**
-  `launcher-confirmation` (`role="alertdialog"`, named `launcherConfirmTitle(<runtime label>)`)
-  renders `launcher-confirmation-consequence` **non-empty**, `launcher-confirmation-undo` =
-  `Not undoable`, and `launcherConfirmExternal('your file system')` = `Outside Fredo: your file
-  system`; **Cancel holds focus**; after Cancel → nothing applied, zero journal entries, no OS
-  dialog, launcher back at the palette.
-  **Expected (unit — accept-render supplement):** a `ConfirmationRequest` built from the committed
-  fixture surface (`shared/navigation/ui/__tests__/fixtures.ts`, `test.exportPng`, `risk:'external'`)
-  renders `launcherConfirmExternal(party)` = `Outside Fredo: <party>` and `Not undoable —
-  not-undoable`; `dispatch` routes `risk:'external'` through `confirm` (accept → run, reject →
-  `canceled-confirmation`, nothing applied).
-  **Existing pins (kept green, widened not weakened — ST-1):** `shared/navigation/__tests__/riskPolicy.test.ts`
-  — `'destructive verb does not run until confirmation is accepted'`,
-  `'destructive confirmation carries verb target consequence and undo availability'`,
-  `'external confirmation carries the party and is always not-undoable'`.
-  **Edge:** the external leg is **cancel-only** — Accept must never be pressed (an OS save dialog,
-  not a scripted leg); the fixture remains the ONLY accept path; repeated cancel → a fresh dialog,
-  no stale promise.
-  **Receipt:** E-DOM (dialog + post-cancel journal) + E-SHOT + E-UNIT summary + the explicit
-  non-live disclosure for the accept half only (a cancel-only PASS is valid).
+- [ ] F-142: With the export seam set (`FREDO_WIREFRAME_EXPORT_PATH`), choose the File menu's
+  `Export PNG` row.
+  **Expected:** the page PNG is written at the export seam; `-dirty` is untouched; NO confirmation
+  dialog appears and no OS save dialog is opened (the seam supplies the destination — the native
+  dialog is only the fallback when the seam is unset). The retired `external` risk class does not
+  exist.
+  **Edge:** the seam unset (native dialog path, Q-24); export mid-guide (guides never painted).
+  **Receipt:** E-DOM (seam file + `-dirty`) + the `wireframeFileActions` unit summary.
 
-## F-143 (R-5.3) — cancel / Esc / outside-click journal nothing
+## F-143 (R-5.3) — dismissing a dialog changes nothing
 
-- [ ] F-143: `delete` + Enter → Cancel; repeat → `Esc`; repeat → outside click; then
-  `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/riskPolicy.test.ts`.
-  **Expected:** every dismissal → `status:'rejected'`, `code:'canceled-confirmation'`; zero entries
-  added, document byte-identical (element still present), **no** S6 error line, launcher stays open
-  at the palette. Unit: `requestLauncherConfirmation` with no launcher mounted resolves `false`
-  immediately and the funnel applies nothing.
-  **Edge:** launcher closed between request and resolve; double resolve (guarded); cancel then
-  re-dispatch (a fresh dialog, no stale promise).
-  **Receipt:** E-DOM (before/after journal + document) + E-UNIT (the confirmation-store case in
-  ST-1's new `shared/navigation/ui/__tests__/hostRegistry.test.ts`, plus the existing
-  `riskPolicy.test.ts` pin `'dismissed confirmation rejects canceled-confirmation and journals nothing'`).
+- [ ] F-143: With a dirty document, choose the File menu's `New` row, then Cancel the discard
+  dialog; repeat with `Esc`.
+  **Expected:** every dismissal keeps the document, its path and its dirty state intact and adds
+  zero history entries; the dialog reopens cleanly on a second attempt (no stale promise). This is
+  the shipped `WireframeNewDocumentDialog`, the only dialog the editor owns.
+  **Edge:** the dialog open while the window loses focus; Cancel then Discard (Discard resets).
+  **Receipt:** E-DOM (before/after document + history) + the `WireframeNewDocumentDialog` unit case.
 
-## F-144 (R-6.1 matcher) — the undo-by-description phrase table
+## F-144 (R-6.1 matcher) — the app-local history is the only undo path
 
-- [ ] F-144: `pnpm --filter @fredo/ui exec vitest run applications/home/components/launcher/__tests__/launcherUndoQuery.test.ts`.
-  **Expected:** `"undo the companion's last change"` → `{kind:'undo', args:{actor:'companion',
-  count:'1'}}`; case/punctuation variants equal; `"undo the last 3 companion changes"` →
-  `{actor:'companion', count:'3'}`; `"undo"` / `"undo the last change"` → `{count:'1'}` (bare last);
-  `"undo that"` / `"undo it"` → `{kind:'ambiguous', reason:'actor'}`; an undo-SHAPED phrase with no
-  rule — `"undo the red one"` → `{kind:'no-match-undo'}` (Q-1 accepted — ST-5 widens the matcher),
-  and `resolveLauncherRoute` maps it to `{kind:'clarify', message: UNDO_NO_MATCH_COPY}` — while a
-  plain non-undo query `"make it nicer"` → `{kind:'no-match'}` (never captured).
-  **Edge:** trailing punctuation, extra whitespace, mixed case; a number word vs a digit; `count`
-  outside 1..100; `no-match` (ordinary query) and `no-match-undo` (undo-shaped miss) must stay
-  distinct — only the latter routes to `UNDO_NO_MATCH_COPY`.
-  **Receipt:** E-UNIT summary (the whole table quoted, including the no-match-undo case).
+- [ ] F-144: `pnpm --filter @fredo/ui test:run applications/wireframe` and read
+  `store/wireframeHistory.ts`.
+  **Expected:** `createWireframeHistory` exposes `push`/`undo`/`redo`/`entries` over one
+  field-scoped `before`/`after` delta pair per entry with `WIREFRAME_HISTORY_LIMIT = 100`; there is
+  no description-matching phrase table, no `launcherUndoQuery` and no `resolveLauncherRoute`.
+  `wireframeHistory.test.ts` pins the 105→100 eviction and the disabled-on-empty flags.
+  **Edge:** a non-positive limit normalises to at least one entry.
+  **Receipt:** the vitest summary + the exact-path absence of `launcherUndoQuery.ts`.
 
-## F-145 (R-6.1 live) — "undo the companion's last change" reverts exactly the newest companion entry
+## F-145 (R-6.1 live) — undo reverts exactly the newest entry
 
-- [ ] F-145: L5 companion entry A (`toggleLock`); then L4 human entry B (`toggleVisible`); then type
-  `undo the companion's last change` + Enter.
-  **Expected:** exactly **one** new journal entry, label `Undo Toggle lock`; the companion entry A
-  stays in the trail (append-only); **B's effect is untouched** (the element's visibility flag is
-  unchanged); the launcher closes to reveal the trail (UI/UX §1.5); no other entry reverts.
-  **Edge:** no companion entry → `no-matches` + `Nothing to undo.`, no mutation; a companion
-  navigation entry (inverse `null`) is skipped for the next invertible one; the same phrase relayed
-  through L5 (`journal.undo` with the matched args) has the same effect.
-  **Receipt:** E-DOM (trail entries + both flags) + E-SHOT of the trail.
+- [ ] F-145: Make two edits (insert, then drag), then click `wireframe-undo`.
+  **Expected:** exactly one click reverts ONLY the newest edit (a drag reverts to its exact
+  pre-drag geometry; an insert decrements the count); the older edit is untouched; one
+  `wireframe-redo` click re-applies it.
+  **Edge:** undo with an empty history (disabled, no-op); undo of a delete restores the same id and
+  geometry; undo → undo → redo.
+  **Receipt:** E-DOM (geometry/count per step).
 
-## F-146 (R-6.2) — "undo the last 3 companion changes" reverts a block
+## F-146 (R-6.2) — a block is undone one entry at a time
 
-- [ ] F-146: L5 three companion mutations (`toggleLock`, `toggleVisible`, `toggleLock`) → type
-  `undo the last 3 companion changes` + Enter.
-  **Expected:** exactly **3** new entries, newest-first, each `Undo <original label>`, each
-  `actor 'human'`; the document is restored to the pre-companion state; a human entry made before
-  the block is untouched.
-  **Edge:** fewer companion entries than named → undoes what exists and reports the count applied;
-  0 companion entries → `no-matches`, nothing applied; `count` clamp 1..100.
-  **Receipt:** E-DOM (3 entries + restored flags).
+- [ ] F-146: Make three edits, then click `wireframe-undo` three times.
+  **Expected:** exactly three clicks revert exactly three entries, newest-first; a fourth click is
+  a no-op and the control is disabled; the document is restored to its pre-edit state.
+  **Edge:** two edits then one undo (only the last reverts); redo after a NEW mutation (the redo
+  stack is cleared).
+  **Receipt:** E-DOM (the state per click).
 
-## F-147 (R-6.3) — the reversal entry is attributed to the human (keyed to the UNDO entry)
+## F-147 (R-6.3) — no attribution channel exists
 
-- [ ] F-147: same run as F-145.
-  **Expected:** the newest `[data-testid="navigation-trail-entry"]` (the reversal) has
-  `data-nav-actor="human"` and `navigation-trail-actor` text `You`; the original companion entry
-  still reads `Companion`; the P3/P4 `actor:'system'` pins are **refreshed, not deleted**
-  (`shared/navigation/__tests__/journal.test.ts`, `dispatch.test.ts`, `ui/__tests__/host.test.ts` —
-  A1's four pins); the trail-button undo (`host.undoEntry(seq)`) defaults to
-  `{actor:'human', channel:'pointer'}` and also reads `You`.
-  **Edge:** a companion-channel undo request journals `human` (§3.10); a system-originated undo keeps
-  `system`; the `NOTHING_TO_UNDO` path adds no entry.
-  **Receipt:** E-DOM (both entries) + the named refreshed pins in `## Tests Runs`.
+- [ ] F-147: After an undo, inspect the document and the UI for any actor/attribution surface.
+  **Expected:** the history entry carries `verbId` + a human `label` (`Move`, `Delete Rectangle`) and
+  no actor/channel field; there is no trail widget, no per-entry trail row and no actor label
+  (`You` / `Companion`) anywhere. The retired shared journal's attribution model is gone.
+  **Edge:** a Companion-initiated action (it cannot act on the document at all — F-132); a
+  pointer-initiated action.
+  **Receipt:** E-DOM (the absence) + the `wireframeHistory.ts` shape read.
 
-## F-148 (R-6.4) — ambiguous undo asks; nothing mutates
+## F-148 (R-6.4) — there is no undo phrase matcher to ask
 
-- [ ] F-148: type `undo that`, then `undo it`, then `undo the red one` (or any undo-shaped phrase
-  with no rule); repeat one leg via L5.
-  **Expected:** `undo that` / `undo it` → `{kind:'ambiguous', reason:'actor'}`, route `clarify`, the S6
-  line text exactly `Tell me whose change to undo — yours or the companion's. Nothing changed.`
-  (`data-launcher-response="clarify"`, D2; fallback: the line text), announced once, **zero** journal
-  entries, document identical. `undo the red one` → `{kind:'no-match-undo'}`, route `clarify` with
-  the S6 line text exactly `I couldn't tell which change to undo. Nothing changed.`
-  (`UNDO_NO_MATCH_COPY`, Q-1), announced once, NO `journal.undo` dispatch, zero journal entries,
-  document identical.
-  **Edge:** a plain NON-undo-shaped query (`make it nicer`) still falls through to the companion —
-  `no-match-undo` must not capture ordinary text; every leg journals nothing.
-  **Receipt:** E-DOM (both lines verbatim + entry count) + E-UNIT (F-144 table, incl. the
-  no-match-undo case).
+- [ ] F-148: Type `undo that`, `undo it` and `undo the red one` into the launcher bar and press
+  Enter.
+  **Expected:** each is ordinary search text — no app matches, nothing launches, the text is
+  retained, and no clarify/response line is produced (no `launcher-response`, no
+  `data-launcher-response`). There is no undo matcher, no route classifier and no `UNDO_NO_MATCH_COPY`.
+  **Edge:** a plain query that happens to contain the word `undo`; an empty bar.
+  **Receipt:** E-DOM (the absence + retained text).
 
-## F-149 (R-7.1) — `/ Ask` and `app.ask` open a pre-focused, grounded launcher
+## F-149 (R-7.1) — Ctrl+Space is the only launcher entry
 
-- [ ] F-149: in Wireframe click `[data-testid="navigation-rail-ask"]`; then L4 `ask` + Enter.
-  **Expected:** the rail affordance is enabled — `aria-disabled` omitted, no reason node, tooltip
-  `Ask (k)`, visible label `Ask`; activation → the launcher opens with `document.activeElement` =
-  `[data-testid="launcher-command-input"]`, empty value, `launcher-context` visible with the
-  Wireframe path. `app.ask` (`available: always`) performs a navigation effect and opens the same
-  state via `requestLauncherOpen({source:'ask-verb'})`.
-  **Edge:** `/ Ask` from a no-surface app → legacy launcher, no header; `app.ask` while the launcher
-  is already open (no double open); `NAV_ASK_DISABLED_REASON` gone from `ui/constants.ts` and no
-  reason node rendered.
-  **Receipt:** E-DOM (rail + launcher) + E-SHOT.
+- [ ] F-149: In Wireframe, look for an `/ Ask` control; then press `Ctrl+Space`.
+  **Expected:** no `navigation-rail-ask` control exists (the rail was deleted with the engine) and
+  no application exposes a launcher-open affordance; `Ctrl+Space` opens the launcher with
+  `document.activeElement` = `[data-testid="launcher-command-input"]` and an empty value.
+  **Edge:** a text-entry control focused (`Ctrl+Space` does not fire); the launcher already open.
+  **Receipt:** E-DOM (the absence + the focused input) + E-SHOT.
 
 ## F-150 (R-7.2) — closing restores focus to the pre-open element
 
-- [ ] F-150: record `document.activeElement` (the rail Ask button) → `/ Ask` → `Esc`; then
-  `Ctrl+Space` open/close from another element.
+- [ ] F-150: Record `document.activeElement`, `Ctrl+Space`, then `Esc`; then a toggle-open/close
+  from another element.
   **Expected:** the recorded element is focused again; the launcher is closed; no focus trap remains
-  (Tab moves through page chrome).
-  **Edge:** pre-open element unmounted while open → graceful blur, no crash; toggle-off close restores
-  too; a confirmation's close returns focus to the bar searchbox, not the page.
+  (`Tab` moves through page chrome).
+  **Edge:** the pre-open element unmounted while open → graceful blur, no crash; toggle-off close
+  restores too.
   **Receipt:** E-DOM (activeElement before/after each leg).
 
 ## F-151 (R-7.3) — no chat panel, no transcript anywhere
 
-- [ ] F-151: two companion turns from the launcher; inspect the results region + the shell; scan the
-  P6 source.
-  **Expected:** the results region shows only app tiles, the grouped palette, one row's actions, or
-  ONE response sentence — no message list, no scrollback, no second bubble; the companion's answer
-  stays in the shipped seat bubble; the voice path still carries no transcript state
+- [ ] F-151: Send two messages through the companion composer; inspect the launcher and the shell.
+  **Expected:** the launcher region shows only app tiles and the open-apps row — no message list, no
+  scrollback, no reply sentence, no second bubble. The companion's answer is the seat/overlay
+  `SpeechBubble` in the hosting window; the voice path carries no transcript state
   (`useVoiceDictation.ts`; `CompanionEntity` sends the clip as the turn input).
-  **Edge:** a long reply; the S6 line replaced by the next keystroke (no history); two turns in a row
-  (latest reply only); `/ Ask` while a reply is displayed. The source scan strips comments and the
-  literal text of strings/templates before the ban but still scans template interpolations as code
-  (G-419).
-  **Receipt:** E-DOM + the scan result.
+  **Edge:** a long reply; two turns in a row (the bubble shows the latest); the launcher open while a
+  reply is displayed.
+  **Receipt:** E-DOM (the absence in the launcher) + the bubble DOM.
 
-## F-152 (R-8.1/R-8.2, **static**) — the committed template carries the fields, the six gate lines and the Gate H handoff
+## F-152 (R-8.1/R-8.2, **static**) — the historical evaluation template is intact
 
 - [ ] F-152: `Read` `docs/agentic-pipeline/evaluations/3120-pilot-exit-review-template.md` by exact
-  path; `Read` `spikes/3115-navigation-engine/session-protocol.md` §3/§7/§8 +
-  `spikes/3115-navigation-engine/session-kit/gate-h-input-template.md`.
-  **Expected:** the template exists at that exact path and carries (a) the per-participant summary
-  columns `participant_id, keyboard_profile, vim_comfortable, wireframe_new, consent_recorded,
-  tasks_completed, where_rating_1_5, q_ux_item_1_7, q_ux_item_2_7, umux_lite_score,
-  trust_autoapply_1_5, undo_first_attempt_success, launcher_same_system, launcher_same_system_why,
-  quote_1, quote_2, helped_or_hindered`; (b) the per-task columns `task_id, success_unaided, time_s,
-  errors, discovery_source, discovery_note` with rows T1–T7; (c) the six gate lines byte-matching
-  protocol §8 (the full literal text is quoted in the QA Plan row R-8.1; whitespace-only
-  differences allowed); (d) the three RQ rows with the exact titles `RQ1 — Does the place tree
-  improve felt flow?`, `RQ2 — Does launcher-only conversation feel connected?`, `RQ3 — Does
-  auto-apply with visible undo build trust?` and ≥2 quote slots each; (e) the #3120-is-the-pilot-gate
-  + fleet-migration-decision statement; (f) the Gate H handoff (copy `gate-h-input-template.md` →
-  `.opencode/tmp/3115/sessions/participant-notes.md`, one block per completed participant,
-  `consent_recorded` gate, P1–P8 only, Stage-2 transcription).
-  **Edge:** a wrapped GO-2 line (every token/operator/threshold must still match);
-  `session-protocol.md` is **not edited** by this spec (no diff entry).
-  **Receipt:** E-STATIC field table + the exact-path read.
-- [ ] F-152 edge: **no participant data is required and its absence is never a FAIL** (G-414).
+  path.
+  **Expected:** the file exists at that exact path and is a HISTORICAL evaluation template (it sits
+  on the absence guard's evidence allowlist). Its existence is asserted; its content is **not**
+  re-adjudicated by this slice — no participant data is required and its absence is never a FAIL
+  (G-414). The spike it referenced (`spikes/3115-navigation-engine/**`) is outside the scanned roots
+  and out of scope.
+  **Edge:** the file must not be deleted (deleting history to go green is a refusal of AC2).
+  **Receipt:** E-STATIC exact-path read.
 
-## F-153 (R-8.3/R-8.4, **static**) — no data, no verdict, banner, and the P1 comparator
+## F-153 (R-8.3/R-8.4, **static**) — no fabricated verdict in the historical template
 
 - [ ] F-153: same file.
-  **Expected:** zero participant rows / ratings / quotes / examples (every data cell an empty slot);
-  **no** prefilled `Verdict: GO` or `NO-GO`; exactly one `Verdict: GO|NO-GO` line; a banner states
-  participant data is human-produced, never pipeline-produced; the P1 comparator is the documented
-  qualitative flat-key baseline + the six thresholds, and the file states P1 produced no participant
-  rows (`docs/UX_FLUENCY_RESEARCH.md:544/550-552/614`; `docs/NAVIGATION_ENGINE.md:544`).
-  **Edge:** a numeric P1 column rendered empty with its stated reason (never a fabricated baseline);
-  no interim percentages; an empty quote slot is correct, never `[]`.
+  **Expected:** zero participant rows / ratings / quotes; no prefilled `Verdict: GO` or `NO-GO`
+  beyond the template's own single line; a banner states participant data is human-produced. The
+  historical `docs/UX_FLUENCY_RESEARCH.md` and `docs/NAVIGATION_ENGINE.md` it cites are superseded
+  documents, kept and banner-marked, not deleted.
+  **Edge:** an empty quote slot is correct, never `[]`; no interim percentages.
   **Receipt:** E-STATIC.
 
-## F-154 (R-8.5/R-8.6, **static**) — cohort quotas, per-cohort report, verdict procedure
+## F-154 (R-8.5/R-8.6, **static**) — the historical cohort rules are unchanged
 
 - [ ] F-154: same file.
-  **Expected:** the quota block is verbatim — `5–8 participants, with a minimum of 5 completed`;
-  `keyboard_first_or_vim = count(keyboard_profile=="keyboard-first" OR vim_comfortable=="yes") >= 2`;
-  `non_vim = count(keyboard_profile=="non-vim" AND vim_comfortable=="no") >= 2`;
-  `wireframe_new = count(wireframe_new=="yes") >= 2`; a **per-cohort report** is required and **no
-  finding may rest on keyboard-first participants alone**. The template also requires the `Verdict:`
-  line to be mirrored as a `## Status` comment on the issue, a failed line to name what participants
-  did instead (from `discovery_source`/`discovery_note`) plus one concrete redesign hypothesis, and
-  states `GO` iff `PRE-1 ∧ PRE-2 ∧ GO-1 ∧ GO-2 ∧ GO-3 ∧ GO-4`.
-  **Edge:** the categories are not mutually exclusive (satisfiable at n=5); NO-GO recorded as a valid
-  outcome (not a retry instruction); GO-4 strict-majority note; GO-2 pooled-rate note.
+  **Expected:** the cohort quota block and the verdict procedure are unchanged from the historical
+  template (this slice does not rewrite the evaluation record). The template is a record of a
+  superseded programme, kept for audit.
+  **Edge:** NO-GO recorded as a valid historical outcome, not a retry instruction.
   **Receipt:** E-STATIC.
 
-## F-155 (R-9.1) — ONE polite launcher region with the exact announcement format
+## F-155 (R-9.1) — the launcher carries its shipped live regions only
 
-- [ ] F-155: open the palette, press `ArrowDown` three times; open the secondary; trigger the clarify
-  line.
-  **Expected:** exactly **one** `[data-testid="launcher-palette-announcer"]` (`role="status"`,
-  `aria-live="polite"`, `aria-label="Launcher announcements"`) in the launcher; on each focused-row
-  change its text is exactly `launcherPaletteAnnouncement(row)` — e.g.
-  `Delete — Canvas › Edit — Destructive — X`; a safe row → `… — Safe`; an unbound row → no trailing
-  key segment; the secondary open/item change → the item label; the clarify line → its message. The
-  S6 line is **not** `role="status"`.
-  **Edge:** the no-surface launcher has NO announcer node (byte-identical DOM); identical consecutive
-  text de-duplicates; a 55-row arrow walk. **Count ONE `launcher-palette-announcer` — never a global
-  `[aria-live]` count** (the shipped status bar + the bar's voice/queue announcers are live regions
-  too — UI/UX D3, G-424).
-  **Receipt:** E-DOM (the announcer + its text per step).
+- [ ] F-155: Open the launcher and press `ArrowDown` three times on a query that matches several
+      apps.
+  **Expected:** no `launcher-palette-announcer` (no palette). The shipped live regions are the
+  ones that exist — `launcher-queued-announcer` and the bar's status regions
+  (`LauncherCommandBar.tsx:1787/1804/1826/1829`); the count of `[aria-live]` nodes is whatever those
+  render and nothing from a retired palette. **Never assert a global `[aria-live]` count** (G-424) —
+  assert the named shipped nodes.
+  **Edge:** the launcher with no open windows; a query matching zero apps.
+  **Receipt:** E-DOM (the named nodes) + its absence set.
 
-## F-156 (R-9.2) — reduced motion removes every new animation
+## F-156 (R-9.2) — reduced motion leaves the shipped launcher unchanged
 
 - [ ] F-156: `execute_js` installs a `matchMedia` stub returning `matches:true` for
-  `NAV_REDUCED_MOTION_QUERY` **only**, then open the palette, move the selection, open the secondary,
-  open the confirmation.
-  **Expected:** the context entrance, palette entrance, secondary entrance, confirmation/scrim and row
-  press render with no transition/animation (`transitionDuration` 0s / `animationName` `none` on the
-  animated nodes; two frames ≥100 ms apart identical); selection changes instantly; no
-  context-change flash. Without the stub the §4 timings are present.
-  **Edge:** the stub must not leak to other queries; the confirmation appears at full opacity; a
-  theme switch mid-open under reduce.
+  `prefers-reduced-motion` only, then open/close the launcher and move the grid selection.
+  **Expected:** the shipped launcher animates nothing the slice added (there is no palette,
+  secondary or context entrance to suppress); the existing open/close transition still behaves per
+  the shipped reduced-motion handling; two frames ≥100 ms apart are identical where motion is
+  suppressed.
+  **Edge:** the stub must not leak to other queries; a theme switch mid-open under reduce.
   **Receipt:** E-DOM (computed styles + two-frame comparison) + E-SHOT.
 
-## F-157 (R-9.3) — theme tokens only; the palette and dialog re-tint live
+## F-157 (R-9.3) — theme tokens only across the launcher
 
-- [ ] F-157: static scan of the new P6 files (launcher palette/confirmation/context +
-  `shared/navigation/ui/hostRegistry.ts` / `confirmation.ts` / `launcherBridge.ts`), then re-theme
-  live while the palette + confirmation are visible.
+- [ ] F-157: static scan of the launcher files for colour literals; then re-theme live while the
+  launcher is open.
   **Expected:** ZERO `#[0-9a-fA-F]{3,8}` / `rgba(` / `rgb(` / `hsla(` literals and ZERO `var(--x)NN`
-  alpha-appends (comment issue-refs such as `#3120` exempt); tints use the shared `tint()` helper;
-  the scan strips comments and the literal text of strings/templates before the ban but still scans
-  interpolations as code (G-419). Live: dark ↔ a light preset via
-  `select[aria-label="Theme presets"]` re-tints with **identical rects** (no stale colour, no layout
-  shift).
-  **Edge:** a near-background accent; the status-tint chips keep their word legible; no new theme
-  token without a `system.ts` mapping.
-  **Receipt:** the scan output + before/after computed colours + the rect pairs.
+  alpha-appends (comment issue-refs exempt); tints use the shared `tint()` helper. Live: dark ↔ a
+  light preset re-tints with identical rects (no stale colour, no layout shift).
+  **Edge:** a near-background accent; no new theme token without a `system.ts` mapping.
+  **Receipt:** the scan output + before/after computed colours.
 
 ## F-158 (R-9.4) — keyboard operable, every control named, no trap
 
-- [ ] F-158: walk the palette, secondary and confirmation with Tab/arrows; read accessible names;
-  close.
-  **Expected:** every control is keyboard operable with a non-empty accessible name — context region
-  `Current context`, list `Places and actions`, secondary list `Row actions`, announcer `Launcher
-  announcements`, each row's `aria-label` = `launcherPaletteAnnouncement(row)` (+ ` — <reason>` when
-  unavailable), confirmation `role="alertdialog"` named `Run <title>?` with the consequence as
-  description, Cancel focused, accept `Apply <title>`; unavailable rows use `aria-disabled="true"`
-  (never native `disabled`), stay selectable, dispatch nothing; closing does not trap focus.
-  **Edge:** an icon-only control with no name = FAIL (G-423); Tab exits; Shift+Tab; focus-visible ring
-  (`accent-strong`); the dialog keeps focus while modal.
+- [ ] F-158: Walk the launcher with Tab/arrows; read accessible names; close.
+  **Expected:** every control is keyboard operable with a non-empty accessible name — the command bar
+  input (`aria-label`/`role="searchbox"`), each tile's `aria-label` = the app name, the open-apps
+  row's list/label; closing does not trap focus.
+  **Edge:** an icon-only control with no name = FAIL (G-423); Tab exits; Shift+Tab; focus-visible
+  ring (`accent-strong`).
   **Receipt:** E-DOM (role/name per control).
 
-## F-159 (NFR-1) — the keystroke path is local, synchronous and non-blocking
+## F-159 (NFR-1) — the keystroke path is local and synchronous
 
-- [ ] F-159: type 20 chars and arrow through 10 rows while timing the handler and counting `fetch`
-  calls; static-scan the route/palette/registry modules.
-  **Expected:** zero `fetch`/`XMLHttpRequest`/`adapterBridge.invoke` in the keystroke path (scan +
-  runtime counter 0); `describeContext()` is a synchronous registry read (`getNavigationHost` →
-  `host.describeContext()`); per-keystroke handler < 16 ms; no awaited work precedes the render on a
-  safe/mutating dispatch.
-  **Edge:** the 55-row filter per keystroke; a large selection; a confirmation opened while typing
-  (route precedence blocks it). **Pre-authorized disclosure:** `tauri_ipc_monitor` cannot witness
-  application invokes in this build → `logic-verified — invoke not observable through the monitor in
-  this build`, with the DOM observable as the binding evidence (references.md #3098).
+- [ ] F-159: Type 20 chars and arrow through the grid while timing the handler and counting `fetch`
+  calls.
+  **Expected:** zero `fetch`/`XMLHttpRequest`/`adapterBridge.invoke` in the filter path (scan +
+  runtime counter 0); per-keystroke handler < 16 ms; the filter is a pure `useMemo` over the
+  registry and the query string.
+  **Edge:** a large feature set; churn while typing. **Pre-authorized disclosure:**
+  `tauri_ipc_monitor` cannot witness application invokes in this build →
+  `logic-verified — invoke not observable through the monitor in this build`, with the DOM
+  observable as the binding evidence (references.md #3098).
   **Receipt:** the timing series + the scan output + the disclosure.
 
-## F-160 (NFR-2) — the envelope stays inside the byte cap; one envelope per turn
+## F-160 (NFR-2) — the grounding envelope stays inside the byte cap
 
-- [ ] F-160: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/context.test.ts`
-  (+ ST-3's dispatch test), then read the live header.
-  **Expected:** `envelopeByteLength(buildContextEnvelope(wireframeSurface, maximalSnapshot, 10)) <=
-  CAPABILITY_LIMITS.maxContextBytes` (**16384**) with a maximal snapshot (32 selection ids × 120
-  chars, 10 journal entries) and `verbs.length <= maxVerbs` (**64** — the surface's 55 fit); exactly
-  one envelope per companion turn.
-  **Edge:** a path deeper than `maxPathDepth` (8) keeps root + deepest seven; labels truncate at 120;
-  a 40-id selection caps at 32.
-  **Receipt:** E-UNIT summary + the live header content.
+- [ ] F-160: `pnpm --filter @fredo/ui test:run shared/companion`; then read a live composer turn.
+  **Expected:** `COMPANION_CAPABILITY_LIMITS.maxContextBytes` = **16384** (`grounding.ts:38-39`) and
+  `COMPANION_GROUNDING_VERSION` = **1** (`:31`); an over-cap payload yields `null` from
+  `companionGroundingContent` (never truncated JSON), so the turn is ungrounded; exactly one
+  grounding payload per companion turn.
+  **Edge:** a maximal selection (32 ids × 120 chars, 10 entries); zero-element document; a disposed
+  provider → `null`.
+  **Receipt:** E-UNIT summary + the live composer turn content.
 
 ## F-161 (NFR-3/NFR-4) — build and suite green; other apps unregressed
 
 - [ ] F-161: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; then open Mission
-  Monitor, Query Viewer, Settings, Terminal from the launcher and run one companion skill call; count
-  `document` keydown listeners before/after.
-  **Expected:** build exit 0, zero TS errors; suite green; the refreshed P3/P4 pins are updated not
-  deleted/weakened (A1's four pins; the `NAV_ASK_DISABLED_REASON` P4 assertions in
-  `commandRail.test.tsx`/`models.test.ts` rewritten to the enabled state) and each refresh is listed
-  in `## Tests Runs`; every other retained app opens and behaves as on `main`; every retained
-  application that declares a navigation surface is still published; the `document` keydown
-  listener count is unchanged and the Wireframe
-  adapter stays element-scoped (no new `document` listener).
+  Monitor, Query Viewer, Settings and Terminal from the launcher and run one companion skill call;
+  count `document` keydown listeners before/after.
+  **Expected:** build exit 0, zero TS errors; suite green; every retained app opens and behaves as on
+  `main`; the `document` keydown listener count is unchanged by opening the launcher (the ONE
+  application listener is `installPlatformChords`), and no new `document` listener is added.
   **Edge:** a pre-existing unrelated failure must be named with its `main` baseline; a skipped test is
   not a pass.
   **Receipt:** the quoted command output + the listener counts + the app sweep.
@@ -2689,9 +2525,9 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 - [ ] F-162: same run as F-126…F-161: query `telemetry_spans` via the `telemetry-query` skill; upload
   the run's screenshots with `upload-evidence`.
   **Expected:** a NON-ZERO count with `max(ingested_at)` at/after the run start (lever: the app's own
-  OTLP ingest from an active session / the companion generation in F-131 — **`fredo emit` writes no
-  spans** and is not a substitute); the count + timestamp quoted verbatim and the screenshot URLs
-  embedded in `## Tests Runs`.
+  OTLP ingest from an active session / a companion generation — **`fredo emit` writes no spans** and
+  is not a substitute); the count + timestamp quoted verbatim and the screenshot URLs embedded in
+  `## Tests Runs`.
   **Edge:** a quiet table → re-run after a companion turn; a stale `max(ingested_at)` is a FAIL, not a
   "quiet environment" pass.
   **Receipt:** E-SPAN + E-SHOT.
@@ -2705,8 +2541,8 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 > global commands; the `>` palette, the app-scoped navigation palette and the launcher-only
 > conversation are REMOVED. Rows map 1:1 to `.opencode/tmp/3120/triage.md` `## QA Expert` keyed
 > **R-2** and **R-8**; the reworked conversation surface lives in
-> `.opencode/tests/companion/functional.md` F-164..F-178 and the bottom command bar in
-> `.opencode/tests/wireframe-navigation/functional.md` F-N25..F-N45.
+> `.opencode/tests/companion/functional.md` F-164..F-178 and the surviving retire-and-verify rows in
+> `.opencode/tests/navigation-retirement/functional.md` (Q-13 / Q-19 / Q-29).
 >
 > **Verification policy: live**, except **F-166** which is `static` (a prove-a-negative source sweep —
 > G-408). Every live row needs a rendered-webview receipt (DOM snapshot / screenshot / measured
@@ -2719,9 +2555,9 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 > F-146, F-147, F-148, F-149, F-150, F-151, F-152, F-153, F-154, F-155, F-156, F-157, F-158, F-159**
 > (context header, palette projection/render, app-scoped Enter route, launcher-only conversation, undo
 > routing, `/ Ask` → launcher, the palette instrument rows, palette announcer/a11y/reduced-motion/perf).
-> Their mechanisms are replaced by F-163..F-167 here, `companion` F-164..F-178 and
-> `wireframe-navigation` F-N40..F-N43, F-N45; the pilot instrument (F-152..F-154) is replaced by
-> `navigation-research` F-8..F-10. **Kept and still binding:** F-132 (routed-intent parity),
+> Their mechanisms are replaced by F-163..F-167 here and `companion` F-164..F-178; the retire-and-verify
+> coverage for the behaviours they named lives in `.opencode/tests/navigation-retirement/functional.md`
+> (Q-13 / Q-19 / Q-29 / Q-41). **Kept and still binding:** F-132 (routed-intent parity),
 > F-136..F-143 (manifest/companion intent/risk policy/confirmation), **F-160 (envelope cap)**,
 > **F-161 (build/suite)**, **F-162 (live receipt)**.
 
@@ -2757,23 +2593,21 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
     launch Settings.
   - **Receipt:** E-DOM (grid + row per query) + the window list before/after Enter.
 
-- [ ] **F-165 (R-2.3) — global commands survive: Ctrl+Space, voice, and the confirmation host; no palette handler is registered.**
+- [ ] **F-165 (R-2.3) — global commands survive: Ctrl+Space, voice, and NO confirmation host; no palette handler is registered.**
   **Steps:** record `document.activeElement`; press `Ctrl+Space` twice; focus the searchbox and hold
-  Space (`down` → wait → `up`) to start dictation; release; then drive a destructive companion intent
-  with one element selected —
-  `tauri_ipc_execute_command({command:"app_command_intent", args:{requestId:"qa-3120-launcher-confirm",
-  appId:"wireframe", action:"wireframe.element.delete", arguments:{}}})` — and read the launcher.
+  Space (`down` → wait → `up`) to start dictation; release; then apply a destructive action from a
+  pointer `Delete` row in `wireframe-arrange` with one element selected, and read the launcher.
   **Expected:** `Ctrl+Space` opens ONCE and closes ONCE per press (searchbox focused on open, focus
   restored on close); the voice/dictation path is unchanged (a listening indicator renders and the
-  transcript is a message to Fredo — never a palette); the confirmation host still mounts:
-  `[data-testid="launcher-confirmation"]` (`role="alertdialog"`) renders for the destructive intent
-  with **Cancel focused**, and Cancel leaves the document and journal unchanged; NO handler is
-  registered for `fredo.palette.openActions` (typing `>` produces no palette — F-163; the source half
-  is F-166).
+  transcript is a message to Fredo — never a palette); there is NO confirmation host —
+  `[data-testid="launcher-confirmation"]` count **0**, no `role="alertdialog"` is rendered for the
+  destructive action, and the `Delete` row applies immediately because no confirmation requester
+  exists (R-86, F-141); NO handler is registered for `fredo.palette.openActions` (typing `>` produces
+  no palette — F-163; the source half is F-166).
   - **Edge:** Ctrl+Space while a text control is focused (must not fire); Esc closes the launcher;
-    Cancel / Esc / outside-click on the confirmation (nothing applied); the confirmation while the
-    launcher is closed (request resolves `false`, nothing applied).
-  - **Receipt:** E-DOM (launcher + dialog) + the window/generation counts.
+    the `Delete` row with a locked element (still applies, still no dialog); delete then undo restores
+    the same element id and geometry.
+  - **Receipt:** E-DOM (launcher + the absent dialog) + the window/history counts.
 
 - [ ] **F-166 (R-2.4 / R-8 static half) — source sweep: the retired palette/route/bridge tokens are absent from `apps/ui/src`.**
   **Steps:** on the tested tip, strip comments and the literal TEXT of string/template literals (keep
@@ -2787,7 +2621,7 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   scan finds it (G-408 — the instrument can fail).
   **Expected:** ZERO matches for every token; `launcherActionPalette.ts`, `LauncherActionList.tsx`,
   `launcherNavigationPalette.ts`, `LauncherNavigationList.tsx`, `launcherRoute.ts`,
-  `launcherUndoQuery.ts` and `shared/navigation/ui/launcherBridge.ts` do not exist; the negative
+  `launcherUndoQuery.ts` and the retired launcher bridge do not exist; the negative
   control reports the seeded token; the scan's scope and stripped/kept regions are stated verbatim.
   - **Edge:** a token in a comment (stripped → pass); a token inside a template interpolation (must be
     caught); an unrelated `.palette` CSS class; a symbol named only in docs (out of scope — the

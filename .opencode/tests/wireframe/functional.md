@@ -15,20 +15,25 @@
 > `pipeline-state.rs --issue 3070 --agent tester --action upload-evidence --image <path>`.
 > A static-only or "looks correct" PASS fails closed.
 >
-> **Hooks (C7):** `wireframe-root` carrying `data-wireframe-element-count`,
-> `-selection-id`, `-selection-type`, `-selection-geometry` (`"x,y,w,h"`, 1 dp),
+> **Hooks (C7, as shipped after #3151):** `wireframe-root` carrying
+> `data-wireframe-element-count`, `-selection-id`, `-selection-type`, `-selection-shape`,
+> `-selection-fill`, `-selection-geometry` (`"x,y,w,h"`, 1 dp), `-selection-ids`,
+> `-selection-count`, `-selection-group`, `-group-count`, `-snap`, `-stacking`,
 > `-dirty`, `-document-path`, `-page` (`"1280x800"`), `-zoom` (percent), `-pan-mode`;
-> plus `wireframe-status`, `wireframe-canvas`, `wireframe-toolbar`,
-> `wireframe-action-<suffix>` (suffix = the id after `wireframe.` with `.`→`-`, camelCase
-> PRESERVED: `wireframe-action-element-toggleLock`, `wireframe-action-view-fitPage`,
-> `wireframe-action-file-saveAs`), `wireframe-property-panel`, `wireframe-page-controls`,
+> plus `wireframe-status`, `wireframe-canvas`, `wireframe-details-column`,
+> `wireframe-control-strip`, `wireframe-property-panel`, `wireframe-page-controls`,
+> `wireframe-insert` / `wireframe-insert-item`, `wireframe-pan-surface`,
 > `wireframe-file-error` (rendered by ST-6's `WireframeFileError` in the editor shell,
 > between the canvas and the status bar — C8 adjudication 3). There is **no**
 > `data-wireframe-selection-props`: that hook is DECLINED (C7 adjudication 7 / G-324).
-> Shipped hooks consumed: `data-fredo-passthrough` (terminal) and the navigation hooks
-> `data-nav-keycap`, `data-nav-verb-id`, `data-nav-availability` (bound in
-> `shared/navigation/ui/constants.ts`). The legacy element-key hooks were DELETED in P8 / #3122;
-> their absence is gate-owned by `legacyAbsence.test.ts`.
+> Shipped hooks consumed: `data-fredo-passthrough` (terminal) and the pointer control strip's
+> published testids — `wireframe-undo` / `wireframe-redo`, `wireframe-arrange` /
+> `wireframe-arrange-item`, `wireframe-file-menu` / `wireframe-file-item`,
+> `wireframe-view-controls` / `wireframe-view-item` (the ONE import site,
+> `components/wireframeControlIds.ts`). There is **no** keyboard-navigation hook and no
+> per-application key surface: the editor shell installs no key handler and no global listener,
+> and the strip is ordinary `Tab`-reachable chrome (the pointer-row successor is
+> `.opencode/tests/navigation-retirement/functional.md` Q-19).
 
 ## Harness (run before every leg)
 
@@ -43,13 +48,12 @@
   `OPEN_PATH` per bad-document fixture (F-50/F-51/F-52).
 - **Driver:** `tauri_driver_session start`, `appIdentifier` = the env's MCP port as a decimal
   string (`"16001"` for slot 1) — never the bare bundle id.
-- **Focus gate before every key press:** `document.activeElement === document.body` and no
-  text-entry control focused (the navigation `text-entry` focus context must not suppress the
-  declared stroke). A focused interactive control
-  (`<button>`, `[tabindex>=0]`) makes bare keys pass through (`sequence.ts:146`), and the canvas
+- **Focus gate before every pointer interaction:** `document.activeElement === document.body` and
+  no text-entry control focused — ordinary widget focus, not a navigation focus context. A focused
+  interactive control (`<button>`, `[tabindex>=0]`) keeps Space/Enter for itself, and the canvas
   host is itself `tabIndex={0}` — so NEVER `.focus()` it: reach the gate via a pointer-down on
   the empty canvas (explicit blur, UI/UX §2.3) or a pointer toolbar activation (`detail > 0`
-  blurs to body, UI/UX §3.14), then re-read the gate. F-42 covers the keyboard-activation case.
+  blurs to body, UI/UX §3.14), then re-read the gate. F-42 covers the interactive-control case.
 - **Canvas coordinates:** `Reset view` (`0`) ⇒ 100 % and centred. Read
   `[data-testid="wireframe-canvas"]` rect + `-page` + `-zoom`; page origin = canvas centre −
   pagePx × scale/2; element centre = origin + (x + w/2, y + h/2) × scale. Calibrate with TWO
@@ -260,13 +264,14 @@
       **Edge:** undo→redo→undo; redo after a NEW mutation (stack dropped); redo of a
       duplicate.
 - [ ] **F-26 (R-4.2)** Zoom in/out by a fixed step.
-      **Expected:** the two-step `g` `i` (zoom in) / `g` `o` (zoom out) — RE-BOUND from the
-      Slice-1 bare `g`/`m` by Spec #3071 ST-4 — change `-zoom` by the same declared step each
-      press (record consecutive values); the page visibly scales; `-element-count` and the
-      document are unchanged. The bare key `g` now only ARMS the two-step namespace
-      (the navigation bar's 250 ms pending hint), and the freed first step `m` dispatches nothing.
+      **Expected:** the two `wireframe-view-item` controls whose accessible names are `Zoom in` /
+      `Zoom out` change `-zoom` by the same declared step each activation
+      (`ZOOM_STEP = 0.1`, `model/geometry.ts:16`) — record consecutive values; the page visibly
+      scales; `-element-count` and the document are unchanged. There is no zoom key chord: the
+      only keyboard surface outside the application is the three platform chords
+      (`shared/window-system/platformChords.ts`), and none of them zooms.
       **Edge:** at 100 %; with a selection (handles scale, selection kept); alternate
-      `g i`/`g o` back to 100.
+      `Zoom in`/`Zoom out` back to 100.
 - [ ] **F-27 (R-4.3)** Pan mode translates the VIEW only.
       **Expected:** `h` sets `-pan-mode`=`true`; dragging **anywhere** on the canvas shifts the
       rendered page by the pointer delta while `-element-count`, `-selection-id`,
@@ -375,68 +380,95 @@
       **Edge:** Cancel then Discard; New on a clean document (no dialog); a Companion
       `document.new` never blocks on the dialog; open the same document twice.
 
-## R-5 / AC5 — Hotkeys
+## R-5 / AC5 — Pointer control strip (there is no keyboard model)
 
-- [ ] **F-37 (R-5.1)** All 32 bindings, each vs its visible control.
-      **Expected:** with `data-fredo-focus-context=default`, each of the **20 bare keys**
-      `1 2 3 4 5 6 7 8 9 p k l u y n 0 h w o t` produces its action's observable effect
-      (count / geometry / zoom / history / dirty / file), AND each of the **12 two-step
-      sequences** in the `g` namespace — `g i` (zoom in) / `g o` (zoom out), re-bound from the
-      Slice-1 bare `g`/`m`, plus the 10 arrange rows `g g` / `g u` / `g l` / `g s` / `g a` /
-      `g c` / `g r` / `g d` / `g f` / `g b` — produces its action's observable effect (the
-      navigation bar's pending hint shows between the two strokes). Clicking its
-      `[data-testid="wireframe-action-<suffix>"]` produces an INDISTINGUISHABLE effect. A
-      POINTER toolbar activation blurs the control (UI/UX §3.14), so the very next bare key
-      fires — verify that loop for at least `1`, `p`, `u`.
-      **Edge:** `u`/`y` on empty history; `l`/`p`/`k` with no selection; `w`/`o`/`t` in the
-      seam env (all three path seams set at once); each key pressed twice; a lone `g` does
-      nothing after the 1000 ms prefix timeout.
-- [ ] **F-38 (R-5.2 — historical; current model).** The bar lists the declaration's rows.
-      **Expected (current):** `navigation-bar` contains a row (`data-nav-verb-id`) for the
-      current place's declared verbs, each with a non-empty title and a `data-nav-keycap` hint;
-      no legacy element-key row exists (the committed `legacyAbsence.test.ts` owns the literal
-      absence). **Edge:** other windows open; narrow viewport (rows scroll/are not clipped); the
-      digit/arrow reserved strokes render their glyphs.
-- [ ] **F-39 (R-5.3 — historical; current model).** Text-entry suppression in the property
-      panel. **Expected:** with a panel field focused, typing `1`, `p`, `k`, `n` lands the
-      characters in the field and no navigation verb fires (the declaration's `text-entry`
-      focus-context rule); the document is unchanged.
+> **R-5's subject was a per-application keyboard surface and it is deleted.** The shipped product
+> has exactly one keyboard surface and it is not per-application: the three platform chords
+> (`primary+space` toggles the launcher; `primary+tab` / `primary+shift+tab` move window focus —
+> `shared/window-system/platformChords.ts`), the plain-`Tab` window-boundary hand-off
+> (`shared/window-system/traversal.ts`), and focus-derived terminal passthrough. Wireframe's only
+> controls are the 23 pointer-reachable ones on `wireframe-control-strip`
+> (`components/WireframeEditor.tsx:186-202`): 12 `wireframe-arrange-item` + 4 `wireframe-file-item`
+> + 5 `wireframe-view-item` + `wireframe-undo` / `wireframe-redo`, all published from ONE import
+> site (`components/wireframeControlIds.ts`). The rows below keep their behavioural outcomes
+> (reachability, effect, suppression, unfocused isolation, no collision) re-pointed onto that
+> surface; the capability-level successor for each is named in
+> `.opencode/tests/navigation-retirement/functional.md` and in the ledger row for this file.
+
+- [ ] **F-37 (R-5.1 — pointer parity).** All 21 strip rows, each vs its declared effect.
+      **Expected:** every one of the 21 rows on `wireframe-control-strip` is present, enabled
+      where its selection gate allows (F-19/Q-19's disabled matrix), and pointer-activating it
+      produces its declared observable effect (count / geometry / zoom / history / dirty / file)
+      — the 12 Arrange rows, the 4 File rows and the 5 View rows, each asserted by its
+      **accessible name inside the opened popup** (the `*-item` testids repeat and both menus are
+      `lazyMount`, so never a page-wide count of a repeating testid and never a count while the
+      menu is closed — G-424). The two history controls are F-24/F-25's. A keyboard path does
+      **not** exist to compare against: the shell installs no `onKeyDown`, no key table and no
+      global listener (`components/WireframeEditor.tsx:19-20`), and pressing any bare key while
+      the strip or the canvas is focused changes nothing — record that as expected behaviour.
+      **Edge:** an empty selection (Delete/Duplicate/Group/Ungroup/Lock/Align×3/Distribute/
+      Bring/Send disabled, Snap enabled); one element; one whole group; each row activated twice;
+      a disabled row activated (a no-op, never an error).
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
+- [ ] **F-38 (R-5.2 — the strip reflects the current state).**
+      **Expected (current):** the strip's enabled/disabled set tracks the selection and the file
+      status on the SAME tick — no stale row survives a selection change, and no row is enabled
+      whose operand set it cannot serve (the UI/UX §7 disabled matrix, Q-19's edge). The row set
+      is fixed (23 controls); only its availability varies. **Edge:** other windows open; a narrow
+      detail column (rows wrap, nothing is clipped); a locked control.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
+- [ ] **F-39 (R-5.3 — text entry inside the panel).** Typing in the property panel.
+      **Expected:** with a panel field focused, typing `1`, `p`, `k`, `n` lands exactly those
+      characters in the field and fires **no** application command — there is no per-application
+      keyboard surface for a keystroke to reach — and the document is otherwise unchanged. The
+      same rule governs the three platform chords: they are suppressed while focus is
+      `text-entry` (`shared/window-system/chordSuppression.ts`, precedence
+      `terminal > modal > text-entry > none`), so a chord typed into a field never leaves the
+      field either.
       **Edge:** each text-entry control (label, content, numeric dims); blur then press `1`
-      (fires); a digit typed into the page width field.
-- [ ] **F-40 (R-5.4 — historical; current model).** Unfocused Wireframe neither dispatches nor
-      lists. **Expected:** focus another window ⇒ the Wireframe rows leave the bar; pressing `1`
-      from the other window's context adds nothing to Wireframe. No legacy element-key attribute
-      exists in either state (`legacyAbsence.test.ts` green).
-      **Edge:** focus returns (rows restored); two windows open.
-- [ ] **F-41 (R-5.5 — historical; current model).** No duplicate-stroke collision.
-      **Expected:** `validation.test.ts` V-07 yields exactly one `NAV-E007` for a duplicate-stroke
-      fixture; the shipped Wireframe surface validates with zero diagnostics; console clean of
-      any duplicate throw.
-      **Edge:** every retained app open at once; focus toggled 10×.
-- [ ] **F-42 (R-5.1 platform note, non-AC)** Bare key with a toolbar `<button>` focused.
-      **Expected:** NOTHING happens (shipped `native-consumer` rule, `sequence.ts:146`).
-      Record as expected platform behaviour — a no-op here is NOT a FAIL; the AC path is the
-      `default`-context press in F-37.
-      **Edge:** focused `<button>` vs canvas; focused panel field (F-39); modal open
-      (suspended).
+      (still nothing, because nothing is bound); a digit typed into the page width field.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-18.)*
+- [ ] **F-40 (R-5.4 — an unfocused Wireframe is inert).**
+      **Expected:** with another window focused, pressing `1` adds nothing to Wireframe and
+      changes no Wireframe observable — every command is pointer-driven and scoped to the
+      focused window, so no keystroke reaches an unfocused application.
+      **Edge:** focus returns (the strip is interactive again); two windows open.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-1.)*
+- [ ] **F-41 (R-5.5 — no duplicated control identity).**
+      **Expected:** the strip publishes each testid once per concern — 12 arrange rows + 4 file
+      rows behind their own triggers, 5 view buttons under `wireframe-view-controls`, and the two
+      history controls — with no duplicated accessible name inside one popup, and no console throw
+      when the strip mounts. `wireframePointerControls.test.tsx` is the committed pin.
+      **Edge:** every menu open at once; the strip remounted 10×.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
+- [ ] **F-42 (R-5.1 platform note, non-AC)** A bare key with an interactive control focused.
+      **Expected:** NOTHING happens at the application level — standard widget behaviour only
+      (Space/Enter activate the focused control), because no application command is bound to any
+      bare key. Record as expected platform behaviour — a no-op here is NOT a FAIL; the
+      reachability path is the pointer row in F-37.
+      **Edge:** focused `<button>` vs canvas; focused panel field (F-39); a modal open (the
+      platform chords are suppressed, the pointer strip is not).
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
 
 ## R-6 / AC6 — Companion control
 
-> **#3099 SUPERSESSION (G-136 — history preserved, no row or PASS record deleted).** Spec #3099 makes
-> the companion skill a GENERATED projection of this application's TypeScript command surface, so the
-> hand-written catalog (`wireframe_catalog.rs`) and its parity test are gone and FOUR rows below are
-> re-pointed. The authoritative rows for the new contract are `.opencode/tests/companion/`
-> F-144..F-163 / R-70..R-75; the wording below is the superseded form kept for the record.
+> **#3099 SUPERSESSION (G-136 — history preserved, no row or PASS record deleted).** Spec #3099 made
+> the companion skill a GENERATED projection of this application's TypeScript command surface; #3152
+> then deleted that whole command path. The hand-written catalog (`wireframe_catalog.rs`), its parity
+> test and the per-application command relay are all **gone**, and FOUR rows below are re-pointed.
+> The authoritative rows for the shipped contract are `.opencode/tests/companion/` F-144..F-163 /
+> R-70..R-75; the wording below is the superseded form kept for the record.
 >
 > - **Emit shape (all rows below):** `llm-skill-call` now carries
 >   `{skill:"wireframe", arguments:{action:"<id>", arguments:{…}}}` — arguments are NESTED under
 >   `arguments`, and `action` is required by the generated schema. A flat
 >   `{action, app_name}` payload (the #3070 shape) is superseded.
 > - **F-43:** the listing id is the RESERVED `listActions` (not `wireframe.companion.listActions`,
->   which is no longer a command); the reply is composed HOST-SIDE from the published manifest —
->   `Wireframe actions: <id> — <description>; …` — and keeps working with the app closed. The 35-id
->   TS↔Rust parity pin is replaced by ONE shared golden fixture asserted by the TS builder suite and
->   the Rust `tests/companion_manifest.rs` (companion F-159).
+>   which is no longer a command) and keeps working with the app closed. The host-side manifest
+>   composition, the 35-id TS↔Rust parity pin and its `tests/companion_manifest.rs` target are all
+>   **gone** (#3152); the surviving 35-id table is `wireframeActions.test.ts`'s `EXPECTED_IDS`, and
+>   the Rust target that survives is `tests/companion_offer_static_only.rs:147`, which pins the
+>   three static skills byte-identically (companion F-159).
 > - **F-45:** the performed reply is now generic — `Performed in Wireframe: <description>, …`
 >   (supersedes `Started a new wireframe for Reporter: …`); it still names only what was performed
 >   and a stopped `draftApp` still lists only the prior steps.
@@ -444,16 +476,19 @@
 >   Nothing changed.` The undeclared-key rejection now happens in TypeScript (`executeCommand`)
 >   BEFORE `run`, fail-closed, with no window opened (companion F-153..F-155); the Rust validator
 >   still rejects the outer `{action, arguments}` shape.
-> - **F-48:** the relay is the generic `app-command-intent` / `app-command-intent-result` pair with
->   `{requestId, appId, action, arguments}` and the SAME bounded queue (16, oldest-first); the
->   cross-webview take-on-mount guarantee is retained (companion F-150).
+> - **F-48:** **there is no relay.** #3152 deleted the per-application command path, so the
+>   `app-command-intent` / `app-command-intent-result` pair, its `{requestId, appId, action,
+>   arguments}` payload and its bounded queue do **not** exist; a companion `llm-skill-call` is
+>   handled by the application's own listener (companion F-150's take-on-mount guarantee went with
+>   it).
 
 - [ ] **F-43 (R-6.1)** `wireframe.companion.listActions`.
       **Expected:** the reply contains all 35 action ids with a non-empty description each
       (the 25 Slice-1 ids + the 10 `wireframe.arrange.*` ids added by this slice); supported by
       a direct `llm-skill-call` emit
-      `{skill:"wireframe", arguments:{action:"wireframe.companion.listActions"}}`; a TS
-      parity test pins the 35 ids against the Rust catalog source.
+      `{skill:"wireframe", arguments:{action:"wireframe.companion.listActions"}}`; the surviving
+      35-id table is `wireframeActions.test.ts`'s `EXPECTED_IDS` (the Rust catalog source and its
+      `tests/companion_manifest.rs` parity target were deleted in #3152).
       **Edge:** a narrow reply surface (scroll, never truncate the id list); invoked while the
       app is closed.
 - [ ] **F-44a (R-6.2)** Invoke the 9 `wireframe.add.*` actions.
@@ -508,17 +543,25 @@
       from `Save As` + the document; count ≥ 3; the reply names only performed actions.
       **Edge:** the model supplies `app_name:"Reporter"`; app already open (no duplicate
       window/elements); the same sentence twice (record the declared behaviour).
-- [ ] **F-48 (R-6.2 cross-webview)** Intent relay with `new-window` presentation.
-      **Expected:** invoking `wireframe.add.card` before the `app-wireframe` webview mounts
-      yields exactly one card (take-on-mount path) and the reply names the performed action.
-      **Edge:** two emits before mount; window closed between intent and execution; main-window
-      host as the contrast leg.
+- [ ] **F-48 (R-6.2 cross-webview)** No intent relay exists.
+      **Expected:** with Wireframe closed, emitting `llm-skill-call {skill:"wireframe",
+      arguments:{action:"wireframe.add.card"}}` changes nothing — the offer is the three static
+      skills, no listener declares a `wireframe` skill, and the per-application relay with its
+      take-on-mount queue was deleted (#3152), so no window opens, no card appears and no reply is
+      claimed. The app still opens from the launcher and its 35 ids are driven by the pointer
+      strip.
+      **Edge:** two emits while closed; window open at emit time (still inert); main-window host
+      as the contrast leg (nothing to contrast — also inert).
 - [ ] **F-49 (R-6.2 additive registry)** Existing skills unchanged.
-      **Expected:** `open_app`, `close_app`, `doom_mode` still resolve and behave as before
-      with the 4th skill registered (`with_app_control_doom_and_wireframe`, offer order
-      `open_app, close_app, doom_mode, wireframe`); one listener per skill.
-      **Edge:** all four skills in one request body; a wireframe request while doom mode is
-      active.
+      **Expected:** `open_app`, `close_app`, `doom_mode` still resolve and behave as before, and
+      the offer is exactly those three static skills from the ZERO-argument
+      `companion_skill_registry()` (`applications/llm_server/status.rs:691-693`; pinned by
+      `the_turn_offer_is_exactly_the_three_static_skills`, `status.rs:1462`). There is no fourth,
+      generated or application-named skill: Wireframe has no companion skill and driving it is its
+      own pointer strip. `with_app_control_doom_and_wireframe` and the offer order
+      `open_app, close_app, doom_mode, wireframe` do **not** exist. One listener per skill.
+      **Edge:** all three skills in one request body; a Wireframe request while doom mode is
+      active — the strip is pointer-only, so nothing fires.
 
 ## Error / edge rows
 
@@ -735,16 +778,16 @@ round-2/3 live receipts stand.
 `dom_snapshot` returning `body > div#root` with no children is a BOOTING webview — wait, do not
 `Down`/`Up` (five cycles did not help; waiting did).
 
-**Technique notes (round 4):** a bare `KeyboardEvent` dispatch does NOT reach the hotkey engine
-(9 synthetic keydowns → count 0); use the driver's real key events. Every panel interaction
-focuses a hidden radio/number input (`focus-context=text-entry`, hotkeys disabled) — a canvas
-pointer-down (the shipped explicit blur) restores `default` before any bare key.
+**Technique note:** drive every interaction by pointer. No key is bound to any application
+command, so a synthetic `KeyboardEvent` observes no product behaviour and must not be used as
+evidence; a focused panel field simply receives its characters (ordinary text entry).
 
 ## Spec #3081 — Wireframe "Discard" label colour (AC1–AC4)
 
-> Extends the #3070 suite. Scope: the destructive-action confirm dialog's Discard button
-> (`WireframeToolbar.tsx:390-397`) currently sets `color="white"` (line 393) — a raw colour.
-> Fix: derive the label from `status.onSolids` / `--status-on-solids`. Verification policy:
+> Extends the #3070 suite. Scope: the destructive-action confirm dialog's Discard button. The
+> dialog survives the toolbar deletion and is owned by
+> `components/WireframeNewDocumentDialog.tsx`; the label derives from `status.onSolids` /
+> `--status-on-solids`. Verification policy:
 > **live** (DOM computed colour + measured contrast), no `telemetry_spans` receipt expected.
 > Evidence per row: a quoted `tauri_webview_execute_js` result carrying the OBSERVED computed
 > colour(s) + the resolved `--status-on-solids`, plus an uploaded `user-attachments` capture
@@ -756,8 +799,9 @@ pointer-down (the shipped explicit blur) restores `default` before any bare key.
       onSolidsVar:"#0c1117", ratio:5.11, labelIsWhite:false}`; DARK `dark`:
       `{labelColor:"rgb(12, 17, 23)", buttonBg:"rgb(239, 68, 68)", onSolidsVar:"#0c1117",
       ratio:5.04, labelIsWhite:false}`. Label == resolved `--status-on-solids` (`#0c1117`) in
-      both; ratio ≥ 4.5; never white. Source `WireframeToolbar.tsx:393` = `color="status.onSolids"`.
-      **Recipe:** open Wireframe → add one element (dirty) → **New** → dialog
+      both; ratio ≥ 4.5; never white. Source read: the surviving Discard button in
+      `components/WireframeNewDocumentDialog.tsx` carries the token prop (`color="status.onSolids"`).
+      **Recipe:** open Wireframe → add one element (dirty) → File menu's `New` row → dialog
       `[data-testid="wireframe-new-document-dialog"]`; read the Discard button
       `[data-testid="wireframe-new-document-discard"]`.
       **Expected:** `getComputedStyle(discard).color` equals
@@ -765,8 +809,8 @@ pointer-down (the shipped explicit blur) restores `default` before any bare key.
       (rgb-normalised, same task) in BOTH `light-default` and a dark preset; contrast between
       that colour and `getComputedStyle(discard).backgroundColor` ≥ **4.5** (the `status-error-label`
       body floor); the label is NOT `rgb(255,255,255)` where `--status-error` is light; a source
-      read of `WireframeToolbar.tsx:393` shows a token prop (no `white`/hex/rgba).
-      **Edge:** accent override; dialog opened via the toolbar New button AND via a Companion
+      read of `components/WireframeNewDocumentDialog.tsx` shows a token prop (no `white`/hex/rgba).
+      **Edge:** accent override; dialog opened from the File menu's `New` row AND via a Companion
       `document.new`; label unclipped inside the button.
 
 - [x] **F-58 (REQ-2 / AC2)** Repo sweep — zero raw-colour literals in the Wireframe tree.
@@ -797,13 +841,13 @@ pointer-down (the shipped explicit blur) restores `default` before any bare key.
 
 - [x] **F-60 (REQ-4 / AC4)** Regression gates.
       **Round 1 (2026-10-26) — PASS.** `test:run` 240 files / 3084 tests; `build` 2832 modules
-      zero TS errors; `contrast:gate` 46/46; `WireframeToolbar` assertion UPDATED (+43 lines,
+      zero TS errors; `contrast:gate` 46/46; the dialog's token assertion UPDATED (+43 lines,
       strengthened — G-125).
       **Recipe:** `pnpm --filter @fredo/ui test:run` (must include green
       `applications/wireframe/__tests__/canvasPalette.test.ts` +
-      `applications/wireframe/__tests__/WireframeToolbar.hotkeys.test.tsx`),
+      `applications/wireframe/__tests__/WireframeFileError.test.tsx`),
       `pnpm --filter @fredo/ui build` (zero TS errors), `pnpm --filter @fredo/ui contrast:gate`.
-      **Expected:** all three exit 0; the `WireframeToolbar` assertion is UPDATED to expect the
+      **Expected:** all three exit 0; the dialog's token assertion is UPDATED to expect the
       token (not deleted/weakened — G-125); no other assertion changed.
       **Edge:** the dialog testid is unchanged; the build introduces no new chunk regression;
       the contrast gate stays at its frozen baseline cap.
@@ -812,8 +856,8 @@ pointer-down (the shipped explicit blur) restores `default` before any bare key.
 
 Env `3081-a` (Vite :16030 / MCP :16031), served `7f2983b` (= `spec/3081` HEAD). Driver:
 `tauri_driver_session` on `127.0.0.1:16031` (the `tauri_*` tools were PRESENT this round).
-Dialog reached by: launcher → Wireframe → `wireframe-action-add-text` (count 1) →
-`wireframe-action-document-new` → `wireframe-new-document-dialog`. Theme via Settings →
+Dialog reached by: launcher → Wireframe → `wireframe-insert` → Elements → `Text` (count 1) →
+`wireframe-file-menu` → `New` → `wireframe-new-document-dialog`. Theme via Settings →
 Appearance `select[aria-label="Theme presets"]` (reset to default after).
 
 - **F-57 PASS** — label == `--status-on-solids` in light + dark; ratios 5.11 / 5.04.
@@ -829,31 +873,35 @@ plan; the two REQ-1 named presets clear 4.5.
 ## Spec #3071 — Wireframe Layout Intelligence (AC1–AC3)
 
 > Extends the #3070 Slice-1 suite. Scope: multi-select + group; snap-to-grid + align + distribute
-> + smart guides; bring-forward/send-backward; hotkey + Companion parity; groups/stacking
+> + smart guides; bring-forward/send-backward; pointer-control parity; groups/stacking
 > persistence. Rows map 1:1 to the Architect's EARS `R-1.1`…`R-3.3` (incl. the convergence
 > clauses R-1.9/R-1.10/R-2.8/R-2.9/R-3.3, pinned at rows F-79…F-83) and bind VERBATIM to the
-> BINDING names block in `.opencode/tmp/3071/triage.md` (action ids, two-step `g` namespace,
-> root/canvas DOM hooks, testids). **Verification policy: live** — DOCUMENT STATE, no
-> `telemetry_spans` receipt expected; per-row evidence is a quoted `tauri_webview_*` result
-> carrying the named testid + the OBSERVED value, plus an uploaded capture for the visual rows.
+> BINDING names block in `.opencode/tmp/3071/triage.md` (action ids, root/canvas DOM hooks,
+> testids). **Verification policy: live** — DOCUMENT STATE, no `telemetry_spans` receipt
+> expected; per-row evidence is a quoted `tauri_webview_*` result carrying the named testid +
+> the OBSERVED value, plus an uploaded capture for the visual rows.
 >
-> **RE-BASELINE (never delete — G-125).** This slice added 10 hotkeyed controls, so the legacy
-> count assertions moved 22 → 32 at #3071. **P5/P8 supersession:** the legacy element-key channel
-> and its counts are DELETED; the current surface is the declaration-driven place surface
-> (`navigation-bar` + `data-nav-*`). The rows below keep their behavioural outcomes (selection,
-> grouping, snap, alignment, undo), with the invoker re-pointed to the declared keys (`a g`,
-> `a s`, `a ←`).
+> **RE-BASELINE (never delete — G-125).** This slice added 10 controls to the then-shipped
+> toolbar, so the legacy count assertions moved 22 → 32 at #3071. **The toolbar and every
+> keyboard binding are DELETED (#3119 P5, engine removed #3151):** the current surface is the
+> 23 pointer-reachable controls on `wireframe-control-strip` (12 `wireframe-arrange-item` + 4
+> `wireframe-file-item` + 5 `wireframe-view-item` + `wireframe-undo` / `wireframe-redo`,
+> `components/WireframeEditor.tsx:186-202`). The rows below keep their behavioural outcomes
+> (selection, grouping, snap, alignment, undo), with the invoker re-pointed to the Arrange
+> menu rows (`Group`, `Snap to grid`, `Align left`) on the strip. No key stroke drives any of
+> them: the only keyboard surface is the three platform chords in `shared/window-system/`.
 >
 > **Other Slice-1 rows re-baselined in place (expected value only, never deleted):**
 > `F-7` (selection chrome now `palette.accent`, not `--accent-strong`), `F-9` (shift-click ADDS
-> to the selection — R-1.1), `F-26` (zoom re-bound to `g i` / `g o`), and `F-43`/`F-44c`
-> (catalog ids **25 → 35**).
+> to the selection — R-1.1), `F-26` (zoom now the `Zoom in` / `Zoom out` view rows), and
+> `F-43`/`F-44c` (catalog ids **25 → 35**).
 >
 > **New hooks asserted:** root `wireframe-root[data-wireframe-selection-ids | -selection-count |
 > -selection-group | -group-count | -snap | -stacking]`; canvas
-> `wireframe-canvas[data-wireframe-guides]`; controls `wireframe-action-arrange-<group|ungroup|
-> toggleGroupLock|toggleSnap|alignLeft|alignCenter|alignRight|distribute|bringForward|
-> sendBackward>`; `wireframe-tag-group`. Unchanged Slice-1 hooks still asserted
+> `wireframe-canvas[data-wireframe-guides]`; controls `wireframe-arrange` /
+> `wireframe-arrange-item` (by accessible name: `Group`, `Ungroup`, `Lock group`, `Align left`,
+> `Align centre`, `Align right`, `Distribute`, `Bring forward`, `Send backward`, `Snap to grid`,
+> `Delete`, `Duplicate`); `wireframe-tag-group`. Unchanged Slice-1 hooks still asserted
 > (`wireframe-selection-id` is now the PRIMARY = last selected id).
 
 - [ ] **F-61 (R-1.1)** Shift-click ADDS to the selection.
@@ -870,8 +918,9 @@ plan; the two REQ-1 named presets clear 4.5.
       **Edge:** remove down to empty; remove the primary (primary becomes the new last in
       document order); remove then re-add; remove all then a plain click selects one.
 - [ ] **F-63 (R-1.3)** Group creates ONE group, geometry unchanged.
-      **Expected:** select ≥2, invoke `wireframe.arrange.group` (declared stroke `a` then `g` /
-      map row / Companion id) ⇒ `-group-count` +1, `-selection-group` =
+      **Expected:** select ≥2, click the `Group` row in `wireframe-arrange` (by accessible name
+      inside the opened popup) / or the Companion id `wireframe.arrange.group` ⇒ `-group-count`
+      +1, `-selection-group` =
       the NEW group id, `wireframe-tag-group` shown, `-selection-ids` unchanged, and EVERY
       member's `-selection-geometry` is string-identical pre/post.
       **Edge:** exactly 2; the whole page; each of the three invokers; members already in another
@@ -894,14 +943,15 @@ plan; the two REQ-1 named presets clear 4.5.
       lock covers position+size only, R-1.10); ungroup then undo; ungroup a single non-grouped
       element (no-op, `runWireframeAction` false).
 - [ ] **F-66 (R-1.6)** Delete group removes group + members in ONE undo step.
-      **Expected:** group selected, delete (`k`) ⇒ group AND every member removed:
+      **Expected:** group selected, click the `Delete` row in `wireframe-arrange` ⇒ group AND
+      every member removed:
       `-element-count` − n, `-group-count` −1, `-selection-ids`=`''`; exactly ONE `u` restores
       the group and all members with ids/geometry intact.
       **Edge:** members include a hidden element; the only group; via Companion `element.delete`;
       undo then redo.
 - [ ] **F-67 (R-1.7)** `toggleGroupLock` flips; locked group members don't move/resize.
-      **Expected:** group selected, `wireframe.arrange.toggleGroupLock` ⇒ group `locked` flips
-      (toolbar `aria-pressed` + locked affordance + `wireframe-tag-group`); a body drag AND a
+      **Expected:** group selected, the `Lock group` row in `wireframe-arrange` ⇒ group `locked` flips
+      (the row's `aria-pressed` + locked affordance + `wireframe-tag-group`); a body drag AND a
       drag at the FORMER handle coordinates then leave EVERY member's `-selection-geometry`
       string-identical; the flip commits ONE undo snapshot and flips `-dirty` (the
       `documentsEqual` trap — a groups-only change must NOT be a silent no-op).
@@ -910,15 +960,17 @@ plan; the two REQ-1 named presets clear 4.5.
       mutation that STILL commits and flips `-dirty`; the `documentsEqual` trap); save+reopen
       preserves group `locked`.
 - [ ] **F-68 (R-1.8)** A locked member in an unlocked group stays immovable.
-      **Expected:** group of 3 with ONE member individually locked (`l`), drag the group ⇒ the two
+      **Expected:** group of 3 with ONE member individually locked (`Lock position and size`
+      switch), drag the group ⇒ the two
       unlocked members move by the delta, the locked member's `-selection-geometry` is
       string-identical, ONE undo restores.
       **Edge:** lock 2 of 3; resize the group; the locked member's former handle coordinates do
       nothing; unlock mid-group and re-drag.
 - [ ] **F-69 (R-2.1)** `toggleSnap` flips + reports state.
-      **Expected:** `wireframe.arrange.toggleSnap` (declared stroke `a` then `s` / map row /
-      Companion) ⇒ `wireframe-root[data-wireframe-snap]` flips `'false'`↔`'true'` AND the
-      map/rail row's state matches; `-dirty` and the undo depth UNCHANGED (editor state, not
+      **Expected:** the `Snap to grid` row in `wireframe-arrange` (`role="menuitemcheckbox"`) /
+      the Companion id `wireframe.arrange.toggleSnap` ⇒
+      `wireframe-root[data-wireframe-snap]` flips `'false'`↔`'true'` AND the row's `aria-checked`
+      matches; `-dirty` and the undo depth UNCHANGED (editor state, not
       document state).
       **Edge:** toggle twice; toggle then Save/Open (snap absent from the document); toggle with
       a selection; each invoker.
@@ -931,8 +983,8 @@ plan; the two REQ-1 named presets clear 4.5.
       is applied UNIFORMLY to every movable member (inter-element offsets preserved, clamped to
       `-page`); 200 % zoom; a 1 px nudge rounds to the nearest multiple.
 - [ ] **F-71 (R-2.3)** `alignLeft`/`alignCenter`/`alignRight` line up edges/centres.
-      **Expected:** ≥2 selected: `alignLeft` ⇒ all left edges coincide (min left) in
-      `-selection-geometry`; `alignCenter` ⇒ horizontal centres coincide; `alignRight` ⇒ right
+      **Expected:** ≥2 selected: the `Align left` row in `wireframe-arrange` ⇒ all left edges coincide (min left) in
+      `-selection-geometry`; `Align centre` ⇒ horizontal centres coincide; `Align right` ⇒ right
       edges coincide; every element's w/h UNCHANGED; ONE undo per align.
       **Edge:** 2 vs 5 elements; a mixed locked/unlocked selection ⇒ **R-2.8**: align operates on
       the MOVABLE members only, the align TARGET is the WHOLE selection's union bounds (locked
@@ -941,7 +993,7 @@ plan; the two REQ-1 named presets clear 4.5.
       **R-2.9 TRUE NO-OP** (value-equal ⇒ no commit, no `-dirty`, no undo step, returns `false`);
       each invoker.
 - [ ] **F-72 (R-2.4)** `distribute` equalises horizontal gaps; ends unchanged.
-      **Expected:** ≥3 selected: `wireframe.arrange.distribute` ⇒ the horizontal gaps between
+      **Expected:** ≥3 selected: the `Distribute` row in `wireframe-arrange` ⇒ the horizontal gaps between
       consecutive selected elements (ordered by left edge) are equal within ±1 px; the leftmost
       and rightmost elements are geometry-identical pre/post; ONE undo.
       **Edge:** exactly 3 MOVABLE (minimum — **R-2.8**: the operand set is the movable members, so
@@ -957,8 +1009,8 @@ plan; the two REQ-1 named presets clear 4.5.
       simultaneous guides; guides absent from an exported PNG (see F-78); drag near the page
       edge.
 - [ ] **F-74 (R-2.6)** `bringForward`/`sendBackward` move one position, clamped.
-      **Expected:** non-empty selection: `bringForward` ⇒ each selected element moves ONE
-      position later in `data-wireframe-stacking`; `sendBackward` ⇒ one position earlier;
+      **Expected:** non-empty selection: the `Bring forward` row in `wireframe-arrange` ⇒ each selected element moves ONE
+      position later in `data-wireframe-stacking`; `Send backward` ⇒ one position earlier;
       clamped at the ends (topmost forward / bottommost backward is a no-op); ONE undo.
       **Edge:** bringForward the top element (clamped ⇒ value-equal ⇒ no commit, returns `false` —
       R-2.9); sendBackward the bottom (clamped, `false`); multi-select reorder determinism
@@ -971,15 +1023,18 @@ plan; the two REQ-1 named presets clear 4.5.
       `bringForward`/`sendBackward` with 0 ⇒ NOTHING changes (document, selection, `-group-count`,
       `-stacking`, undo depth) and `runWireframeAction` returns `false`; the Companion replies
       "nothing changed".
-      **Edge:** each invoker × each under-sized case; a visibly-disabled toolbar control still
+      **Edge:** each invoker × each under-sized case; a visibly-disabled strip row still
       no-ops when invoked; the Companion reply text is honest.
-- [ ] **F-76 (R-3.1 — historical; current model)** Declaration / map / Companion parity.
-      **Expected:** for each of the 10 actions the `navigation-bar` lists a row
-      (`data-nav-verb-id`) with its `data-nav-keycap` hint; the declared stroke produces the SAME
-      visible change as the map row and as the Companion command id;
-      `wireframe.companion.listActions` contains all 10 ids with non-empty descriptions.
-      **Edge:** each action × all three invokers; the 250 ms prefix hint after the first stroke;
-      `zoom.in` (`v` `+`) / `zoom.out` (`v` `-`) still work; no duplicate stroke (V-07).
+- [ ] **F-76 (R-3.1 — pointer / Companion parity)** Strip row / Companion parity.
+      **Expected:** for each of the 10 arrange/file/view capabilities the strip publishes a row,
+      and activating that row by pointer produces the SAME visible change as invoking its
+      Companion id; `wireframe.companion.listActions` contains all 10 ids with non-empty
+      descriptions. `wireframePointerControls.test.tsx` pins the row set (23 controls) and the
+      accessible names, which are the `WIREFRAME_ACTIONS` titles verbatim.
+      **Edge:** each action × both invokers (pointer row, Companion id); `Zoom in` / `Zoom out`
+      still work; each testid published exactly once per concern (no duplicated identity — see
+      F-41).
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
 - [ ] **F-77 (R-3.2)** Save As…/Open restores groups + stacking.
       **Expected:** build a document with ≥2 groups (one locked) and a non-default stacking
       order, Save As…, then `document.new` + Open ⇒ `-group-count` matches, the saved JSON
@@ -1053,202 +1108,222 @@ plan; the two REQ-1 named presets clear 4.5.
       whose only id dangles ⇒ group removed; an id duplicated across two groups ⇒ FIRST keeps it,
       the second drops it; `groups` present but not an array ⇒ reject; each via the Open seam.
 
-## Spec #3087 — remove the on-control hotkey chip (F-84…F-90)
+## Spec #3087 — no on-control hotkey chip (F-84…F-90)
 
-> The Wireframe toolbar must render **no** hotkey badge/chip on any control; shortcuts show
-> only on the always-on bottom hotkey bar. Deletion-only markup; bindings/actions/bar
-> unchanged. **Verification policy: live** — DOM observable + a real keystroke performing the
-> action; document state, no `telemetry_spans` receipt expected. Isolated env:
+> The Wireframe editor renders **no** hotkey badge/chip on any control, and since #3119 P5 (engine
+> removed #3151) there is no bottom hotkey bar either: the toolbar is deleted and no control
+> carries a key hint. **Verification policy: live** — DOM observable; document state, no
+> `telemetry_spans` receipt expected. Isolated env:
 > `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3087 -EnvId wf3087-a
 > -EnvSlot 1 -RequireIsolation`; driver `tauri_driver_session start` with `appIdentifier` = the
-> env MCP port decimal string. Do **not** synthesize key events (E-22).
+> env MCP port decimal string. Do **not** synthesize key events (E-22) — no application key is
+> bound to anything, so a synthetic event proves nothing.
 
-- [ ] **F-84 (R-1 — historical #3087; current model)** No on-control key chip exists.
-      **Expected (current):** the deleted toolbar/chip has no successor; the bar renders key
-      hints through `NavKeycap` (`data-nav-keycap`) and the rail/map rows carry
-      `data-nav-verb-id`; zero legacy element-key attributes under `wireframe-root`
-      (`legacyAbsence.test.ts` green). A capture of the bar is uploaded.
-      **Edge:** every place; the insert affordance; both theme presets.
-- [ ] **F-85 (R-1.2 — historical)** The absence holds unfocused too.
-      **Expected:** focus another window ⇒ the Wireframe rows leave the bar and no legacy
-      element-key attribute appears in either state. **Edge:** toggle focus 10×.
-- [ ] **F-86 (R-2 — historical)** A declared key performs its verb.
-      **Expected:** with the Wireframe host focused, pressing a declared stroke (`c`, then `t`)
-      produces the SAME document delta as activating the corresponding map/rail row.
-      **Edge:** a place with no bound verbs (no row); a two-step prefix renders its hint.
-- [ ] **F-87 (R-3 — historical)** Keyboard operability + accessible name/tooltip.
-      **Expected:** Tab order is identical to the pre-change order; every retained control's
-      accessible name is unchanged; the map/rail rows expose the verb title + `data-nav-keycap`
-      hint; nothing derives from a removed chip.
+- [ ] **F-84 (R-1 — no key hint on any control)** No on-control key chip exists.
+      **Expected (current):** the 23 strip controls on `wireframe-control-strip` render label +
+      icon with **no** chip, no `(hotkey)` suffix in any accessible name, and no key-hint element
+      anywhere under `wireframe-root`. `[data-testid="wireframe-toolbar"]` is absent (0 nodes).
+      A capture of the strip is uploaded.
+      **Edge:** every control; the insert affordance; both theme presets.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
+- [ ] **F-85 (R-1.2 — the absence holds unfocused)** The absence holds unfocused too.
+      **Expected:** focus another window ⇒ no key hint and no chip appears in either state, and
+      the strip is unchanged (it is ordinary Chrome, not a focus-driven surface).
+      **Edge:** toggle focus 10×.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-1.)*
+- [ ] **F-86 (R-2 — a pointer row performs its command)** A strip row performs its command.
+      **Expected:** with the Wireframe window focused, clicking the `Text` item in
+      `wireframe-insert` (the Create pill's Elements group) produces the SAME document delta as
+      the Companion id `wireframe.add.text` (`-element-count` 0→1, `-selection-type="text"`).
+      **Edge:** an item with a selection active (the new element becomes the selection); each
+      insert group.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-16.)*
+- [ ] **F-87 (R-3 — operability + accessible name/tooltip)** Pointer operability + accessible name.
+      **Expected:** the strip is ordinary `Tab`-reachable chrome with the same document order as
+      before the deletion; every one of the 23 controls has a non-empty accessible name (the
+      `WIREFRAME_ACTIONS` title verbatim — `wireframePointerControls.test.tsx` pins the set), and
+      Tab/Shift+Tab move focus across the window boundary (`shared/window-system/traversal.ts`)
+      so focus is never trapped. Nothing derives from a removed chip.
       **Edge:** a disabled (unavailable) row; a locked control.
-- [ ] **F-88 (R-4 — historical)** Unit suite + build.
-      **Expected:** `pnpm --filter @fredo/ui test:run -- src/shared/navigation` green (including
-      `keycap.test.tsx`); `pnpm --filter @fredo/ui build` exit 0 zero TS errors; no
-      weakened/deleted assertion (G-125). Cross-ref `regression.md` R-19.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
+- [ ] **F-88 (R-4 — unit suite + build)** Unit suite + build.
+      **Expected:** `pnpm --filter @fredo/ui test:run -- applications/wireframe` green (including
+      `wireframePointerControls.test.tsx`); `pnpm --filter @fredo/ui build` exit 0 zero TS errors;
+      no weakened/deleted assertion (G-125). Cross-ref `regression.md` R-19.
       **Edge:** full `test:run` green; `contrast:gate` zero wireframe hits.
-- [ ] **F-89 (edge — historical)** Bar height stable across focus.
-      **Expected:** `navigation-bar` height focused vs unfocused is identical (±0 px); no
-      reserved chip slot exists in either state.
+- [ ] **F-89 (edge — the strip height is stable)** Strip height stable across focus.
+      **Expected:** `wireframe-control-strip` height focused vs unfocused is identical (±0 px) —
+      it is static layout, not a focus-driven surface; no reserved chip slot exists in either
+      state.
       **Edge:** wrap may change once between states — NOT a focus reflow.
-- [ ] **F-90 (edge — historical)** `NavKeycap` consumers intact.
-      **Expected:** `data-nav-keycap` hints render in the bar/map/rail; the navigation barrel
-      exports `NavKeycap`; `keycap.test.tsx` green.
-      **Edge:** a two-key hint renders two glyphs.
+- [ ] **F-90 (edge — no key-hint consumer remains)** No key-hint consumer remains.
+      **Expected:** no control under `wireframe-root` renders a key glyph or hint; the strip's
+      eight testid constants are the ONE import site (`components/wireframeControlIds.ts`) and no
+      other key-hint module is imported by the Wireframe tree.
+      **Edge:** open every menu — no hint appears in any popup.
+      *(Successor: `.opencode/tests/navigation-retirement/functional.md` Q-19.)*
 
-## Spec #3119 (P5) — Wireframe pilot: RE-BASELINE of every keyboard / toolbar / bar recipe
+## Spec #3119 (P5) / #3151 — the shipped pointer surface (re-baseline of every recipe)
 
-> **Nothing above is deleted (G-125).** Spec #3119 replaces the toolbar + element hotkeys with a
-> **declaration-driven place surface**: `applications/wireframe/wireframeSurface.ts` (six places
-> under `Canvas`, 55 verbs, 3 root direct aliases) mounted with `CommandRail` +
-> `NavigationMap` + `ActivityTrail`. The legacy toolbar, carrier, command surface and every
-> element-key binding are DELETED; no Wireframe element carries a legacy key attribute.
+> **Every row above keeps its EXPECTED OUTCOME (G-125 — nothing is dropped).** What changed is the
+> invoker and the hook set. Spec #3119 replaced the toolbar + element hotkeys with a declared
+> surface; Spec #3151 then **deleted that whole keyboard/declaration model** (engine, surfaces,
+> providers, bar/map/trail, journal). The shipped Wireframe surface is the **23 pointer-reachable
+> controls** on `wireframe-control-strip`, inside the details column of
+> `components/WireframeEditor.tsx:186-202`:
 >
-> **Authoritative amendments below.** Where a row above names a removed key, hook or testid,
-> the amendment in this section is the executable recipe — the row's EXPECTED OUTCOME is
-> unchanged (that is the regression guarantee). The new surface's own cases (declaration,
-> parity, reachability, single stack, announcement) live in
-> `.opencode/tests/wireframe-navigation/functional.md` (F-N1…F-N24) and are not duplicated here.
+> - **History (2):** `wireframe-undo`, `wireframe-redo` — the application-local bounded history
+>   `WIREFRAME_HISTORY_LIMIT = 100` (`store/wireframeHistory.ts:27`).
+> - **View (5):** `wireframe-view-item` × 5 under `wireframe-view-controls` — `Zoom out`,
+>   `Zoom in`, `Fit page`, `Reset view`, `Pan tool`.
+> - **Arrange (12):** `wireframe-arrange-item` × 12 under `wireframe-arrange` — `Delete`,
+>   `Duplicate`, `Group`, `Ungroup`, `Lock group`, `Align left`, `Align centre`, `Align right`,
+>   `Distribute`, `Bring forward`, `Send backward`, `Snap to grid`.
+> - **File (4):** `wireframe-file-item` × 4 under `wireframe-file-menu` — `New`, `Open`,
+>   `Save As`, `Export PNG`.
 >
-> **Deleted hooks / premises (a row that reads one of these is a technique error, not a FAIL
-> of the product):** the legacy toolbar/carrier/action testids, the legacy on-control chip, any
-> legacy element-key attribute inside `wireframe-root`, the retired two-step namespace, the
-> legacy pending-sequence marker for Wireframe strokes, legacy bar rows for Wireframe, and the
-> retired binding counts. The absence is gate-owned by `legacyAbsence.test.ts`.
+> Every testid is published from ONE import site (`components/wireframeControlIds.ts`); every
+> accessible name is the `WIREFRAME_ACTIONS` title verbatim (`actions/wireframeActions.ts:363`).
+> `wireframePointerControls.test.tsx` is the committed pin for the row set.
 >
-> **One timeout:** the NAV ENGINE prefix times out at **250 ms**
-> (`PENDING_TIMEOUT_MS`, `shared/navigation/types.ts:17`). The legacy 1000 ms sequence timeout
-> belonged to the deleted engine and no longer governs Wireframe.
+> **There is no keyboard surface of any kind here** — no per-application key table, no global
+> listener, no place tree, no bar, no map, no trail, no pending/armed prefix. What exists outside
+> the application is the three platform chords and the plain-`Tab` boundary hand-off in
+> `shared/window-system/`; none of them reaches an application command.
 >
-> **Three surface facts that change what a row can assert (UI/UX §4/§8/§9, binding):**
+> **Deleted hooks / premises (a row that reads one of these is a technique error, not a FAIL of
+> the product):** the legacy toolbar testid, the on-control chip, any element-key attribute inside
+> `wireframe-root`, `wireframe-action-*` control testids (the only survivor is the
+> `wireframeActionTestId()` symbol helper in `actions/wireframeActions.ts:640`), and every retired
+> stroke recipe.
+>
+> **Surface facts that change what a row can assert (UI/UX §4/§8/§9, binding):**
 > 1. **Availability is kind+count gated.** `fill`/`border`/`radius` need ONE **shape**;
 >    `textStyle` needs a **text**; `appearance` needs a **button**; `rename` needs
->    `text|button|input|card`; edit verbs need ≥1; `align ≥2`, `distribute ≥3`, `group ≥2`,
->    `ungroup`/`toggleGroupLock` need a group. A row that expects `fill` enabled on a text
->    element is wrong — the row is `aria-disabled` with
->    `Not available for the current selection`, and pressing its key speaks
->    `<key> isn't available here` once.
-> 2. **Value keys are deterministic CYCLES** (all value args optional): `f` → next
->    `WIREFRAME_COLOR_TOKENS` token (wrap `info→surface`); `o` → `none→thin→thick→none`;
->    `p` → `primary→secondary→ghost→primary`; `z` → `none→s→m→l→none`;
->    `t` → `body→heading→body`. One press = one mutation entry = one undo. Edit `r` is a
->    NAVIGATION effect (focus + select the name field), never a document entry.
-> 3. **Accepted deltas (not regressions):** (a) file rows are no longer visually disabled while a
->    file operation runs (`ContextSnapshot` has no file status — re-entrancy is the store's
->    existing no-op); (b) every Wireframe verb has `coalesceKey: null`, so a repeated field tick
->    is TWO entries (no coalesced group); (c) the insert menu (`wireframe-insert`) is the ONLY
->    toolbar-shaped affordance left and never changes the place.
+>    `text|button|input|card`; edit rows need ≥1; `Align*` needs ≥2; `Distribute` needs ≥3;
+>    `Group` needs ≥2 (or a non-grouped selection); `Ungroup`/`Lock group` need a group. A row
+>    that expects a fill edit enabled on a text element is wrong — the row is `disabled`, and
+>    invoking it is a no-op returning `false`.
+> 2. **Value controls are deterministic CYCLES** in the property panel (all value args optional):
+>    fill cycles through `WIREFRAME_COLOR_TOKENS` (wrap `info→surface`); border cycles
+>    `none→thin→thick→none`; the button appearance cycles `primary→secondary→ghost→primary`;
+>    radius cycles `none→s→m→l→none`; text style cycles `body→heading→body`. One activation =
+>    one document mutation = one undo entry.
+> 3. **Accepted deltas (not regressions):** (a) file rows are disabled while a file operation
+>    runs (`disabled={busy}` on the three non-New rows); (b) the history container is a cursor
+>    (not two stacks), so a repeated field tick is its own entry; (c) the insert menu
+>    (`wireframe-insert`) is the ONLY toolbar-shaped affordance left and it never changes the
+>    document place.
 
-### Key map — old recipe → new recipe (binding)
+### Invoker map — every row → its shipped pointer control (binding)
 
-| Row(s) | Old stroke(s) | New stroke(s) |
-|---|---|---|
-| F-1, S-6 | `1` (text) | `c` `t` |
-| F-2, S-12 | `2`…`4`, `6`…`9` (button/input/image/card/section/shape/line) | `c` `b` / `c` `i` / `c` `m` / `c` `k` / `c` `s` / **map › Create › Shape** / `c` `l` |
-| F-5 | `5` (icon) | **map › Create › Icon** (unbound keyboard-wise; default `iconId` supplied) |
-| F-6 | `1`…`9` | the nine `c <key>` above + map for Icon/Shape |
-| F-12 | `p` duplicate, `k` delete | `e` `d` duplicate, `e` `x` delete |
-| F-13, F-14 | `l` lock | `e` `l` toggleLock (`e` `h` toggles visible) |
-| F-24, F-25 | `u` undo, `y` redo | **unchanged** — root direct aliases `u` / `y` |
-| F-26, F-53 | `g i` zoom in, `g o` zoom out | `v` `+` / `v` `-` |
-| F-27 | `h` pan | `v` `p` (togglePan) |
-| F-28 | `n` fit page | `v` `f` |
-| F-29 | `0` reset view | `v` `0` |
-| F-31, F-35, F-57 | `w` save as | `f` `w` (File place) |
-| F-32, F-35, F-50…F-52 | `o` open | `f` `o` |
-| F-33, F-35 | `t` export | `f` `x` |
-| F-36, F-44c | `document.new` | `f` `n` (opens the discard dialog when dirty — see F-57a) |
-| F-61…F-83 (+ `g` rows) | `g g` / `g u` / `g s` / `g a` / `g r` / `g d` / `g f` / `g b` | `a` `g` / `a` `u` / `a` `s` / `a` `←` / `a` `→` / `a` `d` / `a` `f` / `a` `b` |
-| F-63, F-67, F-69, F-71, F-76 | `wireframe-action-arrange-*` | `navigation-rail-row` / `navigation-map-row` (`data-nav-verb-id`), or `a <key>` |
-| F-69, F-73, F-76 | toolbar `aria-pressed`, retired zoom chord | rail/map row `data-nav-availability` + `data-wireframe-snap`; `v` `+` / `v` `-` |
-| F-63, F-67 | `WIREFRAME_GROUP_MIN_MEMBERS` etc. | unchanged (document semantics untouched) |
-| F-71 | `alignCenter` via `g c` | `alignCenter` is **unbound** → **map › Arrange › Align centre** |
-| F-67 | `toggleGroupLock` via `g l` | **unbound** → **map › Arrange › Lock group** |
-| F-12 (multi) | delete/lock with N selected | unchanged semantics; one `e x` / `e l` commit |
+> The retired stroke recipes are **not** reproduced here: they are recorded, one row per site, in
+> `.opencode/tests/retired-navigation/RETIRED.md` §`#3153`. This table is the executable map a
+> tester reads.
 
-**Selection by pointer is unchanged** (click / shift-click / empty-canvas deselect) — no key
-change. **Arrow keys are engine-owned now:** at the root they select previous/next (replacing
-`WireframeCanvasImpl.tsx:1275-1303`'s local handler); inside Arrange they align. A test that
-dispatches arrow `KeyboardEvent`s to the canvas element will no longer work — press them on the
-shell root with the key gate satisfied.
+| Row(s) | Shipped invoker |
+|---|---|
+| F-1, S-6 | `wireframe-insert` → Elements → `Text` |
+| F-2, S-12 | `wireframe-insert` → Elements / Shape kinds (`Button`, `Input`, `Image`, `Card`, `Line`…), by accessible name |
+| F-5 | `wireframe-insert` → Icons (default `iconId` supplied) |
+| F-6 | the insert menu's nine element types + the four section presets |
+| F-12 | `wireframe-arrange-item` → `Duplicate` / `Delete` |
+| F-13, F-14 | the `Lock position and size` switch (property panel) / `wireframe-arrange-item` → `Lock group` |
+| F-24, F-25 | `wireframe-undo` / `wireframe-redo` |
+| F-26, F-53 | `wireframe-view-item` → `Zoom in` / `Zoom out` |
+| F-27 | `wireframe-view-item` → `Pan tool` |
+| F-28 | `wireframe-view-item` → `Fit page` |
+| F-29 | `wireframe-view-item` → `Reset view` |
+| F-31, F-35, F-57 | `wireframe-file-menu` → `Save As` |
+| F-32, F-35, F-50…F-52 | `wireframe-file-menu` → `Open` |
+| F-33, F-35 | `wireframe-file-menu` → `Export PNG` |
+| F-36, F-44c | `wireframe-file-menu` → `New` (opens the discard dialog when dirty — see F-57a) |
+| F-61…F-83 | `wireframe-arrange-item` → `Group` / `Ungroup` / `Snap to grid` / `Align left` / `Align right` / `Align centre` / `Distribute` / `Bring forward` / `Send backward`, or the Companion id |
+| F-63, F-67, F-69, F-71, F-76 | `wireframe-arrange-item` (by accessible name inside the opened popup) |
+| F-69, F-73, F-76 | the `Snap to grid` row's `role="menuitemcheckbox"` `aria-checked` + `data-wireframe-snap`; `Zoom in` / `Zoom out` |
+| F-63, F-67 | `WIREFRAME_GROUP_MIN_MEMBERS` etc. unchanged (document semantics untouched) |
+| F-71 | `wireframe-arrange-item` → `Align centre` |
+| F-67 | `wireframe-arrange-item` → `Lock group` |
+| F-12 (multi) | unchanged semantics; one `Delete` / `Lock group` commit |
+
+**Selection by pointer is unchanged** (click / shift-click / empty-canvas deselect). **Arrow keys
+are not an application surface:** inside a focused radio group or slider they do what the widget
+does, and nowhere do they select a canvas element or align a selection — a test that dispatches
+`KeyboardEvent`s to the canvas element observes no product behaviour and should not be written.
 
 ### Row amendments (read with the row above)
 
-- **F-1/F-2/F-3/F-5/F-6** — same expected observables; add via the Create place (`c <key>`) or
-  the map. F-5 (icon) and F-2's shape leg now go through **map › Create**, which must supply
-  the default `iconId` / `shape` (`rect`); an `invalid-args` rejection is a FAIL. F-6's
-  12-category page still needs all nine types + the four section presets + both text styles.
-- **F-12/F-13/F-14** — `e` first, then `d`/`x`/`l`/`h`. The one-undo clauses are unchanged but
-  now ride the journal (`wireframeJournal.test.ts`).
-- **F-15/F-16/F-17…F-23** — unchanged (selection + property panel; no keys). The panel writes
-  verbs through the host in ST-6; the panel's testids/labels are unchanged.
-- **F-24/F-25** — `u`/`y` unchanged as ROOT aliases. **Inside Arrange, `u` is ungroup** (tier 1
-  beats tier 2) — an undo leg must run at the root (or via the trail's per-entry Undo).
-- **F-26/F-53** — zoom step is unchanged (±10 pp), now `v +` / `v -`. The 30/9 clamp counts and
-  the 400/10 bounds are unchanged.
-- **F-27** — pan is `v p`; the `wireframe-pan-surface` recipe, the three drag origins and the
-  E-20 bubbled-drag guard are unchanged.
-- **F-28/F-29/F-30** — `v f` / `v 0`; page presets/dims unchanged (`wireframe-page-controls`).
-- **F-31/F-32/F-33/F-34/F-35** — file verbs are `place.saveAs` / `place.open` /
-  `place.exportPng` at `f w` / `f o` / `f x`; the seams, precedence, copy, 2× PNG, page-space
-  invariance and dirty/saved rules are UNCHANGED. One journal entry each, `inverse: null`,
-  `external: true`, non-undoable with the shipped consequence copy.
-- **F-36** — `f n` for New. The `Discard unsaved changes?` dialog behaviour is retained **only
-  if** the dialog survives the toolbar deletion — see F-57a and plan Q-6.
-- **F-37** — **SUPERSEDED.** The 32-binding table no longer exists. Replacement: press the
-  declared strokes listed in `wireframe-navigation/functional.md` (F-N3…F-N10 cover every AC2
-  case) and confirm each performs its verb; `wireframe-navigation/functional.md` F-N13 proves
-  the 33 capabilities are still reachable.
-- **F-38/F-39/F-40** — **SUPERSEDED for the 32-row/32-attribute counts.** New expectations:
-  Wireframe contributes **0** LEGACY bar rows while focused (the current rows are the navigation
-  bar's declaration rows)
-  (the global bar model is empty for Wireframe); text-entry suppression still works on the ONE
-  element-scoped nav handler (typing into a panel field dispatches nothing and lands the
-  characters); an unfocused Wireframe still dispatches nothing.
-- **F-41** — duplicate-key guard: Wireframe contributes **zero** bindings, so the risk is now
-  the inverse (a stray legacy element-key reintroduced) — covered by `legacyAbsence.test.ts` and `wireframe-navigation`
-  F-N11/F-N22.
-- **F-42** — unchanged in spirit: a bare stroke with a `<button>` focused must not be treated as
-  a text-entry passthrough by the nav engine (only text controls pass through), so record the
-  observed behaviour and do not fail the product for it.
-- **F-43…F-49** — **DEFERRED to P6 (recorded, Q-1).** The generated companion skill came from
-  the deleted command surface. New expected outcome for these rows: a companion
-  `llm-skill-call` for Wireframe resolves to a clean `Invalid` (no window opened, no element
-  added, no timeout, no crash) and `wireframeDraft.ts`'s direct draft operations still work as
-  unit tests. Anything OTHER than a clean fail-closed is a FAIL. Do not re-baseline these to
-  "PASS by removal".
-- **F-50/F-51/F-52** — unchanged except the `o` leg is `f o`.
-- **F-53** — unchanged except zoom strokes.
+- **F-1/F-2/F-3/F-5/F-6** — same expected observables; add via `wireframe-insert` (Elements /
+  Section presets / Shape kinds / Icon picker). F-5 (icon) and F-2's shape leg go through the
+  insert menu, which supplies the default `iconId` / `shape` (`rect`). F-6's 12-category page
+  still needs all nine types + the four section presets + both text styles.
+- **F-12/F-13/F-14** — `Duplicate`/`Delete` rows and the `Lock position and size` switch. The
+  one-undo clauses are unchanged and ride `store/wireframeHistory.ts` (pinned by
+  `wireframeHistory.test.ts`).
+- **F-15/F-16/F-17…F-23** — unchanged (selection + property panel; no key surface). The panel's
+  testids/labels are unchanged.
+- **F-24/F-25** — `wireframe-undo` / `wireframe-redo` (accessible names `Undo` / `Redo`), both
+  disabled when their stack is empty.
+- **F-26/F-53** — zoom step is unchanged (±10 pp, `ZOOM_STEP`, `model/geometry.ts:16`), now the
+  `Zoom in` / `Zoom out` rows. The 30/9 clamp counts and the 400/10 bounds are unchanged.
+- **F-27** — pan is the `Pan tool` toggle (`aria-pressed` + `-pan-mode`); the
+  `wireframe-pan-surface` recipe, the three drag origins and the E-20 bubbled-drag guard are
+  unchanged.
+- **F-28/F-29/F-30** — `Fit page` / `Reset view`; page presets/dims unchanged
+  (`wireframe-page-controls`).
+- **F-31/F-32/F-33/F-34/F-35** — file rows `Save As` / `Open` / `Export PNG`; the seams,
+  precedence, copy, 2× PNG, page-space invariance and dirty/saved rules are UNCHANGED. One
+  history entry each, non-undoable, with the shipped consequence copy.
+- **F-36** — `New` (the File menu's first row, never disabled). The `Discard unsaved changes?`
+  dialog survives the toolbar deletion; `WireframeNewDocumentDialog.tsx` owns it — see F-57a.
+- **F-37** — re-pointed: the 32-binding table no longer exists (no binding exists). Replacement:
+  F-37's own row above (every one of the 21 strip rows vs its declared effect);
+  `.opencode/tests/navigation-retirement/functional.md` Q-19 is the capability-parity successor.
+- **F-38/F-39/F-40** — re-pointed: Wireframe contributes **0** key rows to anything (there is no
+  bar); the strip's enabled/disabled set tracks the selection on the same tick; typing into a
+  panel field lands the characters and fires nothing; an unfocused Wireframe stays inert.
+- **F-41** — the identity guard is now "each testid published once per concern" (F-41's own row);
+  the retired element-key reintroduction risk is covered by `wireframePointerControls.test.tsx`.
+- **F-42** — a bare key with an interactive control focused does nothing at the application level:
+  standard widget behaviour only. Record the observed behaviour; do not fail the product.
+- **F-43…F-49** — **the companion command path was deleted (#3152), not deferred.** The offer is
+  the three static skills (`open_app`, `close_app`, `doom_mode`) from the zero-argument
+  `companion_skill_registry()`, so no per-application skill and no relay exist: a `wireframe`
+  `llm-skill-call` is inert (no window opened, no element added, no reply claimed, no timeout, no
+  crash), and `wireframeDraft.ts`'s draft operations survive only as internal Wireframe action
+  code with no companion path. Anything that opens a window, mutates the document or crashes is a
+  FAIL. Do not re-baseline these to "PASS by removal".
+- **F-50/F-51/F-52** — unchanged except the open invoker is the `Open` row.
+- **F-53** — unchanged except the zoom invokers.
 - **F-54/F-55/F-56** — unchanged (console, CI parity, bundle).
 - **F-57** — the Discard label colour row keeps its observable (computed colour == resolved
   `--status-on-solids`, ratio ≥ 4.5, never white, testids `wireframe-new-document-dialog` /
-  `wireframe-new-document-discard`). Its **source-read leg** must be re-pointed from the deleted
-  `WireframeToolbar.tsx:393` to whichever component now owns the dialog — a NAMED BLOCKER until
-  ST-7 declares the owner (plan Q-6). The dialog must be reached with `f n` on a dirty document.
-- **F-58/F-59/F-60** — colour/contrast rows unchanged; the wireframe-scoped scan now includes
-  `wireframeSurface.ts` and the nav surface files (they are under `applications/wireframe/**` /
-  `shared/navigation/**`; the latter needs the scoped sweep because `contrast:gate` does not glob
-  `shared/`).
-- **F-61…F-83** — arrange/group rows keep their document semantics and one-undo clauses; only
-  the invoker changes (`a <key>` or the map/rail row). `alignCenter` and `toggleGroupLock` are
-  map-only. The `g`-namespace bar/ARIA clauses in F-76 are superseded by F-N13/F-N19.
-- **F-84…F-90** — **SUPERSEDED** (they are entirely about the toolbar and the on-control chip,
-  both deleted). Replacement coverage: `wireframe-navigation` F-N11 (no toolbar, no bar) and
-  F-N14 (capability parity) plus `.opencode/tests/hotkeys/` for the other apps' bar.
+  `wireframe-new-document-discard`). Its **source-read leg** now reads
+  `applications/wireframe/components/WireframeNewDocumentDialog.tsx` — the surviving owner of the
+  dialog (the deleted toolbar is not read). The dialog must be reached with the File menu's `New`
+  row on a dirty document.
+- **F-58/F-59/F-60** — colour/contrast rows unchanged; the wireframe-scoped scan covers
+  `applications/wireframe/**` (the nav surface files it once additionally covered are deleted).
+- **F-61…F-83** — arrange/group rows keep their document semantics and one-undo clauses; only the
+  invoker changes (`wireframe-arrange-item` by accessible name, or the Companion id). `Align
+  centre` and `Lock group` are menu rows like every other arrange verb.
+- **F-84…F-90** — re-pointed in full above (no key chip on any control; the absence holds focused
+  and unfocused; a pointer row performs its command; pointer operability + accessible name; the
+  unit suite + build; stable strip height; no key-hint consumer).
 - **F-23 (multi header caption) — copy changed, testids unchanged.** The multi-selection panel
-  caption is now `Arrange, align or group them from the rail` (was "…from the toolbar"); the
-  header testids (`wireframe-panel-header/-title/-caption`) are unchanged and the pinned
+  caption is now `Arrange, align or group them from the detail column` (was "…from the toolbar");
+  the header testids (`wireframe-panel-header/-title/-caption`) are unchanged and the pinned
   `WireframePropertyPanel` assertion must be UPDATED, never deleted (G-125).
-- **New pointer affordance (insert menu).** The toolbar's Insert cluster is replaced by one pill
-  — `wireframe-insert` (trigger) + `wireframe-insert-item` rows carrying `data-nav-verb-id` and
-  `data-nav-args` (Elements / Section presets / Shape kinds / Icon picker). Every item dispatches
-  its declared verb with explicit args and **never changes the place** and never enters Create.
-  It is the only toolbar-shaped affordance left; `wireframe-toolbar` stays deleted.
-- **S-9/S-15/S-16 (smoke.md)** — superseded: Wireframe now shows **0** bar rows and **0**
-  legacy element-key attributes; `wireframe-toolbar` is gone. See `smoke.md`'s P5 section.
-- **F-57a (NEW, P5 regression — the New dialog).** `f n` on a dirty document opens
+- **New pointer affordance (insert menu).** The toolbar's Insert cluster is the single pill
+  `wireframe-insert` (trigger) + `wireframe-insert-item` rows (Elements / Section presets / Shape
+  kinds / Icon picker). Every item runs its action with explicit args by pointer. It is the only
+  toolbar-shaped affordance left; `wireframe-toolbar` stays deleted.
+- **S-9/S-15/S-16 (smoke.md)** — re-pointed: Wireframe shows **0** key rows of any kind;
+  `wireframe-toolbar` is gone. See `smoke.md`'s P5 section.
+- **F-57a (P5 regression — the New dialog).** The File menu's `New` row on a dirty document opens
   `[data-testid="wireframe-new-document-dialog"]`; Cancel keeps the document and dirty state,
   Discard resets to an empty document (`-element-count="0"`, `-dirty="true"`, path `''`); on a
-  clean document no dialog appears. **If the dialog is not preserved, this row is a FAIL of
-  AC8** (New is a shipped capability) — the owner must be named by ST-7 (plan Q-6).
+  clean document no dialog appears. **If the dialog is not preserved, this row is a FAIL of AC8**
+  (New is a shipped capability). Owner: `components/WireframeNewDocumentDialog.tsx`.
 
 

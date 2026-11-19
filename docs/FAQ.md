@@ -25,7 +25,9 @@ Raw telemetry is persisted on receipt and then classified by the **RTDB ingest c
 
 ### Can I use Fredo entirely with the keyboard?
 
-Yes — Fredo's keyboard model is built in and needs no setup (Spec #3009, extended by the declared-surface engine in #3117–#3122). Each application **declares** its own keyboard surface: a small tree of places, the verbs available in each place, and the keys bound to them. A bottom command bar shows where you are and the actions available right there (each with its key), the navigation map (`?`) shows the whole tree, and the activity trail shows what just happened — all three are generated from that one declaration, so what you can read and what actually works cannot disagree. Three chords are global: `Ctrl+Space` (or `Cmd+Space`) opens the launcher, and `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Cmd+Tab` / `Cmd+Shift+Tab`) move focus between windows. Every other key belongs to the place you are in — for example `s` focuses the Mission Monitor session search, and in Wireframe `r` draws a rectangle, `u`/`y` undo and redo, while `c`/`e`/`a`/`s`/`v`/`f` step into its Create, Edit, Arrange, Style, View and File places. While you are typing in a text field or working in a terminal no application shortcut fires — your keystrokes go where you expect. A focused terminal session passes every key to the shell; clicking away or moving focus hands the keyboard back to Fredo. The command bar never takes focus and its contents are announced to screen readers through the navigation announcement channel. The old configurable machinery is gone (Spec #3009): there is no Settings → Hotkeys pane and no way to configure a hotkey — no saved overrides, no recorded key sequences, and no top-left keyboard chrome. `>` is ordinary search text in the launcher command bar.
+Not quite — the keyboard surface is deliberately small (Spec #3153), and the interaction surface for directing Fredo is the **companion**. The **pointer** is the ordinary way to work inside an application; the **companion** is where you direct Fredo conversationally — open an app, close an app, or switch on Doom Mode. The keyboard itself carries only three global chords: `Ctrl+Space` (or `Cmd+Space` on macOS) toggles the launcher, and `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Cmd+Tab` / `Cmd+Shift+Tab` on macOS) move focus between windows. Plain `Tab` / `Shift+Tab` hands focus across a window boundary, so focus is never trapped in one window. A focused terminal receives every keystroke by focus, chord-shaped ones included; clicking or focusing anywhere else hands the keyboard back to Fredo. There is no keyboard-navigation model to learn — no per-application key surface, and a bare key never fires an application command.
+
+That last part is a statement about the *model*, not about the UI: standard widget behaviour still works exactly as you would expect. Ordinary `Tab` order inside an application, the arrow keys inside a focused radio group, and the launcher grid's roving selection all keep responding. `>` is ordinary search text in the launcher's own query field.
 
 ### Can I see several apps at once instead of one full-bleed window at a time?
 
@@ -35,7 +37,7 @@ Yes — Fredo's main window is a customizable dockable/tileable workspace (Spec 
 
 Yes (Spec #3147, first slice). Open **Settings → Installed applications**, choose a package (a `.zip` with a `fredo-app.json` manifest at its root), and Fredo validates it — manifest schema, a fixed id/version/`engines.fredo` rule set, archive path safety, and size caps — then hashes every file and installs it only if the whole thing is valid. An installed app then appears on the launcher's **Installed apps** shelf; choosing it opens it in its own native window, and choosing it again brings that one window to the front.
 
-An installed app is deliberately kept at arm's length: it runs in its own window at its own origin, it receives **no** backend commands, it never joins Fredo's keyboard/navigation tree, and it cannot declare commands of its own (that arrives in a later slice). Its files are pinned by SHA-256 at install and re-verified every time they are loaded, so tampering after install is detected rather than trusted. **Packages are unsigned in this slice** — nothing proves who built a package, so only install ones whose source you trust. See [SECURITY.md](SECURITY.md#installed-applications-spec-3147) for the full boundary.
+An installed app is deliberately kept at arm's length: it runs in its own window at its own origin, it receives **no** backend commands, and it cannot declare commands of its own. Its files are pinned by SHA-256 at install and re-verified every time they are loaded, so tampering after install is detected rather than trusted. **Packages are unsigned in this slice** — nothing proves who built a package, so only install ones whose source you trust. See [SECURITY.md](SECURITY.md#installed-applications-spec-3147) for the full boundary.
 
 ### Can I choose whether an app opens in the main window or in its own window?
 
@@ -169,7 +171,7 @@ To place files manually, drop the correctly-sized GGUFs under `<models_dir>/gemm
 
 ### Does Fredo run llama.cpp as a subprocess?
 
-No. Companion inference runs **inside Fredo**: the `llama.cpp` runtime is linked into the app through the `llama-cpp-4` Rust bindings and ships in the installer, so there is no separate server program to install, launch, or supervise — and no child process, port, or local HTTP endpoint. Fredo loads the model into its own engine (on one dedicated thread), streams tokens straight to the conversation, and releases the model when the engine stops. This is why the Companion setup asks only for the model files.
+No. Companion inference runs **inside the Fredo process**: the `llama.cpp` runtime ships as native DLLs **beside `fredo.exe` in the install directory** (bundled in the installer), so there is no separate server program to install, launch, or supervise — and no child process, port, or local HTTP endpoint. Fredo loads the model into its own engine (on one dedicated thread), streams tokens straight to the conversation, and releases the model when the engine stops. This is why the Companion setup asks only for the model files.
 
 ### Does Fredo support voice input?
 
@@ -279,7 +281,7 @@ Yes. Type or dictate a request that names a Fredo app — for example `open Miss
 
 ### How do I get the companion ready to use?
 
-Open **Settings → Companion**. If the companion is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls). Because the inference runtime ships inside Fredo, there is **nothing to install**: the **Model files** step is the only prerequisite, and it lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. The second row, **Companion engine**, starts the built-in engine and confirms it is ready. Once the model files are present and the engine is running, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
+Open **Settings → Companion**. If the companion is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls). Because the installer delivers the inference runtime with the app (the `engine-payload/` DLLs beside `fredo.exe`), there is **nothing for the user to install extra**: the **Model files** step is the only prerequisite, and it lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. The second row, **Companion engine**, starts the built-in engine and confirms it is ready. Once the model files are present and the engine is running, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
 
 ### How does the Tic-Tac-Toe AI work?
 
@@ -295,7 +297,15 @@ The companion takes a screenshot of the board via `capture_screen_region`, sends
 pnpm build:tauri
 ```
 
-Local development builds produce installers for the host OS. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
+Local development builds produce installers for the host OS. The Windows NSIS `.exe` installer is the artifact that carries the companion engine: `bundle.resources` ships the `engine-payload/` DLL set beside `fredo.exe` in the install directory, and the release pipeline runs `.opencode/scripts/verify-installer-payload.ps1` on the produced installer before any draft release exists. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
+
+To verify an installer yourself, point the gate at the produced `.exe`:
+
+```bash
+powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
+```
+
+The gate extracts the installer and prints one `PAYLOAD_PRESENT=<name>` line per core payload DLL plus `RESULT=PASS` when the payload is complete; a missing DLL fails it (exit 1), and a debug artifact, a missing installer or an unavailable extractor is refused (exit 2).
 
 ### How is the `fredo` CLI installed?
 

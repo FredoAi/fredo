@@ -56,4 +56,3 @@
 - `.opencode/tests/mission-monitor/` — the E2E live-session render gate.
 - `.opencode/tests/llama-setup/`, `.opencode/tests/postgres-lifecycle/` — exit-hook co-existence
   and the model-serving the Doom decision leg depends on.
-- `.opencode/tests/hotkeys/` — the `view=doom` hotkeys-cluster suppression the window keeps.

@@ -7,11 +7,12 @@ never apply a ruleset, never approve or merge into the protected release branch,
 release; their only in-repo deliverable was the workflow/owner-rule files this document references.
 
 **What it produces:** a protected `release/stable` branch whose merges are owner-gated and whose
-pushes always run a one-trigger Tauri build that lands the **Windows-only** installer on a **DRAFT**
-GitHub Release — Windows is the only supported platform, so a release is Windows-only and carries the
-single NSIS `.exe` installer. That means every artifact a user downloads has first passed (a) the
-thorough `validate` gate, (b) an owner code-owner approval, and (c) a deliberate owner publish of the
-draft — **no release is public without the owner's hand on it.**
+pushes always run a one-trigger Tauri build that builds the **Windows-only** installer, verifies the
+engine payload inside the produced installer, and lands it on a **DRAFT** GitHub Release — Windows is
+the only supported platform, so a release is Windows-only and carries the single NSIS `.exe`
+installer. That means every artifact a user downloads has first passed (a) the thorough `validate`
+gate, (b) an owner code-owner approval, (c) the installer-payload gate, and (d) a deliberate owner
+publish of the draft — **no release is public without the owner's hand on it.**
 
 > <!-- machine-parsing note: this file is the reference for the AC1/AC2/AC3/AC4 "documented"
 >      rows in the QA plan; the admin-enforced legs remain owner-gated and are UNVERIFIED
@@ -54,20 +55,34 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
     explicit owner re-run, not a second automatic trigger.)
 - **Permissions:** `permissions: contents: write` at the **workflow level** — the `GITHUB_TOKEN`
   needs write to create/publish the Release object and upload artifacts.
-- **Build matrix (Windows x64 only — single `windows-latest` leg):** `windows-latest` (x64), with no
-  `--target` arg. `fail-fast: false`.
+- **Build matrix (Windows x64 only — single `windows-2022` leg):** `windows-2022` (x64), with no
+  `--target` arg. `fail-fast: false`. The leg is **pinned** (`windows-latest` is not used): the
+  current `windows-latest` image ships VS 18 / MSVC 14.52, whose STL hard-asserts *"expected Clang
+  22 or newer"* inside `llama-cpp-sys-4`'s bindgen step, so the engine would not compile.
 - **Steps:** checkout → pnpm/action-setup → setup-node 20 with pnpm cache (the pnpm setup MUST
   precede setup-node, which resolves the `pnpm` binary for its cache) → `oven-sh/setup-bun`
   (builds the OpenCode plugin via `beforeBuildCommand`) → dtolnay/rust-toolchain stable →
-  Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `pnpm install --frozen-lockfile`
-  → `tauri-apps/tauri-action@v1`.
-- **`tauri-action` inputs:** `projectPath: apps/tauri/src-tauri` (the Tauri project is **not** at the
-  repo root); `tagName: app-v__VERSION__` (`__VERSION__` is substituted from `tauri.conf.json`
-  `version` = `0.2.0`); `releaseName: 'Fredo v__VERSION__'`; `releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'`;
-  **`releaseDraft: true`**; `prerelease: false`; `args: ${{ matrix.args }}`.
-- **`releaseDraft: true` is the deliberately-reviewed gate** — tauri-action creates a **DRAFT**
-  GitHub Release and uploads the artifacts to it. Nothing is public until the owner publishes the
-  draft. Do **not** flip this to `false` (that would auto-publish and bypass owner review).
+  Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `jakoch/install-vulkan-sdk-action`
+  (LunarG Vulkan SDK, **`cache: false` + `install_runtime: true`**) → `pnpm install
+  --frozen-lockfile` → read `version` from `tauri.conf.json` → `tauri-apps/tauri-action@v1`
+  (**build only**) → locate the produced `*-setup.exe` → `verify-installer-payload.ps1`
+  (**payload gate**) → `gh release create … --draft` (the only publish step) → draft cleanup.
+  `cache: false` is load-bearing: the action's SDK cache holds the SDK tree only, so on a cache
+  hit it skips the install path entirely and `install_runtime` never runs — leaving no
+  `vulkan-1.dll` for the staged payload.
+- **`tauri-action` inputs:** only `projectPath: apps/tauri/src-tauri` (the Tauri project is **not**
+  at the repo root) and `args: ${{ matrix.args }}`. The action carries **no** `tagName`,
+  `releaseName`, `releaseBody`, `releaseDraft` or `releaseId`, so it makes no release API call and
+  publishes nothing.
+- **The tag** is `app-v<version>` (`<version>` is read from `tauri.conf.json` = `0.2.1`) and is
+  applied by the draft step, not by the action: `gh release create "app-v<version>" <installer>
+  --draft --title "Fredo v<version>" --notes "<fixed template>"`, gated `if: success()` **after**
+  the payload gate.
+- **The payload gate is the deliberately-reviewed artifact check** — `verify-installer-payload.ps1`
+  extracts the produced NSIS installer and fails the job if any core `engine-payload/` DLL is
+  missing. A gate failure leaves **no draft and no uploaded asset**. Nothing is public until the
+  owner publishes the draft; do **not** remove `--draft` (that would auto-publish and bypass owner
+  review).
 - **Every `uses:` action is SHA-pinned** (e.g. `actions/checkout@11bd71... # v4.2.2`,
   `tauri-apps/tauri-action@1deb37... # v1`) per the repo convention (NFR-2). `pnpm install
   --frozen-lockfile` + the committed `Cargo.lock` make the build reproducible from the branch tip.
@@ -98,10 +113,18 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
 
 ### 4. `apps/tauri/src-tauri/tauri.conf.json` — bundle config consumed by the release build
 
-- `productName: "Fredo"`, `version: "0.2.0"` (feeds `__VERSION__`), `identifier: "com.fredo.app"`.
-- `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`. **No change is
-  required** — `release.yml` reads the existing config. **No signing identity is configured**
-  (`macOS.signingIdentity: null`) — code signing/notarization is deferred (NFR-4).
+- `productName: "Fredo"`, `version: "0.2.1"` (read by the workflow and injected into the
+  `app-v<version>` tag/title), `identifier: "com.fredo.app"`.
+- `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`.
+- **Engine payload (Spec #3158).** `bundle.resources` is exactly `{"engine-payload/": ""}` (a map
+  with the empty-string destination, **not** a glob), and `build.beforeBundleCommand` runs
+  `.opencode/scripts/stage-engine-payload.ps1`, which stages the canonical allowlist
+  (`.opencode/scripts/payload-manifest.json`) into `engine-payload/`. The payload installs **beside
+  `fredo.exe` in the install directory**; `bundle.externalBin` stays `[]` (the DLLs are resources,
+  not sidecar binaries). **What to change:** nothing in the config for an ordinary release — but the
+  produced installer is gated by `.opencode/scripts/verify-installer-payload.ps1`, which extracts
+  the NSIS `.exe` and fails the job when any core payload DLL is missing. **No signing identity is
+  configured** (`macOS.signingIdentity: null`) — code signing/notarization is deferred (NFR-4).
 
 ---
 
@@ -245,15 +268,17 @@ or publishes.**
 4. **Merge.** Once approved **and** green, merge the PR into `release/stable`. (Because the ruleset
    requires a PR, there is no direct-merge path; the merge itself is the PR merge.)
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
-   runs the Windows-only matrix, builds the Windows installer, and uploads it to a **DRAFT** GitHub
-   Release (tag `app-v0.2.0` at the branch tip).
+   runs the Windows-only matrix, builds the Windows installer, locates the produced `*-setup.exe`,
+   and runs `verify-installer-payload.ps1` on it. Only after that gate passes does the draft step
+   `gh release create app-v0.2.1 <installer> --draft` upload it to a **DRAFT** GitHub Release at the
+   branch tip.
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
    deliberately-reviewed artifacts because nothing is public before this step.
 
 > **Reproducibility note:** every artifact is built from the `release/stable` tip with a fixed ref,
 > `pnpm install --frozen-lockfile`, the committed `Cargo.lock`, and SHA-pinned actions — so a given
-> tip always yields the same build. The bundle `version` (`0.2.0`) is read from
+> tip always yields the same build. The bundle `version` (`0.2.1`) is read from
 > `tauri.conf.json` at build time and injected into the release tag/name.
 
 ---
@@ -276,21 +301,77 @@ matrix.
 
 ---
 
+## Version bumps — the ORDER is load-bearing
+
+A release ships whatever version `tauri.conf.json` holds, and a release sync sets the
+`release/stable` tree to **exactly `main`**. That makes `main` the single source of truth for the
+version, and it makes the **order** of a bump non-negotiable.
+
+### The rule
+
+**A version bump lands on `main` FIRST. Only then is `release/stable` synced from `main`.**
+
+```
+  1. bump  ->  PR into main              (version change lives here, once)
+  2. sync  ->  PR into release/stable    (tree = main, bump included)
+  3. the merge to release/stable fires release.yml -> DRAFT release
+  4. owner reviews + publishes the draft
+```
+
+Never open a release PR that carries version content `main` does not already have. The
+`release-version-guard` job in `validate.yml` fails closed on exactly that shape, on every PR
+into `release/stable`.
+
+### Why the order matters (a real incident)
+
+PR #3156 bumped the version to `0.2.0` on `release/stable` while `main` stayed on `0.1.0`. The
+release that shipped was correct — but the **next** release sync would have reset the tree to
+`main`, silently rebuilding `0.1.0` and reusing the old `app-v0.1.0` tag. Nothing caught it; it
+was found by comparing the two branches after the release had already been cut, and repaired by a
+second PR (#3157) that backfilled the bump onto `main`.
+
+The failure is silent by construction: the two branches each look internally consistent, and only
+their *comparison* reveals the drift. Hence the automated guard rather than a convention.
+
+### The version lives in five places (all must agree)
+
+| File | Consumed by |
+|------|-------------|
+| `apps/tauri/src-tauri/tauri.conf.json` | `version` → the `app-v<version>` tag + draft title |
+| `apps/tauri/src-tauri/Cargo.toml` | `CARGO_PKG_VERSION` = `HOST_FREDO_VERSION` — the host version an installed app targets via `engines.fredo` |
+| `apps/tauri/src-tauri/Cargo.lock` | the locked crate version (must be regenerated, not hand-edited) |
+| `apps/tauri/package.json`, `apps/ui/package.json` | workspace identity |
+
+Bump all five in one commit on the `main` PR. Regenerate the lock with
+`cargo update --workspace --offline -p fredo` rather than editing it by hand.
+
+**Constraint on the value:** `installed_apps::tests::the_host_version_is_a_parseable_semver`
+asserts the host **major is 0**. A `1.0.0` bump fails that test by design — it is a deliberate
+signal that jumping majors needs a decision about `engines.fredo` compatibility, not an accident
+to work around.
+
+**Semver policy for the value itself** (what counts as major/minor/patch) remains out of scope
+below — this section fixes only the *order* the bump must travel.
+
+---
+
 ## Explicit non-goals (deferred — NFR-4)
 
 This manual does **not** cover the following — they are deliberately deferred to a later slice and
 must **not** be added to this process without a new spec:
 
-- **Versioning scheme / tag strategy** — `release.yml` uses the single `app-v__VERSION__` tag
-  derived from `tauri.conf.json`; a semver/SemVer-policy scheme, version bump workflow, and tag
-  strategy are out of scope.
+- **Versioning scheme / tag strategy** — `release.yml` uses the single `app-v<version>` tag
+  derived from `tauri.conf.json`; a semver policy for *which* number to increment, and a tag
+  strategy, are out of scope. (The bump *order* and the file set are specified above; only the
+  policy for choosing the number is deferred.)
 - **Code signing / notarization** — `release.yml` has no signing/notarize inputs and
   `tauri.conf.json` has no signing identity.
-- **Changelog / release-notes generation** — `releaseBody` is a fixed template string; there is no
-  changelog step.
+- **Changelog / release-notes generation** — the draft step's `--notes` is a fixed template string;
+  there is no changelog step.
 - **Hotfix / patch-branch policy** — a long-lived `release/*` matrix, patch branch promotion, etc.
   are out of scope.
-- **Publishing on merge** — `releaseDraft: true` stays; do not switch to publish-on-merge.
+- **Publishing on merge** — the draft step (`gh release create … --draft`) stays; do not switch to
+  publish-on-merge.
 
 ## Constraints the pipeline must respect (regression invariants)
 

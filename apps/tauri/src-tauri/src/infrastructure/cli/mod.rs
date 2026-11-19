@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 
 use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
+use commands::companion_probe::CompanionArgs;
 use commands::doom_export::{DoomArgs, DoomCommand};
 use commands::emit::EmitArgs;
 use commands::ingest::IngestArgs;
@@ -37,6 +38,8 @@ pub enum Commands {
     OpenTerminal(OpenTerminalArgs),
     /// Doom Mode maintenance commands (local only; no egress)
     Doom(DoomArgs),
+    /// Companion engine diagnostics (runs locally; no app instance required)
+    Companion(CompanionArgs),
     /// Run the headless ingest daemon (embedded PostgreSQL + OTLP receivers)
     ///
     /// Owns the embedded PostgreSQL cluster (shared data dir + shared
@@ -66,6 +69,13 @@ async fn run_async(cli: Cli) -> Result<()> {
     // a long-lived daemon that owns its own embedded cluster and receivers.
     match cli.command {
         Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
+        // `companion probe` is the ONE shipped diagnostic for a RELEASE binary:
+        // the release build has no MCP bridge, so it starts its own in-process
+        // engine, runs one bounded turn, and prints JSON. Handled BEFORE the IPC
+        // dispatch — it needs no running app.
+        Commands::Companion(ref args) => {
+            return commands::companion_probe::run_companion(args).await;
+        }
         Commands::Ingest(args) => {
             return crate::applications::pg_supervisor::headless::run_ingest_daemon(args).await;
         }
@@ -160,6 +170,10 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::Setup(_) => {
             // Setup commands are handled locally in run_async, not via IPC.
             unreachable!("Setup command should be handled before IPC dispatch")
+        }
+        Commands::Companion(_) => {
+            // The companion probe is handled locally in run_async, not via IPC.
+            unreachable!("Companion command should be handled before IPC dispatch")
         }
         Commands::Ingest(_) => {
             // The headless daemon is handled locally in run_async, not via IPC.

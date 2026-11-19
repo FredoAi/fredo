@@ -302,3 +302,36 @@ fn the_bundle_external_bin_stays_empty() {
         "bundle.externalBin must stay [] — there is no shipped llama-server sidecar"
     );
 }
+
+// ── (5) The engine payload resource ─────────────────────────────────────────
+
+/// Spec #3158 ST-1: the shipped config MUST carry the engine payload so the
+/// installer places the `dynamic-link` DLLs beside `fredo.exe`. The entry is a
+/// DIRECTORY map (no glob) — a glob that matches nothing hard-errors
+/// `tauri_build` on a tree with nothing staged.
+#[test]
+fn the_bundle_resources_carry_the_engine_payload() {
+    fn ships_engine_payload(bundle: &serde_json::Value) -> bool {
+        bundle["resources"] == serde_json::json!({ "engine-payload/": "" })
+    }
+
+    let config = read_source(&crate_root().join("tauri.conf.json"));
+    let parsed: serde_json::Value = serde_json::from_str(&config).expect("valid tauri.conf.json");
+    assert!(
+        ships_engine_payload(&parsed["bundle"]),
+        "bundle.resources must be {{\"engine-payload/\": \"\"}} — the installer must ship the \
+         dynamic-link engine DLLs (a payload-less bundle is the app-v0.2.0 defect)"
+    );
+
+    // NON-VACUITY CONTROL: the payload-less shapes that shipped app-v0.2.0 must
+    // FAIL the SAME predicate — a bundle with no `resources` key, and a map the
+    // retired CI branch emptied.
+    assert!(
+        !ships_engine_payload(&serde_json::json!({})),
+        "a bundle with no resources key must fail the payload pin"
+    );
+    assert!(
+        !ships_engine_payload(&serde_json::json!({ "resources": {} })),
+        "an emptied resources map must fail the payload pin"
+    );
+}

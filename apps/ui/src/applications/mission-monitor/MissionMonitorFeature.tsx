@@ -13,11 +13,9 @@ export class MissionMonitorFeature extends FredoApplicationClass {
   readonly showable = true;
 
   /**
-   * Spec #3121 (P7), ST-3: Mission Monitor is a declared NavigationEngine surface
-   * (`missionMonitorSurface.ts`). Its one shipped key — `s`, the session filter focus —
-   * is now the declared `mission-monitor.session.search` verb, resolved through the shared
-   * engine and mounted by `MissionMonitorNavigationProvider`; the feature owns no legacy
-   * element-key attribute and no per-feature key table.
+   * #3151 ST-6: Mission Monitor is pointer-only. The deleted navigation engine's
+   * session-search key and its declared surface went with it; the session list,
+   * selection and detail panel are reached through the drawer + canvas by pointer.
    */
 
   /**

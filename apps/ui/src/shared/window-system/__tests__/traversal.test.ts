@@ -1,5 +1,5 @@
 /**
- * Spec #3122 (P8), ST-1 — the relocated keyboard-only window traversal engine.
+ * The relocated keyboard-only window traversal module.
  *
  * Pins the traversal unit contract against a hand-built window DOM, now that the module lives
  * in the window system and carries NO legacy registry/engine edge:
@@ -7,7 +7,7 @@
  *    (content region when it has none) — never `body`;
  *  - no open window ⇒ every entry point is a silent no-op;
  *  - plain Tab/Shift+Tab cross a window boundary; a modified Tab is ignored so the
- *    navigation global chord dispatcher's `primary+tab` is untouched;
+ *    `primary+tab` platform chord (`./platformChords.ts`) is untouched;
  *  - the target is scrolled into view BEFORE focus lands;
  *  - Escape return goes to the invoker, or the focused window's first focusable when the
  *    invoker is disconnected;

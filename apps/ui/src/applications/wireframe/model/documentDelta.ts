@@ -1,23 +1,37 @@
 /**
  * Field-scoped document deltas (Spec #3120 round 2, ST-4-REWORK / AC6).
  *
- * The journal is the ONE undo authority, but an entry's `inverse` MUST revert only
- * what that entry changed — a whole-document snapshot means an older inverse
- * clobbers a later independent edit (R-6.1). This module is the SINGLE diff/apply
- * implementation shared by both producers (`wireframeSurface.mutate` and the
- * legacy `wireframeDocumentStore.commitPlan`), so a verb's field can never
- * silently stop being reverted through a second hand-authored patch path.
+ * The app-local history (`store/wireframeHistory.ts`, Spec #3151) is the ONE undo
+ * authority, and an entry's `before` delta MUST revert only what that entry
+ * changed — a whole-document snapshot means an older inverse clobbers a later
+ * independent edit (R-6.1). This module is the SINGLE diff/apply implementation
+ * shared by the store's two write paths (`wireframeDocumentStore.commitPlan` for
+ * the `dispatch` funnel and its `writeDocumentPatch` for applied patches), so a
+ * field can never silently stop being reverted through a second hand-authored
+ * patch path.
  *
  * The delta is an ABSOLUTE field assignment (not an operation list): disjoint
  * deltas compose in any order and overlapping ones compose LIFO, which is exactly
- * the engine's undo/redo order. `applyDocumentDelta` applies against the CURRENT
+ * the history's undo/redo order. `applyDocumentDelta` applies against the CURRENT
  * document and never mutates its input.
  */
 
-import type { JsonValue } from '../../../shared/navigation';
-
 import type { WireframeDocument, WireframeGroup, WireframePage } from './document';
 import type { WireframeElement } from './elements';
+
+/**
+ * The JSON field value a delta assigns (Spec #3151, ST-3). Re-homed here from
+ * the retired navigation engine's `types.ts`: the delta module is the only
+ * consumer, and a removal must not leave a surviving module importing the
+ * engine for a four-line type.
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
 
 /** A per-object field delta: assign each `set` key, delete each `unset` key. */
 export interface WireframeFieldsDelta {

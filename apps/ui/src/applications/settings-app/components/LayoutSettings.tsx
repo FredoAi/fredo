@@ -15,7 +15,7 @@
  * "Active" state is never colour-only (a text pill + `aria-current`).
  *
  * Chord labels are a LOCAL presentational map (no new shared hook/export): the
- * `primary` token is resolved through the hotkey engine's existing
+ * `primary` token is resolved through `platformModifier.ts`'s
  * `resolvePrimaryModifier()`, and each option's accessible name is spelled out
  * ("Control plus Alt"). Presentation is token-first — semantic tokens + CSS
  * vars + the shared `tint()` helper; no hex/rgba literal and never an
@@ -44,8 +44,7 @@ import {
 
 import { tint } from '../../../shared/utils/colorTint';
 import { selectRecipeWith } from '../../../shared/utils/selectStyles';
-import { announceNavigation } from '../../../shared/navigation/ui';
-import { resolvePrimaryModifier } from '../../../shared/navigation/keys';
+import { resolvePrimaryModifier } from '../../../shared/window-system/platformModifier';
 import {
   MAX_ZONE_GAP,
   MIN_ZONE_GAP,
@@ -82,9 +81,10 @@ interface ChordPresentation {
 }
 
 /**
- * The local presentational chord map — built from the engine's ONE platform
- * rule (`resolvePrimaryModifier`), so "primary" reads as Ctrl on win32/linux
- * and ⌘ on darwin with no second implementation. Iterated in the canonical
+ * The local presentational chord map — built from the ONE platform rule
+ * (`resolvePrimaryModifier` in `shared/window-system/platformModifier`), so
+ * "primary" reads as Ctrl on win32/linux and ⌘ on darwin with no second
+ * implementation. Iterated in the canonical
  * `ZONE_ACTIVATION_CHORDS` order by the render.
  */
 function buildChordPresentation(): Record<ZoneActivationChord, ChordPresentation> {
@@ -125,7 +125,6 @@ export const LayoutSettings: React.FC = () => {
 
   const applyStatus = useCallback((message: string | null) => {
     setStatus(message);
-    if (message) announceNavigation(message);
   }, []);
 
   // ── Write-through handlers ──────────────────────────────────────────────────
@@ -448,7 +447,7 @@ export const LayoutSettings: React.FC = () => {
         </Box>
       ) : null}
 
-      {/* ── Destructive-confirm (inline alertdialog; Hotkeys reset precedent) ── */}
+      {/* ── Destructive-confirm (inline alertdialog) ── */}
       {pendingDelete ? (
         <Box
           data-testid="layout-delete-dialog"

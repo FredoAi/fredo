@@ -1,51 +1,36 @@
 /**
  * Wireframe editor shell (Spec #3070, ST-1, C8; root hooks extended by
- * Spec #3071, ST-6; re-shaped by Spec #3119, ST-4).
+ * Spec #3071, ST-6; re-shaped by Spec #3119, ST-4; engine seams stripped by
+ * Spec #3151, ST-5).
  *
- * Spec #3119 ST-4 replaces the retired toolbar + hidden `g+*` carrier + command
- * surface with the NavigationEngine P4 surfaces: a rail + canvas + details +
- * trail workspace over the declarative `wireframeSurface`. The shell root keeps
- * every shipped `data-wireframe-*` hook (same names and meanings) and gains
- * `data-wireframe-place` + `data-wireframe-arm`.
+ * Spec #3151 deletes the navigation engine, so this shell no longer mounts a
+ * navigation provider, a command rail, a navigation map or an activity trail.
+ * What remains is the pointer product: a canvas region (insert pill + stage) and
+ * a details column (pointer control strip over the property panel), then the
+ * file-error banner and the status bar. Every capability the command bar was the
+ * only pointer entry for (history, view, arrange, file) is re-homed onto the
+ * control strip at the top of the details column — the exact footprint the
+ * deleted activity-trail footer occupied, so the canvas keeps its width.
  *
- * Layout (UI/UX §1 / Spec #3120 ST-6):
- *   workspace row (`flex:1; minH:0`) holds EXACTLY two children — canvas
- *   (`flex:1; minWidth:0`) and the details column (`w:288px; flexShrink:0`,
- *   property-panel scroller over the compact trail footer). Below it the
- *   full-width bottom command bar (`flexShrink:0`), then the status bar
- *   (`flexShrink:0`). There is no left rail / 266 px command column (R-8).
- *   < lg — the workspace stacks (canvas → details at ≤ 45%); the bar and the
- *   status bar stay pinned at the bottom.
- * The retired key-bar band padding is gone (Wireframe renders no legacy bar).
+ * The shell keeps every shipped `data-wireframe-*` hook (same names and
+ * meanings) EXCEPT the two that existed only to arm the engine cursor
+ * (`data-wireframe-place`, `data-wireframe-arm`).
  *
- * The ONE element-scoped keydown adapter is attached here (no document
- * listener). The rail/map/trail read the host snapshot; the availability models
- * are rebuilt from the FRESH store selection + the host place path so a pure
- * selection change flips `data-nav-availability` without a verb dispatch.
+ * There is NO keyboard handling of any kind here: no `onKeyDown`, no key table,
+ * no global listener. The strip is ordinary Tab-reachable chrome.
  */
 
-import React, {
-  useCallback,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from 'react';
+import React, { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { Box, Flex } from '@chakra-ui/react';
 
-import type { ContextSnapshot } from '../../../shared/navigation';
 import {
-  ActivityTrail,
-  CommandRail,
-  NavigationMap,
-  buildActivityTrailModel,
-  buildCommandRailModel,
-  buildNavigationMapModel,
-} from '../../../shared/navigation/ui';
-import { requestCompanionComposerOpen } from '../../../shared/companion/composerBridge';
-import { useAppCommandIntent } from '../../../shared/companion/useAppCommandIntent';
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+} from '../../../shared/companion/grounding';
+import { getApplications } from '../../applicationRegistry';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
+import { runWireframeAction } from '../actions/wireframeActions';
 import {
   getSnapshot,
   getWireframeContext,
@@ -53,134 +38,70 @@ import {
   selectionGroup,
   subscribe,
 } from '../store/wireframeDocumentStore';
-import { WIREFRAME_MAP_DEFAULT_ARGS } from '../wireframeSurface';
-import {
-  WireframeNavigationProvider,
-  handleWireframeKeyDown,
-  useFreshWireframeContext,
-  useWireframeHostSnapshot,
-  useWireframeNavigation,
-  useWireframePlaceView,
-  type WireframeChannel,
-} from './WireframeNavigationProvider';
+import { WireframeArrangeControls } from './WireframeArrangeControls';
 import { WireframeCanvas } from './WireframeCanvas';
 import { WireframeFileError } from './WireframeFileError';
+import { WireframeFileMenu } from './WireframeFileMenu';
+import { WireframeHistoryControls } from './WireframeHistoryControls';
 import { WireframeInsertMenu } from './WireframeInsertMenu';
 import { WireframeNewDocumentDialog } from './WireframeNewDocumentDialog';
 import { WireframePropertyPanel } from './WireframePropertyPanel';
 import { WireframeStatusBar } from './WireframeStatusBar';
+import { WireframeViewControls } from './WireframeViewControls';
 
 export function WireframeEditor(): React.ReactElement {
-  return (
-    <WireframeNavigationProvider>
-      <WireframeShell />
-    </WireframeNavigationProvider>
-  );
+  return <WireframeShell />;
 }
 
 function WireframeShell(): React.ReactElement {
-  const { host, surface } = useWireframeNavigation();
-  // Spec #3120 (P6) — the generic Companion relay now resolves this app's registered
-  // navigation host and executes through `host.runIntent(actor:'companion')`. Mounted
-  // INSIDE the provider so the host is registered before an intent can drain.
-  useAppCommandIntent(WIREFRAME_APP_ID);
-  const hostSnapshot = useWireframeHostSnapshot(host);
-  const placeView = useWireframePlaceView(host);
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
 
-  // Freshness seam (AC4) — the host is now the freshness authority: the provider publishes
-  // store selection/dirty changes through `NavigationHost.refreshContext()`, so
-  // `hostSnapshot.context` is current. This composition is a value-identical defensive
-  // merge (the same store selection/dirty plus the host's current place path), not a
-  // second freshness source.
-  const storeContext = useMemo<ContextSnapshot>(() => getWireframeContext(), [state]);
-  const liveContext = useFreshWireframeContext(hostSnapshot.context, storeContext);
-
-  const railModel = useMemo(
-    () => buildCommandRailModel(surface, liveContext),
-    [surface, liveContext],
-  );
-  const mapModel = useMemo(
+  // #3151 ST-2 (AC5) — this shell owns the Wireframe selection, so it registers the
+  // application-level companion grounding source. The provider reads the store
+  // SYNCHRONOUSLY at turn time (`getSnapshot()`), so a turn always carries the live
+  // selection/dirty — never a captured render snapshot.
+  useEffect(
     () =>
-      buildNavigationMapModel(surface, liveContext, {
-        filteredTo: hostSnapshot.mapFilterPlaceId,
-      }),
-    [surface, liveContext, hostSnapshot.mapFilterPlaceId],
-  );
-  const trailModel = useMemo(
-    () => buildActivityTrailModel(surface, hostSnapshot.entries),
-    [surface, hostSnapshot.entries],
-  );
-
-  /** Run one verb through the map-click defaults (UI/UX §9). */
-  const performVerb = useCallback(
-    async (verbId: string, channel: WireframeChannel = 'pointer') => {
-      const args = WIREFRAME_MAP_DEFAULT_ARGS[verbId] ?? {};
-      const result = await host.runVerb(verbId, channel, args);
-      // `m` at the root (and `?`) perform `app.map`; the shell opens the map once.
-      if (verbId === 'app.map' && result.status === 'performed') host.openMap(null);
-      return result;
-    },
-    [host],
-  );
-
-  /** The shell's dirty guard owns the New-discard dialog (File `n` + rail/map rows). */
-  const runVerb = useCallback(
-    (verbId: string) => {
-      if (verbId === 'wireframe.document.new' && dirty) {
-        setNewDialogOpen(true);
-        return;
-      }
-      void performVerb(verbId, 'pointer');
-    },
-    [dirty, performVerb],
-  );
-
-  const beforeDispatch = useCallback(
-    (verbId: string): boolean => {
-      // Spec #3120 (P6) R-1.8 — `k` resolves to `app.ask`; Ask opens Fredo's
-      // teleport-attached instruction box (the composer bridge), never the launcher.
-      // The stroke is consumed here so the surface's `app.ask` run never publishes a
-      // second request. The binding itself is unchanged (still `k` → `app.ask`).
-      if (verbId === 'app.ask') {
-        requestCompanionComposerOpen({
-          source: 'keyboard',
+      registerCompanionGrounding(WIREFRAME_APP_ID, () => {
+        const snapshot = getSnapshot();
+        const byId = new Map(snapshot.document.elements.map((element) => [element.id, element]));
+        return {
+          version: COMPANION_GROUNDING_VERSION,
           appId: WIREFRAME_APP_ID,
-          focus: true,
-        });
-        return true;
-      }
-      if (verbId === 'wireframe.document.new' && dirty) {
-        setNewDialogOpen(true);
-        return true;
-      }
-      return false;
-    },
-    [dirty],
+          appName:
+            getApplications().find((application) => application.id === WIREFRAME_APP_ID)?.name ??
+            'Wireframe',
+          selection: {
+            count: snapshot.selectedIds.length,
+            ids: [...snapshot.selectedIds],
+            kinds: snapshot.selectedIds.map((id) => byId.get(id)?.type ?? 'element'),
+            label: getWireframeContext().selection.label,
+          },
+          dirty: snapshot.dirty,
+        };
+      }),
+    [],
   );
 
-  const onKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      handleWireframeKeyDown(event, host, performance.now(), { beforeDispatch });
-    },
-    [host, beforeDispatch],
-  );
+  // #3151 ST-5 — the dirty guard survives, the engine route does not. The File
+  // menu's `New` row is the ONE pointer caller: a clean document resets
+  // immediately, a dirty one raises the shipped discard dialog first. The reset
+  // itself is `wireframe.document.new` (`runWireframeAction` →
+  // `resetForNewDocument`), never a host verb.
+  const handleNew = useCallback(() => {
+    if (dirty) {
+      setNewDialogOpen(true);
+      return;
+    }
+    runWireframeAction('wireframe.document.new');
+  }, [dirty]);
 
   const discardNewDocument = useCallback(() => {
     setNewDialogOpen(false);
-    void performVerb('wireframe.document.new', 'pointer');
-  }, [performVerb]);
-
-  /** Spec #3120 (P6) R-1.8 — `Ask` publishes ONE composer request for this app. */
-  const openCompanionComposer = useCallback(() => {
-    requestCompanionComposerOpen({
-      source: 'command-bar-ask',
-      appId: WIREFRAME_APP_ID,
-      focus: true,
-    });
+    runWireframeAction('wireframe.document.new');
   }, []);
 
   const primaryId = primarySelectedId(state);
@@ -195,8 +116,6 @@ function WireframeShell(): React.ReactElement {
   return (
     <Flex
       data-testid="wireframe-root"
-      data-wireframe-place={placeView.placeId}
-      data-wireframe-arm={placeView.armed ?? 'none'}
       data-wireframe-element-count={String(document.elements.length)}
       data-wireframe-selection-id={selectedElement?.id ?? ''}
       data-wireframe-selection-type={selectedElement?.type ?? ''}
@@ -222,9 +141,8 @@ function WireframeShell(): React.ReactElement {
       h="100%"
       minH={0}
       bg="bg.canvas"
-      onKeyDown={onKeyDown}
     >
-      {/* ── Workspace row: EXACTLY two children — canvas + details (R-1.7) ── */}
+      {/* ── Workspace row: canvas + details column ── */}
       <Flex
         data-testid="wireframe-workspace"
         flex="1"
@@ -247,7 +165,7 @@ function WireframeShell(): React.ReactElement {
           <WireframeCanvas />
         </Box>
 
-        {/* Details column: the property panel over the compact trail footer. */}
+        {/* Details column: the pointer control strip over the property panel. */}
         <Flex
           data-testid="wireframe-details-column"
           data-wireframe-region="details"
@@ -259,47 +177,38 @@ function WireframeShell(): React.ReactElement {
           minH={0}
           overflow="hidden"
         >
+          {/*
+            The pointer control strip — the ONE re-home for the capabilities the
+            command bar was the only pointer entry for. It takes exactly the
+            footprint of the deleted activity-trail footer, so the canvas keeps
+            its width and no store value changes.
+          */}
+          <Flex
+            data-testid="wireframe-control-strip"
+            p={2}
+            gap={1}
+            align="center"
+            flexWrap="wrap"
+            flexShrink={0}
+            minWidth={0}
+            bg="bg.surface"
+            borderBottomWidth="1px"
+            borderColor="border.subtle"
+          >
+            <WireframeHistoryControls />
+            <WireframeViewControls />
+            <WireframeArrangeControls />
+            <WireframeFileMenu onNew={handleNew} />
+          </Flex>
           <Box flex="1" minH={0} overflowY="auto" display="flex" flexDirection="column">
             <WireframePropertyPanel />
-          </Box>
-          <Box flexShrink={0} maxH="50" overflowY="auto" p={2}>
-            <ActivityTrail
-              model={trailModel}
-              compact
-              onUndo={(seq) => {
-                void host.undoEntry(seq);
-              }}
-            />
           </Box>
         </Flex>
       </Flex>
 
       <WireframeFileError />
 
-      {/* ── Bottom command bar: breadcrumb · verbs · globals (R-1.1) ── */}
-      <Box
-        data-testid="wireframe-command-bar"
-        data-wireframe-region="command-bar"
-        flexShrink={0}
-        w="100%"
-        minWidth="0"
-      >
-        <CommandRail
-          model={railModel}
-          onRunVerb={runVerb}
-          onOpenMap={(filterPlaceId) => host.openMap(filterPlaceId ?? null)}
-          onAsk={openCompanionComposer}
-        />
-      </Box>
-
       <WireframeStatusBar />
-
-      <NavigationMap
-        model={mapModel}
-        open={hostSnapshot.mapOpen}
-        onClose={() => host.closeMap()}
-        onRunVerb={runVerb}
-      />
 
       <WireframeNewDocumentDialog
         open={newDialogOpen}

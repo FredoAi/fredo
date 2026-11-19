@@ -1,27 +1,32 @@
 /**
  * Wireframe insert menu (Spec #3070, ST-3, UI/UX 2.1/2.2; re-homed as the ONE
- * pointer affordance by Spec #3119, ST-6 — UI/UX §9).
+ * pointer affordance by Spec #3119, ST-6; store-direct since Spec #3151, ST-5).
  *
  * A single pill pinned inside the canvas region (`wireframe-insert`) opens one
  * Chakra `Menu` grouped as Elements / Section presets / Shape kinds / Icons.
- * Every item carries `data-testid="wireframe-insert-item"`, `data-nav-verb-id`
- * and (for an argumented verb) `data-nav-args`, and dispatches the DECLARED verb
- * through `host.runVerb(verbId, 'pointer', args)`. It never changes the place
- * and never mutates the store — it is a shortcut to the same verbs the rail,
- * the map and the Create place expose.
+ * Every item carries `data-testid="wireframe-insert-item"` and calls the SAME
+ * retained action handler the command table exposes
+ * (`addWireframeElement`), so the menu is a shortcut to the capability, never a
+ * second implementation. It never mutates the store directly and never changes a
+ * place.
  *
- * Pointer activation releases focus to the trigger's caller (G-327) once the
- * menu has closed, so the next bare key reaches the ONE key adapter; keyboard
- * activation keeps focus on the trigger so the menu remains operable.
+ * The two engine-only DOM hooks the navigation engine used (`data-nav-verb-id` /
+ * `data-nav-args`) are GONE — they described a `host.runVerb` call that no longer
+ * exists. The `wireframe-insert` / `wireframe-insert-item` testids stay.
+ *
+ * Arrow-key traversal inside the open popup is Chakra/Ark's own menu behaviour,
+ * not an application binding: the trigger and every item are ordinary
+ * Tab-reachable controls.
  *
  * Tokens only: semantic tokens and the shared `tint()` helper — never a
  * hex/rgba literal, never an alpha-append onto a `var()`.
  */
 
-import React, { useRef } from 'react';
+import React from 'react';
 import { Box, Button, Icon, Menu, Portal, Text } from '@chakra-ui/react';
 import { LuPlus } from 'react-icons/lu';
 
+import { addWireframeElement } from '../actions/wireframeActions';
 import {
   WIREFRAME_ELEMENT_LABELS,
   type WireframeElementType,
@@ -30,14 +35,13 @@ import {
 } from '../model/elements';
 import { WIREFRAME_ICONS } from '../model/icons';
 import { tint } from '../../../shared/utils/colorTint';
-import { useWireframeNavigation } from './WireframeNavigationProvider';
 
 interface InsertItem {
   /** Unique menu value (never shown). */
   readonly key: string;
   readonly label: string;
-  readonly verbId: string;
-  readonly args?: Readonly<Record<string, string>>;
+  /** Run the retained action handler for this row. */
+  readonly run: () => void;
 }
 
 /** The seven no-argument element verbs (Section/Shape carry an explicit choice). */
@@ -54,7 +58,9 @@ const ELEMENT_TYPES: readonly WireframeElementType[] = [
 const ELEMENT_ITEMS: readonly InsertItem[] = ELEMENT_TYPES.map((type) => ({
   key: `element:${type}`,
   label: WIREFRAME_ELEMENT_LABELS[type],
-  verbId: `wireframe.add.${type}`,
+  run: () => {
+    addWireframeElement(type);
+  },
 }));
 
 const SECTION_PRESET_LABELS: Readonly<Record<WireframeSectionPreset, string>> = {
@@ -69,8 +75,9 @@ const SECTION_ITEMS: readonly InsertItem[] = (
 ).map((preset) => ({
   key: `section:${preset}`,
   label: SECTION_PRESET_LABELS[preset],
-  verbId: 'wireframe.add.section',
-  args: { preset },
+  run: () => {
+    addWireframeElement('section', { preset });
+  },
 }));
 
 const SHAPE_KIND_LABELS: Readonly<Record<WireframeShapeKind, string>> = {
@@ -84,23 +91,18 @@ const SHAPE_ITEMS: readonly InsertItem[] = (
 ).map((shape) => ({
   key: `shape:${shape}`,
   label: SHAPE_KIND_LABELS[shape],
-  verbId: 'wireframe.add.shape',
-  args: { shape },
+  run: () => {
+    addWireframeElement('shape', { shape });
+  },
 }));
 
 const ICON_ITEMS: readonly InsertItem[] = WIREFRAME_ICONS.map((icon) => ({
   key: `icon:${icon.id}`,
   label: icon.label,
-  verbId: 'wireframe.add.icon',
-  args: { iconId: icon.id },
+  run: () => {
+    addWireframeElement('icon', { iconId: icon.id });
+  },
 }));
-
-/** `preset=footer` / `shape=triangle` / `iconId=user` (single argument per row). */
-function formatArgs(args: Readonly<Record<string, string>>): string {
-  return Object.entries(args)
-    .map(([name, value]) => `${name}=${value}`)
-    .join(',');
-}
 
 function InsertMenuItem({
   item,
@@ -109,13 +111,10 @@ function InsertMenuItem({
   item: InsertItem;
   onRun: (item: InsertItem) => void;
 }): React.ReactElement {
-  const args = item.args;
   return (
     <Menu.Item
       value={item.key}
       data-testid="wireframe-insert-item"
-      data-nav-verb-id={item.verbId}
-      {...(args === undefined ? {} : { 'data-nav-args': formatArgs(args) })}
       onSelect={() => onRun(item)}
       fontSize="xs"
       color="fg.default"
@@ -132,12 +131,8 @@ function InsertMenuItem({
 }
 
 export function WireframeInsertMenu(): React.ReactElement {
-  const { host } = useWireframeNavigation();
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const pointerOpenedRef = useRef(false);
-
   const runItem = (item: InsertItem): void => {
-    void host.runVerb(item.verbId, 'pointer', item.args ?? {});
+    item.run();
   };
 
   return (
@@ -147,19 +142,9 @@ export function WireframeInsertMenu(): React.ReactElement {
       insetBlockStart="12px"
       zIndex={2}
     >
-      <Menu.Root
-        positioning={{ placement: 'bottom-start' }}
-        onExitComplete={() => {
-          if (!pointerOpenedRef.current) return;
-          pointerOpenedRef.current = false;
-          // A pointer activation releases focus so the next bare key resolves
-          // through the shell adapter (G-327); a keyboard activation keeps it.
-          triggerRef.current?.blur();
-        }}
-      >
+      <Menu.Root positioning={{ placement: 'bottom-start' }}>
         <Menu.Trigger asChild>
           <Button
-            ref={triggerRef}
             data-testid="wireframe-insert"
             aria-label="Insert"
             aria-haspopup="menu"
@@ -172,12 +157,6 @@ export function WireframeInsertMenu(): React.ReactElement {
             borderColor="border.default"
             color="fg.default"
             _hover={{ bg: tint('var(--accent-primary)', 10) }}
-            onPointerDown={() => {
-              pointerOpenedRef.current = true;
-            }}
-            onKeyDown={() => {
-              pointerOpenedRef.current = false;
-            }}
           >
             <Icon as={LuPlus} boxSize={3.5} aria-hidden="true" />
             <Text as="span" display={{ base: 'none', lg: 'inline' }} fontSize="xs">

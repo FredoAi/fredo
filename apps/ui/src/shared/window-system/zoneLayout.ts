@@ -16,15 +16,14 @@
  * `MIN_WIDTH × MIN_HEIGHT`. Nothing here produces or persists px geometry — the
  * persisted payload holds ids + fractions + numbers only (never a `WindowEntry`).
  *
- * The activation chord is MODIFIER-ONLY (pure modifier keydowns are rejected by
- * the hotkey engine's `normalizeKeyStroke`), so `matchesZoneChord` reads the
- * pointer event's modifier flags and reuses the engine's
- * `resolvePrimaryModifier` for the platform-neutral `primary` token. This module
- * adds no keydown listener and does not touch the keymap engine.
+ * The activation chord is MODIFIER-ONLY (a pure modifier press never produces a
+ * printable character), so `matchesZoneChord` reads the pointer event's modifier
+ * flags and resolves the platform-neutral `primary` token through
+ * `./platformModifier` (`resolvePrimaryModifier`). This module adds no keydown
+ * listener and owns no keymap.
  */
 
-import { resolvePrimaryModifier } from '../navigation/keys';
-import type { Platform } from '../navigation/types';
+import { resolvePrimaryModifier, type PrimaryPlatform } from './platformModifier';
 import { MIN_HEIGHT, MIN_WIDTH } from './windowGeometry';
 
 // ── Template + chord vocabulary ───────────────────────────────────────────────
@@ -346,13 +345,13 @@ export function zoneAtPoint(
  * held, so `primary` does not match `primary+alt`.
  *
  * `primary` is the platform-neutral primary modifier (Ctrl on win32/linux, Meta
- * on darwin) resolved through the hotkey engine's `resolvePrimaryModifier`, so a
- * chord and the drag gesture agree on what "primary" means with no second rule.
+ * on darwin) resolved through `./platformModifier`'s `resolvePrimaryModifier`, so
+ * a chord and the drag gesture agree on what "primary" means with no second rule.
  */
 export function matchesZoneChord(
   chord: ZoneActivationChord,
   mods: { alt: boolean; ctrl: boolean; meta: boolean; shift: boolean },
-  platform?: Platform,
+  platform?: PrimaryPlatform,
 ): boolean {
   const primaryMod = resolvePrimaryModifier(platform);
   const primary = primaryMod === 'ctrl' ? mods.ctrl : mods.meta;

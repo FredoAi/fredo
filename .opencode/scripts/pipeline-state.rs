@@ -3511,6 +3511,85 @@ fn count_verdict_comments_in_round(issue: u32, round: u32) -> usize {
     count
 }
 
+/// The machine-owned marker a `reconcile-verdict` post carries (an HTML comment, so
+/// it never renders). It is the ONLY thing that distinguishes a sanctioned supersede
+/// from a duplicate verdict — carrying it is useless outside `reconcile-verdict`,
+/// which is itself role-gated, requires a reason, requires an existing verdict in the
+/// round, and permits exactly ONE supersede per round.
+const RECONCILE_MARKER: &str = "reconcile-verdict:supersedes";
+
+/// Count `## Tests Runs` comments in the given round that were posted by the
+/// `reconcile-verdict` action (a supersede of the round's earlier verdict). Drives
+/// the "exactly one supersede per round" cap, so G-020 keeps its force: a round
+/// holds ONE verdict plus AT MOST ONE reconciled successor — never unlimited
+/// verdicts.
+fn count_supersede_verdicts_in_round(issue: u32, round: u32) -> usize {
+    let (comments, flagged) = issue_comments_partitioned(issue);
+    flag_untrusted_comments(issue, &flagged);
+    let mut count = 0usize;
+    for c in comments {
+        let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
+        let t = body.trim_start();
+        if !t.starts_with("## Tests Runs") || !has_verdict_line(body) {
+            continue;
+        }
+        if !body.contains(RECONCILE_MARKER) {
+            continue;
+        }
+        let r = t.lines().next().and_then(|h| {
+            h.split("round").nth(1)
+                .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+        }).unwrap_or(1);
+        if r == round { count += 1; }
+    }
+    count
+}
+
+/// The content gate for a `## Tests Runs` verdict body — SHARED by the timeline
+/// draft flush and the `reconcile-verdict` action, so the supersede path can never
+/// become a bypass of the verdict-line (G-013) or evidence-renderability (G-104)
+/// gates. Returns `(guardId, guardKey, failureClass, eventMessage)` on refusal.
+fn tests_runs_content_refusal(body: &str) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
+    // PO feedback (#2688): a `## Tests Runs` body MUST carry a literal `Verdict:`
+    // line (template format). A malformed header like `## Tests Runs -- PASS 7/7`
+    // is REFUSED so the timeline never receives an unparseable verdict comment.
+    if !body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:")) {
+        return Some(("G-013", "tests_runs_verdict_line", "unparseable_verdict_comment",
+            "tests-runs draft refused: no literal Verdict: line"));
+    }
+    // Evidence-renderability guard (#2756): a screenshot referenced by bare
+    // filename or local scratch path can never render or even open as a link on
+    // GitHub. Every image reference in a verdict MUST be an `https://` URL.
+    let has_dead_image_ref = body.lines().any(|l| {
+        let t = l.to_lowercase();
+        (t.contains(".jpeg") || t.contains(".jpg") || t.contains(".png") || t.contains(".webp") || t.contains(".gif"))
+            && !t.contains("https://")
+    });
+    if has_dead_image_ref {
+        return Some(("G-104", "tests_runs_evidence_renderability", "unviewable_evidence",
+            "tests-runs draft refused: image reference without https:// (unviewable evidence)"));
+    }
+    None
+}
+
+/// A PENDING `tests-runs.md` draft that the verdict content gate would REFUSE.
+/// Returns `(guardId, message)` when such a draft exists. Used by the `transition`
+/// arm to FAIL CLOSED on a leg that leaves `testing`: a refused verdict draft means
+/// the round's verdict stays unposted, and completing the transition would advance
+/// the round stamp (a rework re-entry counts) while the guard sees no fresh verdict
+/// — the #3152 deadlock, where the corrected verdict then posted under the ADVANCED
+/// round and collided with the next round's legitimate verdict under G-020.
+fn pending_tests_runs_content_refusal(issue: u32) -> Option<(String, String)> {
+    let p = project_root().ok()?
+        .join(".opencode").join("tmp").join(issue.to_string()).join("tests-runs.md");
+    if !p.exists() { return None; }
+    let body = std::fs::read_to_string(&p).ok()?;
+    // Unattributed drafts are a different (already-fail-closed) gate — the flush keeps
+    // them and nothing posts, but the round's verdict state is unaffected by them.
+    if !body.to_lowercase().contains("*authored by") { return None; }
+    tests_runs_content_refusal(&body).map(|(gid, _, _, msg)| (gid.to_string(), msg.to_string()))
+}
+
 /// A line that mentions `telemetry_spans` but in a NEGATING / explain-why-not
 /// context is static-only evidence, not a live query result (G-099 #2798). The
 /// canonical config-only justification is "No `telemetry_spans` surface exists" —
@@ -4143,32 +4222,19 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             println!("SKIPPED: {} — the `{}` comment is already posted", fname, title);
             continue;
         }
-        // PO feedback (#2688): a `## Tests Runs` draft MUST carry a literal `Verdict:`
-        // line (template format) before it is posted. A malformed header like
-        // `## Tests Runs -- PASS 7/7` with no `Verdict:` line is REFUSED (the draft is
-        // kept for the tester to fix) so the timeline never receives an unparseable
-        // verdict comment.
+        // PO feedback (#2688) + evidence renderability (#2756): a `## Tests Runs` draft
+        // MUST carry a literal `Verdict:` line and MUST reference every screenshot by
+        // an `https://` URL. REFUSED (draft kept for the tester to fix) so the timeline
+        // never receives an unparseable verdict or unviewable evidence. The gate is
+        // shared with `reconcile-verdict` (one implementation, no bypass).
         if fname == "tests-runs.md" {
-            let has_verdict = body.lines().any(|l| l.trim_start().to_lowercase().starts_with("verdict:"));
-            if !has_verdict {
-                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: no literal Verdict: line", &[("guardId", "G-013"), ("guardKey", "tests_runs_verdict_line"), ("failureClass", "unparseable_verdict_comment"), ("site", "post-comments")]);
-                println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
-                continue;
-            }
-            // Evidence-renderability guard (#2756): a screenshot referenced by bare
-            // filename or local scratch path can never render or even open as a link
-            // on GitHub — repo members see only a dead string. Every image reference
-            // in a verdict MUST be an `https://` URL (the `user-attachments` URL
-            // `upload-evidence` prints via `gh image`). Refused (draft kept) so the
-            // timeline never carries unviewable evidence.
-            let has_dead_image_ref = body.lines().any(|l| {
-                let t = l.to_lowercase();
-                (t.contains(".jpeg") || t.contains(".jpg") || t.contains(".png") || t.contains(".webp") || t.contains(".gif"))
-                    && !t.contains("https://")
-            });
-            if has_dead_image_ref {
-                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "tests-runs draft refused: image reference without https:// (unviewable evidence)", &[("guardId", "G-104"), ("guardKey", "tests_runs_evidence_renderability"), ("failureClass", "unviewable_evidence"), ("site", "post-comments")]);
-                println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
+            if let Some((gid, gkey, fclass, msg)) = tests_runs_content_refusal(&body) {
+                let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", msg, &[("guardId", gid), ("guardKey", gkey), ("failureClass", fclass), ("site", "post-comments")]);
+                if gid == "G-013" {
+                    println!("WARNING: tests-runs.md lacks a `Verdict:` line — not posting (template format). Fix the draft, then re-run post-comments.");
+                } else {
+                    println!("WARNING: tests-runs.md references a screenshot by bare filename or local path — not posting (unviewable evidence). Run `upload-evidence --image <screenshot>` PER AC and paste the returned https:// user-attachment URL into that AC's Screenshot cell; write `n/a — not visually observable` for backend-only ACs. Then re-run post-comments.");
+                }
                 continue;
             }
         }
@@ -4642,6 +4708,92 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             recover_missing_triage_plan(issue, &a.actor, &phase);
             post_pending_comments(issue, &a.actor, &phase, None)?;
         }
+        "reconcile-verdict" => {
+            // SANCTIONED SUPERSEDE (#3152). The record can reach a state where a
+            // round's verdict is posted but WRONG — e.g. a stale-by-head verdict, or a
+            // verdict that landed under an advanced round because a refused draft let
+            // the counter advance — and G-020 then refuses the corrected verdict
+            // forever (`a verdict-carrying ## Tests Runs comment already exists for
+            // round N`), with no amend/edit path (single writer, no history rewrite).
+            // This action posts a NEW verdict comment for the CURRENT round carrying
+            // the machine-owned `RECONCILE_MARKER`; `latest_evidence_comment` already
+            // selects the latest verdict-carrying comment by timestamp, so the new one
+            // becomes authoritative WITHOUT rewriting history — both verdicts stay on
+            // the timeline (audit trail) and the supersede is recorded as an event.
+            // Non-gameable by construction: role-gated (tester/orchestrator), requires
+            // a `--reason`, requires an EXISTING verdict in the round (a first verdict
+            // is the normal draft flush, not a supersede), permits exactly ONE
+            // supersede per round, and passes the SAME verdict content gate as the
+            // draft flush (G-013/G-104) so it can never post an unparseable verdict or
+            // unviewable evidence.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            let phase = phase_of(a)?.as_str().to_string();
+            let reason = a.reason.as_deref().unwrap_or("").trim().to_string();
+            if reason.is_empty() {
+                anyhow::bail!("reconcile-verdict requires --reason \"<why the existing verdict must be superseded>\" — the supersede is audited");
+            }
+            let (round, _) = retry_state(issue);
+            let existing = count_verdict_comments_in_round(issue, round);
+            if existing == 0 {
+                anyhow::bail!(
+                    "no verdict-carrying `## Tests Runs` comment exists for round {} — post the first verdict through the normal channel (write `.opencode/tmp/{}/tests-runs.md` with a `Verdict:` line, then `post-comments`); reconcile-verdict only SUPERSEDES an existing verdict",
+                    round, issue
+                );
+            }
+            if count_supersede_verdicts_in_round(issue, round) > 0 {
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, &phase, "blocked",
+                    "G-020 preserved: a reconciled (superseding) verdict already exists in this round",
+                    &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "reconcile-verdict")]);
+                anyhow::bail!(
+                    "round {} already carries a reconciled verdict — exactly ONE supersede per round (G-020 is not weakened into unlimited verdicts); a further correction needs a new round",
+                    round
+                );
+            }
+            // Body: `--body-file`, else the conventional reconcile draft (never the
+            // pending `tests-runs.md` — that draft belongs to the normal flush and
+            // consuming it here would silently double-post or lose it).
+            let conventional = project_root()?.join(".opencode").join("tmp").join(issue.to_string()).join("reconcile-verdict.md");
+            let raw = match a.body_file.as_deref() {
+                Some(f) => std::fs::read_to_string(f)
+                    .map_err(|e| anyhow::anyhow!("cannot read --body-file {}: {}", f, e))?,
+                None if conventional.exists() => std::fs::read_to_string(&conventional)?,
+                None => anyhow::bail!(
+                    "reconcile-verdict requires --body-file <verdict draft> (or `.opencode/tmp/{}/reconcile-verdict.md`) — the corrected `## Tests Runs` body, with a literal `Verdict:` line",
+                    issue
+                ),
+            };
+            // The SAME content gate the draft flush applies — the supersede path is
+            // never a bypass of the verdict-line or evidence-renderability guards.
+            if let Some((gid, gkey, fclass, msg)) = tests_runs_content_refusal(&raw) {
+                let _ = append_event_attrs(issue, "guard.fired", &a.actor, &phase, "blocked", msg,
+                    &[("guardId", gid), ("guardKey", gkey), ("failureClass", fclass), ("site", "reconcile-verdict")]);
+                anyhow::bail!("{} — the superseding verdict must pass the same content gate", msg);
+            }
+            let stripped = strip_leading_heading(&raw, "## Tests Runs");
+            let body = ensure_author_footer(
+                &format!(
+                    "## Tests Runs (round {})\n\n<!-- {} round {} -->\n\nSupersedes the earlier verdict for round {} of this issue.\n\nReason: {}\n\n{}",
+                    round, RECONCILE_MARKER, round, round, reason, stripped
+                ),
+                &a.actor,
+            );
+            let tmp = project_root()?.join(".opencode").join("tmp").join(format!("reconcile-{}.md", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(tmp.parent().unwrap())?;
+            std::fs::write(&tmp, &body)?;
+            run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+            let _ = std::fs::remove_file(&tmp);
+            if a.body_file.is_none() { let _ = std::fs::remove_file(&conventional); }
+            println!("RECONCILED: superseding `## Tests Runs (round {})` verdict posted on #{} (previous verdict kept on the timeline)", round, issue);
+            let round_s = round.to_string();
+            append_event_attrs(issue, "verdict.reconciled", &a.actor, &phase, "success",
+                &format!("superseded the round-{} verdict: {}", round, reason),
+                &[("round", round_s.as_str()), ("reason", reason.as_str())])?;
+        }
         "record-improvement" => {
             // The Curator records a pipeline improvement — posts the ONE structured
             // `## Pipeline Improvement` comment on the feature issue immediately (the
@@ -4785,6 +4937,32 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // retry/PASS workflow (G-344).
             if phase == Phase::Testing {
                 let _ = post_pending_comments(issue, &a.actor, phase.as_str(), Some(phase.as_str()));
+                // FAIL CLOSED on a refused verdict draft (#3152). The flush above
+                // REFUSES a `tests-runs.md` draft that fails the verdict content gate
+                // and keeps it on disk. Completing this transition anyway would advance
+                // the round stamp (a rework re-entry counts) while the round's verdict
+                // stays unposted: the corrected verdict then posts under the ADVANCED
+                // round and collides with the next round's legitimate verdict under
+                // G-020 — a permanent deadlock with no reconcile affordance. So while
+                // the ENDING round has no verdict-carrying comment AND a refused
+                // verdict draft is pending, the leg is BLOCKED (the draft is kept).
+                // Remedy (documented): fix the draft so it passes the gate, or hold it
+                // aside, then re-run the transition. EXEMPT: the human-authorized
+                // pre-verdict rework (a binding directive that overrides the evidence
+                // guard for an aborted round) must not be stranded by a leftover draft.
+                let (ending_round, _) = retry_state(issue);
+                if !human_authorized_rework && count_verdict_comments_in_round(issue, ending_round) == 0 {
+                    if let Some((gid, msg)) = pending_tests_runs_content_refusal(issue) {
+                        let reason = format!(
+                            "a pending `## Tests Runs` verdict draft was refused by the content gate ({}) and round {} has no posted verdict — completing this transition would advance the round while the verdict stays unposted (the corrected verdict would then collide with the next round's under G-020, #3152). Fix the draft (or hold it aside), then re-run the transition",
+                            msg, ending_round);
+                        let _ = append_event_attrs(issue, "guard.fired", &a.actor, phase.as_str(), "blocked", &reason,
+                            &[("guardId", gid.as_str()), ("guardKey", "verdict_draft_refused_counter_advance"), ("failureClass", "round_advanced_without_verdict"), ("site", "transition")]);
+                        append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
+                        println!("BLOCKED: {}", reason);
+                        return Ok(());
+                    }
+                }
             }
             let (ok, reason) = if (phase == Phase::Implementation && to == Phase::Planning)
                 || human_authorized_rework
@@ -5852,6 +6030,9 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "audit-record" => actor == "auditor",
         "upload-evidence" => matches!(actor, "tester" | "orchestrator"),
         "post-comments" => matches!(actor, "orchestrator" | "tester"),
+        // The sanctioned verdict SUPERSEDE (#3152) — same two roles that may post a
+        // verdict, since it IS a verdict post (with a stricter gate).
+        "reconcile-verdict" => matches!(actor, "tester" | "orchestrator"),
         "record-improvement" => actor == "curator",
         // The operator's accept/reject at the done human-review window: recorded by
         // the Product Owner — the human-facing proxy (the human has no machine

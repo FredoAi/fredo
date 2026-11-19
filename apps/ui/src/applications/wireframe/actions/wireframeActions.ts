@@ -1,23 +1,22 @@
 /**
- * Wireframe command table (Spec #3070, ST-3, C4 / C9).
+ * Wireframe command table (Spec #3070, ST-3, C4 / C9; engine-free since
+ * Spec #3151, ST-5).
  *
  * ONE table is the single source of truth for the retained per-capability
- * handlers and the 33-row parity manifest (Spec #3119 ST-7 reads `toolbar:
- * true`). The legacy command surface, the hidden `g+*` carrier and the toolbar
- * are retired by Spec #3119 ST-4, so the table no longer declares a `hotkey`
- * field at all — keyboard resolution is owned by the navigation surface
- * (`wireframeSurface.ts`) and the ONE shell adapter.
+ * handlers and the parity manifest. The legacy command surface, the hidden `g+*`
+ * carrier, the toolbar and the navigation surface are retired, so the table
+ * declares no `hotkey` field and no key resolution lives here: the pointer
+ * controls call `runWireframeAction(id)` directly, and the table's `run`
+ * functions are those handlers.
  *
  * The 35 ids are the C4 catalog verbatim. `toolbar: true` survives as the
  * parity flag: 33 rows carried a toolbar control, the two
  * `wireframe.companion.*` ids are Companion-only (`toolbar: false`) and are
  * executed by the companion layer — their `run` is deliberately absent here.
- * `wireframe.document.new` keeps its `run` and no longer requires a keyboard
- * binding (`File n` is declared on the navigation surface).
  *
- * The descriptions are user-facing (the Companion lists them per R-6.1) and
- * ST-7 mirrors them verbatim in the Rust catalog
- * (`infrastructure/companion/wireframe_catalog.rs`).
+ * The descriptions are user-facing labels for the pointer controls; nothing
+ * renders them to the Companion (Spec #3152 removed the generated per-surface
+ * skill offer, so no Companion surface lists these rows).
  *
  * Nothing in this module touches telemetry or the RTDB row pipeline: the
  * wireframe document is document state, and every mutation goes through the
@@ -29,6 +28,7 @@ import {
   type WireframeElement,
   type WireframeElementPatch,
   type WireframeElementType,
+  type WireframeIconId,
   type WireframeSectionPreset,
   type WireframeShapeKind,
 } from '../model/elements';
@@ -74,6 +74,8 @@ export interface WireframeActionDefinition {
 export interface AddWireframeElementOptions {
   preset?: WireframeSectionPreset;
   shape?: WireframeShapeKind;
+  /** Chosen curated icon (the insert menu's icon group). */
+  iconId?: WireframeIconId;
   text?: string;
 }
 
@@ -165,13 +167,19 @@ export function addWireframeElement(
   options: AddWireframeElementOptions = {},
 ): boolean {
   const { document } = getSnapshot();
-  const element = createDefaultElement(type, {
+  let element = createDefaultElement(type, {
     page: document.page,
     elements: document.elements,
     preset: options.preset,
     shape: options.shape,
     text: options.text,
   });
+  // `createDefaultElement` has no icon option, so the chosen curated icon is
+  // applied after construction (the insert menu's icon group; same element
+  // object, one extra field).
+  if (element.type === 'icon' && options.iconId !== undefined) {
+    element = { ...element, iconId: options.iconId };
+  }
   dispatch('element.add', { element });
   return true;
 }

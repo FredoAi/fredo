@@ -40,9 +40,6 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::infrastructure::companion::skills::SkillRegistry;
-use crate::infrastructure::companion::surface_registry::{
-    build_companion_skill_registry, AppCommandSurfaceRegistry,
-};
 use crate::infrastructure::companion::PerformanceModeState;
 
 use super::chat::LlmMessage;
@@ -474,7 +471,7 @@ enum StructuredAttempt {
 /// rather than on a re-implementation.
 #[derive(Clone)]
 struct StatusTurnContext {
-    /// The skill offer for this turn (built from the published surfaces).
+    /// The skill offer for this turn (the three shipped static skills).
     registry: SkillRegistry,
     /// Whether the cached capability verdict allows the structured attempt.
     structured_status_supported: bool,
@@ -491,7 +488,7 @@ impl StatusTurnContext {
     /// retry still degrades a non-conforming structured attempt.
     fn for_app(app: &AppHandle) -> Self {
         Self {
-            registry: companion_skill_registry(app),
+            registry: companion_skill_registry(),
             structured_status_supported: true,
             audio_suppressed: is_performance_suppressed(app),
         }
@@ -688,26 +685,11 @@ async fn run_status_pass(
         .map(str::to_string)
 }
 
-/// The ONE skill offer of the live companion transport (Spec #3070 ST-7b;
-/// Spec #3099 ST-4 — generated per published surface).
-///
-/// Every live offer site — [`run_tools_attempt`] and the offer-skills branch of
-/// [`run_plain_retry`] — obtains its registry from here, so the offer SET is
-/// chosen in exactly ONE place. Round 2's defect (F-47) was two divergent
-/// copies that both registered `open_app`/`close_app`/`doom_mode` only, so the
-/// `wireframe` skill was never in a request the model saw and a Wireframe
-/// request could only be answered with prose.
-///
-/// The shipped static skills (`open_app`, `close_app`, `doom_mode`) stay
-/// byte-identical and FIRST; one generated skill follows per published surface,
-/// read from the managed [`AppCommandSurfaceRegistry`] on EVERY turn (never
-/// cached), so a surface publish is effective on the next turn with no restart.
-pub(crate) fn companion_skill_registry(app: &AppHandle) -> SkillRegistry {
-    let surfaces = app
-        .try_state::<AppCommandSurfaceRegistry>()
-        .map(|state| state.surfaces())
-        .unwrap_or_default();
-    build_companion_skill_registry(&surfaces)
+/// The ONE skill offer of the live companion transport.
+/// The three shipped static skills and nothing generated: the companion is
+/// conversational only and executes no application command.
+pub(crate) fn companion_skill_registry() -> SkillRegistry {
+    SkillRegistry::with_app_control_and_doom()
 }
 
 /// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
@@ -1462,135 +1444,76 @@ mod tests {
         );
     }
 
-    // ── Spec #3070 ST-7b: the ONE live offer carries the wireframe skill ──────
+    // ── Spec #3152: the turn offer is exactly the three static skills ─────────
 
-    /// F-47 regression pin — the LIVE transport's offer set.
+    /// AC2 pin — the LIVE transport's offer set is the three shipped static
+    /// skills and nothing generated.
     ///
-    /// The Companion's typed send reaches the model through `run_tools_attempt`
-    /// (and its retry through the offer-skills branch of `run_plain_retry`), so
-    /// THIS offer must be the generated registry built from the PUBLISHED
-    /// surfaces: the three shipped static skills (`open_app`, `close_app`,
-    /// `doom_mode`) FIRST, then the generated `wireframe` skill in registration
-    /// order — with the PROJECTION's description plus every published action id
-    /// (Spec #3122 P8: the ONE manifest is the navigation declaration), so
-    /// "let's create a new wireframe for <app>" is callable.
+    /// The Companion's typed send and its model-audio turn both obtain their
+    /// registry from [`companion_skill_registry`], which is the value
+    /// [`run_tools_attempt`] offers the model. So asserting on it IS asserting on
+    /// the turn path.
     ///
-    /// Round-2 code fails this on the first assertion: the live path offered
-    /// `SkillRegistry::with_app_control_and_doom()` — three tools, no
-    /// `wireframe` function at all, which is why the model could only reply in
-    /// prose.
+    /// The structural leg (R-2b) is asserted by reading the production source:
+    /// the accessor takes no parameters (no `AppHandle`), reads no managed state
+    /// and consults no published surface, so "no publisher, no crash" is
+    /// structural rather than defensive.
     #[test]
-    fn the_live_offer_carries_the_generated_wireframe_skill_with_its_projected_description() {
-        use crate::infrastructure::companion::surface_registry::{
-            build_companion_skill_registry, CompanionManifest,
-        };
-
-        #[derive(serde::Deserialize)]
-        struct GoldenFixture {
-            manifest: CompanionManifest,
-        }
-
-        let fixture: GoldenFixture = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../ui/src/shared/companion/fixtures/wireframe.companion.golden.json"
-        )))
-        .expect("the golden fixture parses");
-        let surfaces = fixture.manifest.surfaces;
-        let registry = build_companion_skill_registry(&surfaces);
-        let tools = skills::render_tools(&registry);
-        let tools = tools.as_array().expect("the offer renders a tools array");
-
-        // The static three, then one generated skill per surface.
-        let names: Vec<&str> = tools
-            .iter()
-            .filter_map(|tool| tool["function"]["name"].as_str())
-            .collect();
+    fn the_turn_offer_is_exactly_the_three_static_skills() {
+        let registry = companion_skill_registry();
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["open_app", "close_app", "doom_mode", "wireframe"],
-            "the live offer must register the generated wireframe skill last (F-47)"
+            vec!["open_app", "close_app", "doom_mode"],
+            "the turn offer is exactly the three shipped static skills, in order"
         );
-
-        let wireframe = tools
-            .iter()
-            .find(|tool| tool["function"]["name"] == "wireframe")
-            .expect("the wireframe function is offered to the model");
-
-        // The generated contract: one required `action` string carrying every
-        // published id plus `listActions`, and an open `arguments` object.
-        let parameters = &wireframe["function"]["parameters"];
-        assert_eq!(parameters["type"], "object");
-        assert_eq!(parameters["required"], json!(["action"]));
-        let properties = parameters["properties"]
-            .as_object()
-            .expect("the declared properties object");
-        let mut keys: Vec<&str> = properties.keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, vec!["action", "arguments"]);
-        assert_eq!(properties["action"]["type"], "string");
-        assert_eq!(properties["arguments"], json!({ "type": "object" }));
-        let offered: Vec<&str> = properties["action"]["enum"]
-            .as_array()
-            .expect("the action enum is an array")
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-        let expected: Vec<&str> = surfaces[0]
-            .commands
-            .iter()
-            .map(|command| command.id.as_str())
-            .chain(std::iter::once("listActions"))
-            .collect();
-        assert_eq!(offered, expected, "every published id then listActions");
-
-        // The description is the PROJECTION's description plus the generated id
-        // list. Since P8 the ONE manifest is the navigation declaration, so the
-        // directive text comes from the surface's `companion.description` — never
-        // a second hand-authored copy (Spec #3122 P8, ST-3).
-        let description = wireframe["function"]["description"]
-            .as_str()
-            .expect("the description is a string");
+        assert_eq!(registry.len(), 3, "no application-named skill is offered");
         assert!(
-            description.starts_with(surfaces[0].description.as_str()),
-            "the offer must carry the declaration's description: {description}"
-        );
-        for command in &surfaces[0].commands {
-            assert!(
-                description.contains(&command.id),
-                "description is missing {}",
-                command.id
-            );
-        }
-        assert!(
-            description.ends_with("listActions."),
-            "the description ends with the generated id list: {description}"
+            registry.get("wireframe").is_none(),
+            "no application-named skill is offered"
         );
 
-        // The body keeps the shipped tools contract: the model decides (`auto`),
-        // parallel calls stay off, and NO `response_format` — the schema grammar
-        // must never displace the native tool path (ST-6).
-        let body = skill_body(
-            &[message(
-                "user",
-                "let's create a new wireframe for our new Reporter app",
-            )],
-            &registry,
-        );
-        assert_eq!(body["tool_choice"], "auto");
-        assert_eq!(body["parallel_tool_calls"], false);
+        // R-2b: reading it again returns the same three names — the offer is a
+        // pure function of no state at all.
+        let again = companion_skill_registry();
+        let again_names: Vec<&str> = again.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(again_names, names, "the offer does not depend on any state");
+
+        // R-2b structural leg: the accessor takes no parameters, holds no
+        // `AppHandle` and reads no managed state / published surfaces.
+        let source = include_str!("status.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("status.rs has a production section");
         assert!(
-            body.get("response_format").is_none(),
-            "the tools body must never carry response_format: {body}"
+            production.contains("fn companion_skill_registry() -> SkillRegistry"),
+            "the accessor must declare zero parameters (no AppHandle)"
         );
-        let body_names: Vec<&str> = body["tools"]
-            .as_array()
-            .expect("tools array")
-            .iter()
-            .filter_map(|tool| tool["function"]["name"].as_str())
-            .collect();
-        assert_eq!(
-            body_names, names,
-            "the request body offers the same generated tools in offer order"
+        let start = production
+            .find("fn companion_skill_registry() -> SkillRegistry")
+            .expect("the accessor signature is present");
+        let accessor = &production[start..];
+        let accessor = &accessor[..accessor.find("\n}\n").unwrap_or(accessor.len())];
+        assert!(
+            !accessor.contains(".try_state"),
+            "the accessor must not read managed state: {accessor}"
+        );
+        assert!(
+            !accessor.contains("state::<"),
+            "the accessor must not read managed state: {accessor}"
+        );
+        assert!(
+            !accessor.contains("surfaces"),
+            "the accessor must not consult published surfaces: {accessor}"
+        );
+        assert!(
+            !accessor.contains("app: &AppHandle"),
+            "the accessor must take no AppHandle: {accessor}"
+        );
+        assert!(
+            accessor.contains("SkillRegistry::with_app_control_and_doom()"),
+            "the accessor is the ONE construction site: {accessor}"
         );
     }
 

@@ -1,27 +1,24 @@
 /**
- * Canvas create operator (Spec #3098, ST-4).
+ * Canvas create operator (Spec #3098, ST-4; store-direct since Spec #3151, ST-5).
  *
- * The app-side pointer operator: while the ACTIVE command mode declares
- * `operator === WIREFRAME_CREATE_OPERATOR`, the Konva Stage captures
- * pointerdown → pointermove* → pointerup, converts stage → page through the LIVE
- * view transform, normalizes + clamps the dragged rect, enforces
+ * The app-side pointer operator: while a create shape kind is ARMED, the Konva
+ * Stage captures pointerdown → pointermove* → pointerup, converts stage → page
+ * through the LIVE view transform, normalizes + clamps the dragged rect, enforces
  * `ELEMENT_MIN_SIZE` on both axes and commits exactly ONE `element.add` on
- * release (auto-selected, mode back to Select). Below the minimum it creates
+ * release (auto-selected, operator disarmed). Below the minimum it creates
  * nothing and stays in the draw mode.
  *
  * Konva is mocked with the same harness shape as `WireframeCanvas.test.tsx`
  * (inert divs + a module-scoped registry), extended with the Stage's pointer
- * props and `getPointerPosition()`. The REAL React component, the REAL
- * command-surface store and the REAL document store are driven.
+ * props and `getPointerPosition()`. The REAL React component and the REAL
+ * document store are driven.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-import { resetNavigationAnnouncer } from '@/shared/navigation/ui';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
-import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import {
   getSnapshot,
   resetWireframeStoreForTests,
@@ -34,8 +31,8 @@ import {
   beginWireframeShapeCreate,
   clearArmedWireframeShape,
   getArmedWireframeShape,
-  resetWireframeSurfaceForTests,
-} from '../wireframeSurface';
+  resetWireframeCanvasOperatorForTests,
+} from '../components/wireframeCanvasOperator';
 // Side effect: the application must be registered (exactly as the eager
 // `allApplications` barrel does in the app).
 import '../index';
@@ -337,8 +334,7 @@ function artworkLayer(): HTMLElement {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
-  resetWireframeSurfaceForTests();
-  resetNavigationAnnouncer();
+  resetWireframeCanvasOperatorForTests();
   document.body.innerHTML = '';
   konvaMock.stageProps = null;
   konvaMock.pointer = { x: 0, y: 0 };
@@ -373,8 +369,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
-  resetWireframeSurfaceForTests();
-  resetNavigationAnnouncer();
+  resetWireframeCanvasOperatorForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.removeAttribute('style');
@@ -382,11 +377,7 @@ afterEach(() => {
 
 /** Render the canvas at 100 % / origin so stage coords equal page coords. */
 function mountCanvas(): void {
-  renderWithChakra(
-    <WireframeNavigationProvider>
-      <WireframeCanvasImpl />
-    </WireframeNavigationProvider>,
-  );
+  renderWithChakra(<WireframeCanvasImpl />);
   act(() => setView({ scale: 1, x: 0, y: 0 }));
 }
 

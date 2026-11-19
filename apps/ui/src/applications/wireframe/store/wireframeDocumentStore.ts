@@ -1,21 +1,21 @@
 /**
  * Wireframe document store (Spec #3070, ST-1, C3; extended by Spec #3071, ST-1;
- * journal seam added by Spec #3119, ST-2).
+ * app-local history by Spec #3151, ST-3).
  *
  * MODULE-SCOPED — never React refs. Open -> close -> open keeps the document,
  * the undo history and the saved path because they live at module scope (the
  * AGENTS.md persistence rule; shipped precedent: `windowStore.ts`).
  *
- * THE JOURNAL IS THE ONE UNDO AUTHORITY (Spec #3119, R-5). Every document
- * mutation commits exactly ONE entry to the module-scoped `JournalStore`; the
- * public `undo()`/`redo()`/`canUndo`/`canRedo` are journal-backed shims derived
- * from that SAME store, so there is no second history container. `dispatch` is
- * the compatibility funnel for the shipped regression suite; the P5 surface
- * verbs call the PURE `reduceDocument` plan and commit through
- * `applyDocumentPatch` (the host owns their journal entry).
+ * THE APP-LOCAL HISTORY IS THE ONE UNDO AUTHORITY (Spec #3151, AC4). The shared
+ * navigation journal that used to play this role is being removed with the
+ * engine, so Wireframe owns a bounded `WireframeHistory`: every document
+ * mutation commits exactly ONE entry (a `before`/`after` field-scoped delta
+ * pair), and the public `undo()`/`redo()`/`canUndo`/`canRedo` read that SAME
+ * instance, so there is no second history container. `dispatch` is the
+ * compatibility funnel for the shipped regression suite.
  *
  * Selection, view, pan mode, the snap-to-grid flag, file status and errors are
- * editor state, NOT document history: they never journal and never flip `dirty`.
+ * editor state, NOT document history: they never record and never flip `dirty`.
  *
  * Spec #3071 turns the selection into a SET (`selectedIds`, document order) and
  * adds groups, stacking order and snap to the shared spine. `selectedId` is no
@@ -51,22 +51,13 @@ import {
 import {
   applyDocumentDelta,
   diffDocument,
-  isWireframeDocumentDelta,
   type WireframeDocumentDelta,
 } from '../model/documentDelta';
 import {
-  appendEntry,
-  createJournalStore,
-  type JournalEntryDraft,
-  type JournalStore,
-} from '../../../shared/navigation/journal';
-import type {
-  ContextSnapshot,
-  JournalEntry,
-  JsonPatch,
-  ObjectRef,
-  SelectionSnapshot,
-} from '../../../shared/navigation/types';
+  WIREFRAME_HISTORY_LIMIT,
+  createWireframeHistory,
+  type WireframeHistory,
+} from './wireframeHistory';
 import {
   clampPageDimension,
   clampViewScale,
@@ -90,7 +81,8 @@ export {
   reconcileDocumentGroups,
 };
 
-export const UNDO_DEPTH = 100;
+/** Bounded history depth — the ONE source (`wireframeHistory.ts`). */
+export const UNDO_DEPTH = WIREFRAME_HISTORY_LIMIT;
 
 export type WireframeOperationStatus = 'idle' | 'saving' | 'opening' | 'exporting';
 
@@ -121,10 +113,10 @@ export interface WireframeEditorState {
   filePath: string | null;
   dirty: boolean;
   /**
-   * Journal-backed flags (Spec #3119). They are NOT stored independently: the
-   * snapshot derives them from the module-scoped `JournalStore` on every rebuild
-   * (`computeCanUndo` / `computeCanRedo`), so clearing the journal always clears
-   * them and no second stack can disagree.
+   * History-backed flags (Spec #3151). They are NOT stored independently: the
+   * snapshot derives them from the module-scoped `WireframeHistory` on every
+   * rebuild, so clearing the history always clears them and no second stack can
+   * disagree.
    */
   canUndo: boolean;
   canRedo: boolean;
@@ -144,23 +136,29 @@ export interface WireframeEditorSnapshot extends WireframeEditorState {
 }
 
 /**
- * The document write the navigation funnel applies (Spec #3119, R-5/R-6; scoped by
+ * The document write the apply seam performs (Spec #3151, AC4; scoped by
  * Spec #3120 round 2 / AC6).
  *
- * It is one of two shapes: the shipped whole-document checkpoint
- * (`{document, selection?}` — still used by `newDocument`) or a FIELD-SCOPED delta
- * (`{delta, selection?}`) that is applied to the CURRENT document. A missing
- * `selection` keeps (and re-normalises) the live selection — the shape the
- * `inverse` payload uses.
+ * It is one of two shapes: the whole-document checkpoint
+ * (`{document, selection?}` — used by New, which is deliberately NOT undoable)
+ * or a FIELD-SCOPED delta (`{delta, selection?}`) that is applied to the
+ * CURRENT document and recorded as ONE history entry. A missing `selection`
+ * keeps (and re-normalises) the live selection.
  */
 export interface WireframeDocumentCheckpointPatch {
   readonly document: WireframeDocument;
   readonly selection?: readonly string[];
+  /** Optional attribution for the recorded entry (defaults are derived). */
+  readonly verbId?: string;
+  readonly label?: string;
 }
 
 export interface WireframeDocumentDeltaPatch {
   readonly delta: WireframeDocumentDelta;
   readonly selection?: readonly string[];
+  /** Optional attribution for the recorded entry (defaults are derived). */
+  readonly verbId?: string;
+  readonly label?: string;
 }
 
 export type WireframeDocumentPatch =
@@ -212,12 +210,12 @@ let listeners = new Set<Listener>();
 let canvasStage: CanvasStageLike | null = null;
 
 /**
- * The ONE module-scoped navigation journal (Spec #3119, ST-2). Created once and
- * never replaced: the host, the store shims and the tests all read the SAME
- * instance, so there is exactly one undo stack. New/Open and the test reset
- * clear it IN PLACE (never re-create it) so a held reference stays valid.
+ * The ONE module-scoped app-local history (Spec #3151, ST-3). Created once and
+ * never replaced: the store shims and the tests all read the SAME instance, so
+ * there is exactly one undo stack. New/Open and the test reset clear it IN PLACE
+ * (never re-create it) so a held reference stays valid.
  */
-const navigationJournal: JournalStore = createJournalStore();
+const history: WireframeHistory = createWireframeHistory(WIREFRAME_HISTORY_LIMIT);
 
 /** The default place path until the shell registers its read model. */
 const DEFAULT_CONTEXT_PLACE = 'wireframe.canvas';
@@ -225,20 +223,36 @@ const DEFAULT_CONTEXT_PLACE = 'wireframe.canvas';
 /**
  * The shell's read-model registration seam. It supplies the host-owned
  * `appId`/`placePath`; the store always owns `selection` and `dirty`. The store
- * never imports the host (Spec #3119, ST-2).
+ * never imports the host.
+ *
+ * Structural copies of the retired engine's `ContextSnapshot` /
+ * `SelectionSnapshot` — re-declared here so the surviving store keeps no engine
+ * import (`shared/navigation` is deleted in ST-6).
  */
-let contextProvider: (() => ContextSnapshot) | null = null;
+export interface WireframeSelectionSnapshot {
+  readonly count: number;
+  readonly kinds: readonly string[];
+  readonly label: string | null;
+  readonly ids: readonly string[];
+}
+
+export interface WireframeContextSnapshot {
+  readonly appId: string;
+  readonly placePath: readonly string[];
+  readonly selection: WireframeSelectionSnapshot;
+  readonly dirty: boolean;
+}
+
+let contextProvider: (() => WireframeContextSnapshot) | null = null;
 
 let state: WireframeEditorState = createInitialState();
 /**
- * The journal arrays captured when `snapshot` was last built. The journal
- * replaces BOTH arrays on every commit, so identity is a cheap revision token:
- * a path that appends a journal entry WITHOUT notifying the store (the
- * navigation funnel applies the patch first, then journals) is still observed
- * by the next `getSnapshot()`.
+ * The history revision the cached `snapshot` was built at. The history bumps its
+ * revision on every push/undo/redo/clear, so this is a cheap O(1) change token —
+ * a path that records an entry WITHOUT notifying the store (the surface verbs
+ * apply the patch first, then push) is still observed by the next `getSnapshot()`.
  */
-let snapshotJournalEntries: readonly JournalEntry[] = navigationJournal.entries();
-let snapshotJournalRedo: readonly number[] = navigationJournal.redo();
+let snapshotRevision = history.revision();
 let snapshot: WireframeEditorSnapshot = createSnapshot(state);
 
 function createInitialState(): WireframeEditorState {
@@ -261,71 +275,18 @@ function createInitialState(): WireframeEditorState {
 
 /** The selection source of truth is `selectedIds`; `selectedId` is derived. */
 function createSnapshot(next: WireframeEditorState): WireframeEditorSnapshot {
-  snapshotJournalEntries = navigationJournal.entries();
-  snapshotJournalRedo = navigationJournal.redo();
+  snapshotRevision = history.revision();
   return {
     ...next,
-    canUndo: computeCanUndo(),
-    canRedo: computeCanRedo(),
+    canUndo: history.canUndo(),
+    canRedo: history.canRedo(),
     selectedId: primarySelectedId(next),
   };
 }
 
 /* ------------------------------------------------------------------------- */
-/* Journal-backed history (the ONLY undo authority — Spec #3119, R-5)          */
+/* App-local history (the ONLY undo authority — Spec #3151, AC4)              */
 /* ------------------------------------------------------------------------- */
-
-function journalNow(): string {
-  return new Date().toISOString();
-}
-
-function isRedoSeq(seq: number): boolean {
-  return navigationJournal.redo().includes(seq);
-}
-
-/**
- * The newest USER mutation that has not been undone yet. System entries are
- * skipped (an undo of an undo is redo, never a second undo), and a seq already
- * on the redo stack is skipped so repeated undo walks back one step at a time.
- */
-function newestUndoableEntry(): JournalEntry | null {
-  const entries = navigationJournal.entries();
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry.inverse === null) continue;
-    if (entry.actor === 'system') continue;
-    if (isRedoSeq(entry.seq)) continue;
-    return entry;
-  }
-  return null;
-}
-
-function computeCanUndo(): boolean {
-  return newestUndoableEntry() !== null;
-}
-
-function computeCanRedo(): boolean {
-  const entries = navigationJournal.entries();
-  if (entries.length === 0) return false;
-  const bySeq = new Set(entries.map((entry) => entry.seq));
-  return navigationJournal.redo().some((seq) => bySeq.has(seq));
-}
-
-/** Rebuild the cached snapshot so `canUndo`/`canRedo` read the latest journal. */
-function refreshSnapshot(): void {
-  snapshot = createSnapshot(state);
-}
-
-/** Append one draft to the module-scoped journal (append-only; never mutates). */
-function appendJournalEntry(draft: JournalEntryDraft): JournalEntry {
-  const outcome = appendEntry(
-    { entries: navigationJournal.entries(), redo: navigationJournal.redo() },
-    draft,
-    journalNow(),
-  );
-  navigationJournal.commit(outcome.state.entries, outcome.state.redo);
-  return outcome.entry;
-}
 
 function setState(next: WireframeEditorState): void {
   state = next;
@@ -400,7 +361,7 @@ function replaceState(patch: Partial<WireframeEditorState>): void {
  *
  * `groups` MUST be part of the comparison (Spec #3071): `reduceDocument`
  * returns `null` for a value-equal candidate, so a groups-only mutation (e.g.
- * group-lock) would otherwise commit nothing — no journal entry, no `dirty`,
+ * group-lock) would otherwise commit nothing — no history entry, no `dirty`,
  * no notify.
  */
 function documentsEqual(left: WireframeDocument, right: WireframeDocument): boolean {
@@ -462,7 +423,7 @@ export interface WireframeDocumentPlan {
  * value-equal candidate (a true no-op: no journal entry, no `dirty` flip, no
  * notify — E-15 / R-2.9).
  *
- * It never touches module state, the journal or listeners: the surface verbs
+ * It never touches module state, the history or listeners: the surface verbs
  * build their `VerbEffect` from this plan, `dispatch` commits it, and the host
  * applies the effect through `applyDocumentPatch`.
  */
@@ -653,7 +614,7 @@ export function reduceDocument(
 }
 
 /* ------------------------------------------------------------------------- */
-/* Journal checkpoints + labels (the store's compatibility funnel)             */
+/* History labels (the store's compatibility funnel)                           */
 /* ------------------------------------------------------------------------- */
 
 function documentTitle(element: WireframeElement): string {
@@ -667,36 +628,6 @@ function documentTitle(element: WireframeElement): string {
     default:
       return WIREFRAME_ELEMENT_LABELS[element.type];
   }
-}
-
-function elementRef(element: WireframeElement): ObjectRef {
-  return { type: element.type, id: element.id, label: documentTitle(element) };
-}
-
-/** Element/group refs for the trail — resolved against the pre-mutation document. */
-function targetsForAction(
-  action: WireframeStoreAction,
-  args: WireframeStoreActionArgs,
-  document: WireframeDocument,
-  next: WireframeDocument,
-): ObjectRef[] {
-  const groups = args.groupIds ?? [];
-  if (groups.length > 0) {
-    return groups.map((id) => ({ type: 'group', id, label: 'Group' }));
-  }
-  if (action === 'element.add') {
-    return args.element ? [elementRef(args.element)] : [];
-  }
-  if (action === 'page.update') {
-    return [{ type: 'page', id: 'page', label: 'Page' }];
-  }
-  const before = new Map(document.elements.map((element) => [element.id, element]));
-  const after = new Map(next.elements.map((element) => [element.id, element]));
-  const ids = args.ids ?? (args.id ? [args.id] : []);
-  return ids
-    .map((id) => before.get(id) ?? after.get(id))
-    .filter((element): element is WireframeElement => element !== undefined)
-    .map(elementRef);
 }
 
 function labelForAction(
@@ -740,9 +671,9 @@ function labelForAction(
 }
 
 /**
- * Commit a pure plan as exactly ONE journal entry + ONE state update (the
- * compatibility funnel behind `dispatch`). The journal append happens BEFORE
- * the snapshot rebuild so `canUndo`/`canRedo` read the new history.
+ * Commit a pure plan as exactly ONE history entry + ONE state update (the
+ * compatibility funnel behind `dispatch`). The entry is recorded BEFORE the
+ * snapshot rebuild so `canUndo`/`canRedo` read the new history.
  */
 function commitPlan(
   action: WireframeStoreAction,
@@ -751,27 +682,13 @@ function commitPlan(
 ): void {
   const before = state.document;
   // Spec #3120 round 2 (ST-4-REWORK / AC6) — the legacy funnel is field-scoped too, so
-  // one entry's inverse can never clobber a later independent human edit.
+  // one entry's before-delta can never clobber a later independent human edit.
   const { patch: forward, inverse } = diffDocument(before, plan.document);
-  appendJournalEntry({
+  history.push({
     verbId: action,
-    actor: 'human',
-    channel: 'system',
     label: labelForAction(action, args, before),
-    effect: 'mutation',
-    placePath: getWireframeContext().placePath,
-    target: targetsForAction(action, args, before, plan.document),
-    patch: {
-      before: { delta: inverse } as unknown as JsonPatch,
-      after: {
-        delta: { ...forward, selection: [...plan.selectedIds] },
-      } as unknown as JsonPatch,
-    },
-    inverse: { delta: inverse } as unknown as JsonPatch,
-    external: false,
-    consequence: null,
-    exitedBy: 'none',
-    coalesceKey: null,
+    before: inverse,
+    after: { ...forward, selection: [...plan.selectedIds] },
   });
   setState({
     ...state,
@@ -794,36 +711,32 @@ export function subscribe(listener: Listener): () => void {
  * Stable snapshot reference until the next mutation. The returned object also
  * carries the derived `selectedId` (the primary/last selected id).
  *
- * `canUndo`/`canRedo` are derived from the shared journal on every read (Spec
- * #3119, R-5a). The navigation funnel applies the document patch BEFORE it
- * appends the entry, so a value captured at notify time is one append stale;
+ * `canUndo`/`canRedo` are derived from the app-local history on every read
+ * (Spec #3151, AC4). The surface verbs apply the document patch BEFORE they
+ * record the entry, so a value captured at notify time is one push stale;
  * refreshing the two flags here keeps them truthful after a VERB commit too,
  * while still returning the SAME object when they did not move (the
  * `useSyncExternalStore` stability contract).
  */
 export function getSnapshot(): WireframeEditorSnapshot {
-  // O(1) revision check (the journal replaces its arrays on commit); only a real
-  // journal change re-derives the flags.
-  if (
-    snapshotJournalEntries !== navigationJournal.entries() ||
-    snapshotJournalRedo !== navigationJournal.redo()
-  ) {
+  // O(1) revision check (the history bumps its revision on every change).
+  if (snapshotRevision !== history.revision()) {
     snapshot = createSnapshot(state);
   }
   return snapshot;
 }
 
 /* ------------------------------------------------------------------------- */
-/* Navigation seam (Spec #3119, ST-2)                                          */
+/* Context seam                                                                */
 /* ------------------------------------------------------------------------- */
 
 /**
- * The ONE module-scoped journal. The P5 host is constructed with THIS instance
- * and `applyDocumentPatch` as its `applyPatch`, so `store.undo()` and
- * `host.undoLast()` advance the same stack (no second counter).
+ * The ONE module-scoped app-local history (Spec #3151, AC4). Exposed for
+ * diagnostics, the shell's own controls (ST-5) and the store's tests — there is
+ * no second undo container to read.
  */
-export function getNavigationJournal(): JournalStore {
-  return navigationJournal;
+export function getWireframeHistory(): WireframeHistory {
+  return history;
 }
 
 /**
@@ -831,17 +744,17 @@ export function getNavigationJournal(): JournalStore {
  * `appId`/`placePath`; the store always overrides `selection` and `dirty` with
  * its live values. Registration seam only — the store never imports the host.
  */
-export function setWireframeContextProvider(fn: () => ContextSnapshot): void {
+export function setWireframeContextProvider(fn: () => WireframeContextSnapshot): void {
   contextProvider = fn;
 }
 
 /**
- * The `ContextSnapshot` the P5 host reads (Spec #3119, R-4). `selection.kinds`
- * is the primary element's TYPE first (`text|button|shape|…`), never an
- * `ObjectRef` noun, so the kind gates in `available(ctx)` work. `ids` stays in
- * document order and `label` is the primary element's title.
+ * The context snapshot the shell reads. `selection.kinds` is the primary
+ * element's TYPE first (`text|button|shape|…`), so the kind gates in
+ * `available(ctx)` work. `ids` stays in document order and `label` is the
+ * primary element's title.
  */
-export function getWireframeContext(): ContextSnapshot {
+export function getWireframeContext(): WireframeContextSnapshot {
   const base = contextProvider === null ? null : contextProvider();
   return {
     appId: base?.appId ?? WIREFRAME_APP_TAG,
@@ -851,7 +764,7 @@ export function getWireframeContext(): ContextSnapshot {
   };
 }
 
-function publishSelection(current: WireframeEditorState): SelectionSnapshot {
+function publishSelection(current: WireframeEditorState): WireframeSelectionSnapshot {
   const byId = new Map(current.document.elements.map((element) => [element.id, element]));
   const selected = current.selectedIds
     .map((id) => byId.get(id))
@@ -915,47 +828,27 @@ function asWireframeDocument(value: unknown): WireframeDocument | null {
   return value as unknown as WireframeDocument;
 }
 
-/** `undefined` = absent, `null` = present but invalid, else the decoded ids. */
-function decodeSelection(value: unknown): readonly string[] | null | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || !value.every((id) => typeof id === 'string')) return null;
-  return value as readonly string[];
-}
-
 /**
- * Decode a journal patch into the app patch shape (or `null`). Accepts BOTH the
- * shipped whole-document checkpoint and the field-scoped delta (Spec #3120 round 2).
- */
-function asDocumentPatch(patch: JsonPatch | null): WireframeDocumentPatch | null {
-  if (patch === null || !isRecord(patch)) return null;
-  if (patch.delta !== undefined) {
-    const delta = patch.delta;
-    if (!isWireframeDocumentDelta(delta)) return null;
-    const selection = decodeSelection(patch.selection ?? delta.selection);
-    if (selection === null) return null;
-    return selection === undefined ? { delta } : { delta, selection };
-  }
-  const document = asWireframeDocument(patch.document);
-  if (document === null) return null;
-  const selection = decodeSelection(patch.selection);
-  if (selection === null) return null;
-  return selection === undefined ? { document } : { document, selection };
-}
-
-/**
- * Apply the document write + reconcile the selection (Spec #3119, R-5/R-6; delta
- * form added by Spec #3120 round 2). A delta applies against the CURRENT document;
- * the selection re-normalises through `documentOrder`, so ids the new document no
- * longer contains are dropped. This is the ONLY document write the host performs —
- * it never journaled and never throws (an invalid patch is a no-op).
+ * Apply the document write + reconcile the selection (Spec #3151, AC4). A delta
+ * applies against the CURRENT document and records exactly ONE app-local
+ * history entry (with the field-scoped inverse as `before`); a whole-document
+ * checkpoint is a non-undoable reset (New), so it records nothing. The
+ * selection re-normalises through `documentOrder`, so ids the new document no
+ * longer holds are dropped.
  */
 export function applyDocumentPatch(patch: WireframeDocumentPatch): void {
-  if (!writeDocumentPatch(patch)) return;
+  if (!writeDocumentPatch(patch, true)) return;
   notify();
 }
 
-/** Apply a patch to state WITHOUT notifying (used by undo/redo for one notify). */
-function writeDocumentPatch(patch: WireframeDocumentPatch): boolean {
+/**
+ * Apply a patch to state WITHOUT notifying — used by undo/redo for one notify.
+ *
+ * `record` distinguishes a caller-visible edit (`true`: push the app-local
+ * history entry) from the history's OWN application of `before`/`after`
+ * (`false`: never re-record, or undo would push a second entry forever).
+ */
+function writeDocumentPatch(patch: WireframeDocumentPatch, record: boolean): boolean {
   const document =
     'delta' in patch
       ? applyDocumentDelta(state.document, patch.delta)
@@ -963,10 +856,23 @@ function writeDocumentPatch(patch: WireframeDocumentPatch): boolean {
   if (document === null) return false;
   const selection =
     patch.selection ?? ('delta' in patch ? patch.delta.selection : undefined) ?? state.selectedIds;
+  const selectedIds = documentOrder(selection, document);
+  if (record && 'delta' in patch) {
+    // ONE entry per document write: `before` is the field-scoped inverse of the
+    // write that is about to land, `after` re-applies the caller's delta (with
+    // the reconciled selection so a redo restores the post-commit selection).
+    const { inverse } = diffDocument(state.document, document);
+    history.push({
+      verbId: patch.verbId ?? 'document.apply',
+      label: patch.label ?? 'Edit',
+      before: inverse,
+      after: { ...patch.delta, selection: [...selectedIds] },
+    });
+  }
   setState({
     ...state,
     document,
-    selectedIds: documentOrder(selection, document),
+    selectedIds,
     dirty: true,
   });
   return true;
@@ -1087,13 +993,13 @@ function reorderElements(
 }
 
 /**
- * Apply one document mutation through the compatibility funnel (Spec #3119,
- * ST-2). Unknown actions and missing targets are safe no-ops. Returns `true`
- * when exactly one journal entry was committed (R-2.7 / R-2.9).
+ * Apply one document mutation through the compatibility funnel (Spec #3151,
+ * ST-3). Unknown actions and missing targets are safe no-ops. Returns `true`
+ * when exactly one history entry was recorded (R-2.7 / R-2.9).
  *
- * The surface verbs (ST-3) call `reduceDocument` directly and let the navigation
- * funnel own their journal entry; this function is the shipped-regression-suite
- * seam and commits through the SAME journal, so `dispatch(...)` then `undo()`
+ * The surface verbs call `reduceDocument` directly and let the write seam own
+ * their history entry; this function is the shipped-regression-suite seam and
+ * records through the SAME app-local history, so `dispatch(...)` then `undo()`
  * works without a second stack.
  */
 export function dispatch(
@@ -1107,82 +1013,35 @@ export function dispatch(
 }
 
 /**
- * Reverse the newest not-yet-undone USER mutation through the shared journal
- * (Spec #3119, R-5). Applies the entry's inverse, appends exactly ONE `system`
- * entry (`Undo <label>`, deliberately non-undoable so it is never re-targeted)
- * and records the undone `seq` on the redo stack. The document + selection are
- * re-synced through the same patch seam the host uses.
+ * Reverse the newest not-yet-undone mutation through the app-local history
+ * (Spec #3151, AC4). Applies the entry's `before` delta through the SAME write
+ * seam the host uses; a stale/inapplicable delta steps the cursor back (so the
+ * entry is not silently lost) and is a safe no-op.
  */
 export function undo(): void {
-  const target = newestUndoableEntry();
-  if (target === null) return;
-  const inverse = asDocumentPatch(target.inverse);
-  if (inverse === null) return;
-  if (!writeDocumentPatch(inverse)) return;
-
-  // `before` = the state the entry installed; `after` = the restored state.
-  const beforeUndo: JsonPatch =
-    target.patch !== null ? target.patch.after : (target.inverse as JsonPatch);
-  const outcome = appendEntry(
-    { entries: navigationJournal.entries(), redo: navigationJournal.redo() },
-    {
-      verbId: target.verbId,
-      actor: 'system',
-      channel: 'system',
-      label: `Undo ${target.label}`,
-      effect: 'mutation',
-      placePath: getWireframeContext().placePath,
-      target: target.target,
-      patch: { before: beforeUndo, after: target.inverse as JsonPatch },
-      // A system undo entry is NOT undoable: `redo` restores the mutation, so an
-      // undo-of-undo must never become a second stack edge.
-      inverse: null,
-      consequence: 'An undone action is restored with redo.',
-      external: false,
-      exitedBy: 'none',
-      coalesceKey: null,
-    },
-    journalNow(),
-  );
-  navigationJournal.commit(outcome.state.entries, [
-    target.seq,
-    ...navigationJournal.redo().filter((seq) => seq !== target.seq),
-  ]);
-  refreshSnapshot();
+  const entry = history.undo();
+  if (entry === null) return;
+  if (!writeDocumentPatch({ delta: entry.before }, false)) {
+    // Not applicable against the CURRENT document — restore the cursor so the
+    // entry stays undoable (the shipped no-op semantics).
+    history.redo();
+    return;
+  }
   notify();
 }
 
 /**
- * Re-apply the OLDEST undone mutation (one step at a time) and drop its `seq`
- * from the redo stack. The redo stack is ascending, so the smallest seq is the
- * next chronological step — the retired LIFO redo ordering.
+ * Re-apply the oldest undone mutation (one step at a time) through the
+ * app-local history. The `after` delta carries the post-commit selection, so a
+ * redo restores the selection the edit installed.
  */
 export function redo(): void {
-  const redoSeqs = navigationJournal.redo();
-  if (redoSeqs.length === 0) return;
-  const seq = [...redoSeqs].sort((left, right) => left - right)[0];
-  const entries = navigationJournal.entries();
-  const target = entries.find((entry) => entry.seq === seq);
-
-  // A stale redo seq (its entry vanished) is dropped without touching state.
-  if (target === undefined || target.patch === null) {
-    navigationJournal.commit(
-      entries,
-      redoSeqs.filter((candidate) => candidate !== seq),
-    );
-    refreshSnapshot();
-    notify();
+  const entry = history.redo();
+  if (entry === null) return;
+  if (!writeDocumentPatch({ delta: entry.after }, false)) {
+    history.undo();
     return;
   }
-
-  const after = asDocumentPatch(target.patch.after);
-  if (after === null) return;
-  if (!writeDocumentPatch(after)) return;
-  navigationJournal.commit(
-    entries,
-    redoSeqs.filter((candidate) => candidate !== seq),
-  );
-  refreshSnapshot();
   notify();
 }
 
@@ -1294,8 +1153,8 @@ export function setError(error: string | null): void {
  */
 export function resetForNewDocument(preset: WireframePagePreset = 'desktop'): void {
   const document = createNewWireframeDocument(preset);
-  // History reset is NON-UNDOABLE: clear the ONE journal in place.
-  navigationJournal.commit([], []);
+  // History reset is NON-UNDOABLE: clear the ONE app-local history in place.
+  history.clear();
   setState({
     ...state,
     document,
@@ -1318,8 +1177,8 @@ export function resetForNewDocument(preset: WireframePagePreset = 'desktop'): vo
  * selection + history, fit the view, remember the path and mark it saved.
  */
 export function loadDocument(document: WireframeDocument, path: string): void {
-  // History reset is NON-UNDOABLE: clear the ONE journal in place.
-  navigationJournal.commit([], []);
+  // History reset is NON-UNDOABLE: clear the ONE app-local history in place.
+  history.clear();
   setState({
     ...state,
     document,
@@ -1362,12 +1221,12 @@ export function getCanvasStage(): CanvasStageLike | null {
   return canvasStage;
 }
 
-/** Test-only: wipe module state, the ONE journal, stage, provider and listeners. */
+/** Test-only: wipe module state, the ONE history, stage, provider and listeners. */
 export function resetWireframeStoreForTests(): void {
   listeners = new Set<Listener>();
   canvasStage = null;
   contextProvider = null;
-  navigationJournal.commit([], []);
+  history.clear();
   state = createInitialState();
   snapshot = createSnapshot(state);
 }

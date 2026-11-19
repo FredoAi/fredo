@@ -1,26 +1,26 @@
 /**
- * Spec #3122 (P8), ST-1 — the keyboard-only window traversal engine, relocated out of the
- * retired hotkey runtime into the window system (a DOM/window concern, not a hotkey table).
+ * Keyboard-only window traversal — relocated (Spec #3122 P8 ST-1) out of the retired hotkey
+ * runtime into the window system, and re-homed off the navigation engine by Spec #3151 ST-4.
  *
  * What it does (behaviour identical to the shipped module):
  *   - turns a keyboard raise into real focus movement,
  *   - adds the native `Tab`/`Shift+Tab` window-boundary hand-off so focus is never trapped
- *     inside one window (the ONE plain-Tab listener; the three modifier chords belong to
- *     `navigation/ui/globalKeys.ts`).
+ *     inside one window (the ONE plain-Tab listener; the three modifier chords are matched by
+ *     `./platformChords.ts`).
  *
- * What it deliberately DROPS (P8, ST-1):
- *   - the legacy hotkey REGISTRY edge (the traversal-action run overrides). The three
- *     modifier chords are now owned by the navigation layer; the window-system host verbs
- *     call `focusNextWindow()` / `focusPreviousWindow()` directly, so there is exactly ONE
- *     dispatch path and no registry round-trip.
- *   - the engine/hotkey types. The two action ids stay exported as plain navigation ids.
+ * What it deliberately does NOT do:
+ *   - no hotkey REGISTRY edge (the legacy traversal-action run overrides are gone). The three
+ *     modifier chords live in `./platformChords.ts` and call `focusNextWindow()` /
+ *     `focusPreviousWindow()` DIRECTLY, so there is exactly ONE dispatch path and no
+ *     registry round-trip.
+ *   - no engine/hotkey types. The two action ids below are plain string constants.
  *
  * Division of labour (do NOT re-implement either side):
  *   - `windowStore.focusWindow()` (window kernel contract, untouched) is the ONE raise/focus
  *     API. Traversal CALLS it; it never rewrites store semantics.
  *   - `Tab`/`Shift+Tab` stay native DOM order; traversal only intervenes AT a window boundary
  *     (last→next window first, first→previous window last). It ignores any modified Tab so
- *     the `primary+tab` chord stays the global dispatcher's.
+ *     the `primary+tab` chord stays the platform-chord matcher's.
  *
  * Focus placement: a keyboard raise places DOM focus on the window's first focusable control,
  * or its content region when it has none, and scrolls the target into view BEFORE focus lands
@@ -265,8 +265,8 @@ export function restoreTransientFocus(invoker: HTMLElement | null): HTMLElement 
 /**
  * Handle a plain `Tab`/`Shift+Tab` at a window boundary. Returns true when the event was
  * consumed (focus moved to the adjacent window); false leaves the native default untouched.
- * Modified tabs (Ctrl/Alt/Meta) are never intercepted — they belong to the navigation global
- * chord dispatcher's `primary+tab` binding.
+ * Modified tabs (Ctrl/Alt/Meta) are never intercepted — the `primary+tab` binding belongs to
+ * `./platformChords.ts`.
  */
 export function handleWindowBoundaryTab(event: KeyboardEvent): boolean {
   if (event.key !== 'Tab') return false;
@@ -318,8 +318,8 @@ let activeInstalls = 0;
 let tabListener: KeydownFn | null = null;
 
 /**
- * Install the ONE Tab-boundary listener. This is NOT the navigation chord dispatch listener
- * (the navigation layer owns that, exactly one per webview); it only inspects plain Tab
+ * Install the ONE Tab-boundary listener. This is NOT the platform-chord listener (that
+ * lives in `./platformChords.ts`, exactly one per webview); it only inspects plain Tab
  * events at a window boundary. Reference counted: the first install arms it, the last
  * uninstall releases it, so React StrictMode's double effect and multiple open windows are
  * both safe.

@@ -79,6 +79,33 @@
   - **Edge:** a *stale/never-existing* path is equally inert; an empty/whitespace value does not
     crash; the value survives `stop_llama_server` + `launch_llama_server`.
 
+- [ ] **F-27 (R-17.5, STATIC — the ARTIFACT payload; added by Spec #3158).** The engine ships as DLLs
+      **beside `fredo.exe` inside the installer**, not only as cargo build output. Read
+      `apps/tauri/src-tauri/tauri.conf.json`'s `bundle.resources`; then run the committed artifact
+      gate through the wrapper:
+      `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer '<the produced 0.2.0 NSIS setup.exe>'"`;
+      then enumerate the extracted install root with
+      `powershell -File .opencode/scripts/run-exitcode.ps1 -Command "Get-ChildItem -LiteralPath '<extracted root>' -File"`.
+  - **Expected:** `bundle.resources` is exactly `{"engine-payload/": ""}` (a **map**, destination the
+    empty string, **no `*`**) while `bundle.externalBin` **stays `[]`** — F-2's assertion above is
+    retained **byte-identical** and is unaffected, because resources are not sidecar binaries. The
+    gate prints `ARTIFACT=<path> sha256=<hex> bytes=<n>`, one `PAYLOAD_PRESENT=<name>` line for
+    **each of the 8 core payload names** (`ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`,
+    `ggml-vulkan.dll`, `llama.dll`, `llama-common.dll`, `mtmd.dll`, `vulkan-1.dll`), `RESULT=PASS`
+    and `EXITCODE=0`. The install-root listing shows those 8 files **plus `fredo.exe`** (and
+    `uninstall.exe` on a silent-install route), every one with a non-zero `Length`;
+    `ggml-cuda.dll` and `fredo_lib.dll` are **ABSENT**.
+  - **Where the rest of it lives:** the complete artifact verification is the durable suite
+    `.opencode/tests/companion-artifact-payload/` — run its `functional.md` **F-1..F-28**
+    (`A1-0`..`E-5`), `regression.md` **R-1..R-7**, `smoke.md` **S-1..S-7**, `exploratory.md`
+    **E-1..E-10**. This row is the embedded-engine suite's pointer to it, not a replacement.
+  - **Edge:** `bundle.resources` as a **glob** (`engine-payload/*`) ⇒ **FAIL** (`GlobPathNotFound`
+    on a pristine/shared-target tree, `tauri-utils` `resources.rs:234-245`). `externalBin` changed to
+    carry the DLLs ⇒ **FAIL** — that would invert F-2; the payload is resources, never sidecars. A
+    payload file with `Length == 0` ⇒ **FAIL**. No installer obtainable this round ⇒ **NOT RUN** with
+    the named blocker (producer = local build, else a `workflow_dispatch` run of `release.yml` —
+    **never** a build log), not a FAIL.
+
 ## R-18 — the pinned model set is byte-identical
 
 - [ ] **F-4 (R-18.1/R-18.2, STATIC + LIVE).** Read `infrastructure/companion/models.rs`'s

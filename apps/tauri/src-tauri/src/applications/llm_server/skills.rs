@@ -759,14 +759,11 @@ mod settle_tests {
 /// Stream one skill-aware generation: content deltas → `llm-token`; tool calls
 /// buffered; at the finish the selection is validated and routed.
 async fn run_skill_chat(app: &AppHandle, messages: Vec<LlmMessage>) -> Result<(), String> {
-    // Spec #3070 ST-7: the Wireframe skill is offered additively — the three
-    // static skills, then one generated skill per published surface (Spec #3099
-    // ST-4). The three static declarations and their behaviour are unchanged.
-    //
     // Spec #3073 ST-2 (R-2): the registry SOURCE is the ONE shared accessor, so
     // this second same-content construction site can never drift from the live
-    // companion offer. The content/order is unchanged.
-    let registry = super::status::companion_skill_registry(app);
+    // companion offer. The offer is the shipped static three and nothing
+    // generated (Spec #3152).
+    let registry = super::status::companion_skill_registry();
     let turn = skill_turn(messages, &registry, None, None);
     run_skill_stream(app, &registry, turn).await
 }

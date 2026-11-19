@@ -31,11 +31,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
-// Spec #3122 ST-2 — the Ctrl+Space chord is owned by the ONE navigation chord
-// dispatcher installed by `NavigationProvider` (mounted in `main.tsx`). The shell
-// adds no `document` keydown listener, so these wiring tests mount the provider
-// with the shell (assertions unchanged — only the listener's owner moved).
-import { NavigationProvider } from '@/shared/navigation/ui';
+// #3151 ST-4/ST-6 — the Ctrl+Space chord is owned by the ONE platform-chord
+// listener (`PlatformChordHost`, mounted in `main.tsx`), which calls the
+// launcher-toggle seam the shell registers. The shell adds no `document` keydown
+// listener, so these wiring tests mount the host with the shell (assertions
+// unchanged — only the listener's owner moved).
+import { PlatformChordHost } from '@/shared/window-system/PlatformChordHost';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import type { FredoApplicationClass } from '@/shared/classes/FredoApplicationClass';
 import { HEARING_NOTHING_COPY, HEARING_NOTHING_MS } from '../LauncherCommandBar';
@@ -288,9 +289,9 @@ describe('deriveHoldCue — the honest cue (#2887 ST-7, R-3/AC3; #2914 ST-9)', (
 describe('LauncherShell — Ctrl+Space / Escape / capture wiring', () => {
   const renderShell = (onOpenFeature = vi.fn()) => {
     renderWithChakra(
-      <NavigationProvider>
+      <PlatformChordHost>
         <LauncherShell showableFeatures={[]} onOpenFeature={onOpenFeature} />
-      </NavigationProvider>,
+      </PlatformChordHost>,
     );
     return onOpenFeature;
   };

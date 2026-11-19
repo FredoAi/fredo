@@ -16,15 +16,17 @@
  * remains unit-testable in isolation.
  *
  * #3120 ST-3 — the companion grounding seam also lives here: `CompanionAskOptions`
- * carries the launcher's current `ContextEnvelope` into a turn, and
+ * carries the app's current grounding into a turn, and
  * `buildCompanionTurnMessages` is the ONE pure place that decides whether exactly
- * one grounding `system` message is prepended. `CAPABILITY_LIMITS` is a frozen
- * value import from the navigation leaf types module (no React, no DOM) and the
- * `LlmMessage`/`ContextEnvelope` imports are type-only, so the module stays pure.
+ * one grounding `system` message is prepended. #3151 ST-2 re-homed the cap + the
+ * payload type to `shared/companion/grounding.ts` (the navigation engine is being
+ * deleted): `COMPANION_CAPABILITY_LIMITS` is a frozen value import from that
+ * engine-free module and `CompanionGrounding`/`LlmMessage` are type-only imports,
+ * so the module stays pure.
  */
 import type { CompanionSendDisposition } from '../../contexts/CompanionContext';
-import { CAPABILITY_LIMITS } from '../../navigation/types';
-import type { ContextEnvelope } from '../../navigation/types';
+import { COMPANION_CAPABILITY_LIMITS } from '../../companion/grounding';
+import type { CompanionGrounding } from '../../companion/grounding';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
 
 /** What actually happened to a send. `rejected` is the ONLY non-accepting outcome. */
@@ -39,24 +41,24 @@ export interface CompanionSendResult {
 }
 
 /**
- * #3120 ST-3 — the optional grounding payload of a companion ask. The launcher
- * hands the focused app's current envelope so a plain query is grounded without
+ * #3120 ST-3 — the optional grounding payload of a companion ask. The composer
+ * hands the target app's current grounding so a plain query is grounded without
  * a transcript or any new prompt architecture. It is TURN-SCOPED: never persisted,
  * never stored as history, and only carried across a FIFO wait.
  */
 export interface CompanionAskOptions {
-  readonly context?: ContextEnvelope;
+  readonly context?: CompanionGrounding;
 }
 
 export interface QueuedCompanionSend {
   readonly id: string;
   readonly text: string;
   /**
-   * #3120 ST-3 — the queued turn's grounding envelope. ABSENT KEY when the send
-   * carried no context (never an explicit `undefined`), so the drained turn builds
-   * the byte-identical legacy message pair.
+   * #3120 ST-3 — the queued turn's grounding. ABSENT KEY when the send carried no
+   * context (never an explicit `undefined`), so the drained turn builds the
+   * byte-identical legacy message pair.
    */
-  readonly context?: ContextEnvelope;
+  readonly context?: CompanionGrounding;
 }
 
 export interface CompanionSendQueue {
@@ -127,9 +129,9 @@ export function resolveSendOutcome(
 
 /**
  * #3120 ST-3 — the UTF-8 byte length of a string (the unit
- * `CAPABILITY_LIMITS.maxContextBytes` is expressed in). A surrogate pair counts
- * as ONE four-byte code point, never two three-byte units. Mirrors
- * `envelopeByteLength`'s counting without importing the envelope builder.
+ * `COMPANION_CAPABILITY_LIMITS.maxContextBytes` is expressed in). A surrogate pair
+ * counts as ONE four-byte code point, never two three-byte units. Mirrors
+ * the retired envelope builder's counting without importing it.
  */
 function utf8ByteLength(value: string): number {
   let bytes = 0;
@@ -155,16 +157,16 @@ function utf8ByteLength(value: string): number {
  *   no `context` supplied            → `null` (legacy message array, untouched)
  *   `JSON.stringify(context)` fits    → the exact JSON string
  *   larger than `maxContextBytes`     → `null` (never send an over-cap or a
- *                                       truncated — therefore unparseable — envelope)
+ *                                       truncated — therefore unparseable — payload)
  *
- * The envelope builder already caps its output; this is the seam's defensive
- * guarantee that the message actually handed to the model is bounded too.
+ * The app's grounding projection is expected to stay small; this is the seam's
+ * defensive guarantee that the message actually handed to the model is bounded too.
  */
 export function companionGroundingContent(options?: CompanionAskOptions): string | null {
   const context = options?.context;
   if (context === undefined) return null;
   const json = JSON.stringify(context);
-  if (utf8ByteLength(json) > CAPABILITY_LIMITS.maxContextBytes) return null;
+  if (utf8ByteLength(json) > COMPANION_CAPABILITY_LIMITS.maxContextBytes) return null;
   return json;
 }
 
