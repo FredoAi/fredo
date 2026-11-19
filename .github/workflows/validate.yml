@@ -144,7 +144,13 @@ jobs:
   rust-validate:
     needs: paths
     if: needs.paths.outputs.rust == 'true'
-    runs-on: windows-latest
+    # Pinned to windows-2022 (VS 2022 / MSVC 14.4x). `windows-latest` now ships
+    # VS 18 (MSVC 14.5x), whose STL asserts "expected Clang 22 or newer" during
+    # `llama-cpp-sys-4`'s bindgen step, so `cargo check` dies in a third-party
+    # header before any Fredo code compiles. The pin keeps the native toolchain
+    # the engine actually builds against; it is a toolchain choice, not a
+    # relaxation of any check.
+    runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -188,6 +194,15 @@ jobs:
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true
+          # The SDK alone does not give us a loadable `vulkan-1.dll` on a
+          # Windows Server runner (the loader is not in `Bin` and the Server
+          # image does not carry it in System32). `ggml-vulkan.dll` imports it
+          # at LOAD time, so nextest cannot enumerate a single test binary
+          # without it. `install_runtime` is the action's own supported switch
+          # for exactly this (it installs the runtime / `vulkan-1.dll`); the
+          # discovery step below still searches every candidate and fails loud
+          # if the loader is absent.
+          install_runtime: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest
