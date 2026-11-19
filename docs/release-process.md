@@ -55,20 +55,26 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
     explicit owner re-run, not a second automatic trigger.)
 - **Permissions:** `permissions: contents: write` at the **workflow level** — the `GITHUB_TOKEN`
   needs write to create/publish the Release object and upload artifacts.
-- **Build matrix (Windows x64 only — single `windows-latest` leg):** `windows-latest` (x64), with no
-  `--target` arg. `fail-fast: false`.
+- **Build matrix (Windows x64 only — single `windows-2022` leg):** `windows-2022` (x64), with no
+  `--target` arg. `fail-fast: false`. The leg is **pinned** (`windows-latest` is not used): the
+  current `windows-latest` image ships VS 18 / MSVC 14.52, whose STL hard-asserts *"expected Clang
+  22 or newer"* inside `llama-cpp-sys-4`'s bindgen step, so the engine would not compile.
 - **Steps:** checkout → pnpm/action-setup → setup-node 20 with pnpm cache (the pnpm setup MUST
   precede setup-node, which resolves the `pnpm` binary for its cache) → `oven-sh/setup-bun`
   (builds the OpenCode plugin via `beforeBuildCommand`) → dtolnay/rust-toolchain stable →
-  Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `pnpm install --frozen-lockfile`
-  → read `version` from `tauri.conf.json` → `tauri-apps/tauri-action@v1` (**build only**) →
-  locate the produced `*-setup.exe` → `verify-installer-payload.ps1` (**payload gate**) →
-  `gh release create … --draft` (the only publish step) → draft cleanup.
+  Swatinem/rust-cache (`workspaces: apps/tauri/src-tauri`) → `jakoch/install-vulkan-sdk-action`
+  (LunarG Vulkan SDK, **`cache: false` + `install_runtime: true`**) → `pnpm install
+  --frozen-lockfile` → read `version` from `tauri.conf.json` → `tauri-apps/tauri-action@v1`
+  (**build only**) → locate the produced `*-setup.exe` → `verify-installer-payload.ps1`
+  (**payload gate**) → `gh release create … --draft` (the only publish step) → draft cleanup.
+  `cache: false` is load-bearing: the action's SDK cache holds the SDK tree only, so on a cache
+  hit it skips the install path entirely and `install_runtime` never runs — leaving no
+  `vulkan-1.dll` for the staged payload.
 - **`tauri-action` inputs:** only `projectPath: apps/tauri/src-tauri` (the Tauri project is **not**
   at the repo root) and `args: ${{ matrix.args }}`. The action carries **no** `tagName`,
   `releaseName`, `releaseBody`, `releaseDraft` or `releaseId`, so it makes no release API call and
   publishes nothing.
-- **The tag** is `app-v<version>` (`<version>` is read from `tauri.conf.json` = `0.2.0`) and is
+- **The tag** is `app-v<version>` (`<version>` is read from `tauri.conf.json` = `0.2.1`) and is
   applied by the draft step, not by the action: `gh release create "app-v<version>" <installer>
   --draft --title "Fredo v<version>" --notes "<fixed template>"`, gated `if: success()` **after**
   the payload gate.
@@ -107,7 +113,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
 
 ### 4. `apps/tauri/src-tauri/tauri.conf.json` — bundle config consumed by the release build
 
-- `productName: "Fredo"`, `version: "0.2.0"` (read by the workflow and injected into the
+- `productName: "Fredo"`, `version: "0.2.1"` (read by the workflow and injected into the
   `app-v<version>` tag/title), `identifier: "com.fredo.app"`.
 - `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`.
 - **Engine payload (Spec #3158).** `bundle.resources` is exactly `{"engine-payload/": ""}` (a map
@@ -264,7 +270,7 @@ or publishes.**
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
    runs the Windows-only matrix, builds the Windows installer, locates the produced `*-setup.exe`,
    and runs `verify-installer-payload.ps1` on it. Only after that gate passes does the draft step
-   `gh release create app-v0.2.0 <installer> --draft` upload it to a **DRAFT** GitHub Release at the
+   `gh release create app-v0.2.1 <installer> --draft` upload it to a **DRAFT** GitHub Release at the
    branch tip.
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
@@ -272,7 +278,7 @@ or publishes.**
 
 > **Reproducibility note:** every artifact is built from the `release/stable` tip with a fixed ref,
 > `pnpm install --frozen-lockfile`, the committed `Cargo.lock`, and SHA-pinned actions — so a given
-> tip always yields the same build. The bundle `version` (`0.2.0`) is read from
+> tip always yields the same build. The bundle `version` (`0.2.1`) is read from
 > `tauri.conf.json` at build time and injected into the release tag/name.
 
 ---
