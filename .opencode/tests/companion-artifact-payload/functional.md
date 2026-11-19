@@ -589,6 +589,38 @@ universe — its load proof is AC4 (F-39), and no row here asserts on its own im
     `PROBE_SUCCESS=false` with `modelMissing` / `mmprojInitFailed` / `mtpInitFailed`, record the
     **precondition blocker** (E-2), never a product FAIL.
 
+- [ ] **F-40 (R-3.3, the negative leg is driven at the gate's layer and the build aborts before
+      packaging).** Copy the 14 release DLLs to `.opencode/tmp/3172/ac3-poison-tree/` with one tmp
+      script (never write `target/release`), then:
+      (a) `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -Profile release -SourceDir '.opencode\tmp\3172\ac3-poison-tree' -OutDir '.opencode\tmp\3172\ac3-pos'")`;
+      (b) `RC("powershell -NoProfile -File .opencode/scripts/new-synthetic-pe.ps1 -Path '.opencode\tmp\3172\ac3-poison-tree\llama-common.dll' -Imports libssl-3-x64.dll")`
+      then the same staging call with `-OutDir '.opencode\tmp\3172\ac3-neg'`;
+      (c) the same tmp script writes `.opencode/tmp/3172/ac3-config.json` (`ConvertTo-Json`, exactly
+      one key: `build.beforeBundleCommand` = the `tauri.conf.json:9` value read at run time, verbatim,
+      plus one `-SourceDir "<abs repo>\.opencode\tmp\3172\ac3-poison-tree"` argument) and runs
+      `apps\tauri\node_modules\.bin\tauri.cmd build --config <abs json> --bundles nsis` from
+      `apps\tauri` — the F-1b(2) recipe; the same binary `pnpm build:tauri` reaches
+      (`package.json:10` → `apps/tauri/package.json:9`).
+  - **Expected:** (a) `RESULT=PASS`, `PAYLOAD_COUNT=14`, exactly 14 `PAYLOAD_IMPORT_SCAN=` lines, zero
+    `PAYLOAD_FORBIDDEN_IMPORT=`, `EXITCODE=0`. (b) `PAYLOAD_IMPORT_SCAN=llama-common.dll imports=1
+    delay=0`; `PAYLOAD_FORBIDDEN_IMPORT=libssl-3-x64.dll imported_by=llama-common.dll kind=import`;
+    `ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=llama-common.dll module=libssl-3-x64.dll kind=import`;
+    `RESULT=FAIL`; `EXITCODE=1`; no `PAYLOAD_COUNT=` and no `RESULT=PASS`; both
+    `.opencode/tmp/3172/ac3-pos` and `apps\tauri\src-tauri\engine-payload` byte-identical to the
+    pre-leg snapshot. (c) build exit non-zero with the same three literals in its log;
+    `NEW_INSTALLER_FILES=0`; the shipped `Fredo_0.2.2_x64-setup.exe` (`e934d504…780f` / `18839725 B`)
+    unchanged; `ARTIFACT_OF_RECORD_UNCHANGED=True`; `target/release/llama-common.dll` still the real
+    DLL (`bytes=9380864`). The receipt states which layer supplies "no installer": (b) the gate aborts
+    before any write to the bundle input (`stage-engine-payload.ps1:490-505` returns before the swap at
+    `:507-573`); (c) the build terminates at the hook, so the NSIS step never runs.
+  - **Edge:** poisoning `target/release` and rebuilding is **NOT** a valid drive — `cargo build`
+    unlinks and re-links every engine DLL from the `llcb` cache
+    (`llama-cpp-sys-4-0.11.0/build.rs:3429-3460`). An overlay carrying any key or argument beyond the
+    one `-SourceDir` ⇒ **FAIL** (gate relaxation). A new installer appearing ⇒ **FAIL** (G-446); the
+    pre-leg `bundle/nsis` listing is restored in `finally`. A `--config` override used as the
+    *producer* stays REJECTED evidence (F-1b). No `PAYLOAD_VULKAN_LOADER=… status=found` line ⇒
+    precondition blocker (`stage-engine-payload.ps1:390-399`), never a poison PASS.
+
 _Evidence convention: pass cases keep `- [x]` and append the recorded transcript/JSON tokens plus the
 `EXITCODE=` value; fail cases leave `- [ ]` and mark `FAIL` with expected-vs-actual + repro. Rows whose
 precondition is absent (no installer, no models, no extractor, no elevation, no GPU for F-8) are
