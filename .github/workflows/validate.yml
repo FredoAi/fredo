@@ -193,15 +193,20 @@ jobs:
       # cost of this leg and of every local build.
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
-          cache: true
+          # `cache: false` is load-bearing, not an oversight. The action's SDK
+          # cache holds the SDK tree only; on a cache hit it skips the install
+          # path entirely, so `install_runtime` never runs and `vulkan-1.dll`
+          # is absent from every candidate directory (observed: the cached
+          # 1.4.363.1 tree had no `runtime\` folder at all). The SDK install is
+          # cheap next to the native engine build, so correctness wins here.
+          cache: false
           # The SDK alone does not give us a loadable `vulkan-1.dll` on a
           # Windows Server runner (the loader is not in `Bin` and the Server
           # image does not carry it in System32). `ggml-vulkan.dll` imports it
           # at LOAD time, so nextest cannot enumerate a single test binary
-          # without it. `install_runtime` is the action's own supported switch
-          # for exactly this (it installs the runtime / `vulkan-1.dll`); the
-          # discovery step below still searches every candidate and fails loud
-          # if the loader is absent.
+          # without it. `install_runtime` copies it into
+          # `<VULKAN_SDK>\runtime\{x64,x86}`, which is the first candidate the
+          # discovery step below probes; that step still fails loud if absent.
           install_runtime: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
