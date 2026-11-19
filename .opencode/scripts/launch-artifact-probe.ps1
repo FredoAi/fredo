@@ -24,6 +24,23 @@
     * Exits non-zero on a crash, an open port under -RequireClosed, the bridge
       log line under -RequireClosed, or leftover orphans.
 
+  AC4 instrument extensions (Spec #3172 ST-5; the base launch contract above is
+  unchanged):
+    * -SanitizePath sets PATH for the launched process and every child probe to
+      `C:\Windows\System32;C:\Windows` and prints `PATH_SANITISED=`.
+    * Whenever a CLI leg below runs, its child process also runs with that
+      sanitised PATH (Windows resolves a DLL import from the EXE's own directory
+      first, so the install-dir payload is the only non-system source).
+    * -CompanionProbe runs `<exe> companion probe` from the exe's directory and
+      prints `PROBE_EXIT=`, `PROBE_SUCCESS=` and `PROBE_JSON=` (one line).
+    * -RemoveDll copies the exe's directory to a temp dir under
+      `.opencode/tmp/3172/`, deletes the named DLL FROM THE COPY ONLY, runs
+      `<copy>\<exe> --version` with cwd = the copy, and prints
+      `CONTROL_REMOVED_DLL=`, `CONTROL_EXIT=` and `CONTROL_EXPECTED_EXIT=`. The
+      original tree is never touched.
+    * The `--version` leg prints `VERSION_EXIT=` and `VERSION_STDOUT=` (first
+      stdout line).
+
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
 
   Exit codes:
@@ -59,11 +76,31 @@
   Directory for the captured stdout/stderr. Default:
   `.opencode/tmp/launch-artifact-probe/<timestamp>-<id>`.
 
+.PARAMETER SanitizePath
+  Set PATH for the launched process (and every child probe) to
+  `C:\Windows\System32;C:\Windows`, and print `PATH_SANITISED=`. Needed for an
+  AC4 receipt: a developer PATH exposes the Cargo target / Vulkan SDK, so a
+  success there is not attributable to the install-dir payload.
+
+.PARAMETER CompanionProbe
+  After the launch observation, run `<exe> companion probe` with the working
+  directory set to the exe's directory and print `PROBE_EXIT=`,
+  `PROBE_SUCCESS=` and `PROBE_JSON=`.
+
+.PARAMETER RemoveDll
+  Name of a payload DLL (e.g. `llama-common.dll`) to delete from a COPY of the
+  exe's directory, then run `<copy>\<exe> --version` and assert the loader exit
+  `-1073741515` (`0xC0000135`; the unsigned form `3221225781` is accepted).
+  The copy lives under `.opencode/tmp/3172/`; the original tree is never touched.
+
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe apps\tauri\src-tauri\target\release\fredo.exe -Ports 16932,9223 -RequireClosed
 
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe .\fredo.exe -Ports 16932 -McpPort 16932 -WaitSecs 20 -DataDir .opencode\tmp\probe-data
+
+.EXAMPLE
+  powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe C:\install\fredo.exe -Ports 16932 -SanitizePath -CompanionProbe -RemoveDll llama-common.dll
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Exe,
@@ -72,10 +109,17 @@ param(
   [switch]$RequireClosed,
   [int]$WaitSecs = 40,
   [string]$DataDir = '',
-  [string]$LogDir = ''
+  [string]$LogDir = '',
+  [switch]$SanitizePath,
+  [switch]$CompanionProbe,
+  [string]$RemoveDll = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The AC4 sanitised PATH: only the Windows system dirs, so the install-dir
+# payload beside the exe is the only non-system DLL source.
+$sanitizedPath = 'C:\Windows\System32;C:\Windows'
 
 function Write-Probe {
   param([string]$Line)
@@ -130,6 +174,14 @@ if ($McpPort -lt 1 -or $McpPort -gt 65535) {
   Write-Probe "ERROR: -McpPort out of range: $McpPort"
   Write-Probe 'RESULT=REFUSED'
   exit 2
+}
+
+if (-not [string]::IsNullOrWhiteSpace($RemoveDll)) {
+  if ($RemoveDll.Contains('\') -or $RemoveDll.Contains('/') -or $RemoveDll -eq '.' -or $RemoveDll -eq '..') {
+    Write-Probe "ERROR: -RemoveDll must be a bare DLL file name (got '$RemoveDll')."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
 }
 
 # ---- Log directory ------------------------------------------------------------
@@ -229,6 +281,39 @@ function Read-LogHits {
   return @{ Hits = $total; Complete = $complete }
 }
 
+# Run a CLI child to completion with redirected stdio and return its exit code
+# (null when the launch itself failed). Start-Process is used because a release
+# build is a windows-subsystem binary: its stdout is only reachable through
+# redirected handles, never through the console.
+function Invoke-ArtifactCli {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList,
+    [string]$WorkingDirectory,
+    [string]$StdOutPath,
+    [string]$StdErrPath
+  )
+  try {
+    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -PassThru -Wait -NoNewWindow -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
+    return [int]$proc.ExitCode
+  } catch {
+    Write-Probe "ERROR: child launch failed ${FilePath}: $($_.Exception.Message)"
+    return $null
+  }
+}
+
+function Get-FirstOutputLine {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return '' }
+  try {
+    $lines = @(Get-Content -LiteralPath $Path -TotalCount 1)
+  } catch {
+    return ''
+  }
+  if ($lines.Count -eq 0) { return '' }
+  return ([string]$lines[0]).Trim()
+}
+
 # ---- Preconditions: no stale listener may be attributed to this launch -------
 foreach ($port in $probePorts) {
   $open = Test-TcpPortOpen -Port $port
@@ -250,6 +335,12 @@ Write-Probe "WAIT_SECONDS=$WaitSecs"
 
 # ---- Environment --------------------------------------------------------------
 $env:FREDO_MCP_BASE_PORT = "$McpPort"
+if ($SanitizePath) {
+  # Applied BEFORE the launch so Start-Process inherits it; the child CLI legs
+  # below inherit it too.
+  $env:PATH = $sanitizedPath
+  Write-Probe "PATH_SANITISED=$sanitizedPath"
+}
 if (-not [string]::IsNullOrWhiteSpace($DataDir)) {
   $resolvedDataDir = [System.IO.Path]::GetFullPath($DataDir)
   try {
@@ -414,6 +505,112 @@ if ($appAlive) { $orphans++ }
 $failures = New-Object System.Collections.ArrayList
 if ($null -ne $launchError) { [void]$failures.Add("probe-error: $launchError") }
 if ($appExited) { [void]$failures.Add('app-exited') }
+
+# ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
+$runCliLegs = $SanitizePath -or $CompanionProbe -or (-not [string]::IsNullOrWhiteSpace($RemoveDll))
+if ($runCliLegs) {
+  # Every child probe runs with the sanitised PATH: a developer PATH exposes the
+  # Cargo target dir / Vulkan SDK, which is exactly the false pass AC4 rejects.
+  $env:PATH = $sanitizedPath
+  $exeDir = Split-Path -Parent $exePath
+  $exeLeaf = Split-Path -Leaf $exePath
+
+  # 1) --version leg (R-4.1).
+  $versionOut = Join-Path $LogDir 'version-stdout.log'
+  $versionErr = Join-Path $LogDir 'version-stderr.log'
+  $versionExit = Invoke-ArtifactCli -FilePath $exePath -ArgumentList @('--version') -WorkingDirectory $exeDir -StdOutPath $versionOut -StdErrPath $versionErr
+  $versionStdout = Get-FirstOutputLine -Path $versionOut
+  $versionExitText = if ($null -ne $versionExit) { [string]$versionExit } else { 'error' }
+  Write-Probe "VERSION_EXIT=$versionExitText"
+  Write-Probe "VERSION_STDOUT=$versionStdout"
+  if ($null -eq $versionExit -or $versionExit -ne 0) {
+    [void]$failures.Add("version-exit:$versionExitText")
+  }
+
+  # 2) companion probe leg (R-4.2): cwd = the exe's directory so the sibling
+  #    payload DLLs resolve.
+  if ($CompanionProbe) {
+    $probeOut = Join-Path $LogDir 'companion-probe-stdout.log'
+    $probeErr = Join-Path $LogDir 'companion-probe-stderr.log'
+    $probeExit = Invoke-ArtifactCli -FilePath $exePath -ArgumentList @('companion', 'probe') -WorkingDirectory $exeDir -StdOutPath $probeOut -StdErrPath $probeErr
+    $probeJson = ''
+    if (Test-Path -LiteralPath $probeOut) {
+      try {
+        foreach ($line in @(Get-Content -LiteralPath $probeOut)) {
+          $trimmed = ([string]$line).Trim()
+          if ($trimmed.StartsWith('{')) { $probeJson = $trimmed; break }
+        }
+      } catch {
+        $probeJson = ''
+      }
+    }
+    $probeSuccess = $false
+    if (-not [string]::IsNullOrWhiteSpace($probeJson)) {
+      try {
+        $probeReport = $probeJson | ConvertFrom-Json
+        if ($null -ne $probeReport.PSObject.Properties['success']) {
+          $probeSuccess = [bool]$probeReport.success
+        }
+      } catch {
+        $probeSuccess = $false
+      }
+    }
+    $probeExitText = if ($null -ne $probeExit) { [string]$probeExit } else { 'error' }
+    $probeSuccessText = if ($probeSuccess) { 'true' } else { 'false' }
+    Write-Probe "PROBE_EXIT=$probeExitText"
+    Write-Probe "PROBE_SUCCESS=$probeSuccessText"
+    Write-Probe "PROBE_JSON=$probeJson"
+    if ($null -eq $probeExit -or $probeExit -ne 0) {
+      [void]$failures.Add("probe-exit:$probeExitText")
+    }
+    if (-not $probeSuccess) {
+      [void]$failures.Add('probe-success-false')
+    }
+  }
+
+  # 3) remove-one-DLL loader control (R-4.3). The copy is the ONLY thing
+  #    mutated; the install tree under test is never touched.
+  if (-not [string]::IsNullOrWhiteSpace($RemoveDll)) {
+    $controlExpectedExit = -1073741515
+    $copyRoot = Join-Path $repoRoot (".opencode\tmp\3172\control-copy-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    $controlExit = $null
+    $dllRemoved = $false
+    try {
+      New-Item -ItemType Directory -Path $copyRoot -Force | Out-Null
+      Copy-Item -Path (Join-Path $exeDir '*') -Destination $copyRoot -Recurse -Force -ErrorAction Stop
+      $copyExe = Join-Path $copyRoot $exeLeaf
+      $copyDll = Join-Path $copyRoot $RemoveDll
+      if (Test-Path -LiteralPath $copyDll) {
+        Remove-Item -LiteralPath $copyDll -Force -ErrorAction Stop
+        $dllRemoved = $true
+      }
+      $controlOut = Join-Path $LogDir 'control-stdout.log'
+      $controlErr = Join-Path $LogDir 'control-stderr.log'
+      $controlExit = Invoke-ArtifactCli -FilePath $copyExe -ArgumentList @('--version') -WorkingDirectory $copyRoot -StdOutPath $controlOut -StdErrPath $controlErr
+    } catch {
+      Write-Probe "ERROR: remove-one-DLL control failed: $($_.Exception.Message)"
+    } finally {
+      try { Remove-Item -LiteralPath $copyRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    $controlExitText = if ($null -ne $controlExit) { [string]$controlExit } else { 'error' }
+    Write-Probe "CONTROL_REMOVED_DLL=$RemoveDll"
+    Write-Probe "CONTROL_EXIT=$controlExitText"
+    Write-Probe "CONTROL_EXPECTED_EXIT=$controlExpectedExit"
+    if (-not $dllRemoved) {
+      [void]$failures.Add("control-dll-missing:$RemoveDll")
+    }
+    $controlMatched = $false
+    if ($null -ne $controlExit) {
+      $observedUnsigned = [int64]$controlExit
+      if ($observedUnsigned -lt 0) { $observedUnsigned += 4294967296 }
+      if ($observedUnsigned -eq 3221225781) { $controlMatched = $true }
+    }
+    if (-not $controlMatched) {
+      [void]$failures.Add("control-exit:$controlExitText")
+    }
+  }
+}
+
 if ($RequireClosed) {
   foreach ($port in $probePorts) {
     if ($portState[$port]) { [void]$failures.Add("port-open:$port") }
