@@ -57,11 +57,13 @@ jobs:
       # SHA-pinned (NFR-2).
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
-          cache: true
-          # Same reason as the validation leg: the Server image does not carry
-          # a loadable `vulkan-1.dll`, and the staging script copies the loader
-          # into the payload. Without it `ggml-vulkan.dll` cannot load and the
-          # produced installer would ship a payload that fails at launch.
+          # Same reason as the validation leg: a cache hit skips the install
+          # path, so `install_runtime` never runs and there is no loader to put
+          # in the payload. The Server image does not carry a loadable
+          # `vulkan-1.dll`, and the staging script copies the loader into the
+          # payload — without it `ggml-vulkan.dll` cannot load and the produced
+          # installer ships a payload that fails at launch.
+          cache: false
           install_runtime: true
       - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1 (resolved SHA)
