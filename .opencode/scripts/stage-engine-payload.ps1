@@ -27,11 +27,17 @@
        never globbed. The manifest's explicit-exclusion list (a CUDA backend
        module the current Vulkan-only feature set does not build, and Fredo's
        own cdylib) is never staged even when present.
-    4. Parses each root DLL's PE import directory, resolves every non-system
-       import by bare file name against the staged set, and reports each
-       unresolved edge (PAYLOAD_IMPORT_MISS / ERROR=PAYLOAD_IMPORT_UNRESOLVED).
-       System imports (kernel32/advapi32/msvcp*/vcruntime*/api-ms-win-*/...)
-       are allowlisted by prefix.
+    4. Parses the PE import directory (DataDirectory[1]) AND the delay-import
+       directory (DataDirectory[13]) of EVERY staged DLL - there is no
+       hand-picked root subset: the manifest's importClosure.roots must be the
+       literal "all-staged". Every non-system, non-staged import is reported
+       (PAYLOAD_IMPORT_MISS / ERROR=PAYLOAD_IMPORT_UNRESOLVED); every import
+       whose module name matches a manifest forbiddenImportPrefixes entry is
+       reported (PAYLOAD_FORBIDDEN_IMPORT / ERROR=PAYLOAD_FORBIDDEN_IMPORT).
+       An unparsable table is a parse failure (PAYLOAD_IMPORT_PARSE_FAIL plus
+       ERROR=PAYLOAD_IMPORT_UNRESOLVED kind=parse). System imports
+       (kernel32/advapi32/msvcp*/vcruntime*/api-ms-win-*/...) are allowlisted
+       by prefix. The PE reader lives in the shared pe-imports.psm1.
     5. Stages into a sibling temp directory and only then renames it into
        -OutDir, removing the previous directory afterwards. A strict failure
        leaves -OutDir byte-for-byte unchanged. A second run replaces the whole
@@ -71,8 +77,14 @@
   loader, unresolved import). Import gaps are still reported. Default STRICT.
 
 .PARAMETER SelfTest
-  Run the seven instrument controls (synthetic fixtures, hermetic) and exit 0
+  Run the eleven instrument controls (synthetic fixtures, hermetic) and exit 0
   only if all pass, else 3. Ends with a single SELFTEST: PASS|FAIL line.
+
+.PARAMETER ManifestPath
+  Overrides the manifest location (default: payload-manifest.json beside this
+  script). Exists so a refusal (e.g. importClosure.roots not "all-staged") is
+  drivable from a tmp copy during verification; a default staging run never
+  reads a caller-supplied path.
 
 .OUTPUT
   One machine-greppable line per fact:
@@ -81,15 +93,19 @@
     PAYLOAD_VULKAN_LOADER=<path> status=found
     PAYLOAD_COMPONENT=<name> status=staged bytes=<n>
     PAYLOAD_COMPONENT=<name> status=MISSING
+    PAYLOAD_IMPORT_SCAN=<dll> imports=<n> delay=<n>
     PAYLOAD_IMPORT_PARSE_FAIL=<dll> reason=<why>
-    PAYLOAD_IMPORT_MISS=<dll> imported_by=<dll>
+    PAYLOAD_IMPORT_MISS=<module> imported_by=<dll> kind=<import|delay-import>
+    PAYLOAD_FORBIDDEN_IMPORT=<module> imported_by=<dll> kind=<import|delay-import>
     PAYLOAD_TOTAL_BYTES=<n>
     PAYLOAD_COUNT=<n>
     PAYLOAD_MANIFEST_JSON=<path>
     RESULT=PASS|FAIL
     ERROR=PAYLOAD_INCOMPLETE missing=<comma list>
     ERROR=VULKAN_LOADER_NOT_FOUND searched=<semicolon list>
-    ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=<importer> -> <missing>
+    ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=<importer> -> <missing> kind=<import|delay-import|parse>
+    ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=<dll> module=<module> kind=<import|delay-import>
+    ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE scanned=<n> staged=<n>
     ERROR=INVALID_PROFILE value=<v>
     ERROR=SOURCE_DIR_NOT_FOUND path=<p>
     ERROR=OUTDIR_NOT_WRITABLE path=<p> reason=<why>
@@ -100,7 +116,8 @@
 
 .EXIT CODES
   0  complete payload staged (or -AllowIncomplete probe completed)
-  1  PAYLOAD_INCOMPLETE / VULKAN_LOADER_NOT_FOUND / PAYLOAD_IMPORT_UNRESOLVED
+  1  PAYLOAD_INCOMPLETE / VULKAN_LOADER_NOT_FOUND / PAYLOAD_IMPORT_UNRESOLVED /
+     PAYLOAD_FORBIDDEN_IMPORT / PAYLOAD_IMPORT_SCAN_INCOMPLETE
   2  refused precondition (bad -Profile, source dir absent, manifest invalid,
      no write access to -OutDir)
   3  -SelfTest control failed
@@ -119,6 +136,7 @@ param(
     [string]$SourceDir = '',
     [string]$VulkanLoader = '',
     [string]$OutDir = '',
+    [string]$ManifestPath = '',
     [switch]$AllowIncomplete,
     [switch]$SelfTest
 )
@@ -127,24 +145,25 @@ $ErrorActionPreference = 'Stop'
 
 $script:ScriptDir = $PSScriptRoot
 $script:RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-$script:ManifestPath = Join-Path $script:ScriptDir 'payload-manifest.json'
+# -ManifestPath is state-machine-validated as defaultable: an explicit value is
+# authoritative, otherwise the manifest beside this script is used.
+if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+    $script:ManifestPath = Join-Path $script:ScriptDir 'payload-manifest.json'
+} else {
+    $script:ManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
+}
 $script:Captured = $null
 $script:Manifest = $null
+# Test-only seam: names that the import scan deliberately skips (CONTROL 11).
+# Always empty outside -SelfTest.
+$script:ScanSkipNames = @()
 
-# Non-payload parser policy: imports matching these prefixes are Windows system
-# libraries (or the universal CRT API sets) and are expected to come from the
-# operating system, not from the payload. Matched case-insensitively.
-$script:SystemImportPrefixes = @(
-    'kernel32', 'kernelbase', 'ntdll', 'advapi32', 'user32', 'gdi32', 'shell32',
-    'shlwapi', 'ole32', 'oleaut32', 'comdlg32', 'comctl32', 'ws2_32', 'wsock32',
-    'mswsock', 'iphlpapi', 'bcrypt', 'crypt32', 'secur32', 'sspicli', 'rpcrt4',
-    'dbghelp', 'powrprof', 'psapi', 'setupapi', 'version', 'imm32', 'dwmapi',
-    'uxtheme', 'winmm', 'winhttp', 'wininet', 'wintrust', 'd3d11', 'd3d12',
-    'dxgi', 'd3dcompiler', 'opengl32', 'glu32', 'msvcp', 'msvcr', 'vcruntime',
-    'ucrtbase', 'api-ms-win-', 'ext-ms-', 'concrt', 'vcomp', 'mscoree',
-    'propsys', 'urlmon', 'shcore', 'sxs', 'cfgmgr32', 'devobj', 'wtsapi32',
-    'cryptbase', 'ncrypt', 'normaliz', 'wldap32'
-)
+# Shared PE import/delay-import reader. Importing the module keeps ONE
+# implementation for the stager and the installer gate (no duplicated
+# extraction logic). The module file is a .psm1, so it is imported rather than
+# dot-sourced (Windows PowerShell 5.1 does not publish a dot-sourced .psm1's
+# functions into the caller's scope).
+Import-Module (Join-Path $script:ScriptDir 'pe-imports.psm1') -Force
 
 function Emit {
     param([string]$Line)
@@ -183,17 +202,37 @@ function Import-PayloadManifest {
     $tools = @($parsed.toolModules)
     $excluded = @($parsed.excluded)
     $loaderName = [string]$parsed.vulkanLoader
-    $rootExact = @($parsed.importClosure.rootExact)
-    $rootPrefix = [string]$parsed.importClosure.rootPrefix
+    $roots = [string]$parsed.importClosure.roots
+    $forbiddenRaw = @($parsed.importClosure.forbiddenImportPrefixes)
 
     if ($core.Count -eq 0 -or $tools.Count -eq 0 -or $excluded.Count -eq 0) {
         Emit 'RESULT=FAIL'
         Emit "ERROR=PAYLOAD_MANIFEST_INVALID path=$($script:ManifestPath) reason=empty-list"
         return 2
     }
-    if ([string]::IsNullOrWhiteSpace($loaderName) -or $rootExact.Count -eq 0 -or [string]::IsNullOrWhiteSpace($rootPrefix)) {
+    if ([string]::IsNullOrWhiteSpace($loaderName)) {
         Emit 'RESULT=FAIL'
         Emit "ERROR=PAYLOAD_MANIFEST_INVALID path=$($script:ManifestPath) reason=missing-closure-fields"
+        return 2
+    }
+    if ($roots -ne 'all-staged') {
+        Emit 'RESULT=FAIL'
+        Emit "ERROR=PAYLOAD_MANIFEST_INVALID path=$($script:ManifestPath) reason=import-closure-not-total value=$roots"
+        return 2
+    }
+
+    $forbidden = @()
+    foreach ($prefix in $forbiddenRaw) {
+        if ([string]::IsNullOrWhiteSpace($prefix)) {
+            Emit 'RESULT=FAIL'
+            Emit "ERROR=PAYLOAD_MANIFEST_INVALID path=$($script:ManifestPath) reason=missing-forbidden-prefixes"
+            return 2
+        }
+        $forbidden += [string]$prefix
+    }
+    if ($forbidden.Count -eq 0) {
+        Emit 'RESULT=FAIL'
+        Emit "ERROR=PAYLOAD_MANIFEST_INVALID path=$($script:ManifestPath) reason=missing-forbidden-prefixes"
         return 2
     }
 
@@ -232,12 +271,11 @@ function Import-PayloadManifest {
     }
 
     $script:Manifest = [pscustomobject]@{
-        Core         = $core
-        ToolModules  = $tools
-        Excluded     = $excluded
-        VulkanLoader = $loaderName
-        RootExact    = $rootExact
-        RootPrefix   = $rootPrefix
+        Core              = $core
+        ToolModules       = $tools
+        Excluded          = $excluded
+        VulkanLoader      = $loaderName
+        ForbiddenPrefixes = $forbidden
     }
     return 0
 }
@@ -322,156 +360,6 @@ function Resolve-VulkanLoader {
         Searched = @($searched)
         Found    = ($null -ne $foundPath)
     }
-}
-
-# ---------------------------------------------------------------------------
-# PE import-directory reader (manual BinaryReader over the DOS/PE headers)
-# ---------------------------------------------------------------------------
-function Get-PeImportNames {
-    param([string]$Path)
-
-    $result = [pscustomobject]@{ Ok = $false; Imports = @(); Error = '' }
-
-    try {
-        $bytes = [System.IO.File]::ReadAllBytes($Path)
-    } catch {
-        $result.Error = 'read-failed'
-        return $result
-    }
-
-    if ($bytes.Length -lt 64) { $result.Error = 'file-too-small'; return $result }
-    if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { $result.Error = 'no-mz'; return $result }
-
-    $e = [BitConverter]::ToInt32($bytes, 0x3C)
-    if ($e -lt 0 -or ($e + 24) -ge $bytes.Length) { $result.Error = 'bad-e-lfanew'; return $result }
-    if ($bytes[$e] -ne 0x50 -or $bytes[$e + 1] -ne 0x45 -or $bytes[$e + 2] -ne 0 -or $bytes[$e + 3] -ne 0) {
-        $result.Error = 'no-pe-signature'
-        return $result
-    }
-
-    $coff = $e + 4
-    $numSections = [BitConverter]::ToUInt16($bytes, $coff + 2)
-    $sizeOpt = [BitConverter]::ToUInt16($bytes, $coff + 16)
-    $opt = $coff + 20
-    if (($opt + 2) -gt $bytes.Length) { $result.Error = 'bad-optional-header'; return $result }
-
-    $magic = [BitConverter]::ToUInt16($bytes, $opt)
-    if ($magic -eq 0x10B) {
-        $numDirsOff = $opt + 92
-        $dirsOff = $opt + 96
-    } elseif ($magic -eq 0x20B) {
-        $numDirsOff = $opt + 108
-        $dirsOff = $opt + 112
-    } else {
-        $result.Error = 'bad-optional-magic'
-        return $result
-    }
-    if (($dirsOff + 16) -gt $bytes.Length) { $result.Error = 'truncated-data-directories'; return $result }
-
-    $numDirs = [BitConverter]::ToUInt32($bytes, $numDirsOff)
-    if ($numDirs -lt 2) { $result.Ok = $true; return $result }
-
-    $importRva = [BitConverter]::ToUInt32($bytes, $dirsOff + 8)
-    if ($importRva -eq 0) { $result.Ok = $true; return $result }
-
-    $sectionTable = $opt + $sizeOpt
-    if (($sectionTable + ($numSections * 40)) -gt $bytes.Length) { $result.Error = 'bad-section-table'; return $result }
-
-    $mapRva = {
-        param([uint32]$rva)
-        for ($i = 0; $i -lt $numSections; $i++) {
-            $s = $sectionTable + ($i * 40)
-            $vsize = [BitConverter]::ToUInt32($bytes, $s + 8)
-            $va = [BitConverter]::ToUInt32($bytes, $s + 12)
-            $rawSize = [BitConverter]::ToUInt32($bytes, $s + 16)
-            $rawPtr = [BitConverter]::ToUInt32($bytes, $s + 20)
-            $span = [Math]::Max([int64]$vsize, [int64]$rawSize)
-            if ($rva -ge $va -and ([int64]$rva -lt ([int64]$va + $span))) {
-                return [int]([int64]$rawPtr + ([int64]$rva - [int64]$va))
-            }
-        }
-        return -1
-    }
-
-    $importOff = & $mapRva $importRva
-    if ($importOff -lt 0 -or $importOff -ge $bytes.Length) { $result.Error = 'import-rva-unmapped'; return $result }
-
-    $imports = New-Object System.Collections.ArrayList
-    $index = 0
-    while ($index -lt 4096) {
-        $off = $importOff + ($index * 20)
-        if (($off + 20) -gt $bytes.Length) { break }
-        $oft = [BitConverter]::ToUInt32($bytes, $off)
-        $nameRva = [BitConverter]::ToUInt32($bytes, $off + 12)
-        $ft = [BitConverter]::ToUInt32($bytes, $off + 16)
-        if ($nameRva -eq 0 -and $oft -eq 0 -and $ft -eq 0) { break }
-        if ($nameRva -ne 0) {
-            $nameOff = & $mapRva $nameRva
-            if ($nameOff -ge 0 -and $nameOff -lt $bytes.Length) {
-                $end = $nameOff
-                $max = [Math]::Min($bytes.Length, $nameOff + 260)
-                while ($end -lt $max -and $bytes[$end] -ne 0) { $end++ }
-                if ($end -gt $nameOff) {
-                    $name = [System.Text.Encoding]::ASCII.GetString($bytes, $nameOff, ($end - $nameOff))
-                    if (-not [string]::IsNullOrWhiteSpace($name)) { [void]$imports.Add($name) }
-                }
-            }
-        }
-        $index++
-    }
-
-    $result.Imports = @($imports)
-    $result.Ok = $true
-    return $result
-}
-
-function Test-SystemImportName {
-    param([string]$Name)
-    $lower = $Name.ToLowerInvariant()
-    foreach ($prefix in $script:SystemImportPrefixes) {
-        if ($lower.StartsWith($prefix)) { return $true }
-    }
-    return $false
-}
-
-function Get-ImportClosureResult {
-    param($Entries)
-
-    $names = @{}
-    foreach ($entry in $Entries) { $names[$entry.Name.ToLowerInvariant()] = $true }
-
-    $loaderLower = $script:Manifest.VulkanLoader.ToLowerInvariant()
-    $prefixLower = $script:Manifest.RootPrefix.ToLowerInvariant()
-    $roots = @()
-    foreach ($entry in $Entries) {
-        $lower = $entry.Name.ToLowerInvariant()
-        $isRoot = $false
-        if ($lower -eq $loaderLower) { $isRoot = $true }
-        if ($lower.StartsWith($prefixLower)) { $isRoot = $true }
-        foreach ($exact in $script:Manifest.RootExact) {
-            if ($lower -eq $exact.ToLowerInvariant()) { $isRoot = $true }
-        }
-        if ($isRoot) { $roots += $entry }
-    }
-
-    $misses = New-Object System.Collections.ArrayList
-    $parseFails = New-Object System.Collections.ArrayList
-    foreach ($root in $roots) {
-        $info = Get-PeImportNames -Path $root.Path
-        if (-not $info.Ok) {
-            [void]$parseFails.Add([pscustomobject]@{ Name = $root.Name; Reason = $info.Error })
-            continue
-        }
-        foreach ($dep in $info.Imports) {
-            $dl = $dep.ToLowerInvariant()
-            if ($dl -eq $root.Name.ToLowerInvariant()) { continue }
-            if (Test-SystemImportName -Name $dl) { continue }
-            if ($names.ContainsKey($dl)) { continue }
-            [void]$misses.Add([pscustomobject]@{ Missing = $dep; By = $root.Name })
-        }
-    }
-
-    return [pscustomobject]@{ Misses = @($misses); ParseFails = @($parseFails) }
 }
 
 # ---------------------------------------------------------------------------
@@ -575,20 +463,42 @@ function Invoke-PayloadStage {
         return 1
     }
 
-    $closure = Get-ImportClosureResult -Entries @($entries)
-    foreach ($fail in $closure.ParseFails) {
+    # Totality: every staged DLL is scanned (no hand-picked root subset). The
+    # analytic registry is shared with the installer gate via pe-imports.psm1.
+    $scanEntries = New-Object System.Collections.ArrayList
+    foreach ($entry in $entries) {
+        if ($script:ScanSkipNames -contains $entry.Name) { continue }
+        [void]$scanEntries.Add($entry)
+    }
+
+    $scan = Get-PeImportScan -Entries @($scanEntries) -ForbiddenPrefixes @($script:Manifest.ForbiddenPrefixes)
+    foreach ($dll in $scan.PerDll) {
+        Emit "PAYLOAD_IMPORT_SCAN=$($dll.Name) imports=$($dll.ImportCount) delay=$($dll.DelayCount)"
+    }
+    foreach ($fail in $scan.ParseFails) {
         Emit "PAYLOAD_IMPORT_PARSE_FAIL=$($fail.Name) reason=$($fail.Reason)"
     }
-    foreach ($miss in $closure.Misses) {
-        Emit "PAYLOAD_IMPORT_MISS=$($miss.Missing) imported_by=$($miss.By)"
+    foreach ($miss in $scan.Misses) {
+        Emit "PAYLOAD_IMPORT_MISS=$($miss.Missing) imported_by=$($miss.Importer) kind=$($miss.Kind)"
     }
-    $closureFailed = (($closure.Misses.Count -gt 0) -or ($closure.ParseFails.Count -gt 0))
-    if ($closureFailed -and -not $AllowMissing) {
-        foreach ($fail in $closure.ParseFails) {
-            Emit "ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=$($fail.Name) -> <unparsable>"
+    foreach ($forbidden in $scan.Forbidden) {
+        Emit "PAYLOAD_FORBIDDEN_IMPORT=$($forbidden.Module) imported_by=$($forbidden.Importer) kind=$($forbidden.Kind)"
+    }
+
+    $scanIncomplete = ($scan.Scanned -ne $entries.Count)
+    $scanFailed = ($scanIncomplete -or ($scan.ParseFails.Count -gt 0) -or ($scan.Misses.Count -gt 0) -or ($scan.Forbidden.Count -gt 0))
+    if ($scanFailed -and -not $AllowMissing) {
+        if ($scanIncomplete) {
+            Emit "ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE scanned=$($scan.Scanned) staged=$($entries.Count)"
         }
-        foreach ($miss in $closure.Misses) {
-            Emit "ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=$($miss.By) -> $($miss.Missing)"
+        foreach ($fail in $scan.ParseFails) {
+            Emit "ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=$($fail.Name) -> <unparsable> kind=parse"
+        }
+        foreach ($forbidden in $scan.Forbidden) {
+            Emit "ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=$($forbidden.Importer) module=$($forbidden.Module) kind=$($forbidden.Kind)"
+        }
+        foreach ($miss in $scan.Misses) {
+            Emit "ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=$($miss.Importer) -> $($miss.Missing) kind=$($miss.Kind)"
         }
         Emit 'RESULT=FAIL'
         return 1
@@ -695,116 +605,29 @@ function Test-AnyLineMatches {
     return $false
 }
 
-function PeWriteU16 {
-    param([byte[]]$Buffer, [int]$Offset, [uint32]$Value)
-    $encoded = [BitConverter]::GetBytes([uint16]$Value)
-    [Array]::Copy($encoded, 0, $Buffer, $Offset, 2)
-}
-
-function PeWriteU32 {
-    param([byte[]]$Buffer, [int]$Offset, [uint32]$Value)
-    $encoded = [BitConverter]::GetBytes([uint32]$Value)
-    [Array]::Copy($encoded, 0, $Buffer, $Offset, 4)
-}
-
-function PeWriteU64 {
-    param([byte[]]$Buffer, [int]$Offset, [uint64]$Value)
-    $encoded = [BitConverter]::GetBytes([uint64]$Value)
-    [Array]::Copy($encoded, 0, $Buffer, $Offset, 8)
-}
-
-# Write a structurally valid PE32+ DLL whose import directory names exactly the
-# given modules. Only this script's reader ever consumes the file; it is a
-# fixture, never loaded.
-function New-SyntheticPeDll {
-    param([string]$Path, [string[]]$Imports = @())
-
-    $imports = @($Imports | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $descCount = $imports.Count + 1
-    $descBytes = $descCount * 20
-
-    $stringOffsets = @()
-    $cursor = $descBytes
-    foreach ($imp in $imports) {
-        $stringOffsets += $cursor
-        $cursor += $imp.Length + 1
-    }
-
-    $rawLen = [int]([Math]::Ceiling($cursor / 512.0) * 512)
-    if ($rawLen -lt 512) { $rawLen = 512 }
-    $total = 0x200 + $rawLen
-    $buffer = New-Object byte[] $total
-
-    $mz = [byte[]](0x4D, 0x5A)
-    [Array]::Copy($mz, 0, $buffer, 0, 2)
-    PeWriteU32 $buffer 0x3C 0x40
-
-    $pe = [byte[]](0x50, 0x45, 0x00, 0x00)
-    [Array]::Copy($pe, 0, $buffer, 0x40, 4)
-    PeWriteU16 $buffer 0x44 0x8664   # Machine: AMD64
-    PeWriteU16 $buffer 0x46 1        # NumberOfSections
-    PeWriteU16 $buffer 0x54 240      # SizeOfOptionalHeader (PE32+)
-    PeWriteU16 $buffer 0x56 0x2022   # Characteristics: DLL | EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
-
-    PeWriteU16 $buffer 0x58 0x20B    # Optional header magic: PE32+
-    PeWriteU32 $buffer 0x68 0         # AddressOfEntryPoint
-    PeWriteU32 $buffer 0x6C 0x1000    # BaseOfCode
-    PeWriteU64 $buffer 0x70 0         # ImageBase
-    PeWriteU32 $buffer 0x78 0x1000    # SectionAlignment
-    PeWriteU32 $buffer 0x7C 0x200     # FileAlignment
-    PeWriteU16 $buffer 0x88 6         # MajorSubsystemVersion
-    PeWriteU32 $buffer 0x90 0x2000    # SizeOfImage
-    PeWriteU32 $buffer 0x94 0x200     # SizeOfHeaders
-    PeWriteU16 $buffer 0x9C 3         # Subsystem: console
-    PeWriteU32 $buffer 0xC4 16        # NumberOfRvaAndSizes
-    PeWriteU32 $buffer 0xD0 0x1000    # DataDirectory[IMPORT].VirtualAddress
-    PeWriteU32 $buffer 0xD4 ([uint32]$descBytes)
-
-    $sectionName = [System.Text.Encoding]::ASCII.GetBytes('.rdata')
-    [Array]::Copy($sectionName, 0, $buffer, 0x148, $sectionName.Length)
-    PeWriteU32 $buffer 0x150 ([uint32]$rawLen)  # VirtualSize
-    PeWriteU32 $buffer 0x154 0x1000              # VirtualAddress
-    PeWriteU32 $buffer 0x158 ([uint32]$rawLen)  # SizeOfRawData
-    PeWriteU32 $buffer 0x15C 0x200               # PointerToRawData
-    PeWriteU32 $buffer 0x16C 0x40000040          # INITIALIZED_DATA | READ
-
-    for ($i = 0; $i -lt $imports.Count; $i++) {
-        $descOff = 0x200 + ($i * 20)
-        PeWriteU32 $buffer ($descOff + 12) ([uint32](0x1000 + $stringOffsets[$i]))
-        $nameBytes = [System.Text.Encoding]::ASCII.GetBytes($imports[$i])
-        [Array]::Copy($nameBytes, 0, $buffer, (0x200 + $stringOffsets[$i]), $nameBytes.Length)
-    }
-
-    [System.IO.File]::WriteAllBytes($Path, $buffer)
-}
-
 function New-FixedSourceDir {
-    param([string]$Dir, [string[]]$Omit = @(), [hashtable]$ImportOverrides = @{})
+    param(
+        [string]$Dir,
+        [string[]]$Omit = @(),
+        [hashtable]$ImportOverrides = @{},
+        [hashtable]$DelayOverrides = @{}
+    )
 
     New-Item -ItemType Directory -Path $Dir -Force | Out-Null
 
     # Fixture imports are derived from the manifest's ROLES, never from a
     # second table of payload names: the loader imports only system modules,
-    # every other core module imports the loader plus the first root-prefix
-    # module, tool modules import the anchor root module, and excluded modules
-    # import a deliberately absent module (so a leak into the staged set would
-    # fail the closure proof immediately).
+    # every other core module imports the loader, tool modules import the first
+    # non-loader core module, and excluded modules import a deliberately absent
+    # module (so a leak into the staged set would fail the scan immediately).
     $loaderName = $script:Manifest.VulkanLoader
-    $prefix = $script:Manifest.RootPrefix.ToLowerInvariant()
     $core = @($script:Manifest.Core)
     $tools = @($script:Manifest.ToolModules)
     $excluded = @($script:Manifest.Excluded)
 
-    $baseName = $null
-    foreach ($name in $core) {
-        $lower = $name.ToLowerInvariant()
-        if ($lower -ne $loaderName.ToLowerInvariant() -and $lower.StartsWith($prefix) -and $null -eq $baseName) {
-            $baseName = $name
-        }
-    }
     $anchorName = $null
-    foreach ($exact in $script:Manifest.RootExact) {
-        if ($null -eq $anchorName) { $anchorName = $exact }
+    foreach ($name in $core) {
+        if ($name -ine $loaderName) { $anchorName = $name; break }
     }
 
     $all = @()
@@ -825,12 +648,13 @@ function New-FixedSourceDir {
             $imports = @('KERNEL32.dll')
         } else {
             $imports = @('KERNEL32.dll')
-            if ($null -ne $baseName -and $lower -ne $baseName.ToLowerInvariant()) { $imports += $baseName }
             $imports += $loaderName
         }
 
         if ($ImportOverrides.ContainsKey($name)) { $imports = $ImportOverrides[$name] }
-        New-SyntheticPeDll -Path (Join-Path $Dir $name) -Imports $imports
+        $delays = @()
+        if ($DelayOverrides.ContainsKey($name)) { $delays = $DelayOverrides[$name] }
+        New-SyntheticPeDll -Path (Join-Path $Dir $name) -Imports $imports -DelayImports $delays
     }
 }
 
@@ -854,8 +678,18 @@ function Invoke-SelfTest {
         $toolNames = @($script:Manifest.ToolModules)
         $expectedNames = @($coreNames + $toolNames)
         $loaderName = $script:Manifest.VulkanLoader
-        $anchorName = $script:Manifest.RootExact[0]
+        $anchorName = $null
+        foreach ($name in $coreNames) {
+            if ($name -ine $loaderName) { $anchorName = $name; break }
+        }
         $ghostName = 'fixture-absent-dependency.dll'
+        $sslPrefix = [string]$script:Manifest.ForbiddenPrefixes[0]
+        $cryptoPrefix = [string]$script:Manifest.ForbiddenPrefixes[0]
+        if ($script:Manifest.ForbiddenPrefixes.Count -gt 1) {
+            $cryptoPrefix = [string]$script:Manifest.ForbiddenPrefixes[1]
+        }
+        $forbiddenSslModule = $sslPrefix + '-3-x64.dll'
+        $forbiddenCryptoModule = $cryptoPrefix + '-3-x64.dll'
 
         # ---- CONTROL 1 - POSITIVE -----------------------------------------
         $pass1 = $false
@@ -945,8 +779,8 @@ function Invoke-SelfTest {
             $sentinel4 = Join-Path $out4 'sentinel.txt'
             Set-Content -LiteralPath $sentinel4 -Value 'untouched' -Encoding ASCII
             $run4 = Invoke-StageCaptured -ProfileName release -SourcePath $src4 -LoaderOverride (Join-Path $src4 $loaderName) -DestPath $out4 -AllowMissing $false
-            $missPattern = '^PAYLOAD_IMPORT_MISS=' + [regex]::Escape($ghostName) + ' imported_by=' + [regex]::Escape($anchorName) + '$'
-            $edgePattern = '^ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=' + [regex]::Escape($anchorName) + ' -> ' + [regex]::Escape($ghostName) + '$'
+            $missPattern = '^PAYLOAD_IMPORT_MISS=' + [regex]::Escape($ghostName) + ' imported_by=' + [regex]::Escape($anchorName) + ' kind=import$'
+            $edgePattern = '^ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=' + [regex]::Escape($anchorName) + ' -> ' + [regex]::Escape($ghostName) + ' kind=import$'
             $pass4 = ($run4.Code -eq 1) -and
                      (Test-AnyLineMatches -Lines $run4.Lines -Pattern '^RESULT=FAIL$') -and
                      (Test-AnyLineMatches -Lines $run4.Lines -Pattern $missPattern) -and
@@ -1026,6 +860,144 @@ function Invoke-SelfTest {
         }
         Emit 'CONTROL 7 - SELF-REFERENCE'
         if ($pass7) { Emit '[PASS]' } else { Emit "[FAIL] $detail7"; $allPassed = $false }
+
+        # ---- CONTROL 8 - FORBIDDEN-IMPORT ---------------------------------
+        # A load-time import whose module matches a manifest forbidden prefix
+        # must fail staging with the named error (AC1 load-time leg).
+        $pass8 = $false
+        $detail8 = ''
+        try {
+            $src8 = Join-Path $root 'src-forbidden-import'
+            $overrides8 = @{}
+            $overrides8[$anchorName] = @($forbiddenSslModule, 'KERNEL32.dll')
+            New-FixedSourceDir -Dir $src8 -ImportOverrides $overrides8
+            $out8 = Join-Path $root 'out-forbidden-import'
+            New-Item -ItemType Directory -Path $out8 -Force | Out-Null
+            $sentinel8 = Join-Path $out8 'sentinel.txt'
+            Set-Content -LiteralPath $sentinel8 -Value 'untouched' -Encoding ASCII
+            $run8 = Invoke-StageCaptured -ProfileName release -SourcePath $src8 -LoaderOverride (Join-Path $src8 $loaderName) -DestPath $out8 -AllowMissing $false
+            $report8 = '^PAYLOAD_FORBIDDEN_IMPORT=' + [regex]::Escape($forbiddenSslModule) + ' imported_by=' + [regex]::Escape($anchorName) + ' kind=import$'
+            $error8 = '^ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=' + [regex]::Escape($anchorName) + ' module=' + [regex]::Escape($forbiddenSslModule) + ' kind=import$'
+            $pass8 = ($run8.Code -eq 1) -and
+                     (Test-AnyLineMatches -Lines $run8.Lines -Pattern '^RESULT=FAIL$') -and
+                     (Test-AnyLineMatches -Lines $run8.Lines -Pattern $report8) -and
+                     (Test-AnyLineMatches -Lines $run8.Lines -Pattern $error8) -and
+                     (Test-Path -LiteralPath $sentinel8 -PathType Leaf)
+            if (-not $pass8) { $detail8 = "exit=$($run8.Code) lines=$($run8.Lines -join ' / ')" }
+        } catch {
+            $detail8 = $_.Exception.Message
+        }
+        Emit 'CONTROL 8 - FORBIDDEN-IMPORT'
+        if ($pass8) { Emit '[PASS]' } else { Emit "[FAIL] $detail8"; $allPassed = $false }
+
+        # ---- CONTROL 9 - DELAY-IMPORT -------------------------------------
+        # A delay-load import on a forbidden module must fail staging too; a
+        # reader that only reads DataDirectory[1] cannot see it (AC1 delay leg).
+        $pass9 = $false
+        $detail9 = ''
+        try {
+            $src9 = Join-Path $root 'src-delay-import'
+            $delays9 = @{}
+            $delays9[$anchorName] = @($forbiddenCryptoModule)
+            New-FixedSourceDir -Dir $src9 -DelayOverrides $delays9
+            $out9 = Join-Path $root 'out-delay-import'
+            New-Item -ItemType Directory -Path $out9 -Force | Out-Null
+            $sentinel9 = Join-Path $out9 'sentinel.txt'
+            Set-Content -LiteralPath $sentinel9 -Value 'untouched' -Encoding ASCII
+            $run9 = Invoke-StageCaptured -ProfileName release -SourcePath $src9 -LoaderOverride (Join-Path $src9 $loaderName) -DestPath $out9 -AllowMissing $false
+            $report9 = '^PAYLOAD_FORBIDDEN_IMPORT=' + [regex]::Escape($forbiddenCryptoModule) + ' imported_by=' + [regex]::Escape($anchorName) + ' kind=delay-import$'
+            $error9 = '^ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=' + [regex]::Escape($anchorName) + ' module=' + [regex]::Escape($forbiddenCryptoModule) + ' kind=delay-import$'
+            $pass9 = ($run9.Code -eq 1) -and
+                     (Test-AnyLineMatches -Lines $run9.Lines -Pattern '^RESULT=FAIL$') -and
+                     (Test-AnyLineMatches -Lines $run9.Lines -Pattern $report9) -and
+                     (Test-AnyLineMatches -Lines $run9.Lines -Pattern $error9) -and
+                     (Test-Path -LiteralPath $sentinel9 -PathType Leaf)
+            if (-not $pass9) { $detail9 = "exit=$($run9.Code) lines=$($run9.Lines -join ' / ')" }
+        } catch {
+            $detail9 = $_.Exception.Message
+        }
+        Emit 'CONTROL 9 - DELAY-IMPORT'
+        if ($pass9) { Emit '[PASS]' } else { Emit "[FAIL] $detail9"; $allPassed = $false }
+
+        # ---- CONTROL 10 - NON-ROOT-IMPORT-GAP -----------------------------
+        # A TOOL MODULE with an unresolvable non-system import must fail. The
+        # old roots-only gate (loader + ggml* + two exact roots) never scanned
+        # a tool module, so this control is the AC2 discriminator.
+        $pass10 = $false
+        $detail10 = ''
+        try {
+            $toolModule = $toolNames[0]
+            $src10 = Join-Path $root 'src-non-root-gap'
+            $overrides10 = @{}
+            $overrides10[$toolModule] = @($ghostName, 'KERNEL32.dll')
+            New-FixedSourceDir -Dir $src10 -ImportOverrides $overrides10
+            $out10 = Join-Path $root 'out-non-root-gap'
+            New-Item -ItemType Directory -Path $out10 -Force | Out-Null
+            $sentinel10 = Join-Path $out10 'sentinel.txt'
+            Set-Content -LiteralPath $sentinel10 -Value 'untouched' -Encoding ASCII
+            $run10 = Invoke-StageCaptured -ProfileName release -SourcePath $src10 -LoaderOverride (Join-Path $src10 $loaderName) -DestPath $out10 -AllowMissing $false
+            $miss10 = '^PAYLOAD_IMPORT_MISS=' + [regex]::Escape($ghostName) + ' imported_by=' + [regex]::Escape($toolModule) + ' kind=import$'
+            $edge10 = '^ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=' + [regex]::Escape($toolModule) + ' -> ' + [regex]::Escape($ghostName) + ' kind=import$'
+            $pass10 = ($run10.Code -eq 1) -and
+                      (Test-AnyLineMatches -Lines $run10.Lines -Pattern '^RESULT=FAIL$') -and
+                      (Test-AnyLineMatches -Lines $run10.Lines -Pattern $miss10) -and
+                      (Test-AnyLineMatches -Lines $run10.Lines -Pattern $edge10) -and
+                      (Test-Path -LiteralPath $sentinel10 -PathType Leaf)
+            if (-not $pass10) { $detail10 = "exit=$($run10.Code) lines=$($run10.Lines -join ' / ')" }
+        } catch {
+            $detail10 = $_.Exception.Message
+        }
+        Emit 'CONTROL 10 - NON-ROOT-IMPORT-GAP'
+        if ($pass10) { Emit '[PASS]' } else { Emit "[FAIL] $detail10"; $allPassed = $false }
+
+        # ---- CONTROL 11 - IMPORT-SCAN-COMPLETE ----------------------------
+        # A deliberately skipped DLL must raise the named completeness error
+        # (scanned < staged) instead of a silent partial proof.
+        $pass11 = $false
+        $detail11 = ''
+        try {
+            $src11 = Join-Path $root 'src-scan-complete'
+            New-FixedSourceDir -Dir $src11
+            $out11 = Join-Path $root 'out-scan-complete'
+            New-Item -ItemType Directory -Path $out11 -Force | Out-Null
+            $sentinel11 = Join-Path $out11 'sentinel.txt'
+            Set-Content -LiteralPath $sentinel11 -Value 'untouched' -Encoding ASCII
+            $skipName = $coreNames[0]
+            $script:ScanSkipNames = @($skipName)
+            try {
+                $run11 = Invoke-StageCaptured -ProfileName release -SourcePath $src11 -LoaderOverride (Join-Path $src11 $loaderName) -DestPath $out11 -AllowMissing $false
+            } finally {
+                $script:ScanSkipNames = @()
+            }
+            $scanCount = 0
+            foreach ($line in $run11.Lines) {
+                if ($line -match '^PAYLOAD_IMPORT_SCAN=.+ imports=[0-9]+ delay=[0-9]+$') { $scanCount++ }
+            }
+            $incomplete = $false
+            $scannedCount = 0
+            $stagedCount = 0
+            foreach ($line in $run11.Lines) {
+                if ($line -match '^ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE scanned=([0-9]+) staged=([0-9]+)$') {
+                    $incomplete = $true
+                    $scannedCount = [int]$Matches[1]
+                    $stagedCount = [int]$Matches[2]
+                }
+            }
+            $pass11 = ($run11.Code -eq 1) -and
+                      (Test-AnyLineMatches -Lines $run11.Lines -Pattern '^RESULT=FAIL$') -and
+                      $incomplete -and
+                      ($scannedCount -eq ($stagedCount - 1)) -and
+                      ($stagedCount -eq $expectedNames.Count) -and
+                      ($scanCount -eq ($stagedCount - 1)) -and
+                      (Test-Path -LiteralPath $sentinel11 -PathType Leaf)
+            if (-not $pass11) { $detail11 = "exit=$($run11.Code) incomplete=$incomplete scanned=$scannedCount staged=$stagedCount scanLines=$scanCount lines=$($run11.Lines -join ' / ')" }
+        } catch {
+            $detail11 = $_.Exception.Message
+        } finally {
+            $script:ScanSkipNames = @()
+        }
+        Emit 'CONTROL 11 - IMPORT-SCAN-COMPLETE'
+        if ($pass11) { Emit '[PASS]' } else { Emit "[FAIL] $detail11"; $allPassed = $false }
     } catch {
         Emit "SELFTEST_EXCEPTION=$($_.Exception.Message)"
         $allPassed = $false
