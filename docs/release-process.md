@@ -74,14 +74,27 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   at the repo root) and `args: ${{ matrix.args }}`. The action carries **no** `tagName`,
   `releaseName`, `releaseBody`, `releaseDraft` or `releaseId`, so it makes no release API call and
   publishes nothing.
-- **The tag** is `app-v<version>` (`<version>` is read from `tauri.conf.json` = `0.2.1`) and is
+- **The tag** is `app-v<version>` (`<version>` is read from `tauri.conf.json` = `0.2.2`) and is
   applied by the draft step, not by the action: `gh release create "app-v<version>" <installer>
   --draft --title "Fredo v<version>" --notes "<fixed template>"`, gated `if: success()` **after**
   the payload gate.
-- **The payload gate is the deliberately-reviewed artifact check** — `verify-installer-payload.ps1`
-  extracts the produced NSIS installer and fails the job if any core `engine-payload/` DLL is
-  missing. A gate failure leaves **no draft and no uploaded asset**. Nothing is public until the
-  owner publishes the draft; do **not** remove `--draft` (that would auto-publish and bypass owner
+- **The payload gate is the deliberately-reviewed artifact check**, and it runs as one step
+  **before** the draft. It (a) runs both scripts' `-SelfTest` legs — `stage-engine-payload.ps1`
+  (eleven controls: the original seven plus a forbidden load-time import, a forbidden delay-load
+  import, a non-root import gap and a scan-completeness control) and `verify-installer-payload.ps1`
+  (eight controls: the original five plus forbidden-import, delay-import and unresolved-import
+  checks on an extracted tree); (b) statically asserts the checked-in
+  `[package.metadata.llama-cpp-sys-4.cmake]` table carries `LLAMA_OPENSSL = "OFF"`, failing the job
+  with `::error::ENGINE_OPENSSL_NOT_DISABLED` when the key is absent; and (c)
+  `verify-installer-payload.ps1` extracts the produced NSIS installer, asserts the eight core
+  `engine-payload/` DLLs are present, and scans every present payload DLL's **load-time and
+  delay-load** imports — printing `ARTIFACT_PAYLOAD_SCANNED=<n> of=<n>` and `IMPORT_SCAN=PASS
+  dlls=<n>`, and failing on a forbidden import
+  (`ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT dll=<dll> module=<module> kind=<import|delay-import>`)
+  or an unresolved import
+  (`ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT edge=<dll> -> <module> kind=<import|delay-import>`).
+  A gate failure leaves **no draft and no uploaded asset**. Nothing is public until the owner
+  publishes the draft; do **not** remove `--draft` (that would auto-publish and bypass owner
   review).
 - **Every `uses:` action is SHA-pinned** (e.g. `actions/checkout@11bd71... # v4.2.2`,
   `tauri-apps/tauri-action@1deb37... # v1`) per the repo convention (NFR-2). `pnpm install
@@ -113,7 +126,7 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
 
 ### 4. `apps/tauri/src-tauri/tauri.conf.json` — bundle config consumed by the release build
 
-- `productName: "Fredo"`, `version: "0.2.1"` (read by the workflow and injected into the
+- `productName: "Fredo"`, `version: "0.2.2"` (read by the workflow and injected into the
   `app-v<version>` tag/title), `identifier: "com.fredo.app"`.
 - `bundle.active: true`, `bundle.targets: "all"`; Windows NSIS `perMachine`.
 - **Engine payload (Spec #3158).** `bundle.resources` is exactly `{"engine-payload/": ""}` (a map
@@ -123,8 +136,10 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   `fredo.exe` in the install directory**; `bundle.externalBin` stays `[]` (the DLLs are resources,
   not sidecar binaries). **What to change:** nothing in the config for an ordinary release — but the
   produced installer is gated by `.opencode/scripts/verify-installer-payload.ps1`, which extracts
-  the NSIS `.exe` and fails the job when any core payload DLL is missing. **No signing identity is
-  configured** (`macOS.signingIdentity: null`) — code signing/notarization is deferred (NFR-4).
+  the NSIS `.exe`, fails the job when any core payload DLL is missing, and scans every present
+  payload DLL's load-time **and** delay-load imports, failing on a forbidden (`libssl*`/`libcrypto*`)
+  or unresolved import. **No signing identity is configured** (`macOS.signingIdentity: null`) — code
+  signing/notarization is deferred (NFR-4).
 
 ---
 
@@ -270,15 +285,15 @@ or publishes.**
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
    runs the Windows-only matrix, builds the Windows installer, locates the produced `*-setup.exe`,
    and runs `verify-installer-payload.ps1` on it. Only after that gate passes does the draft step
-   `gh release create app-v0.2.1 <installer> --draft` upload it to a **DRAFT** GitHub Release at the
-   branch tip.
+   `gh release create app-v0.2.2 Fredo_0.2.2_x64-setup.exe --draft` upload it to a **DRAFT** GitHub
+   Release at the branch tip.
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
    deliberately-reviewed artifacts because nothing is public before this step.
 
 > **Reproducibility note:** every artifact is built from the `release/stable` tip with a fixed ref,
 > `pnpm install --frozen-lockfile`, the committed `Cargo.lock`, and SHA-pinned actions — so a given
-> tip always yields the same build. The bundle `version` (`0.2.1`) is read from
+> tip always yields the same build. The bundle `version` (`0.2.2`) is read from
 > `tauri.conf.json` at build time and injected into the release tag/name.
 
 ---
