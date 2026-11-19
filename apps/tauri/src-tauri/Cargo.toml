@@ -160,4 +160,32 @@ semver = "1"
 [dev-dependencies]
 tempfile = "3"
 
+# Spec #3172 ST-1 — build the in-process engine WITHOUT OpenSSL.
+#
+# `llama-cpp-sys-4`'s build script reads a `[package.metadata.llama-cpp-sys-4.cmake]`
+# table from the nearest consuming manifest and forwards every entry to CMake as
+# `-D<key>=<value>` (`llama-cpp-sys-4-0.11.0/build.rs:1887-1925` reads it,
+# `:1950-1956` forwards it). It emits `rerun-if-changed` on this manifest
+# (`:1910`), so changing the table forces a reconfigure — no `cargo clean`.
+#
+# Upstream llama.cpp defaults `LLAMA_OPENSSL` to ON (`llama.cpp/CMakeLists.txt:145`),
+# and its vendored cpp-httplib then takes its `find_package(OpenSSL)` branch and
+# links `OpenSSL::SSL`/`OpenSSL::Crypto` into `llama-common` whenever the build
+# machine happens to have OpenSSL installed
+# (`llama.cpp/vendor/cpp-httplib/CMakeLists.txt:128-152`). That made the same
+# source produce a different `llama-common.dll` per machine and shipped a binary
+# importing `libssl-3-x64.dll`/`libcrypto-3-x64.dll` — which the Windows loader
+# cannot resolve on a machine without OpenSSL, so the app died with `0xC0000135`
+# before reaching its entry point. Fredo downloads its models through its own
+# SHA-256-pinned path and the engine makes no HTTPS request of its own, so that
+# TLS stack is dead weight plus an undeclared runtime dependency.
+# `LLAMA_OPENSSL=OFF` is the crate's own motivating case for this table
+# (`build.rs:2676-2683`).
+#
+# This table is the SINGLE source of truth for the option: it is checked in, not
+# a workflow env var (a `LLAMA_*` env var outranks this file and would mask a
+# deleted key). Do not add `LLAMA_CURL` here — it is deprecated upstream.
+[package.metadata.llama-cpp-sys-4.cmake]
+LLAMA_OPENSSL = "OFF"
+
 
