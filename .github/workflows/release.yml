@@ -32,7 +32,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: 'windows-latest', args: '' }
+          # Pinned to windows-2022 (VS 2022 / MSVC 14.4x), matching
+          # `validate.yml`'s rust leg. `windows-latest` now ships VS 18, whose
+          # STL asserts "expected Clang 22 or newer" during the engine's
+          # bindgen step, so the release build would fail the same way the
+          # validation build did.
+          - { platform: 'windows-2022', args: '' }
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -65,6 +70,11 @@ jobs:
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
           cache: true
+          # Same reason as the validation leg: the Server image does not carry
+          # a loadable `vulkan-1.dll`, and the staging script copies the loader
+          # into the payload. Without it `ggml-vulkan.dll` cannot load and the
+          # produced installer would ship a payload that fails at launch.
+          install_runtime: true
       - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
 
       # 0. Read the version once - it names the tag and is asserted against the
