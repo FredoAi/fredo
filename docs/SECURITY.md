@@ -41,7 +41,7 @@ The gRPC (`:4317`) and HTTP (`:4318`) receivers bind to **`127.0.0.1` only** —
 
 ## Companion engine (in-process)
 
-The companion's inference runtime is **linked into the Fredo binary** (`llama-cpp-4` bindings) and runs **in-process** on one dedicated engine thread. There is **no** `llama-server` child process, **no** listening socket, and **no** loopback HTTP transport — the former child-process surface was retired in Spec #3141, so there is no port for another process to reach and no process to leak.
+The companion's inference runtime ships as native DLLs **beside `fredo.exe` in the install directory** (the `engine-payload/` resource tree; the `dynamic-link` build does not link them into the executable) and is loaded **in-process** by the Fredo process through the `llama-cpp-4` bindings, on one dedicated engine thread. There is **no** `llama-server` child process, **no** listening socket, and **no** loopback HTTP transport — the former child-process surface was retired in Spec #3141, so there is no port for another process to reach and no process to leak.
 
 **Protections:**
 - No new listening surface: the engine opens no socket, which removes rather than adds an attack surface
@@ -274,7 +274,7 @@ Fredo ships installable builds from a dedicated protected release branch (`relea
 
 - Any PR into `release/stable` requires the owner's explicit approval (`@pktron` via `require_code_owner_review` + `required_approving_review_count ≥ 1`). An unapproved PR is blocked even when all CI checks are green.
 - Direct pushes to `release/stable` are forbidden, and the repository ruleset is configured with an **empty bypass list** — so no one, including repo admins, can bypass the protection.
-- `release.yml` (`.github/workflows/release.yml`) triggers on a push to `release/stable`, builds the platform artifacts, and publishes them to a **draft** GitHub Release (`releaseDraft: true`) so the owner reviews and publishes them. The release workflow never triggers on `main` and is never a required check on `main`.
+- `release.yml` (`.github/workflows/release.yml`) triggers on a push to `release/stable`, builds the platform artifacts, verifies the engine payload inside the produced installer, and publishes them to a **draft** GitHub Release (`gh release create … --draft`) so the owner reviews and publishes them. The release workflow never triggers on `main` and is never a required check on `main`.
 - The release approval gate and the full owner-manual cut procedure are documented in [`docs/release-process.md`](release-process.md). The `release/stable` branch protection and ruleset are repo-admin **settings** that the owner applies (they are not a checked-in file).
 
 ## Merge Gate (Spec #3079)

@@ -171,7 +171,7 @@ To place files manually, drop the correctly-sized GGUFs under `<models_dir>/gemm
 
 ### Does Fredo run llama.cpp as a subprocess?
 
-No. Companion inference runs **inside Fredo**: the `llama.cpp` runtime is linked into the app through the `llama-cpp-4` Rust bindings and ships in the installer, so there is no separate server program to install, launch, or supervise — and no child process, port, or local HTTP endpoint. Fredo loads the model into its own engine (on one dedicated thread), streams tokens straight to the conversation, and releases the model when the engine stops. This is why the Companion setup asks only for the model files.
+No. Companion inference runs **inside the Fredo process**: the `llama.cpp` runtime ships as native DLLs **beside `fredo.exe` in the install directory** (bundled in the installer), so there is no separate server program to install, launch, or supervise — and no child process, port, or local HTTP endpoint. Fredo loads the model into its own engine (on one dedicated thread), streams tokens straight to the conversation, and releases the model when the engine stops. This is why the Companion setup asks only for the model files.
 
 ### Does Fredo support voice input?
 
@@ -281,7 +281,7 @@ Yes. Type or dictate a request that names a Fredo app — for example `open Miss
 
 ### How do I get the companion ready to use?
 
-Open **Settings → Companion**. If the companion is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls). Because the inference runtime ships inside Fredo, there is **nothing to install**: the **Model files** step is the only prerequisite, and it lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. The second row, **Companion engine**, starts the built-in engine and confirms it is ready. Once the model files are present and the engine is running, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
+Open **Settings → Companion**. If the companion is not fully set up, the panel shows a guided setup wizard (instead of the normal companion controls). Because the installer delivers the inference runtime with the app (the `engine-payload/` DLLs beside `fredo.exe`), there is **nothing for the user to install extra**: the **Model files** step is the only prerequisite, and it lists the three required files individually, downloads them in-app with per-file progress (skipping files already present), resumes an interrupted transfer, and names exactly which file(s) are missing. The second row, **Companion engine**, starts the built-in engine and confirms it is ready. Once the model files are present and the engine is running, the normal companion controls appear. See the [Setup Guide](SETUP.md#companion-setup).
 
 ### How does the Tic-Tac-Toe AI work?
 
@@ -297,7 +297,15 @@ The companion takes a screenshot of the board via `capture_screen_region`, sends
 pnpm build:tauri
 ```
 
-Local development builds produce installers for the host OS. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
+Local development builds produce installers for the host OS. The Windows NSIS `.exe` installer is the artifact that carries the companion engine: `bundle.resources` ships the `engine-payload/` DLL set beside `fredo.exe` in the install directory, and the release pipeline runs `.opencode/scripts/verify-installer-payload.ps1` on the produced installer before any draft release exists. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
+
+To verify an installer yourself, point the gate at the produced `.exe`:
+
+```bash
+powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
+```
+
+The gate extracts the installer and prints one `PAYLOAD_PRESENT=<name>` line per core payload DLL plus `RESULT=PASS` when the payload is complete; a missing DLL fails it (exit 1), and a debug artifact, a missing installer or an unavailable extractor is refused (exit 2).
 
 ### How is the `fredo` CLI installed?
 

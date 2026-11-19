@@ -1,47 +1,42 @@
-// ── Spec #3141 ST-1: the `dynamic-link` payload decision ──────────────────────
+// ── Spec #3158 ST-1: the shipped `dynamic-link` engine payload ────────────────
 //
 // `llama-cpp-4` is built with `dynamic-link` (see `Cargo.toml` — the EXECUTED
 // gate chose it: static archives do not propagate private deps). That means
-// `ggml*.dll` / `llama*.dll` must sit BESIDE `fredo.exe`. The GPU backend is
-// Vulkan only (no `ggml-cuda`), so the payload is the ggml/llama/mtmd DLLs.
+// `ggml*.dll` / `llama*.dll` / `mtmd.dll` must sit BESIDE `fredo.exe`. The GPU
+// backend is Vulkan only (no `ggml-cuda`), so the payload is the ggml/llama/mtmd
+// DLLs plus the Vulkan loader (`vulkan-1.dll`).
 //
-// DECISION (recorded here because `tauri.conf.json` is strict JSON and cannot
-// carry a comment; this build script is the file that owns the bundle wiring):
+// SHIPPED WIRING (recorded here because `tauri.conf.json` is strict JSON and
+// cannot carry a comment; this build script is the file that owns the bundle
+// wiring):
 //
-//   * `bundle.externalBin` stays `[]` — it is an invariant of this spec, and
-//     the engine DLLs are not sidecar binaries.
-//   * `bundle.resources` is deliberately NOT populated in ST-1. The DLLs are
-//     produced by `llama-cpp-sys-4`'s build script under the CARGO TARGET dir
-//     (`<target>/<profile>/`), which is where Cargo's DLL search path already
-//     finds them for `cargo run` / `cargo test` — so developer runs load them
-//     with no config entry.
-//   * Shipping them in the INSTALLER is a release-packaging concern (installer
-//     artifact leg), and wiring it here in ST-1 would be unverifiable and
-//     breakage-prone for three concrete reasons, none of which ST-1 can settle
-//     without an executed release bundle:
-//       1. a `bundle.resources` glob that matches nothing makes
-//          `tauri_build` hard-error (`GlobPathNotFound`) on every build,
-//          including `cargo check` on a machine whose target dir lives
-//          elsewhere (the shared worktree target-dir config makes a relative
-//          `target/**` pattern resolve out of tree);
-//       2. the CI branch below CLEARS `bundle.resources` before `tauri_build`,
-//          so a resource entry added now would be silently dropped from the
-//          release installer CI produces;
-//       3. the GPU runtime redistributable set is a licensing/notices decision
-//          (`docs/THIRD_PARTY_NOTICES.md`, AC-29). With the Vulkan-only
-//          backend the payload is `vulkan-1.dll` (the loader) plus the
-//          ggml/llama/mtmd DLLs; there is no CUDA runtime to redistribute.
-//   * Follow-up owner: ST-6 (teardown/packaging) + the deployment installer
-//     leg, which must bundle the engine + Vulkan DLLs via a matched
-//     `bundle.resources` map and adjust the CI clear below in the same change.
+//   * `tauri.conf.json` declares `bundle.resources` as the DIRECTORY map
+//     `{ "engine-payload/": "" }` — a map entry, not a glob. A `*` glob that
+//     matches nothing raises `GlobPathNotFound`, and a missing directory raises
+//     `ResourcePathNotFound`; an EMPTY directory is a legal no-op, so plain
+//     `cargo check` / `cargo build` stay green on a tree with nothing staged.
+//   * The payload is staged into `engine-payload/` by the Tauri CLI's
+//     `build.beforeBundleCommand` (`.opencode/scripts/stage-engine-payload.ps1`).
+//     That hook is executed by the bundler only — never by `cargo check` /
+//     `cargo build` — so those commands never depend on a staged payload.
+//   * This script PRE-CREATES `engine-payload/` before `tauri_build` runs so the
+//     resource path always resolves. Do NOT add a
+//     `cargo:rerun-if-changed=engine-payload` line: the directory changes on
+//     every bundle and would force the build script to re-run needlessly.
+//   * `bundle.externalBin` stays `[]` — an invariant, and the engine DLLs are
+//     NOT sidecar binaries.
+//   * The build NEVER rewrites `tauri.conf.json`. A previous CI-only branch
+//     swapped the config for a copy with `bundle.resources` cleared and restored
+//     it afterward; that mechanism is deleted, so no build (on CI or locally) can
+//     empty the shipped payload — and a killed build can no longer leave a
+//     modified config plus a stray `tauri.conf.json.bak` in the tree.
 //
 // The manifest source for the engine crate is the crates.io registry
 // (`llama-cpp-4 = "0.11.0"`), deliberately not a git/path dependency — see the
 // `Cargo.toml` comment for the feature set and its justification.
 
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // Spec #3147 ST-1 — the application command manifest.
 //
@@ -66,44 +61,18 @@ fn main() {
     // `CUDA_PATH`; that function is removed rather than left inert so a
     // future CUDA re-introduction is a deliberate, visible change.
 
-    // CI environment variable is set to "true" by GitHub Actions (and other CI
-    // providers). On CI runners, the OpenCode plugin dist doesn't exist, so we
-    // temporarily clear bundle resources before the build and restore the
-    // original config afterward. Locally (no CI), resources are left intact.
-    let is_ci = env::var("CI").unwrap_or_default() == "true";
-
-    let restore = if is_ci {
-        let config_path = PathBuf::from("tauri.conf.json");
-        let backup_path = PathBuf::from("tauri.conf.json.bak");
-
-        let config_str =
-            fs::read_to_string(&config_path).expect("Failed to read tauri.conf.json");
-
-        let mut config: serde_json::Value =
-            serde_json::from_str(&config_str).expect("Failed to parse tauri.conf.json");
-
-        // Clear all bundle resources — none exist on CI
-        if let Some(bundle) = config.get_mut("bundle") {
-            if let Some(resources) = bundle.get_mut("resources") {
-                *resources = serde_json::Value::Object(serde_json::Map::new());
-            }
-        }
-
-        let filtered =
-            serde_json::to_string_pretty(&config).expect("Failed to serialize config");
-
-        // Swap: backup original, write filtered in its place
-        fs::rename(&config_path, &backup_path)
-            .expect("Failed to backup tauri.conf.json");
-        fs::write(&config_path, filtered.as_bytes())
-            .expect("Failed to write filtered tauri.conf.json");
-
-        println!("cargo:warning=Bundle resources cleared (CI build)");
-
-        Some((config_path.clone(), backup_path, config_str))
-    } else {
-        None
-    };
+    // Spec #3158 ST-1 — make the shipped `bundle.resources` path resolvable.
+    //
+    // `tauri.conf.json` ships the engine payload as the directory map entry
+    // `{ "engine-payload/": "" }`. `tauri_build` errors with
+    // `ResourcePathNotFound` when a resources path is ABSENT, but an EMPTY
+    // directory is a legal no-op. Pre-create it so plain `cargo check` /
+    // `cargo build` stay green on a fresh tree where nothing has been staged
+    // yet; the bundler's `beforeBundleCommand` fills it before packaging.
+    // Deliberately NO `cargo:rerun-if-changed=engine-payload` — the directory
+    // changes on every bundle and would force needless build-script re-runs.
+    fs::create_dir_all("engine-payload")
+        .expect("failed to create the engine-payload staging directory");
 
     // Spec #3147 ST-1 — turn Tauri's IPC authority gate ON.
     //
@@ -154,13 +123,6 @@ fn main() {
     if let Err(error) = tauri_build::try_build(attributes) {
         println!("{error:#}");
         std::process::exit(1);
-    }
-
-    // Restore original config so the working tree stays clean
-    if let Some((_config_path, backup_path, original)) = restore {
-        fs::write(&_config_path, original.as_bytes())
-            .expect("Failed to restore tauri.conf.json");
-        fs::remove_file(&backup_path).expect("Failed to remove config backup");
     }
 }
 

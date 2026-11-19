@@ -64,10 +64,13 @@
   the job fail, or does a `$LASTEXITCODE` check pass it through? A gate that treats exit 2 as
   success would let an unverified artifact publish — a **blocker-class finding** (promote to F-22).
 
-- **E-8 — payload growth.** Record the measured `PAYLOAD_TOTAL_BYTES` and the installer delta
-  against `45,646,403` bytes. Do **not** invent or assert a ceiling (the carried #3141 ceiling is an
-  open human question). If the growth is surprising (> 2× the payload's file sizes, or dominated by
-  one unexpected file), report the per-file breakdown so the human can size the ceiling.
+- **E-8 — payload growth.** Record the measured `PAYLOAD_TOTAL_BYTES` and the installer `Length`.
+  Compare them for context only: the compressed installer vs the uncompressed tree is a
+  cross-artifact-class comparison, so against the `45,646,403` B install-tree baseline the delta is
+  **negative** (measured 18,853,619 B vs 111,806,850 B) and is never a defect. Do **not** assert a
+  ceiling (the carried #3141 ceiling is an open human question). If growth is surprising
+  (> 2× the payload's file sizes, or dominated by one unexpected file), report the per-file
+  breakdown so the human can size the ceiling.
 
 - **E-9 — the six `llama-*-impl.dll` tool modules.** Measure the PE import closure: are any of the
   six tool modules imported by `ggml.dll` / `llama.dll` / `mtmd.dll` / `fredo.exe`? If none is, the

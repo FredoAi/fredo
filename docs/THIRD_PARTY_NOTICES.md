@@ -7,14 +7,17 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 
 > **Scope.** Fredo ships three classes of third-party component with a distribution obligation:
 >
-> 1. **The companion inference runtime** — `llama.cpp` (linked into the Fredo binary through the
->    `llama-cpp-4` / `llama-cpp-sys-4` Rust bindings) plus the native GPU runtime redistributable
->    that build links against (Vulkan). See §1 and §2.
+> 1. **The companion inference runtime** — `llama.cpp` (built through the `llama-cpp-4` /
+>    `llama-cpp-sys-4` Rust bindings and shipped as native runtime DLLs **beside `fredo.exe` in the
+>    install directory**, the `engine-payload/` resource tree) plus the native GPU runtime
+>    redistributable that build links against (Vulkan). See §1 and §2.
 > 2. **Doom Mode** — the game data (`DOOM1.WAD`) and the engine (`neurodoom`). See §3 and §4.
 > 3. Nothing else is bundled with a source-distribution obligation.
 >
 > Since Spec #3141 the companion runtime is **in-process** (no `llama-server` executable is shipped
-> and no separate binary is distributed); the `llama.cpp` source is built into Fredo's own binary.
+> and no separate inference program is distributed); since Spec #3158 the `llama.cpp`/ggml build
+> ships as the `engine-payload/` DLL set beside `fredo.exe`, so the engine is loaded in-process
+> rather than linked into the executable.
 
 ---
 
@@ -28,14 +31,14 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 | License | **MIT OR Apache-2.0** (`llama-cpp-4`/`llama-cpp-sys-4` are dual-licensed; upstream `llama.cpp` is MIT) |
 | Upstream | https://github.com/ggml-org/llama.cpp |
 | Bindings upstream | https://github.com/eugenehp/llama-cpp-rs |
-| Distribution form | **Compiled into the Fredo binary** — no separate executable, no vendored source tree shipped as a resource, no runtime download of the engine |
+| Distribution form | **Shipped as native runtime DLLs** beside `fredo.exe` in the install directory (the `engine-payload/` bundle resource tree) — no `llama-server` executable, no separate inference program, no runtime download of the engine |
 | Use in Fredo | The companion's in-process inference engine (`applications/llm_server/engine/`): model loading, chat templating, sampling, MTP speculative decoding, and multimodal (`mtmd`) vision/audio encoding. |
 
 **Why it is recorded here.** `llama.cpp` is the engine that actually runs the companion model. It is
-built from the crate's pinned upstream revision and linked into the Fredo binary, so Fredo
-distributes a compiled copy of it. Both the MIT and Apache-2.0 licenses permit this provided the
-copyright and license notices are retained — the upstream `LICENSE` (MIT) and the crate's chosen
-dual license cover the shipped artifact.
+built from the crate's pinned upstream revision and shipped as the compiled `engine-payload/` DLLs
+beside `fredo.exe`, so Fredo distributes a compiled copy of it. Both the MIT and Apache-2.0 licenses
+permit this provided the copyright and license notices are retained — the upstream `LICENSE` (MIT)
+and the crate's chosen dual license cover the shipped artifact.
 
 ---
 
@@ -175,8 +178,8 @@ with a distribution obligation is the shareware `DOOM1.WAD` recorded in §4.
 Spec #3141 replaced the previously-bundled **`llama-server` executable** with the in-process
 `llama-cpp-4` runtime documented in §1. No separate inference binary is built, bundled, or
 distributed any more, so the previous notices entry for a bundled server executable no longer
-applies. The `llama.cpp` engine itself is still distributed — now compiled into the Fredo binary
-(§1) — and the GPU runtime redistributables it links are recorded in §2.
+applies. The `llama.cpp` engine itself is still distributed — now as the `engine-payload/` DLLs
+beside `fredo.exe` (§1) — and the GPU runtime redistributables it links are recorded in §2.
 
 ---
 

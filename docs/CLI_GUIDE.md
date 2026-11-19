@@ -6,7 +6,7 @@ The `fredo` binary is installed alongside the desktop app and added to your syst
 2. **CLI mode** (with arguments) — forwards commands to the running app via the local IPC socket
 3. **Headless ingest mode** (`fredo ingest`) — a long-lived daemon that captures agent telemetry while the GUI is closed
 
-> **Prerequisite**: The Fredo desktop app must be running for CLI commands to work — except `fredo ingest`, which is self-contained. If the app is not open, a CLI command prints an error to stderr and exits with code `2`.
+> **Prerequisite**: The Fredo desktop app must be running for CLI commands to work — except `fredo ingest` and `fredo companion probe`, which are self-contained. If the app is not open, a CLI command prints an error to stderr and exits with code `2`.
 
 ## Commands
 
@@ -155,6 +155,61 @@ fredo doom export-dataset [--format <raw|sft|dpo>] [--out <PATH>]
 | `2` | Fredo app is not running | _(the fallback message below)_ |
 
 > Capture is **opt-in** (`doom_dataset_enabled`, off by default; env `FREDO_DOOM_DATASET_ENABLED` overrides) and **local-only** — nothing is transmitted off-device. The dataset lives as an append-only JSONL under `<app-data>/doom-dataset/` with a bounded retention/rotation policy (it replaces the retired `doom-agent-requests.jsonl` / `doom-agent-actions.jsonl` audit files).
+
+### `fredo companion probe`
+
+Starts the in-process companion engine and runs ONE bounded turn — the shipped diagnostic that makes the engine observable from a **release** binary. A release build carries no MCP bridge, so this command is how an installed artifact (and the release verification) proves the engine loads and answers without launching the app.
+
+```bash
+fredo companion probe [--prompt <TEXT>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--prompt` | No | Text of the single probe turn (default: a short sentence about the color blue). A blank value is a usage error (exit `2`) |
+
+**Behaviour.** It resolves the models directory with the same CLI rule `fredo setup` uses (`<home>/fredo-models`), refuses a missing engine model file with the engine's typed code, then spawns its own engine handle (it never enables or disables the app's companion), starts it in `auto` mode, runs one turn capped at 64 completion tokens, and prints ONE JSON object on stdout.
+
+**Precondition.** The three GGUF files must be present under `<home>/fredo-models/<manifest subdir>/` (run `fredo setup --download-model`). The model files are not part of the installer payload (~3.66 GB); a probe without them exits `1` with `modelMissing` / `mmprojInitFailed` / `mtpInitFailed` — a precondition failure, not a missing-engine failure.
+
+**JSON shape**
+
+```json
+{
+  "success": true,
+  "backend": "cpu",
+  "backendMode": "auto",
+  "gpuLayers": 0,
+  "devices": [],
+  "modelId": "gemma-4-E2B-it-qat-UD-Q4_K_XL",
+  "replyChars": 42,
+  "detail": "the companion engine is ready."
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `success` | The engine started and the turn produced a reply |
+| `backend` | The device class ggml reported for the loaded set: `cpu`, `gpu`, `integratedGpu`, `accel`, `meta` (`null` before a load) |
+| `backendMode` | The requested mode — always `auto` for the probe |
+| `gpuLayers` | GPU layers the load's own projection resolves to: `0` on the CPU arm; `4294967295` (`u32::MAX`, "every layer") on the full-offload arm |
+| `devices` | The device set the start reported (name, class, free/total bytes) |
+| `modelId` | The main model's id (the manifest model file stem) |
+| `replyChars` | Characters in the assistant reply (`0` on a failure) |
+| `detail` | The engine's curated detail string |
+| `code` | Present only on a typed engine failure (e.g. `modelMissing`, `gpuUnavailable`, `startTimeout`) |
+
+> On a host with no usable accelerator the device set is empty (`[]`) — ggml's model split selection is empty there; a single `CPU` entry appears only under the test-only `FREDO_COMPANION_FORCE_CPU` seam and is not a product state.
+
+**Exit codes**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | The engine started and answered the turn |
+| `1` | A typed engine failure — `code` names it (missing model, load/backend failure, timeout) |
+| `2` | A usage or local precondition error (e.g. a blank `--prompt`); the app-not-running fallback does not apply |
+
+> `fredo companion probe` runs entirely in this process: no app instance is needed, and nothing is written to the app's persisted companion state.
 
 ### `fredo ingest`
 

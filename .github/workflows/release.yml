@@ -1,10 +1,22 @@
-# release.yml — the one-trigger Tauri release-build + publish workflow (R-4 / AC4).
-# Fires ONLY on an owner-approved merge/push into the protected `release/stable`
-# branch (never on `main` — AC5), plus an owner `workflow_dispatch` re-run fallback.
-# Builds a single Windows x64 leg via tauri-action and publishes the installer to a
-# GitHub Release as a DRAFT so the owner reviews it before it goes public (the
-# deliberately-reviewed gate). Windows is the only supported platform.
+# release.yml - the one-trigger Tauri release-build + payload-gate + draft-publish
+# workflow (R-4 / AC4 / AC5). Fires ONLY on an owner-approved merge/push into the
+# protected `release/stable` branch (never on `main` - AC5), plus an owner
+# `workflow_dispatch` re-run fallback. Builds a single Windows x64 leg.
+# Windows is the only supported platform.
 # Every `uses:` action is SHA-pinned (NFR-2 / repo convention).
+#
+# ORDER (Spec #3158 ST-4, AC5 - the artifact gate must fail closed BEFORE a draft
+# can exist):
+#   0. read the version from tauri.conf.json
+#   1. BUILD ONLY - tauri-apps/tauri-action carries no release input, so it makes
+#      no release API call and publishes nothing
+#   2. LOCATE the produced NSIS installer from the action's artifactPaths
+#   3. GATE - verify-installer-payload.ps1 asserts the engine payload is INSIDE
+#      the produced installer (a build log is never a substitute)
+#   4. PUBLISH - the workflow's ONLY publish step: `gh release create --draft`,
+#      gated `if: success()` AFTER the payload gate
+#   5. CLEANUP - if the draft step itself failed, delete a leftover draft for the
+#      tag so a half-published release cannot linger
 name: Release
 on:
   push:
@@ -12,7 +24,7 @@ on:
   workflow_dispatch: {}          # owner manual re-run fallback (optional)
 
 permissions:
-  contents: write                # GITHUB_TOKEN needs write to create/publish the Release
+  contents: write                # GITHUB_TOKEN needs write to create the draft Release
 
 jobs:
   publish-tauri:
@@ -45,12 +57,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/tauri/src-tauri
-      # Spec #3141 ST-1 — the release build compiles llama.cpp/ggml from source
+      # Spec #3141 ST-1 - the release build compiles llama.cpp/ggml from source
       # with the SAME feature set as CI (`vulkan`, `mtmd`, `openmp`, `ggml`,
       # `dynamic-link`). That requires the identical native prerequisite the
       # `rust-validate` leg provisions, so a release build can never silently
       # differ from the validated one:
-      #   * LunarG Vulkan SDK — ggml-vulkan's Windows CMake lookup hard-fails
+      #   * LunarG Vulkan SDK - ggml-vulkan's Windows CMake lookup hard-fails
       #     without it and `glslc` compiles the shaders.
       # Vulkan is the ONLY GPU backend: `ggml-cuda` is not compiled, so no CUDA
       # Toolkit is provisioned and no CUDA runtime is redistributed.
@@ -66,14 +78,172 @@ jobs:
           cache: false
           install_runtime: true
       - run: pnpm install --frozen-lockfile                  # full workspace (release.yml must build the CSS/plugin too)
-      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1 (resolved SHA)
+
+      # 0. Read the version once - it names the tag and is asserted against the
+      #    produced installer filename so a stale artifact can never gate.
+      - name: Read version from tauri.conf.json
+        id: version
+        shell: pwsh
+        run: |
+          $configPath = 'apps/tauri/src-tauri/tauri.conf.json'
+          if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            Write-Host "::error::version read failed: $configPath not found"
+            exit 1
+          }
+          try {
+            $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+          } catch {
+            Write-Host "::error::version read failed: $configPath is not valid JSON - $($_.Exception.Message)"
+            exit 1
+          }
+          $version = [string]$config.version
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            Write-Host "::error::version read failed: $configPath has no .version"
+            exit 1
+          }
+          Write-Host "VERSION=$version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 1. BUILD ONLY. Per the pinned tauri-action README, an action invocation
+      #    without tagName/releaseName/releaseBody/releaseDraft/releaseId/prerelease
+      #    makes NO release API call. The action stays SHA-pinned as before; only
+      #    its release inputs are gone.
+      - name: Build installer (publishes nothing)
+        id: tauri
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1 (resolved SHA)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/tauri/src-tauri                   # Tauri project is not at repo root (tauri-action README)
-          tagName: app-v__VERSION__                           # __VERSION__ ← tauri.conf.json version (0.2.0)
-          releaseName: 'Fredo v__VERSION__'
-          releaseBody: 'Fredo release for v__VERSION__ — see assets to download and install.'
-          releaseDraft: true                                 # owner reviews + publishes the draft (deliberately-reviewed gate)
-          prerelease: false
           args: ${{ matrix.args }}
+
+      # 2. LOCATE - take the newest *-setup.exe from the action's artifactPaths
+      #    (a JSON array), falling back to newest-by-mtime in the NSIS bundle
+      #    directory. Fails with ::error if no installer was produced.
+      - name: Locate produced installer
+        id: locate
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundleDir = 'apps/tauri/src-tauri/target/release/bundle/nsis'
+          $bundleFiles = @()
+          if (Test-Path -LiteralPath $bundleDir -PathType Container) {
+            $bundleFiles = @(Get-ChildItem -LiteralPath $bundleDir -File -Filter '*-setup.exe' |
+              Sort-Object LastWriteTimeUtc -Descending)
+            foreach ($f in $bundleFiles) {
+              Write-Host "BUNDLE_FILE=$($f.Name) bytes=$($f.Length)"
+            }
+            if ($bundleFiles.Count -eq 0) {
+              Write-Host 'BUNDLE_FILE=<none> bytes=0'
+            }
+          } else {
+            Write-Host "BUNDLE_DIR_MISSING=$bundleDir"
+          }
+
+          $installer = $null
+          $raw = $env:ARTIFACT_PATHS
+          if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            $parsed = $null
+            try {
+              $parsed = $raw | ConvertFrom-Json
+            } catch {
+              Write-Host "WARN: artifactPaths is not parseable JSON - $($_.Exception.Message)"
+            }
+            $fromAction = @()
+            foreach ($candidate in @($parsed)) {
+              if ($candidate -isnot [string]) { continue }
+              if ($candidate -notmatch '(?i)-setup\.exe$') { continue }
+              if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+              $fromAction += (Get-Item -LiteralPath $candidate)
+            }
+            if ($fromAction.Count -gt 0) {
+              $installer = ($fromAction | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
+              Write-Host "ARTIFACT_PATH_HIT=$installer"
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($installer)) {
+            if ($bundleFiles.Count -gt 0) {
+              $installer = $bundleFiles[0].FullName
+              Write-Host "ARTIFACT_PATH_FALLBACK=$installer"
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($installer) -or -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            Write-Host '::error::No *-setup.exe installer found in artifactPaths or the NSIS bundle directory'
+            exit 1
+          }
+
+          $full = [System.IO.Path]::GetFullPath($installer)
+          Write-Host "INSTALLER=$full bytes=$((Get-Item -LiteralPath $full).Length)"
+          "installer=$full" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 3. GATE - the produced ARTIFACT must contain the engine payload. This step
+      #    publishes nothing; on failure the draft step below is skipped.
+      - name: Verify installer payload
+        id: gate
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          INSTALLER: ${{ steps.locate.outputs.installer }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:INSTALLER)) {
+            Write-Host '::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT installer path is empty'
+            exit 1
+          }
+          $name = [System.IO.Path]::GetFileName($env:INSTALLER)
+          if (-not $name.Contains($env:EXPECTED_VERSION)) {
+            Write-Host "::error::INSTALLER_VERSION_MISMATCH expected=$($env:EXPECTED_VERSION) file=$name"
+            exit 1
+          }
+          Write-Host "GATE_INSTALLER=$env:INSTALLER version=$($env:EXPECTED_VERSION)"
+          & powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer $env:INSTALLER
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT verify-installer-payload.ps1 exited $code"
+            exit 1
+          }
+          Write-Host 'PAYLOAD_GATE=PASS'
+
+      # 4. PUBLISH - the workflow's ONLY publish step, AFTER the gate passed. It
+      #    creates a DRAFT (never public: no --auto, no publish) so the owner
+      #    reviews it before it goes public (the deliberately-reviewed gate).
+      - name: Create draft release
+        id: draft
+        if: success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          INSTALLER: ${{ steps.locate.outputs.installer }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "app-v$env:VERSION"
+          Write-Host "DRAFT_TAG=$tag"
+          gh release create $tag $env:INSTALLER --draft --title "Fredo v$env:VERSION" --notes "Fredo release for v$env:VERSION - see assets to download and install."
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::DRAFT_RELEASE_FAILED tag=$tag exit=$LASTEXITCODE"
+            exit 1
+          }
+
+      # 5. CLEANUP - if the draft step itself failed, remove a leftover draft for
+      #    the tag so a half-published release cannot linger. A gate failure never
+      #    reaches here (the draft step is skipped, not failed).
+      - name: Cleanup partial draft release
+        if: failure() && steps.draft.outcome == 'failure'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $tag = "app-v$env:VERSION"
+          gh release view $tag --json tagName --jq '.tagName' 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "DELETING_DRAFT=$tag"
+            gh release delete $tag --yes --cleanup-tag
+          } else {
+            Write-Host "NO_DRAFT_TO_CLEAN=$tag"
+          }

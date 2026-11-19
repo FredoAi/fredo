@@ -56,7 +56,7 @@
 | Probe exit codes | `0` success / `1` typed engine failure / `2` usage-precondition | Architect §API Contracts 7 |
 | Staging exit codes | `0` pass / `1` named payload failure / `2` refused precondition / `3` `-SelfTest` control failed | Architect §API Contracts 3 |
 | Artifact-gate exit codes | `0` PASS / `1` FAIL / `2` refused precondition | Architect §API Contracts 4 |
-| Pre-fix artifact floor | `45,646,403` bytes (`fredo.exe` 45,566,976 + `uninstall.exe` 79,427) | the published `app-v0.2.0` defect baseline |
+| Pre-fix install-**tree** bytes (context only — NOT an installer floor) | `45,646,403` (`fredo.exe` 45,566,976 + `uninstall.exe` 79,427, uncompressed) | the published `app-v0.2.0` defect baseline (issue #3158). The NSIS installer is LZMA-compressed; its `Length` is NOT comparable to this sum (measured: 18,853,619 B installer for a 111,806,850 B tree). |
 | Installer name | carries `0.2.0` | `tauri.conf.json:4` + `release.yml:62` (`app-v__VERSION__`) |
 
 > **Stale-artifact hazard (G-425).** `apps/tauri/src-tauri/target/release/bundle/nsis/` currently
@@ -75,14 +75,38 @@
       then `RC("Get-Item -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`
       and
       `RC("Get-FileHash -Algorithm SHA256 -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`.
-  - **Expected:** `True`; `Length` strictly **greater than `45,646,403`** (a payload-bearing
-    installer must exceed the defect's own two-file baseline); `LastWriteTime` at/after this
-    round's build start; SHA-256 recorded. Evidence: the size + hash lines quoted in the POSTED
-    `## Tests Runs`.
+  - **Expected:** `True`; the file **name** carries `0.2.0`; `LastWriteTime` at/after this round's
+    build start; `Length` and SHA-256 **recorded as measurements — no size threshold**. Completeness
+    is NOT asserted here: it is F-2's extracted-tree enumeration (and F-10's `PAYLOAD_PRESENT=`
+    lines). Evidence: the size + hash lines quoted in the POSTED `## Tests Runs`.
   - **Edge:** a `0.1.0` filename or a pre-build mtime ⇒ **FAIL (stale artifact)** — do not retry a
     different file and call it this round's. No installer at all ⇒ NOT RUN with the AC4 blocker
     phrasing (see `exploratory.md` E-6). If the stem differs but the version segment reads `0.2.0`,
-    record the stem from the listing and continue.
+    record the stem from the listing and continue. A `Length` **smaller** than `45,646,403` B is
+    **EXPECTED, never a FAIL** — that figure is an *uncompressed two-file install-tree* sum, while
+    the installer is LZMA-compressed (measured: 18,853,619 B installer / 111,806,850 B tree). A
+    `Length` of `0` or an unreadable file ⇒ FAIL.
+
+- [ ] **F-1b (A1-0b, the committed producer hook resolves its script from both documented build
+      cwds).**
+  - **(1) Static:** read `apps/tauri/src-tauri/tauri.conf.json:9` — the `-File` argument is exactly
+    `../../.opencode/scripts/stage-engine-payload.ps1` (two `../`).
+  - **(2) Hook-cwd control (ST-6's proven recipe):** author
+    `.opencode/tmp/3158/probe-config.json` = `{"build":{"beforeBundleCommand":"echo PROBE_HOOK_CWD=%CD%"}}`
+    and `.opencode/tmp/3158/hook-cwd-probe.ps1` taking `-Dir <app dir>`:
+    `Set-Location -LiteralPath <repo>\<Dir>` then
+    `& <repo>\apps\tauri\node_modules\.bin\tauri.cmd build --config <repo>\.opencode\tmp\3158\probe-config.json --bundles nsis`.
+    Run it twice through `RC("powershell -NoProfile -File .opencode\tmp\3158\hook-cwd-probe.ps1 -Dir apps\tauri")`
+    and `-Dir apps\tauri\src-tauri`; record `PROBE_HOOK_CWD=`.
+  - **(3) Real producer:** `$env:CI='true'`, `RC("pnpm --filter @fredo/tauri build")`; read the log.
+  - **Expected:** (1) exactly `../../`; (2) **both** probe runs print
+    `PROBE_HOOK_CWD=<repo>\apps\tauri`; (3) `Running beforeBundleCommand …` is followed by
+    `PAYLOAD_SOURCE=<repo>\apps\tauri\src-tauri\target\release` and `RESULT=PASS`, and the build ends
+    with an NSIS `*-setup.exe` (no `… does not exist`, no `beforeBundleCommand … failed`).
+  - **Edge:** a `--config` override (or a hand-staged `engine-payload/`) used as the *producer* is
+    **NOT** a PASS. A probe printing a cwd other than `apps\tauri` ⇒ the documented rule changed ⇒
+    **FAIL** (re-derive before editing the hook). A (3) run that reuses a pre-built installer
+    without executing the hook ⇒ **NOT** a PASS.
 
 - [ ] **F-2 (A1-1, install-directory enumeration — the AC's named evidence).**
       `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe' -WorkDir '.opencode\tmp\3158\artifact'")`
@@ -140,18 +164,21 @@
 
 - [ ] **F-7 (A2-1, the CPU path with all three assertions).** In `probe-sanitised.ps1`, launch the
       probe from the install tree with `GGML_VK_VISIBLE_DEVICES` **present and empty**.
-  - **Expected:** `"success": true`; `"backend": "cpu"`; `"gpuLayers": 0`; `"devices"` length **1**;
-    `devices[0].deviceType === "cpu"`; `PROBE_EXITCODE=0`. Evidence: the JSON verbatim in the
-    POSTED `## Tests Runs`.
+  - **Expected:** `"success": true`; `"backend": "cpu"`; `"gpuLayers": 0`; `"devices"` contains
+    **no** entry whose `deviceType` is other than `"cpu"` — the readout enumerates **no Vulkan GPU**
+    (`"devices": []` is the shipped no-accelerator readout: ggml's model split set is empty when no
+    accelerator is selected, `engine/device.rs:170-174`); no device `name` reads `Vulkan0`. Evidence:
+    the JSON verbatim in the POSTED `## Tests Runs`.
   - **Edge (load-bearing):** **`$env:GGML_VK_VISIBLE_DEVICES = ""` on PowerShell 5.1 DELETES the
     variable** — that would silently make this the no-lever control and pass F-7 by coincidence.
     The script MUST pass the child its environment via
     `[System.Diagnostics.ProcessStartInfo]` with `UseShellExecute = $false` and
     `.EnvironmentVariables["GGML_VK_VISIBLE_DEVICES"] = ""`, and MUST print
-    `VK_ENV_VALUE=<empty-present>` to prove the value was present-but-empty. Devices length > 1, or
-    any non-CPU `deviceType` ⇒ **FAIL**. Do **not** use `FREDO_COMPANION_FORCE_CPU` (it coerces the
-    device set *after* the model loaded with `u32::MAX` layers — `thread.rs:695` then `:708` — so it
-    proves reporting, not CPU execution).
+    `VK_ENV_VALUE=<empty-present>` to prove the value was present-but-empty. Any **non-CPU**
+    `deviceType` (or Vulkan GPU name) ⇒ **FAIL**; a **zero-length** `devices` array is **correct, not
+    a failure**. Do **not** use `FREDO_COMPANION_FORCE_CPU` (the only producer of a one-entry `CPU`
+    list; it coerces the set *after* the model loaded with `u32::MAX` layers — `thread.rs:695` then
+    `:708` — so it proves reporting, not CPU execution).
 
 - [ ] **F-8 (A2-2, discriminating control — the same run WITHOUT the variable).** Same script, same
       install tree, the variable **absent** from the child environment.
@@ -387,12 +414,13 @@
   - **Edge:** an unrelated failing leg is still a FAIL of this row — quote the failing leg verbatim
     so the Orchestrator can attribute it.
 
-- [ ] **F-26 (NF4, payload size measured — NO numeric ceiling asserted).** Record
-      `PAYLOAD_TOTAL_BYTES` (F-18), the per-file `bytes=` lines, and the installer delta (F-1
-      `Length` minus `45,646,403`).
-  - **Expected:** all three numbers recorded in the POSTED `## Tests Runs`. **No pass/fail threshold
-    is applied** — the carried #3141 ceiling is an open human question.
-  - **Edge:** a row that invents a MB ceiling ⇒ plan defect. A payload file with `bytes=0` ⇒ the
+- [ ] **F-26 (NF4, payload size measured — NO numeric threshold).** Record `PAYLOAD_TOTAL_BYTES`
+      (F-18), the per-file `bytes=` lines, and the installer `Length` (F-1) as **measurements**. The
+      delta vs the `45,646,403` B pre-fix figure is context only: the installer is LZMA-compressed,
+      so a **negative** delta is expected (measured: 18,853,619 B installer / 111,806,850 B tree)
+      and is never a FAIL.
+  - **Expected:** the numbers recorded in the POSTED `## Tests Runs`.
+  - **Edge:** a row that invents a size ceiling ⇒ plan defect. A payload file with `bytes=0` ⇒ the
     F-2/F-18 FAIL.
 
 - [ ] **F-27 (NF5, an empty `engine-payload/` still builds).** Empty the staged dir from a tmp script
