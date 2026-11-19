@@ -57,31 +57,31 @@
 | Staging exit codes | `0` pass / `1` named payload failure / `2` refused precondition / `3` `-SelfTest` control failed | Architect §API Contracts 3 |
 | Artifact-gate exit codes | `0` PASS / `1` FAIL / `2` refused precondition | Architect §API Contracts 4 |
 | Pre-fix install-**tree** bytes (context only — NOT an installer floor) | `45,646,403` (`fredo.exe` 45,566,976 + `uninstall.exe` 79,427, uncompressed) | the published `app-v0.2.0` defect baseline (issue #3158). The NSIS installer is LZMA-compressed; its `Length` is NOT comparable to this sum (measured: 18,853,619 B installer for a 111,806,850 B tree). |
-| Installer name | carries `0.2.0` | `tauri.conf.json:4` + `release.yml:62` (`app-v__VERSION__`) |
+| Installer name | carries `0.2.2` | `tauri.conf.json:4` + `release.yml:62` (`app-v__VERSION__`) |
 
 > **Stale-artifact hazard (G-425).** `apps/tauri/src-tauri/target/release/bundle/nsis/` currently
 > holds `Fredo_0.1.0_x64-setup.exe` — a previous version. Every artifact row asserts BOTH the
-> `0.2.0` filename AND an mtime at/after this round's build start. A `0.1.0` file or a pre-build
+> `0.2.2` filename AND an mtime at/after this round's build start. A `0.1.0` file or a pre-build
 > mtime is a **stale-artifact FAIL**, never a PASS.
 >
 > **Display-name note.** `"Fredo_0.1.0_x64-setup.exe"` uses the productName+version form; if this
 > build emits a different stem, take the stem from A1-0's own listing and record it — do **not**
-> fail on the stem while the version segment is `0.2.0`.
+> fail on the stem while the version segment is `0.2.2`.
 
 ## AC1 — a clean install is complete and works
 
 - [ ] **F-1 (A1-0, artifact identity — precondition for every artifact row).**
-      `RC("Test-Path 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`;
-      then `RC("Get-Item -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`
+      `RC("Test-Path 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe'")`;
+      then `RC("Get-Item -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe'")`
       and
-      `RC("Get-FileHash -Algorithm SHA256 -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`.
-  - **Expected:** `True`; the file **name** carries `0.2.0`; `LastWriteTime` at/after this round's
+      `RC("Get-FileHash -Algorithm SHA256 -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe'")`.
+  - **Expected:** `True`; the file **name** carries `0.2.2`; `LastWriteTime` at/after this round's
     build start; `Length` and SHA-256 **recorded as measurements — no size threshold**. Completeness
     is NOT asserted here: it is F-2's extracted-tree enumeration (and F-10's `PAYLOAD_PRESENT=`
     lines). Evidence: the size + hash lines quoted in the POSTED `## Tests Runs`.
   - **Edge:** a `0.1.0` filename or a pre-build mtime ⇒ **FAIL (stale artifact)** — do not retry a
     different file and call it this round's. No installer at all ⇒ NOT RUN with the AC4 blocker
-    phrasing (see `exploratory.md` E-6). If the stem differs but the version segment reads `0.2.0`,
+    phrasing (see `exploratory.md` E-6). If the stem differs but the version segment reads `0.2.2`,
     record the stem from the listing and continue. A `Length` **smaller** than `45,646,403` B is
     **EXPECTED, never a FAIL** — that figure is an *uncompressed two-file install-tree* sum, while
     the installer is LZMA-compressed (measured: 18,853,619 B installer / 111,806,850 B tree). A
@@ -109,7 +109,7 @@
     without executing the hook ⇒ **NOT** a PASS.
 
 - [ ] **F-2 (A1-1, install-directory enumeration — the AC's named evidence).**
-      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe' -WorkDir '.opencode\tmp\3158\artifact'")`
+      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe' -WorkDir '.opencode\tmp\3158\artifact'")`
       then `RC("Get-ChildItem -LiteralPath '.opencode\tmp\3158\artifact' -File")`.
   - **Expected:** the listing carries at least **9** file rows — `fredo.exe` plus **all 8 core
     payload names** — each with `Length` strictly `> 0`. That is the "payload files present — not
@@ -121,7 +121,7 @@
     produced the tree.
 
 - [ ] **F-3 (A1-1b, silent-install route — the user-identical route, when elevated).**
-      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe' -WorkDir '.opencode\tmp\3158\installed'")`
+      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe' -WorkDir '.opencode\tmp\3158\installed'")`
       then enumerate `.opencode\tmp\3158\installed` exactly as in F-2.
   - **Expected:** the same 9 names **plus `uninstall.exe`** (the real `$INSTDIR` layout) and the
     gate's `RESULT=PASS` / `EXITCODE=0`.
@@ -200,7 +200,7 @@
 ## AC3 — a release build can no longer strip the payload
 
 - [ ] **F-10 (A3-1, the produced installer carries the whole payload — by extraction).**
-      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.0_x64-setup.exe'")`.
+      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe'")`.
   - **Expected:** `ARTIFACT=<path> sha256=<hex> bytes=<n>`; one `PAYLOAD_PRESENT=<name>` line for
     **each of the 8 core names**; `RESULT=PASS`; `EXITCODE=0`. Evidence: the whole transcript in the
     POSTED `## Tests Runs`.
@@ -351,12 +351,15 @@
 
 - [ ] **F-21 (A5-5, the instrument's deterministic control set).**
       `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -SelfTest")`.
-  - **Expected:** `EXITCODE=0`; all seven control lines present — `CONTROL 1 - POSITIVE`,
+  - **Expected:** `EXITCODE=0`; all eleven control lines present — `CONTROL 1 - POSITIVE`,
     `CONTROL 2 - MISSING-CORE`, `CONTROL 3 - MISSING-LOADER`, `CONTROL 4 - IMPORT-GAP`,
-    `CONTROL 5 - NO-CUDA`, `CONTROL 6 - IDEMPOTENT`, `CONTROL 7 - SELF-REFERENCE` — and **no
+    `CONTROL 5 - NO-CUDA`, `CONTROL 6 - IDEMPOTENT`, `CONTROL 7 - SELF-REFERENCE`,
+    `CONTROL 8 - FORBIDDEN-IMPORT`, `CONTROL 9 - DELAY-IMPORT`,
+    `CONTROL 10 - NON-ROOT-IMPORT-GAP`, `CONTROL 11 - IMPORT-SCAN-COMPLETE` — and **no
     `[FAIL]`** anywhere.
   - **Edge:** `EXITCODE=3` = a control failed ⇒ **FAIL** of the instrument. A missing control line ⇒
-    **FAIL** (the seven are the contract; a six-control transcript is a plan-level gap, not a PASS).
+    **FAIL** (the eleven are the contract; a six- or ten-control transcript is a plan-level gap, not a
+    PASS). Controls 1–7 keep their names and assertions unchanged (their extension is additive).
 
 - [ ] **F-22 (A5-6, the guard has a runner and the release job runs it).** Read
       `.github/workflows/release.yml` and `.opencode/scripts/test-scripts.ps1` (Read tool); then
@@ -446,6 +449,145 @@
     script.
   - **Edge:** two lists ⇒ **FAIL** (they drift). `ggml-cuda.dll` marked required ⇒ unconditional
     **FAIL** (`Cargo.toml:127-136`).
+
+## #3172 — OpenSSL-free build + total import scan (new contract rows)
+
+Each row below binds to the #3172 QA Plan (`## QA Expert` rows `R-1.2` … `R-5.3`) and to the exact
+script literals; the enumerations above stay the #3158 history. `fredo.exe` is **outside** the scan
+universe — its load proof is AC4 (F-39), and no row here asserts on its own imports.
+
+- [ ] **F-29 (R-1.4, stager control 8 — a load-time forbidden import fails staging).**
+      `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -SelfTest")`.
+  - **Expected:** the transcript carries `CONTROL 8 - FORBIDDEN-IMPORT` then `[PASS]`; the control
+    drives `PAYLOAD_FORBIDDEN_IMPORT=libssl-3-x64.dll imported_by=ggml.dll kind=import` and
+    `ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=ggml.dll module=libssl-3-x64.dll kind=import` with exit 1,
+    and its pre-seeded `sentinel.txt` in `-OutDir` survives; `SELFTEST: PASS`, `EXITCODE=0`.
+  - **Edge:** `libssl-3-x64.dll` derives from `importClosure.forbiddenImportPrefixes[0]`
+    (`"libssl"`), and the importer is the manifest-derived anchor core name (today `ggml.dll`); a
+    control asserting only "no crash" (not the named literal) ⇒ instrument **FAIL**. `kind=parse`
+    belongs to the PE-gap class, not this row.
+
+- [ ] **F-30 (R-1.3 + R-1.4, stager control 9 — a delay-load forbidden import fails staging).**
+      Same `-SelfTest` run.
+  - **Expected:** `CONTROL 9 - DELAY-IMPORT` then `[PASS]`; it drives
+    `PAYLOAD_FORBIDDEN_IMPORT=libcrypto-3-x64.dll imported_by=ggml.dll kind=delay-import` and
+    `ERROR=PAYLOAD_FORBIDDEN_IMPORT dll=ggml.dll module=libcrypto-3-x64.dll kind=delay-import`,
+    exit 1, sentinel survives. This is the discriminator for the delay-import directory
+    (`DataDirectory[13]`) — a reader of `DataDirectory[1]` alone cannot see it.
+  - **Edge:** `libcrypto-3-x64.dll` derives from `forbiddenImportPrefixes[1]` (`"libcrypto"`); a
+    `kind=import` line from control 8 does not satisfy this row (the two kinds are distinct literals).
+
+- [ ] **F-31 (R-2.2, stager control 10 — a NON-ROOT tool module's import gap fails staging).**
+      Same `-SelfTest` run.
+  - **Expected:** `CONTROL 10 - NON-ROOT-IMPORT-GAP` then `[PASS]`; the importer is the first
+    `toolModules` entry (today `llama-batched-bench-impl.dll`), the missing module is
+    `fixture-absent-dependency.dll`, and the control drives
+    `PAYLOAD_IMPORT_MISS=fixture-absent-dependency.dll imported_by=llama-batched-bench-impl.dll kind=import`
+    and
+    `ERROR=PAYLOAD_IMPORT_UNRESOLVED edge=llama-batched-bench-impl.dll -> fixture-absent-dependency.dll kind=import`,
+    exit 1, sentinel survives. This is the AC2 discriminator: a roots-only gate passes control 4 and
+    fails this one.
+  - **Edge:** a fixture whose importer is a core/root DLL does not exercise this row; a `kind=parse`
+    error is a different class.
+
+- [ ] **F-32 (R-2.1, stager control 11 — an incomplete import scan fails closed).**
+      Same `-SelfTest` run.
+  - **Expected:** `CONTROL 11 - IMPORT-SCAN-COMPLETE` then `[PASS]`; the control deliberately skips
+    one staged DLL and drives `ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE scanned=<n> staged=<n>` with
+    `scanned = staged - 1`, `staged = 14` (8 core + 6 tool modules), and exactly `staged - 1`
+    `PAYLOAD_IMPORT_SCAN=<dll> imports=<n> delay=<n>` lines; exit 1, sentinel survives.
+  - **Edge:** a count mismatch with no named error ⇒ control-11 defect; a 14-scan-line transcript in
+    the failing leg means the deliberate skip did not take effect.
+
+- [ ] **F-33 (R-2.3, the manifest is total by construction — and the refusal is drivable).**
+      Read `.opencode/scripts/payload-manifest.json`; then drive the `-ManifestPath` seam from a tmp
+      copy (never mutate the committed manifest): author
+      `.opencode/tmp/3172/manifest-subset.json` with `"roots": "subset"` and
+      `.opencode/tmp/3172/manifest-blank-prefix.json` with `"forbiddenImportPrefixes": [""]`, then
+      `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -ManifestPath '.opencode\tmp\3172\manifest-subset.json'")`
+      and the same call with the blank-prefix copy.
+  - **Expected:** the committed manifest reads `"schemaVersion": 2` and
+    `importClosure.roots` = `"all-staged"`, its `forbiddenImportPrefixes` are exactly `libssl` and
+    `libcrypto`, and it carries **no** `rootExact` / `rootPrefix` key; the subset copy exits `2` with
+    `ERROR=PAYLOAD_MANIFEST_INVALID path=<abs path> reason=import-closure-not-total value=subset`;
+    the blank-prefix copy exits `2` with
+    `ERROR=PAYLOAD_MANIFEST_INVALID path=<abs path> reason=missing-forbidden-prefixes`.
+  - **Edge:** a default staging run (`-ManifestPath` omitted) must read the manifest beside the
+    script — a caller-supplied path is never read by default (`stage-engine-payload.ps1:83-88`,
+    `:148-154`). Never edit the committed manifest mid-round; if the seam is absent, record the
+    refusal literal as `logic-verified, no discriminating run` — never a PASS from the committed
+    value alone.
+
+- [ ] **F-34 (R-1.2 + R-2.1, a real staging run reports one import scan per staged DLL).**
+      On a profile tree holding the full payload (F-18's precondition),
+      `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -Profile release")`
+      (or `-Profile debug`, naming the profile that answered).
+  - **Expected:** `RESULT=PASS`; `PAYLOAD_COUNT=14`; exactly **14** lines
+    `PAYLOAD_IMPORT_SCAN=<dll> imports=<n> delay=<n>` (one per staged DLL, each with a `delay=`
+    field — proof `DataDirectory[13]` is read); **zero** `PAYLOAD_FORBIDDEN_IMPORT=` and zero
+    `PAYLOAD_IMPORT_MISS=` lines; no `ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE`.
+  - **Edge:** fewer scan lines than staged DLLs ⇒ `ERROR=PAYLOAD_IMPORT_SCAN_INCOMPLETE
+    scanned=<n> staged=<n>` (R-2.1); on a tree where a listed tool module is absent the scan-line
+    count equals `PAYLOAD_COUNT` (self-consistency), while 14 is the complete-set expectation — a
+    stale cached `llama-common.dll` is caught HERE, not from a build log.
+
+- [ ] **F-35 (R-5.1, the artifact gate scans every payload DLL it extracts).**
+      `RC("powershell -File .opencode/scripts/verify-installer-payload.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.2_x64-setup.exe'")`.
+  - **Expected:** `ARTIFACT_PAYLOAD_SCANNED=14 of=14`; `IMPORT_SCAN=PASS dlls=14`;
+    `RESULT=PASS`; `EXITCODE=0`; **zero** `ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT`,
+    `ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT` and
+    `ERROR=PAYLOAD_IMPORT_PARSE_FAIL_IN_ARTIFACT` lines; a tool module absent from the extract is
+    reported `PAYLOAD_ABSENT_OPTIONAL=<name>` (a report, never a FAIL) and both counts drop together.
+  - **Edge:** a presence-only gate (pre-#3172) emits no `ARTIFACT_PAYLOAD_SCANNED=` / `IMPORT_SCAN=`
+    line ⇒ **FAIL**; `fredo.exe` and `uninstall.exe` are outside the scan universe.
+
+- [ ] **F-36 (R-5.1, verifier controls 6/7 — the artifact gate's forbidden-import legs).**
+      `RC("powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -SelfTest")`.
+  - **Expected:** `CONTROL 6 - ARTIFACT-FORBIDDEN-IMPORT` and `CONTROL 7 - ARTIFACT-DELAY-IMPORT`
+    each print `[PASS]`; control 6 drives
+    `ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT dll=llama-common.dll module=libssl-3-x64.dll kind=import`,
+    control 7 drives
+    `ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT dll=llama-common.dll module=libcrypto-3-x64.dll kind=delay-import`;
+    each run also prints `IMPORT_SCAN=FAIL` and exits 1.
+  - **Edge:** `llama-common.dll` is the preferred scan target (the DLL whose real OpenSSL import
+    motivated this spec); a manifest without it falls back to the first core name — record the
+    actual `dll=` value. Both fixtures are synthetic PEs (a text stub would now be a parse failure) —
+    strictly stricter with the control names unchanged.
+
+- [ ] **F-37 (R-5.3, verifier control 8 — an unresolved import in the artifact fails the gate).**
+      Same `-SelfTest` run.
+  - **Expected:** `CONTROL 8 - ARTIFACT-IMPORT-GAP` then `[PASS]`; it drives
+    `ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT edge=llama-common.dll -> mystery-unresolved-dependency.dll kind=import`,
+    `IMPORT_SCAN=FAIL`, exit 1.
+  - **Edge:** the full poisoned-installer form would re-bundle over the measured artifact (G-446) ⇒
+    cite-not-execute; the synthetic control is the demonstrated leg and the disclosure is
+    `logic-verified on the instrument; no re-bundled poisoned artifact`.
+
+- [ ] **F-38 (R-5.2, the verifier's instrument contract is eight controls).**
+      `RC("powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -SelfTest")`.
+  - **Expected:** `EXITCODE=0`; `SELFTEST: PASS`; all eight control lines present —
+    `CONTROL 1 - PASS-ON-COMPLETE`, `CONTROL 2 - FAIL-ON-MISSING`,
+    `CONTROL 3 - REFUSE-DEBUG-PATH`, `CONTROL 4 - REFUSE-NO-EXTRACTOR`,
+    `CONTROL 5 - SELF-REFERENCE`, `CONTROL 6 - ARTIFACT-FORBIDDEN-IMPORT`,
+    `CONTROL 7 - ARTIFACT-DELAY-IMPORT`, `CONTROL 8 - ARTIFACT-IMPORT-GAP`; **no `[FAIL]`**.
+  - **Edge:** controls 1–5 keep their names and assertions (their fixtures moved from text stubs to
+    synthetic PEs — stricter, not a rename); `EXITCODE=3` ⇒ a control failed ⇒ **FAIL**; a missing
+    control line ⇒ **FAIL** (the eight are the contract).
+
+- [ ] **F-39 (R-4.1–R-4.3, the AC4 probe literals — sanitised PATH, version, probe, remove-one-DLL).**
+      Decide the extraction route (7z on `PATH` → `%ProgramFiles%\7-Zip\7z.exe` → NSIS `/S /D=`),
+      name it in the receipt, then
+      `RC("powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe '<install>\fredo.exe' -Ports <n> -SanitizePath -CompanionProbe -RemoveDll llama-common.dll")`.
+  - **Expected:** `PATH_SANITISED=C:\Windows\System32;C:\Windows`; `VERSION_EXIT=0`;
+    `VERSION_STDOUT=fredo 0.2.2`; `PROBE_EXIT=0`; `PROBE_SUCCESS=true`; one `PROBE_JSON=` object
+    with `"success":true` (record the loaded `modelId`); `CONTROL_REMOVED_DLL=llama-common.dll`;
+    `CONTROL_EXIT=-1073741515`; `CONTROL_EXPECTED_EXIT=-1073741515` (accept `3221225781` unsigned).
+  - **Edge:** any receipt whose `PATH`/cwd contains `apps\tauri\src-tauri\target\<profile>` (or
+    traceable to `cargo run` / `pnpm dev:tauri` / `pnpm dev:tauri:release` / `target/release/fredo.exe`
+    run in place) is **REJECTED evidence** and invalidates the artifact verdict (F-16). `-RemoveDll`
+    deletes only from its `.opencode/tmp/3172/` copy — the install tree is never touched. If
+    `PROBE_SUCCESS=false` with `modelMissing` / `mmprojInitFailed` / `mtpInitFailed`, record the
+    **precondition blocker** (E-2), never a product FAIL.
 
 _Evidence convention: pass cases keep `- [x]` and append the recorded transcript/JSON tokens plus the
 `EXITCODE=` value; fail cases leave `- [ ]` and mark `FAIL` with expected-vs-actual + repro. Rows whose
