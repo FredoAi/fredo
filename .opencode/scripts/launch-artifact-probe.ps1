@@ -41,20 +41,80 @@
     * The `--version` leg prints `VERSION_EXIT=` and `VERSION_STDOUT=` (first
       stdout line).
 
+  DETACHMENT -- why the GUI app is launched by `Start-DetachedProcess`, not by
+  `Start-Process` (Spec #3172 ST-5):
+    PowerShell 5.1's `Start-Process -RedirectStandardOutput/-RedirectStandardError`
+    calls Win32 `CreateProcess` with handle inheritance ON and NO handle
+    whitelist, so the GUI child inherits EVERY inheritable handle of this
+    process -- including the stdout/stderr PIPE handles of whoever invoked this
+    script. The script then finishes and prints `RESULT=PASS`, yet an INLINE
+    caller that reads this script's stdout to EOF (a tool call, `$(...)`,
+    `Tee-Object`, `& powershell ... | ...`) blocks forever on the pipe, held open
+    by the leftover app / WebView2 process tree.
+    `Start-DetachedProcess` is a `CreateProcess` P/Invoke that passes
+    EXTENDED_STARTUPINFO_PRESENT + STARTF_USESTDHANDLES +
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST whitelisting exactly THREE inheritable
+    handles (stdin=NUL, stdout=<stdout.log>, stderr=<stderr.log>). The whitelist
+    is the guarantee: no other handle of this process -- above all its own
+    stdout/stderr pipe -- is inherited, so the launched app can never hold the
+    caller's console. The helper returns the PID and the rest of the script keeps
+    its `Get-Process -Id` semantics (HasExited / ExitCode / teardown).
+    `.opencode/scripts/test-scripts.ps1` gates this by invoking `-SelfTest`
+    INLINE with its stdout captured: if inheritance ever regresses, the harness
+    itself blocks for the child's lifetime.
+
+  DURATION AND PHASES (Spec #3172 ST-5):
+    A normal run is TWO INDEPENDENT phases, each announced by a `PHASE=` marker
+    carrying SINCE_START_SECONDS:
+      PHASE=launch-window  the bounded GUI observation (-WaitSecs, default 40 s)
+                           plus the port/bridge assertions and teardown -- SECONDS.
+      PHASE=cli-legs       `<exe> --version`, then, when asked,
+                           PHASE=companion-probe and PHASE=dll-control.
+    `-CompanionProbe` DOMINATES wall-clock time: it is a FULL model load plus one
+    real engine turn -- MINUTES, not seconds. Immediately before it starts the
+    script prints `COMPANION_PROBE_HINT=full model load + one turn; expect
+    minutes`, so a reviewer cannot read that wait as "it hung".
+    `-ProbeOnly` runs the CLI legs ALONE (no GUI launch, no port precheck, no
+    bridge scan, no teardown) -- the expensive leg becomes independently
+    re-runnable without spending the bounded window again. It is ADDITIVE: the
+    combined invocation the durable suite prescribes
+    (`-SanitizePath -CompanionProbe -RemoveDll llama-common.dll`) is unchanged
+    and is still the AC4 invocation.
+
+  SELF-TEST (`-SelfTest`, hermetic -- no GUI artifact, no model, no ports):
+      1 - DETACHED-LAUNCH  a deliberately long-lived child (`powershell.exe
+                           -NoProfile -Command "Start-Sleep -Seconds 20"`, no
+                           output) is launched THROUGH THE SAME detachment helper
+                           the GUI uses. The helper must RETURN IN <= 5 s
+                           (`DETACH_RETURN_SECONDS=`) while the child is still
+                           alive. The child is NOT killed -- a leaked handle
+                           would otherwise be masked by the kill; it exits on its
+                           own 20 s later.
+      2 - REFUSALS         a `\debug\` exe, `-RemoveDll 'a\b.dll'` and
+                           `-WaitSecs 0` each still exit 2 with `RESULT=REFUSED`
+                           (each invoked as a child of this script).
+      3 - SELF-REFERENCE   the GUI launch site actually calls the detachment
+                           helper (and the source still spells the handle-list
+                           mechanism), so a future edit cannot silently revert to
+                           plain `Start-Process`.
+    `SELFTEST: PASS` + exit 0 when every control passes.
+
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
 
   Exit codes:
-    0  PASS
+    0  PASS (with -SelfTest: every control passed)
     1  assertion failure (app exited / open port / bridge log line / probe error)
     2  refused precondition (debug exe, missing exe, bad args, stale listener)
     3  teardown left orphans (assertions may also have failed; FAILURE= lines say so)
+       (with -SelfTest: a control failed)
 
 .PARAMETER Exe
   Path to the built GUI app executable (the release `fredo.exe`), NOT the
-  installer. A `\debug\` path is refused.
+  installer. A `\debug\` path is refused. Not required by -SelfTest.
 
 .PARAMETER Ports
-  Comma-separated TCP ports to probe, e.g. `16932,9223`.
+  Comma-separated TCP ports to probe, e.g. `16932,9223`. Required unless
+  -ProbeOnly (which launches nothing) is given.
 
 .PARAMETER McpPort
   The port exported as FREDO_MCP_BASE_PORT. Default: the first -Ports value, so a
@@ -83,15 +143,29 @@
   success there is not attributable to the install-dir payload.
 
 .PARAMETER CompanionProbe
-  After the launch observation, run `<exe> companion probe` with the working
-  directory set to the exe's directory and print `PROBE_EXIT=`,
-  `PROBE_SUCCESS=` and `PROBE_JSON=`.
+  After the launch observation (or alone under -ProbeOnly), run
+  `<exe> companion probe` with the working directory set to the exe's directory
+  and print `PROBE_EXIT=`, `PROBE_SUCCESS=` and `PROBE_JSON=`. This leg is a FULL
+  model load plus one engine turn and DOMINATES wall-clock time (minutes).
 
 .PARAMETER RemoveDll
   Name of a payload DLL (e.g. `llama-common.dll`) to delete from a COPY of the
   exe's directory, then run `<copy>\<exe> --version` and assert the loader exit
   `-1073741515` (`0xC0000135`; the unsigned form `3221225781` is accepted).
   The copy lives under `.opencode/tmp/3172/`; the original tree is never touched.
+
+.PARAMETER ProbeOnly
+  Skip the GUI launch, the port precheck, the bridge scan and teardown; run only
+  the CLI legs (`--version`, and -CompanionProbe / -RemoveDll when supplied).
+  The report prints `MODE=probe-only` and `ORPHANS_LEFT=0` (nothing was
+  launched). Refused in combination with -RequireClosed, which has nothing to
+  assert without a launch. Additive: without it the script behaves exactly as
+  before.
+
+.PARAMETER SelfTest
+  Hermetic self-test of the detachment helper and the refusals (see the
+  DESCRIPTION). Needs no artifact, no ports and no model. Exits 0 when every
+  control passes, 3 on a control failure.
 
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe apps\tauri\src-tauri\target\release\fredo.exe -Ports 16932,9223 -RequireClosed
@@ -101,10 +175,17 @@
 
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe C:\install\fredo.exe -Ports 16932 -SanitizePath -CompanionProbe -RemoveDll llama-common.dll
+
+.EXAMPLE
+  # The expensive leg alone, no bounded GUI window (expect MINUTES for the probe).
+  powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe C:\install\fredo.exe -ProbeOnly -SanitizePath -CompanionProbe -RemoveDll llama-common.dll
+
+.EXAMPLE
+  powershell -File .opencode/scripts/launch-artifact-probe.ps1 -SelfTest
 #>
 param(
-  [Parameter(Mandatory = $true)][string]$Exe,
-  [Parameter(Mandatory = $true)][int[]]$Ports,
+  [string]$Exe = '',
+  [int[]]$Ports = @(),
   [int]$McpPort = 0,
   [switch]$RequireClosed,
   [int]$WaitSecs = 40,
@@ -112,7 +193,9 @@ param(
   [string]$LogDir = '',
   [switch]$SanitizePath,
   [switch]$CompanionProbe,
-  [string]$RemoveDll = ''
+  [string]$RemoveDll = '',
+  [switch]$ProbeOnly,
+  [switch]$SelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -126,61 +209,92 @@ function Write-Probe {
   Write-Output $Line
 }
 
+# Wall-clock phase markers. A long run must be legible as a sequence of named
+# phases (Spec #3172 ST-5): "it hung" is otherwise indistinguishable from "it is
+# loading the model".
+$script:ProbeWatch = [System.Diagnostics.Stopwatch]::StartNew()
+function Write-Phase {
+  param([string]$Name)
+  Write-Probe ("PHASE={0} SINCE_START_SECONDS={1}" -f $Name, [Math]::Round($script:ProbeWatch.Elapsed.TotalSeconds, 1))
+}
+
 # ---- Resolve / validate inputs ------------------------------------------------
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
-if ($null -eq $Ports -or $Ports.Count -eq 0) {
-  Write-Probe 'ERROR: -Ports must name at least one TCP port.'
-  Write-Probe 'RESULT=REFUSED'
-  exit 2
-}
-
-$seen = @{}
 $probePorts = @()
-foreach ($port in $Ports) {
-  if ($port -lt 1 -or $port -gt 65535) {
-    Write-Probe "ERROR: port out of range: $port"
+$exePath = ''
+
+# -SelfTest is hermetic: it needs no artifact, no ports and no model, so none of
+# the artifact preconditions below apply to it.
+if (-not $SelfTest) {
+  if ($ProbeOnly -and $RequireClosed) {
+    Write-Probe 'ERROR: -ProbeOnly launches nothing, so -RequireClosed (a port/bridge assertion) has nothing to assert. Drop one of them.'
     Write-Probe 'RESULT=REFUSED'
     exit 2
   }
-  if (-not $seen.ContainsKey($port)) {
-    $seen[$port] = $true
-    $probePorts += [int]$port
+
+  if ($null -ne $Ports) {
+    $seen = @{}
+    foreach ($port in $Ports) {
+      if ($port -lt 1 -or $port -gt 65535) {
+        Write-Probe "ERROR: port out of range: $port"
+        Write-Probe 'RESULT=REFUSED'
+        exit 2
+      }
+      if (-not $seen.ContainsKey($port)) {
+        $seen[$port] = $true
+        $probePorts += [int]$port
+      }
+    }
   }
-}
 
-if ($WaitSecs -lt 1 -or $WaitSecs -gt 300) {
-  Write-Probe "ERROR: -WaitSecs must be 1..300 (got $WaitSecs)."
-  Write-Probe 'RESULT=REFUSED'
-  exit 2
-}
-
-if (-not (Test-Path -LiteralPath $Exe)) {
-  Write-Probe "ERROR: missing exe: $Exe"
-  Write-Probe 'RESULT=REFUSED'
-  exit 2
-}
-
-$exePath = (Resolve-Path -LiteralPath $Exe).Path
-$exeNormalized = $exePath.ToLowerInvariant().Replace('/', '\')
-if ($exeNormalized.Contains('\debug\')) {
-  Write-Probe "ERROR: refusing a debug artifact (a production/negative AC must use the release build): $exePath"
-  Write-Probe 'RESULT=REFUSED'
-  exit 2
-}
-
-if ($McpPort -eq 0) { $McpPort = $probePorts[0] }
-if ($McpPort -lt 1 -or $McpPort -gt 65535) {
-  Write-Probe "ERROR: -McpPort out of range: $McpPort"
-  Write-Probe 'RESULT=REFUSED'
-  exit 2
-}
-
-if (-not [string]::IsNullOrWhiteSpace($RemoveDll)) {
-  if ($RemoveDll.Contains('\') -or $RemoveDll.Contains('/') -or $RemoveDll -eq '.' -or $RemoveDll -eq '..') {
-    Write-Probe "ERROR: -RemoveDll must be a bare DLL file name (got '$RemoveDll')."
+  if ($probePorts.Count -eq 0 -and -not $ProbeOnly) {
+    Write-Probe 'ERROR: -Ports must name at least one TCP port.'
     Write-Probe 'RESULT=REFUSED'
     exit 2
+  }
+
+  if ($WaitSecs -lt 1 -or $WaitSecs -gt 300) {
+    Write-Probe "ERROR: -WaitSecs must be 1..300 (got $WaitSecs)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if ([string]::IsNullOrWhiteSpace($Exe)) {
+    Write-Probe "ERROR: missing exe: $Exe"
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if (-not (Test-Path -LiteralPath $Exe)) {
+    Write-Probe "ERROR: missing exe: $Exe"
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  $exePath = (Resolve-Path -LiteralPath $Exe).Path
+  $exeNormalized = $exePath.ToLowerInvariant().Replace('/', '\')
+  if ($exeNormalized.Contains('\debug\')) {
+    Write-Probe "ERROR: refusing a debug artifact (a production/negative AC must use the release build): $exePath"
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if (-not $ProbeOnly) {
+    if ($McpPort -eq 0) { $McpPort = $probePorts[0] }
+    if ($McpPort -lt 1 -or $McpPort -gt 65535) {
+      Write-Probe "ERROR: -McpPort out of range: $McpPort"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($RemoveDll)) {
+    if ($RemoveDll.Contains('\') -or $RemoveDll.Contains('/') -or $RemoveDll -eq '.' -or $RemoveDll -eq '..') {
+      Write-Probe "ERROR: -RemoveDll must be a bare DLL file name (got '$RemoveDll')."
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
   }
 }
 
@@ -281,10 +395,278 @@ function Read-LogHits {
   return @{ Hits = $total; Complete = $complete }
 }
 
+# ---------------------------------------------------------------------------
+# Detachment helper (Spec #3172 ST-5).
+#
+# WHY: PowerShell 5.1's `Start-Process -RedirectStandardOutput/-RedirectStandardError`
+# calls Win32 CreateProcess with handle inheritance ON and NO handle whitelist,
+# so the child inherits EVERY inheritable handle of this process -- including the
+# stdout/stderr PIPE handles of whoever invoked this script. The GUI app's
+# WebView2 tree then keeps those pipes open, and an INLINE caller (`$(...)`, a
+# tool call, `Tee-Object`, `& powershell ... | ...`) blocks on the pipe long
+# after this script printed RESULT=PASS and exited.
+#
+# HOW: CreateProcess from P/Invoke with
+#   * EXTENDED_STARTUPINFO_PRESENT -- makes Windows honour the attribute list;
+#   * STARTF_USESTDHANDLES with exactly stdin=NUL, stdout=<StdOutPath>,
+#     stderr=<StdErrPath>, each opened with SECURITY_ATTRIBUTES.bInheritHandle =
+#     TRUE (a handle must be marked inheritable to be inherited at all);
+#   * PROC_THREAD_ATTRIBUTE_HANDLE_LIST whitelisting ONLY those three handles.
+# The whitelist is the GUARANTEE: no OTHER handle of this process (above all its
+# own stdout/stderr pipe) is inherited, so the launched app can never hold the
+# caller's console open. The helper returns the PID; the caller keeps using
+# Get-Process -Id for HasExited / ExitCode / teardown, unchanged.
+# ---------------------------------------------------------------------------
+$script:DetachTypeSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class FredoDetach
+{
+    private const int STARTF_USESTDHANDLES = 0x00000100;
+    private const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint GENERIC_WRITE = 0x40000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint OPEN_EXISTING = 3;
+    private const uint CREATE_ALWAYS = 2;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+    private static readonly IntPtr InvalidHandle = new IntPtr(-1);
+
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST: the whitelist of handles the child may
+    // inherit. With this attribute set (and bInheritHandles = TRUE) nothing else
+    // of the parent's handle table crosses the process boundary.
+    private static readonly IntPtr ProcThreadAttributeHandleList = new IntPtr(0x00020002);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SECURITY_ATTRIBUTES
+    {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        public int bInheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpReserved;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpDesktop;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct STARTUPINFOEX
+    {
+        public STARTUPINFO StartupInfo;
+        public IntPtr lpAttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        ref SECURITY_ATTRIBUTES lpSecurityAttributes, uint dwCreationDisposition,
+        uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount,
+        int dwFlags, ref IntPtr lpSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, IntPtr attribute,
+        IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcessW(string lpApplicationName, StringBuilder lpCommandLine,
+        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, int dwCreationFlags,
+        IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFOEX lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    private static void CloseQuietly(IntPtr handle)
+    {
+        if (handle != IntPtr.Zero && handle != InvalidHandle) { CloseHandle(handle); }
+    }
+
+    private static IntPtr OpenStandardHandle(string path, ref SECURITY_ATTRIBUTES sa)
+    {
+        IntPtr handle;
+        if (string.IsNullOrEmpty(path))
+        {
+            handle = CreateFileW("NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
+        }
+        else
+        {
+            handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, ref sa, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        }
+        if (handle == InvalidHandle)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "CreateFileW(" + (string.IsNullOrEmpty(path) ? "NUL" : path) + ")");
+        }
+        return handle;
+    }
+
+    public static int Launch(string applicationName, string commandLine, string workingDirectory,
+        string stdoutPath, string stderrPath)
+    {
+        IntPtr stdIn = IntPtr.Zero;
+        IntPtr stdOut = IntPtr.Zero;
+        IntPtr stdErr = IntPtr.Zero;
+        IntPtr attributeList = IntPtr.Zero;
+        IntPtr handleBuffer = IntPtr.Zero;
+        bool attributeListReady = false;
+        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
+
+        // PowerShell marshals $null to "" for a string parameter, and CreateProcess
+        // treats an EMPTY lpCurrentDirectory as an invalid name (error 123) rather
+        // than "inherit the caller's directory". Normalise back to NULL.
+        if (string.IsNullOrEmpty(workingDirectory)) { workingDirectory = null; }
+
+        try
+        {
+            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
+            sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+            sa.lpSecurityDescriptor = IntPtr.Zero;
+            sa.bInheritHandle = 1;
+
+            stdIn = OpenStandardHandle("NUL", ref sa);
+            stdOut = OpenStandardHandle(stdoutPath, ref sa);
+            stdErr = OpenStandardHandle(stderrPath, ref sa);
+
+            IntPtr size = IntPtr.Zero;
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            int sizeError = Marshal.GetLastWin32Error();
+            if (size == IntPtr.Zero)
+            {
+                throw new Win32Exception(sizeError, "InitializeProcThreadAttributeList (size probe)");
+            }
+
+            attributeList = Marshal.AllocHGlobal(size);
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref size))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList");
+            }
+            attributeListReady = true;
+
+            handleBuffer = Marshal.AllocHGlobal(IntPtr.Size * 3);
+            Marshal.WriteIntPtr(handleBuffer, 0, stdIn);
+            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size, stdOut);
+            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size * 2, stdErr);
+            if (!UpdateProcThreadAttribute(attributeList, 0, ProcThreadAttributeHandleList, handleBuffer,
+                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)");
+            }
+
+            STARTUPINFOEX startup = new STARTUPINFOEX();
+            startup.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            startup.StartupInfo.hStdInput = stdIn;
+            startup.StartupInfo.hStdOutput = stdOut;
+            startup.StartupInfo.hStdError = stdErr;
+            startup.lpAttributeList = attributeList;
+
+            StringBuilder line = new StringBuilder(commandLine);
+            bool created = CreateProcessW(applicationName, line, IntPtr.Zero, IntPtr.Zero, true,
+                EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, workingDirectory, ref startup, out pi);
+            if (!created)
+            {
+                int launchError = Marshal.GetLastWin32Error();
+                throw new Win32Exception(launchError, "CreateProcessW error=" + launchError.ToString()
+                    + " app=[" + applicationName + "] cmd=[" + commandLine + "]");
+            }
+            return pi.dwProcessId;
+        }
+        finally
+        {
+            if (pi.hThread != IntPtr.Zero) { CloseHandle(pi.hThread); }
+            if (pi.hProcess != IntPtr.Zero) { CloseHandle(pi.hProcess); }
+            if (attributeList != IntPtr.Zero)
+            {
+                if (attributeListReady) { DeleteProcThreadAttributeList(attributeList); }
+                Marshal.FreeHGlobal(attributeList);
+            }
+            if (handleBuffer != IntPtr.Zero) { Marshal.FreeHGlobal(handleBuffer); }
+            CloseQuietly(stdIn);
+            CloseQuietly(stdOut);
+            CloseQuietly(stdErr);
+        }
+    }
+}
+'@
+
+$script:DetachTypeLoaded = $false
+function Initialize-DetachType {
+  if ($script:DetachTypeLoaded) { return }
+  Add-Type -TypeDefinition $script:DetachTypeSource -Language CSharp -ErrorAction Stop | Out-Null
+  $script:DetachTypeLoaded = $true
+}
+
+# The ONE launch primitive for the GUI app (and the -SelfTest control child).
+# Empty StdOutPath/StdErrPath route that stream to the NUL device.
+function Start-DetachedProcess {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [string]$ArgumentString = '',
+    [string]$WorkingDirectory = '',
+    [string]$StdOutPath = '',
+    [string]$StdErrPath = ''
+  )
+  Initialize-DetachType
+  $application = (Resolve-Path -LiteralPath $FilePath).Path
+  $commandLine = '"' + $application + '"'
+  if (-not [string]::IsNullOrWhiteSpace($ArgumentString)) { $commandLine += ' ' + $ArgumentString }
+  $working = $null
+  if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+    $working = [System.IO.Path]::GetFullPath($WorkingDirectory)
+  }
+  return [int][FredoDetach]::Launch($application, $commandLine, $working, $StdOutPath, $StdErrPath)
+}
+
 # Run a CLI child to completion with redirected stdio and return its exit code
 # (null when the launch itself failed). Start-Process is used because a release
 # build is a windows-subsystem binary: its stdout is only reachable through
-# redirected handles, never through the console.
+# redirected handles, never through the console. These legs are `-Wait`, so their
+# inheritance window closes when the child exits; the GUI launch above is the one
+# that outlives this script and therefore must not inherit (see the helper).
 function Invoke-ArtifactCli {
   param(
     [string]$FilePath,
@@ -314,30 +696,307 @@ function Get-FirstOutputLine {
   return ([string]$lines[0]).Trim()
 }
 
-# ---- Preconditions: no stale listener may be attributed to this launch -------
-foreach ($port in $probePorts) {
-  $open = Test-TcpPortOpen -Port $port
-  Write-Probe ("PRECHECK_PORT_{0}={1}" -f $port, $(if ($open) { 'open' } else { 'closed' }))
-  if ($open) {
-    Write-Probe "ERROR: port $port is already open -- a stale app or dev instance owns it; stop the owner and re-run. The probe will not attribute a pre-existing listener to this launch."
-    Write-Probe 'RESULT=REFUSED'
-    exit 2
+# ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
+# Shared by the combined run and -ProbeOnly so ONE implementation emits the
+# VERSION_* / PROBE_* / CONTROL_* literals. Each phase announces itself: a
+# minutes-long companion probe must be legible as a phase, never as a hang.
+function Invoke-CliLegs {
+  param(
+    [string]$ExePath,
+    [string]$LegsLogDir,
+    [switch]$DoCompanionProbe,
+    [string]$RemoveDllName,
+    [System.Collections.ArrayList]$Failures
+  )
+
+  # Every child probe runs with the sanitised PATH: a developer PATH exposes the
+  # Cargo target dir / Vulkan SDK, which is exactly the false pass AC4 rejects.
+  $env:PATH = $sanitizedPath
+  $exeDir = Split-Path -Parent $ExePath
+  $exeLeaf = Split-Path -Leaf $ExePath
+
+  Write-Phase 'cli-legs'
+
+  # 1) --version leg (R-4.1).
+  $versionOut = Join-Path $LegsLogDir 'version-stdout.log'
+  $versionErr = Join-Path $LegsLogDir 'version-stderr.log'
+  $versionExit = Invoke-ArtifactCli -FilePath $ExePath -ArgumentList @('--version') -WorkingDirectory $exeDir -StdOutPath $versionOut -StdErrPath $versionErr
+  $versionStdout = Get-FirstOutputLine -Path $versionOut
+  $versionExitText = if ($null -ne $versionExit) { [string]$versionExit } else { 'error' }
+  Write-Probe "VERSION_EXIT=$versionExitText"
+  Write-Probe "VERSION_STDOUT=$versionStdout"
+  if ($null -eq $versionExit -or $versionExit -ne 0) {
+    [void]$Failures.Add("version-exit:$versionExitText")
+  }
+
+  # 2) companion probe leg (R-4.2): cwd = the exe's directory so the sibling
+  #    payload DLLs resolve. This is a FULL model load + one engine turn, so the
+  #    hint line names the expected duration BEFORE the wait begins.
+  if ($DoCompanionProbe) {
+    Write-Phase 'companion-probe'
+    Write-Probe 'COMPANION_PROBE_HINT=full model load + one turn; expect minutes'
+    $probeOut = Join-Path $LegsLogDir 'companion-probe-stdout.log'
+    $probeErr = Join-Path $LegsLogDir 'companion-probe-stderr.log'
+    $probeExit = Invoke-ArtifactCli -FilePath $ExePath -ArgumentList @('companion', 'probe') -WorkingDirectory $exeDir -StdOutPath $probeOut -StdErrPath $probeErr
+    $probeJson = ''
+    if (Test-Path -LiteralPath $probeOut) {
+      try {
+        foreach ($line in @(Get-Content -LiteralPath $probeOut)) {
+          $trimmed = ([string]$line).Trim()
+          if ($trimmed.StartsWith('{')) { $probeJson = $trimmed; break }
+        }
+      } catch {
+        $probeJson = ''
+      }
+    }
+    $probeSuccess = $false
+    if (-not [string]::IsNullOrWhiteSpace($probeJson)) {
+      try {
+        $probeReport = $probeJson | ConvertFrom-Json
+        if ($null -ne $probeReport.PSObject.Properties['success']) {
+          $probeSuccess = [bool]$probeReport.success
+        }
+      } catch {
+        $probeSuccess = $false
+      }
+    }
+    $probeExitText = if ($null -ne $probeExit) { [string]$probeExit } else { 'error' }
+    $probeSuccessText = if ($probeSuccess) { 'true' } else { 'false' }
+    Write-Probe "PROBE_EXIT=$probeExitText"
+    Write-Probe "PROBE_SUCCESS=$probeSuccessText"
+    Write-Probe "PROBE_JSON=$probeJson"
+    if ($null -eq $probeExit -or $probeExit -ne 0) {
+      [void]$Failures.Add("probe-exit:$probeExitText")
+    }
+    if (-not $probeSuccess) {
+      [void]$Failures.Add('probe-success-false')
+    }
+  }
+
+  # 3) remove-one-DLL loader control (R-4.3). The copy is the ONLY thing
+  #    mutated; the install tree under test is never touched.
+  if (-not [string]::IsNullOrWhiteSpace($RemoveDllName)) {
+    Write-Phase 'dll-control'
+    $controlExpectedExit = -1073741515
+    $copyRoot = Join-Path $repoRoot (".opencode\tmp\3172\control-copy-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    $controlExit = $null
+    $dllRemoved = $false
+    try {
+      New-Item -ItemType Directory -Path $copyRoot -Force | Out-Null
+      Copy-Item -Path (Join-Path $exeDir '*') -Destination $copyRoot -Recurse -Force -ErrorAction Stop
+      $copyExe = Join-Path $copyRoot $exeLeaf
+      $copyDll = Join-Path $copyRoot $RemoveDllName
+      if (Test-Path -LiteralPath $copyDll) {
+        Remove-Item -LiteralPath $copyDll -Force -ErrorAction Stop
+        $dllRemoved = $true
+      }
+      $controlOut = Join-Path $LegsLogDir 'control-stdout.log'
+      $controlErr = Join-Path $LegsLogDir 'control-stderr.log'
+      $controlExit = Invoke-ArtifactCli -FilePath $copyExe -ArgumentList @('--version') -WorkingDirectory $copyRoot -StdOutPath $controlOut -StdErrPath $controlErr
+    } catch {
+      Write-Probe "ERROR: remove-one-DLL control failed: $($_.Exception.Message)"
+    } finally {
+      # A just-exited child can still hold its image file for a moment (image
+      # section release / AV scan), so ONE Remove-Item can leave a partial copy
+      # behind. Bounded retry; the source install tree is never touched either way.
+      for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        if (-not (Test-Path -LiteralPath $copyRoot)) { break }
+        Remove-Item -LiteralPath $copyRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $copyRoot)) { break }
+        Start-Sleep -Milliseconds 300
+      }
+    }
+    $controlExitText = if ($null -ne $controlExit) { [string]$controlExit } else { 'error' }
+    Write-Probe "CONTROL_REMOVED_DLL=$RemoveDllName"
+    Write-Probe "CONTROL_EXIT=$controlExitText"
+    Write-Probe "CONTROL_EXPECTED_EXIT=$controlExpectedExit"
+    if (-not $dllRemoved) {
+      [void]$Failures.Add("control-dll-missing:$RemoveDllName")
+    }
+    $controlMatched = $false
+    if ($null -ne $controlExit) {
+      $observedUnsigned = [int64]$controlExit
+      if ($observedUnsigned -lt 0) { $observedUnsigned += 4294967296 }
+      if ($observedUnsigned -eq 3221225781) { $controlMatched = $true }
+    }
+    if (-not $controlMatched) {
+      [void]$Failures.Add("control-exit:$controlExitText")
+    }
   }
 }
 
+# ---- Self-test (hermetic: no GUI artifact, no model, no ports) ---------------
+# This mode is the regression gate for the inline-caller hang: the harness runs
+# it INLINE with the stdout captured, so a reverted (inheriting) launch would
+# block the harness for the control child's lifetime.
+if ($SelfTest) {
+  Write-Probe '=== launch-artifact-probe : SelfTest ==='
+  $selfPath = $PSCommandPath
+  if ([string]::IsNullOrWhiteSpace($selfPath)) { $selfPath = $MyInvocation.MyCommand.Path }
+  $controlFailures = 0
+  $detachChildPid = 0
+  $selfTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("fredo-probe-selftest-" + [Guid]::NewGuid().ToString('N'))
+
+  try {
+    # ---- CONTROL 1 - DETACHED-LAUNCH ------------------------------------
+    # The child is deliberately long-lived and produces NO output. It is NOT
+    # killed: the helper must return while the child is still alive, because a
+    # leaked stdout handle would otherwise be masked by the kill. It exits on its
+    # own 20 s later.
+    Write-Probe 'CONTROL 1 - DETACHED-LAUNCH'
+    $childExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $detachSeconds = $null
+    try {
+      $detachWatch = [System.Diagnostics.Stopwatch]::StartNew()
+      $detachChildPid = Start-DetachedProcess -FilePath $childExe -ArgumentString '-NoProfile -Command "Start-Sleep -Seconds 20"' -WorkingDirectory '' -StdOutPath '' -StdErrPath ''
+      $detachWatch.Stop()
+      $detachSeconds = [Math]::Round($detachWatch.Elapsed.TotalSeconds, 1)
+    } catch {
+      Write-Probe ("  [FAIL] the detachment helper threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+    if ($null -ne $detachSeconds) {
+      Write-Probe "DETACH_RETURN_SECONDS=$detachSeconds"
+      Write-Probe "DETACH_CHILD_PID=$detachChildPid"
+      $detachChildAlive = $false
+      try {
+        $detachChildAlive = ($null -ne (Get-Process -Id $detachChildPid -ErrorAction SilentlyContinue))
+      } catch {
+        $detachChildAlive = $false
+      }
+      Write-Probe "DETACH_CHILD_ALIVE=$detachChildAlive"
+      if ($detachSeconds -gt 5) {
+        Write-Probe ("  [FAIL] the helper took {0}s (must return in <= 5s while the child lives)" -f $detachSeconds)
+        $controlFailures++
+      } elseif (-not $detachChildAlive) {
+        Write-Probe '  [FAIL] the 20-second child had already exited - the control measured nothing'
+        $controlFailures++
+      } else {
+        Write-Probe ("  [PASS] returned in {0}s with the child (pid {1}) still running; it is NOT killed and exits on its own" -f $detachSeconds, $detachChildPid)
+      }
+    }
+
+    # ---- CONTROL 2 - REFUSALS -------------------------------------------
+    # Each refusal is asserted by invoking THIS script as a child, so the exit
+    # code and the RESULT= line are observed exactly as a caller sees them.
+    Write-Probe 'CONTROL 2 - REFUSALS'
+    New-Item -ItemType Directory -Path (Join-Path $selfTmp 'debug') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $selfTmp 'release') -Force | Out-Null
+    $debugExe = Join-Path $selfTmp 'debug\fredo.exe'
+    $releaseExe = Join-Path $selfTmp 'release\fredo.exe'
+    [System.IO.File]::WriteAllText($debugExe, '')
+    [System.IO.File]::WriteAllText($releaseExe, '')
+    $refusalCases = @(
+      @{ Name = 'debug-exe'; Args = @('-Exe', $debugExe, '-Ports', '16932') },
+      @{ Name = 'remove-dll-path'; Args = @('-Exe', $releaseExe, '-Ports', '16932', '-RemoveDll', 'a\b.dll') },
+      @{ Name = 'waitsecs-zero'; Args = @('-Exe', $releaseExe, '-Ports', '16932', '-WaitSecs', '0') }
+    )
+    foreach ($refusalCase in $refusalCases) {
+      $childArgs = $refusalCase.Args
+      try {
+        $refusalOut = & powershell -NoProfile -File $selfPath @childArgs 2>&1
+        $refusalCode = $LASTEXITCODE
+        $refusalText = if ($refusalOut -is [array]) { $refusalOut -join "`n" } else { "$refusalOut" }
+        $refused = $refusalText.Contains('RESULT=REFUSED')
+        if ($refusalCode -eq 2 -and $refused) {
+          Write-Probe ("  [PASS] {0}: exit 2 + RESULT=REFUSED" -f $refusalCase.Name)
+        } else {
+          Write-Probe ("  [FAIL] {0}: exit {1}, RESULT=REFUSED={2}" -f $refusalCase.Name, $refusalCode, $refused)
+          $controlFailures++
+        }
+      } catch {
+        Write-Probe ("  [FAIL] {0}: the child invocation threw: {1}" -f $refusalCase.Name, $_.Exception.Message)
+        $controlFailures++
+      }
+    }
+
+    # ---- CONTROL 3 - SELF-REFERENCE -------------------------------------
+    # The GUI launch site must call the detachment helper, and the source must
+    # still spell the whitelist mechanism, so a future edit cannot silently
+    # revert to plain Start-Process.
+    Write-Probe 'CONTROL 3 - SELF-REFERENCE'
+    $selfSource = ''
+    if (-not [string]::IsNullOrWhiteSpace($selfPath) -and (Test-Path -LiteralPath $selfPath)) {
+      $selfSource = [System.IO.File]::ReadAllText($selfPath)
+    }
+    $launchUsesHelper = ($selfSource -match '(?m)^\s*\$launchPid\s*=\s*Start-DetachedProcess\b')
+    # Built by concatenation so this assertion's own text is not the needle it
+    # searches for (a literal here would match itself and never regress).
+    $plainLaunchNeedle = 'Start-Process -FilePath ' + '$exePath'
+    $plainLaunchOfExe = $selfSource.Contains($plainLaunchNeedle)
+    $hasHandleList = $selfSource.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST')
+    $hasExtendedStartup = $selfSource.Contains('EXTENDED_STARTUPINFO_PRESENT')
+    $hasStdHandlesFlag = $selfSource.Contains('STARTF_USESTDHANDLES')
+    Write-Probe ("  launch site uses the helper: {0}; plain Start-Process of the exe: {1}; whitelist mechanism present: {2}/{3}/{4}" -f $launchUsesHelper, $plainLaunchOfExe, $hasHandleList, $hasExtendedStartup, $hasStdHandlesFlag)
+    if (-not $launchUsesHelper) {
+      Write-Probe '  [FAIL] the GUI launch site does not call Start-DetachedProcess'
+      $controlFailures++
+    } elseif ($plainLaunchOfExe) {
+      Write-Probe '  [FAIL] the source still launches $exePath through a plain Start-Process'
+      $controlFailures++
+    } elseif (-not ($hasHandleList -and $hasExtendedStartup -and $hasStdHandlesFlag)) {
+      Write-Probe '  [FAIL] the handle-whitelist mechanism is gone from the source'
+      $controlFailures++
+    } else {
+      Write-Probe '  [PASS] the GUI launch site calls the detachment helper and the whitelist mechanism is intact'
+    }
+  } finally {
+    if ($detachChildPid -gt 0) {
+      # Deliberately NOT killed: the child must outlive this script, so a leaked
+      # handle cannot be masked by the kill. Report whether it is still alive.
+      $leftRunning = $false
+      try {
+        $leftRunning = ($null -ne (Get-Process -Id $detachChildPid -ErrorAction SilentlyContinue))
+      } catch {
+        $leftRunning = $false
+      }
+      Write-Probe "DETACH_CHILD_LEFT_RUNNING=$leftRunning"
+    }
+    if (Test-Path -LiteralPath $selfTmp) {
+      Remove-Item -LiteralPath $selfTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  if ($controlFailures -eq 0) {
+    Write-Probe 'SELFTEST: PASS'
+    exit 0
+  }
+  Write-Probe ("SELFTEST: FAIL ({0} control failure(s))" -f $controlFailures)
+  exit 3
+}
+
+# ---- Preconditions: no stale listener may be attributed to this launch -------
 $exeItem = Get-Item -LiteralPath $exePath
 Write-Probe 'PROBE=launch-artifact'
 Write-Probe "EXE=$exePath"
 Write-Probe "EXE_SIZE_BYTES=$($exeItem.Length)"
 Write-Probe "EXE_LAST_WRITE_UTC=$($exeItem.LastWriteTimeUtc.ToString('o'))"
-Write-Probe "MCP_PORT=$McpPort"
-Write-Probe "WAIT_SECONDS=$WaitSecs"
+
+if ($ProbeOnly) {
+  # No launch, so no precheck and no attribution question: the ports are simply
+  # not probed (that is the point of -ProbeOnly).
+  Write-Probe 'MODE=probe-only'
+} else {
+  Write-Probe "MCP_PORT=$McpPort"
+  Write-Probe "WAIT_SECONDS=$WaitSecs"
+
+  Write-Phase 'launch-window'
+  foreach ($port in $probePorts) {
+    $open = Test-TcpPortOpen -Port $port
+    Write-Probe ("PRECHECK_PORT_{0}={1}" -f $port, $(if ($open) { 'open' } else { 'closed' }))
+    if ($open) {
+      Write-Probe "ERROR: port $port is already open -- a stale app or dev instance owns it; stop the owner and re-run. The probe will not attribute a pre-existing listener to this launch."
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+  }
+}
 
 # ---- Environment --------------------------------------------------------------
-$env:FREDO_MCP_BASE_PORT = "$McpPort"
+if (-not $ProbeOnly) { $env:FREDO_MCP_BASE_PORT = "$McpPort" }
 if ($SanitizePath) {
-  # Applied BEFORE the launch so Start-Process inherits it; the child CLI legs
-  # below inherit it too.
+  # Applied BEFORE the launch so the child inherits it; the child CLI legs below
+  # inherit it too.
   $env:PATH = $sanitizedPath
   Write-Probe "PATH_SANITISED=$sanitizedPath"
 }
@@ -360,6 +1019,26 @@ if (-not [string]::IsNullOrWhiteSpace($env:FREDO_DATA_DIR)) {
   $appDataDir = ''
 }
 Write-Probe "APP_DATA_DIR=$appDataDir"
+
+# ---- -ProbeOnly: the CLI legs alone, no bounded window -----------------------
+# Same leg implementation as the combined run, minus the launch/port/bridge/
+# teardown phases. Nothing was launched, so ORPHANS_LEFT is honestly 0.
+if ($ProbeOnly) {
+  Write-Phase 'probe-only'
+  $probeOnlyFailures = New-Object System.Collections.ArrayList
+  Invoke-CliLegs -ExePath $exePath -LegsLogDir $LogDir -DoCompanionProbe:$CompanionProbe -RemoveDllName $RemoveDll -Failures $probeOnlyFailures
+  Write-Phase 'report'
+  Write-Probe ("ELAPSED_SECONDS={0}" -f [Math]::Round($script:ProbeWatch.Elapsed.TotalSeconds, 1))
+  Write-Probe 'ORPHANS_LEFT=0'
+  Write-Probe "LOG_DIR=$LogDir"
+  foreach ($failure in $probeOnlyFailures) { Write-Probe "FAILURE=$failure" }
+  if ($probeOnlyFailures.Count -gt 0) {
+    Write-Probe 'RESULT=FAIL'
+    exit 1
+  }
+  Write-Probe 'RESULT=PASS'
+  exit 0
+}
 
 $pgMatchDirs = @()
 if (-not [string]::IsNullOrWhiteSpace($appDataDir)) { $pgMatchDirs += $appDataDir.ToLowerInvariant() }
@@ -384,7 +1063,12 @@ $postgresKilled = 0
 try {
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   try {
-    $p = Start-Process -FilePath $exePath -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    # DETACHED launch: only stdin=NUL / stdout=<stdout.log> / stderr=<stderr.log>
+    # may be inherited, so this script's own stdout/stderr pipe is never handed
+    # to the app (see the Start-DetachedProcess comment). Plain Start-Process
+    # here is what hung inline callers.
+    $launchPid = Start-DetachedProcess -FilePath $exePath -ArgumentString '' -WorkingDirectory '' -StdOutPath $stdoutPath -StdErrPath $stderrPath
+    $p = Get-Process -Id $launchPid -ErrorAction Stop
   } catch {
     $launchError = "launch failed: $($_.Exception.Message)"
     throw
@@ -507,108 +1191,11 @@ if ($null -ne $launchError) { [void]$failures.Add("probe-error: $launchError") }
 if ($appExited) { [void]$failures.Add('app-exited') }
 
 # ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
+# ONE implementation (Invoke-CliLegs), shared with -ProbeOnly, so the VERSION_* /
+# PROBE_* / CONTROL_* literals cannot drift between the two entry points.
 $runCliLegs = $SanitizePath -or $CompanionProbe -or (-not [string]::IsNullOrWhiteSpace($RemoveDll))
 if ($runCliLegs) {
-  # Every child probe runs with the sanitised PATH: a developer PATH exposes the
-  # Cargo target dir / Vulkan SDK, which is exactly the false pass AC4 rejects.
-  $env:PATH = $sanitizedPath
-  $exeDir = Split-Path -Parent $exePath
-  $exeLeaf = Split-Path -Leaf $exePath
-
-  # 1) --version leg (R-4.1).
-  $versionOut = Join-Path $LogDir 'version-stdout.log'
-  $versionErr = Join-Path $LogDir 'version-stderr.log'
-  $versionExit = Invoke-ArtifactCli -FilePath $exePath -ArgumentList @('--version') -WorkingDirectory $exeDir -StdOutPath $versionOut -StdErrPath $versionErr
-  $versionStdout = Get-FirstOutputLine -Path $versionOut
-  $versionExitText = if ($null -ne $versionExit) { [string]$versionExit } else { 'error' }
-  Write-Probe "VERSION_EXIT=$versionExitText"
-  Write-Probe "VERSION_STDOUT=$versionStdout"
-  if ($null -eq $versionExit -or $versionExit -ne 0) {
-    [void]$failures.Add("version-exit:$versionExitText")
-  }
-
-  # 2) companion probe leg (R-4.2): cwd = the exe's directory so the sibling
-  #    payload DLLs resolve.
-  if ($CompanionProbe) {
-    $probeOut = Join-Path $LogDir 'companion-probe-stdout.log'
-    $probeErr = Join-Path $LogDir 'companion-probe-stderr.log'
-    $probeExit = Invoke-ArtifactCli -FilePath $exePath -ArgumentList @('companion', 'probe') -WorkingDirectory $exeDir -StdOutPath $probeOut -StdErrPath $probeErr
-    $probeJson = ''
-    if (Test-Path -LiteralPath $probeOut) {
-      try {
-        foreach ($line in @(Get-Content -LiteralPath $probeOut)) {
-          $trimmed = ([string]$line).Trim()
-          if ($trimmed.StartsWith('{')) { $probeJson = $trimmed; break }
-        }
-      } catch {
-        $probeJson = ''
-      }
-    }
-    $probeSuccess = $false
-    if (-not [string]::IsNullOrWhiteSpace($probeJson)) {
-      try {
-        $probeReport = $probeJson | ConvertFrom-Json
-        if ($null -ne $probeReport.PSObject.Properties['success']) {
-          $probeSuccess = [bool]$probeReport.success
-        }
-      } catch {
-        $probeSuccess = $false
-      }
-    }
-    $probeExitText = if ($null -ne $probeExit) { [string]$probeExit } else { 'error' }
-    $probeSuccessText = if ($probeSuccess) { 'true' } else { 'false' }
-    Write-Probe "PROBE_EXIT=$probeExitText"
-    Write-Probe "PROBE_SUCCESS=$probeSuccessText"
-    Write-Probe "PROBE_JSON=$probeJson"
-    if ($null -eq $probeExit -or $probeExit -ne 0) {
-      [void]$failures.Add("probe-exit:$probeExitText")
-    }
-    if (-not $probeSuccess) {
-      [void]$failures.Add('probe-success-false')
-    }
-  }
-
-  # 3) remove-one-DLL loader control (R-4.3). The copy is the ONLY thing
-  #    mutated; the install tree under test is never touched.
-  if (-not [string]::IsNullOrWhiteSpace($RemoveDll)) {
-    $controlExpectedExit = -1073741515
-    $copyRoot = Join-Path $repoRoot (".opencode\tmp\3172\control-copy-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-    $controlExit = $null
-    $dllRemoved = $false
-    try {
-      New-Item -ItemType Directory -Path $copyRoot -Force | Out-Null
-      Copy-Item -Path (Join-Path $exeDir '*') -Destination $copyRoot -Recurse -Force -ErrorAction Stop
-      $copyExe = Join-Path $copyRoot $exeLeaf
-      $copyDll = Join-Path $copyRoot $RemoveDll
-      if (Test-Path -LiteralPath $copyDll) {
-        Remove-Item -LiteralPath $copyDll -Force -ErrorAction Stop
-        $dllRemoved = $true
-      }
-      $controlOut = Join-Path $LogDir 'control-stdout.log'
-      $controlErr = Join-Path $LogDir 'control-stderr.log'
-      $controlExit = Invoke-ArtifactCli -FilePath $copyExe -ArgumentList @('--version') -WorkingDirectory $copyRoot -StdOutPath $controlOut -StdErrPath $controlErr
-    } catch {
-      Write-Probe "ERROR: remove-one-DLL control failed: $($_.Exception.Message)"
-    } finally {
-      try { Remove-Item -LiteralPath $copyRoot -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-    }
-    $controlExitText = if ($null -ne $controlExit) { [string]$controlExit } else { 'error' }
-    Write-Probe "CONTROL_REMOVED_DLL=$RemoveDll"
-    Write-Probe "CONTROL_EXIT=$controlExitText"
-    Write-Probe "CONTROL_EXPECTED_EXIT=$controlExpectedExit"
-    if (-not $dllRemoved) {
-      [void]$failures.Add("control-dll-missing:$RemoveDll")
-    }
-    $controlMatched = $false
-    if ($null -ne $controlExit) {
-      $observedUnsigned = [int64]$controlExit
-      if ($observedUnsigned -lt 0) { $observedUnsigned += 4294967296 }
-      if ($observedUnsigned -eq 3221225781) { $controlMatched = $true }
-    }
-    if (-not $controlMatched) {
-      [void]$failures.Add("control-exit:$controlExitText")
-    }
-  }
+  Invoke-CliLegs -ExePath $exePath -LegsLogDir $LogDir -DoCompanionProbe:$CompanionProbe -RemoveDllName $RemoveDll -Failures $failures
 }
 
 if ($RequireClosed) {
@@ -619,6 +1206,7 @@ if ($RequireClosed) {
 }
 
 # ---- Report -------------------------------------------------------------------
+Write-Phase 'report'
 Write-Probe "ELAPSED_SECONDS=$elapsedSeconds"
 Write-Probe "HAS_EXITED=$appExited"
 if ($null -ne $appExitCode) { Write-Probe "EXIT_CODE=$appExitCode" }

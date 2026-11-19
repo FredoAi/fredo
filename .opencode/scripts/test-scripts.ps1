@@ -4999,6 +4999,35 @@ Test-Script "launch-artifact-probe.ps1: debug refusal + fast probe + teardown" {
   return "launch-artifact-probe: debug refusal + BeginConnect(600ms) + bridge scan + teardown"
 }
 
+# INLINE regression gate for the #3172 ST-5 hang. The pre-fix probe launched the
+# GUI with `Start-Process -RedirectStandardOutput`, whose child inherited the
+# CALLER's stdout pipe handles: an inline invocation (this leg) then blocked for
+# the lifetime of the leftover app/WebView2 tree, long after the probe printed
+# RESULT=PASS. `-SelfTest` is hermetic (no artifact, no model) and must return
+# well inside 15 s WITH its stdout captured through a pipe -- if the launch ever
+# reverts to plain inheritance, this very call hangs the harness.
+Test-Script "launch-artifact-probe.ps1: -SelfTest returns inline (no inherited stdout)" {
+  $probePath = ".opencode/scripts/launch-artifact-probe.ps1"
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $out = & powershell -NoProfile -File $probePath -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $watch.Stop()
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  $elapsed = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+  if ($code -ne 0) { throw "inline self-test exited ${code}: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "inline self-test did not report SELFTEST: PASS" }
+  foreach ($control in @(
+    "CONTROL 1 - DETACHED-LAUNCH",
+    "CONTROL 2 - REFUSALS",
+    "CONTROL 3 - SELF-REFERENCE"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if (-not $text.Contains("DETACH_RETURN_SECONDS=")) { throw "self-test printed no DETACH_RETURN_SECONDS=" }
+  if ($elapsed -gt 15) { throw "the inline self-test took ${elapsed}s (expected < 15s)" }
+  return "inline self-test returned in ${elapsed}s with stdout captured; SELFTEST: PASS"
+}
+
 Test-Script-Syntax "webview-security-evidence skill" ".opencode/skills/webview-security-evidence/SKILL.md"
 
 Test-Script "webview-security-evidence skill documents both probes" {

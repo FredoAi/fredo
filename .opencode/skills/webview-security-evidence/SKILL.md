@@ -65,6 +65,42 @@ probe or a CSP parser — use these.
    PIDs, and disclose. Never leave the app running.
 5. **Static case** = inspector + `Read`/`Grep`; no launch.
 
+## Invocation discipline: run it INLINE, and expect minutes for the probe
+
+Run the launch probe **inline** — a normal tool call, `$(...)`, `Tee-Object`, or `& powershell
+... | ...`, with the stdout captured. That is the invocation the probe is built for, and it is
+the invocation the harness gates.
+
+- **Never "fix" a perceived hang by detaching the probe** (`Start-Process ... -RedirectStandardOutput
+  $log`). The pre-fix probe hung inline callers: PowerShell 5.1's
+  `Start-Process -RedirectStandardOutput/-RedirectStandardError` inherits the caller's
+  stdout/stderr **pipe** handles into the GUI child, so the script printed `RESULT=PASS` and
+  exited while the caller blocked to EOF on a pipe held by the leftover app/WebView2 tree.
+  The GUI is now launched through an explicit detachment helper
+  (`CreateProcess` with `EXTENDED_STARTUPINFO_PRESENT` + `STARTF_USESTDHANDLES` +
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` whitelisting only stdin=NUL / stdout / stderr), so no
+  other handle crosses the process boundary. If an inline run blocks, that is a **regression**,
+  not a reason to detach.
+- **`-SelfTest`** (hermetic: no artifact, no model, no ports) proves exactly that — it launches a
+  20-second child through the same helper, asserts the helper returns in `<= 5 s`
+  (`DETACH_RETURN_SECONDS=`) with the child still alive (not killed, so a leaked handle cannot
+  be masked), re-runs the three refusals as children (exit 2 + `RESULT=REFUSED`), and asserts
+  the GUI launch site still calls the helper. `SELFTEST: PASS` + exit 0; exit 3 on a control
+  failure. Run it first if you suspect the instrument: `powershell -File
+  .opencode/scripts/launch-artifact-probe.ps1 -SelfTest`.
+- **`-ProbeOnly`** skips the GUI launch, port precheck, bridge scan and teardown and runs only
+  the CLI legs (`--version`, and `-CompanionProbe` / `-RemoveDll` when supplied). Use it to
+  re-run the expensive leg without spending the bounded window again. It is additive — the
+  combined AC4 invocation above is unchanged — and it is refused together with `-RequireClosed`
+  (which has nothing to assert without a launch).
+- **Duration.** The run is two independent phases, announced by `PHASE=` markers carrying
+  `SINCE_START_SECONDS`: `PHASE=launch-window` (bounded, seconds) then `PHASE=cli-legs`
+  (then `PHASE=companion-probe` / `PHASE=dll-control` / `PHASE=report`). `-CompanionProbe`
+  dominates wall-clock time: it is a **full model load plus one real engine turn — minutes, not
+  seconds** — and the script prints
+  `COMPANION_PROBE_HINT=full model load + one turn; expect minutes` immediately before it
+  starts. A multi-minute wait after that hint is expected, never a hang.
+
 ## Examples
 
 Static receipt:
@@ -87,6 +123,17 @@ ORPHANS_LEFT=0
 RESULT=PASS
 ```
 
+Hermetic self-test receipt (seconds, no artifact, no model):
+```
+powershell -File .opencode/scripts/launch-artifact-probe.ps1 -SelfTest
+CONTROL 1 - DETACHED-LAUNCH
+DETACH_RETURN_SECONDS=0.2
+DETACH_CHILD_ALIVE=True
+CONTROL 2 - REFUSALS
+CONTROL 3 - SELF-REFERENCE
+SELFTEST: PASS
+```
+
 ## Failure modes
 
 - **Exit 2 / `refusing a debug artifact`** — you passed a `\debug\` exe. Build release. Do
@@ -104,6 +151,15 @@ RESULT=PASS
   FAIL (cfg regression).
 - **Exit 3 / `ORPHANS_LEFT`** — a redirected-handle holder survived teardown. Kill the named
   PIDs (`ORPHAN_POSTGRES_PIDS` / `ORPHAN_DESCENDANT_PIDS`) and disclose.
+- **An inline invocation blocks after `RESULT=PASS`** — the launched GUI inherited the caller's
+  stdout/stderr pipe. That is the #3172 ST-5 regression: the GUI launch must go through the
+  detachment helper in `launch-artifact-probe.ps1`, never a plain `Start-Process`. Run
+  `-SelfTest` (it fails `CONTROL 3 - SELF-REFERENCE` if the site reverted) and fix the launch —
+  do not detach the probe to work around it.
+- **`SELFTEST: FAIL` / exit 3** — a `-SelfTest` control failed: `CONTROL 1` the helper took more
+  than 5 s or the child died early (the detachment, not the app, is broken), `CONTROL 2` a
+  refusal stopped refusing, `CONTROL 3` the launch site no longer uses the helper. Never read a
+  self-test FAIL as an artifact problem; the self-test launches no artifact.
 - **Inspector FAIL** — quote the `CHECK` line. Fix the config, or update the inspector's
   expected values in the same change (a legitimate new capability file must be added to
   `-ExpectedCapabilities`). Never launch to "prove" a static value.
@@ -121,7 +177,9 @@ RESULT=PASS
 - Static inspector: [inspect-webview-config.ps1](../../scripts/inspect-webview-config.ps1)
 - Live probe: [launch-artifact-probe.ps1](../../scripts/launch-artifact-probe.ps1)
 - Suite rows: [webview-security-boundary/functional.md](../../tests/webview-security-boundary/functional.md) — F-1, F-3, F-5, F-6, F-9, F-10
-- Harness pin: `powershell -File .opencode/scripts/test-scripts.ps1`
+- Harness pin: `powershell -File .opencode/scripts/test-scripts.ps1` — its
+  `launch-artifact-probe.ps1: -SelfTest returns inline` leg captures the self-test's stdout
+  through a pipe and fails past 15 s, so an inheritance regression hangs the harness itself.
 - Process cleanup: [process-hygiene.ps1](../../scripts/process-hygiene.ps1) via [dev-environment](../dev-environment/SKILL.md)
 - Principles: [principles.md](../../../docs/agentic-pipeline/principles.md) — rule 9 (scripts are called through skills)
 - Skill anatomy: [skill-authoring](../skill-authoring/SKILL.md)
