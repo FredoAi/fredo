@@ -640,14 +640,15 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 /// offer registry.
 ///
 /// The audio defect was the audio entry constructing its own
-/// `SkillRegistry::with_app_control_and_doom()` (three skills, no surface skill).
-/// Spec #3141 ST-3 moved the audio entry from `chat.rs` onto the in-process engine
-/// stream, so this pin follows it to `commands/chat.rs` (`spawn_audio_chat`) and
-/// keeps the SAME predicate: its registry SOURCE is `companion_skill_registry(app)`,
-/// that ONE accessor delegates to the pure `build_companion_skill_registry` builder
-/// (Spec #3099 ST-4), and the deleted hand-written four-skill constructor/catalog
-/// stay gone. Positive-controlled: the scan must SEE the builder definition, so a
-/// scan matching nothing can never pass.
+/// `SkillRegistry::with_app_control_and_doom()` (three skills). Spec #3141 ST-3
+/// moved the audio entry from `chat.rs` onto the in-process engine stream, so this
+/// pin follows it to `commands/chat.rs` (`spawn_audio_chat`) and keeps the SAME
+/// predicate: its registry SOURCE is `companion_skill_registry()`, and that ONE
+/// accessor IS the construction site (Spec #3152 retired the generated per-surface
+/// offer, so the accessor is now the single `SkillRegistry::with_app_control_and_doom()`
+/// call rather than a delegation to a generated builder). Positive-controlled: the
+/// scan must SEE the accessor definition, so a scan matching nothing can never
+/// pass.
 #[test]
 fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
     // (1) The audio path's registry source is the ONE shared accessor. The entry
@@ -663,10 +664,11 @@ fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
         "spawn_audio_chat must not build its own companion offer (R-2): {audio}"
     );
 
-    // (2) The shared accessor reads the managed registry and delegates to the
-    //     PURE builder — it constructs no skill itself. `status.rs` production
-    //     carries `'"'` / `'{'` char literals that `mask()` does not handle, so
-    //     this file is read RAW and sliced at its first test module.
+    // (2) The shared accessor IS the offer's construction site and depends on no
+    //     application state: no managed-state read, no published surfaces, no
+    //     `AppHandle`. `status.rs` production carries `'"'` / `'{'` char literals
+    //     that `mask()` does not handle, so this file is read RAW and sliced at
+    //     its first test module.
     let status = source_text("applications/llm_server/status.rs");
     let status_production = status.split(TEST_ATTR).next().unwrap_or(&status);
     assert!(
@@ -675,38 +677,28 @@ fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
     );
     let accessor = item_span(status_production, "fn companion_skill_registry(");
     assert!(
-        accessor.contains("AppCommandSurfaceRegistry"),
-        "the accessor must read the managed published-surface registry: {accessor}"
+        !accessor.contains(".try_state"),
+        "the accessor must read no managed state: {accessor}"
     );
     assert!(
-        accessor.contains("build_companion_skill_registry(&surfaces)"),
-        "the accessor must delegate to the pure builder (Spec #3099 ST-4): {accessor}"
+        !accessor.contains("surfaces"),
+        "the accessor must consult no published surfaces: {accessor}"
     );
     assert!(
-        !accessor.contains("SkillRegistry::with_"),
-        "the accessor must not build a registry inline: {accessor}"
+        !accessor.contains("app: &AppHandle"),
+        "the accessor must take no AppHandle: {accessor}"
+    );
+    assert!(
+        accessor.contains("SkillRegistry::with_app_control_and_doom()"),
+        "the accessor must be the ONE construction site: {accessor}"
     );
 
-    // (3) The pure builder lives in the surface registry and composes the three
-    //     static skills FIRST, then one generated skill per surface.
-    let surface_registry = production_text("infrastructure/companion/surface_registry.rs");
-    let builder = item_span(&surface_registry, "pub fn build_companion_skill_registry(");
-    assert!(
-        builder.contains("SkillRegistry::with_app_control_and_doom()"),
-        "the builder must lead with the shipped static three: {builder}"
-    );
-    assert!(
-        builder.contains("surface_skill("),
-        "the builder must generate one skill per surface: {builder}"
-    );
-
-    // (4) No OTHER production file builds a companion offer registry. The offer
+    // (3) No OTHER production file builds a companion offer registry. The offer
     //     constructors may live ONLY in the definitions file (they chain there)
-    //     and the pure builder (surface_registry.rs); status.rs is covered by (2).
+    //     and the ONE accessor (status.rs).
     let allowed = [
         "applications/llm_server/status.rs",
         "infrastructure/companion/skills.rs",
-        "infrastructure/companion/surface_registry.rs",
     ];
     for (file, production) in crate_production_sources() {
         if allowed.contains(&file.as_str()) {
@@ -719,7 +711,7 @@ fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
         );
     }
 
-    // (5) The hand-written four-skill constructor and its mirrored catalog are
+    // (4) The hand-written four-skill constructor and its mirrored catalog are
     //     DELETED (Spec #3099 ST-4, G-412): one source of the action list remains.
     for (file, production) in crate_production_sources() {
         assert_eq!(

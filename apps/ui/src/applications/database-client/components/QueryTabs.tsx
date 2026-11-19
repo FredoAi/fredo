@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Flex, Text } from '@chakra-ui/react';
 import { LuPlus, LuX } from 'react-icons/lu';
 import { dbQueryExecute, normalizeDbError } from '../lib/api';
-import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import {
   DBCLIENT_LAYOUT_LIMITS,
   DEFAULT_DB_CLIENT_LAYOUT,
@@ -412,28 +411,6 @@ export const QueryTabs: React.FC<QueryTabsProps> = ({
       setTabs(next);
     },
     [tabs, activeId],
-  );
-
-  // Spec #3121 (P7), ST-4 — the declared `sql-studio.tab.new` / `.tab.close` verbs delegate to
-  // the SAME handlers the pointer controls use (one latest-value ref; no stale closures).
-  const tabActionsRef = useRef({ tabs, addTab, closeTab });
-  tabActionsRef.current = { tabs, addTab, closeTab };
-  useEffect(
-    () =>
-      registerDatabaseClientActionHandlers({
-        tabNew: () => {
-          tabActionsRef.current.addTab();
-          return true;
-        },
-        tabClose: (tabId) => {
-          const current = tabActionsRef.current;
-          if (current.tabs.length <= 1) return false;
-          if (!current.tabs.some((tab) => tab.id === tabId)) return false;
-          current.closeTab(tabId);
-          return true;
-        },
-      }),
-    [],
   );
 
   const completions = useMemo<DbCompletion[]>(

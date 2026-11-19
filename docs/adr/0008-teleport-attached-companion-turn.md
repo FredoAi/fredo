@@ -62,3 +62,16 @@ landing** in the window that hosts him (`CompanionComposer`, `shared/components/
   ambiguous and its grounding is undefined.
 - **A persistent instruction box.** Keeping the box open across turns reintroduces a transcript
   surface and the persistence and stale-target problems that come with it; the box is per-turn.
+
+## Amendment (Spec #3153, slice 3 of 3) — status unchanged: this record is NOT superseded
+
+The composer half of this decision is the shipped product: `CompanionComposer`
+(`apps/ui/src/shared/components/companion/`), `composerBridge.ts` and the pure
+`computeComposerPlacement` / `composerTarget.ts` placement and target resolution all survive the
+NavigationEngine removal (#3151). Only this record's *grounding* pointer moved with that removal:
+the surviving application-level grounding seam is `registerCompanionGrounding` /
+`readCompanionGrounding(appId)` in `apps/ui/src/shared/companion/grounding.ts` — a module-scoped
+`Map<appId, provider>` whose payload is `version` / `appId` / `appName` /
+`selection{count,kinds,label,ids}` / `dirty`, with `COMPANION_CAPABILITY_LIMITS.maxContextBytes`
+bounding the context. The turn is submitted through the existing skill-aware `ask` path, so the
+box still adds no second dispatch route, no transcript and no history.

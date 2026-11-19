@@ -3,8 +3,8 @@
  *
  * The instruction box grounds every turn on the app it is aimed at. This module
  * is the ONE decision (no React, no DOM, no Tauri), so the default target, the
- * named override and the "ground on describeContext" contract are unit-pinned
- * without a harness:
+ * named override and the "ground on the app's registered grounding source"
+ * contract are unit-pinned without a harness:
  *
  *   default target  : requestedAppId → topmost frame containing the landing
  *                     point → the standalone window's app → the focused window
@@ -13,12 +13,12 @@
  *                     `name` and `id`; `null` on 0 matches or on 2+ DISTINCT
  *                     apps tying at the longest match (ambiguous).
  *
- * `ContextEnvelope` is a TYPE-ONLY import (the envelope is built by the caller
- * through `describeContext`), so this file stays pure and free of the navigation
- * host runtime.
+ * Spec #3151 ST-2 — the resolved grounding is the application-level
+ * `CompanionGrounding` (`shared/companion/grounding.ts`), TYPE-ONLY here so this
+ * file stays pure and free of any registry runtime.
  */
 
-import type { ContextEnvelope } from '../navigation/types';
+import type { CompanionGrounding } from './grounding';
 import type { ReplyRect } from '../components/companion/replySurfaceLayout';
 
 /** The app metadata target resolution needs (never the application instance). */
@@ -51,8 +51,8 @@ export interface CompanionTargetInput {
 export interface CompanionTurnTarget {
   readonly appId: string | null;
   readonly appName: string | null;
-  /** `describeContext(appId)`; `null` when the app is unregistered / no app. */
-  readonly envelope: ContextEnvelope | null;
+  /** `readCompanionGrounding(appId)`; `null` when the app registered no source. */
+  readonly grounding: CompanionGrounding | null;
   /** True when a named app overrode the default target. */
   readonly explicit: boolean;
 }

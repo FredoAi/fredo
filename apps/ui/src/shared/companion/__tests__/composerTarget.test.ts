@@ -1,5 +1,8 @@
 /**
  * Spec #3120 (rework) ST-2 — pure companion target resolution.
+ * Spec #3151 (ST-2) — re-pointed off the retired `ContextEnvelope`: the target's
+ * grounding is now the application-level `CompanionGrounding`, so the type-only
+ * import comes from `../grounding` (no navigation engine).
  *
  * Work bullet (a): the default-target order (requested → topmost frame at the
  * landing point → window app → focused app → null) and the named-app override
@@ -12,7 +15,8 @@ import {
   resolveCompanionTargetApp,
   resolveNamedAppMention,
 } from '../composerTarget';
-import type { CompanionTargetFrame, FredoAppRef } from '../composerTarget';
+import type { CompanionTurnTarget, CompanionTargetFrame, FredoAppRef } from '../composerTarget';
+import type { CompanionGrounding } from '../grounding';
 import type { ReplyRect } from '../../components/companion/replySurfaceLayout';
 
 function rect(left: number, top: number, width: number, height: number): ReplyRect {
@@ -152,5 +156,50 @@ describe('resolveNamedAppMention — whole-word, case-insensitive, longest match
   it('matches punctuation-adjacent mentions (whole-word boundaries, not regex state)', () => {
     expect(resolveNamedAppMention('switch (wireframe) to light', APPS)).toBe('wireframe');
     expect(resolveNamedAppMention('open Mission Monitor.', APPS)).toBe('mission-monitor');
+  });
+});
+
+// ── #3151 ST-2 — the de-enveloped target carries a CompanionGrounding ──────────
+
+describe('#3151 ST-2 — CompanionTurnTarget carries CompanionGrounding (no ContextEnvelope)', () => {
+  function groundingFor(appId: string): CompanionGrounding {
+    return {
+      version: 1,
+      appId,
+      appName: 'Wireframe',
+      selection: { count: 1, kinds: ['shape'], label: 'rect', ids: ['el-1'] },
+      dirty: true,
+    };
+  }
+
+  it('builds a target whose grounding is the application-level payload', () => {
+    const grounding = groundingFor('wireframe');
+    const target: CompanionTurnTarget = {
+      appId: 'wireframe',
+      appName: 'Wireframe',
+      grounding,
+      explicit: false,
+    };
+
+    expect(target.grounding).toBe(grounding);
+    expect(target.grounding?.selection).toStrictEqual({
+      count: 1,
+      kinds: ['shape'],
+      label: 'rect',
+      ids: ['el-1'],
+    });
+    // The retired envelope field is gone from the target shape.
+    expect(target).not.toHaveProperty('envelope');
+  });
+
+  it('allows an ungrounded target (null) for an app with no registered source', () => {
+    const target: CompanionTurnTarget = {
+      appId: null,
+      appName: null,
+      grounding: null,
+      explicit: false,
+    };
+
+    expect(target.grounding).toBeNull();
   });
 });

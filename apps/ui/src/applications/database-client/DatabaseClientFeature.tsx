@@ -4,12 +4,6 @@ import { LuDatabase, LuUnplug } from 'react-icons/lu';
 import { FredoApplicationClass } from '../../shared/classes';
 import { ConnectionForm } from './components/ConnectionForm';
 import {
-  DatabaseClientNavigationFooter,
-  DatabaseClientNavigationProvider,
-  handleDatabaseClientKeyDown,
-  useOptionalDatabaseClientNavigation,
-} from './components/DatabaseClientNavigationProvider';
-import {
   ConnectionsPanel,
   type ConnectionStatus,
 } from './components/ConnectionsPanel';
@@ -43,9 +37,11 @@ import {
 } from './lib/storage';
 import { useDbClientLayout } from './lib/useDbClientLayout';
 import {
-  buildDatabaseClientSelection,
-  registerDatabaseClientActionHandlers,
-} from './databaseClientSurface';
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+  type CompanionGroundingSelection,
+} from '../../shared/companion/grounding';
+import { getApplications } from '../applicationRegistry';
 import type {
   DbConnectionView,
   DbSchemaNodeAction,
@@ -77,10 +73,37 @@ interface ExternalSql {
   nonce: number;
 }
 
+/**
+ * #3151 ST-6 — the §D.4 selection projection, re-homed from the deleted
+ * `databaseClientSurface.ts`. `kinds`/`ids` are index-aligned in the fixed order
+ * connection, table, query, resultSet; absent objects are omitted.
+ */
+function buildSelection(input: {
+  readonly connectionId: string | null;
+  readonly tableId: string | null;
+  readonly queryId: string | null;
+  readonly resultSetId: string | null;
+}): CompanionGroundingSelection {
+  const kinds: string[] = [];
+  const ids: string[] = [];
+  const push = (kind: string, id: string | null): void => {
+    if (id === null) return;
+    kinds.push(kind);
+    ids.push(id);
+  };
+  push('connection', input.connectionId);
+  push('table', input.tableId);
+  push('query', input.queryId);
+  push('resultSet', input.resultSetId);
+  return {
+    count: ids.length,
+    kinds,
+    ids,
+    label: kinds.length > 0 ? kinds[kinds.length - 1] : null,
+  };
+}
+
 export const DatabaseClientFeatureView: React.FC = () => {
-  // Spec #3121 (P7), ST-4 — the optional provider handle (the surface is also rendered bare by
-  // the pre-migration suites; the product path mounts it through `render()`).
-  const navigation = useOptionalDatabaseClientNavigation();
   const [connections, setConnections] = useState<DbConnectionView[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [connectionsError, setConnectionsError] = useState<string | null>(null);
@@ -399,9 +422,12 @@ export const DatabaseClientFeatureView: React.FC = () => {
   );
 
   // §D.4 — kinds/ids in the fixed order connection, table, query, resultSet.
+  // #3151 ST-6 — the selection projection the companion grounding publishes. It
+  // used to live on the deleted `databaseClientSurface.ts`; it is the ONLY part
+  // of that declaration the surviving product still needs.
   const selection = useMemo(
     () =>
-      buildDatabaseClientSelection({
+      buildSelection({
         connectionId: activeId,
         tableId: selectedNode?.id ?? null,
         queryId: activeTabId,
@@ -410,82 +436,23 @@ export const DatabaseClientFeatureView: React.FC = () => {
     [activeId, selectedNode?.id, activeTabId, activeResultSetId],
   );
 
-  // Publish through the host's `refreshContext` seam — availability flips with no remount, no
-  // poll, and WITHOUT moving the place cursor (D-UI-1 / R-12).
-  const publishSelection = navigation?.publishSelection;
-  useEffect(() => {
-    publishSelection?.(selection);
-  }, [publishSelection, selection]);
-
-  // The surface's action verbs delegate to these LIVE callbacks through one latest-value ref,
-  // so a declaration never captures stale React state.
-  const actionsRef = useRef({
-    connections,
-    activeId,
-    connectedId,
-    selectedNode,
-    handleDelete,
-    handleDisconnect,
-    reload,
-    openNew,
-    openEdit,
-    handleNodeAction,
-  });
-  actionsRef.current = {
-    connections,
-    activeId,
-    connectedId,
-    selectedNode,
-    handleDelete,
-    handleDisconnect,
-    reload,
-    openNew,
-    openEdit,
-    handleNodeAction,
-  };
-
+  // #3151 ST-2 (AC5) — SQL Studio owns its selection, so it registers the
+  // application-level companion grounding source. The closure reads the CURRENT
+  // `selection` projection (re-registered when it changes), so a turn grounds on the
+  // live connection/table/query/resultSet — never a stale render snapshot.
   useEffect(
     () =>
-      registerDatabaseClientActionHandlers({
-        connectionNew: () => {
-          actionsRef.current.openNew();
-          return true;
-        },
-        connectionEdit: (connectionId) => {
-          const view = actionsRef.current.connections.find((entry) => entry.id === connectionId);
-          if (view === undefined) return false;
-          actionsRef.current.openEdit(view);
-          return true;
-        },
-        connectionDelete: (connectionId) => {
-          const view = actionsRef.current.connections.find((entry) => entry.id === connectionId);
-          if (view === undefined) return false;
-          void actionsRef.current.handleDelete(view);
-          return true;
-        },
-        connectionDisconnect: () => {
-          if (actionsRef.current.activeId === null) return false;
-          void actionsRef.current.handleDisconnect();
-          return true;
-        },
-        connectionRetry: () => {
-          void actionsRef.current.reload();
-          return true;
-        },
-        schemaViewColumns: () => runNodeAction('viewColumns'),
-        schemaOpenData: () => runNodeAction('openData'),
-        schemaNewQuery: () => runNodeAction('newQuery'),
-      }),
-    // ONE registration for this mount; the ref keeps every closure current.
-    [],
+      registerCompanionGrounding('database-client', () => ({
+        version: COMPANION_GROUNDING_VERSION,
+        appId: 'database-client',
+        appName:
+          getApplications().find((application) => application.id === 'database-client')?.name ??
+          'SQL Studio',
+        selection,
+        dirty: false,
+      })),
+    [selection],
   );
-
-  function runNodeAction(action: DbSchemaNodeAction): boolean {
-    const current = actionsRef.current;
-    if (current.selectedNode === null || current.connectedId === null) return false;
-    current.handleNodeAction(action, current.selectedNode);
-    return true;
-  }
 
   return (
     <Flex
@@ -494,11 +461,6 @@ export const DatabaseClientFeatureView: React.FC = () => {
       height="100%"
       minHeight={0}
       bg="bg.canvas"
-      onKeyDown={
-        navigation === null
-          ? undefined
-          : (event) => handleDatabaseClientKeyDown(event, navigation.host)
-      }
     >
       <Flex ref={splitRowRef} flex="1" minHeight={0}>
         {/* Left: connections + schema tree (+ inspector when a node is selected) */}
@@ -695,11 +657,6 @@ export const DatabaseClientFeatureView: React.FC = () => {
           </Button>
         ) : null}
       </Flex>
-
-      {/* Spec #3121 (P7), ST-4 — the navigation footer is the THIRD and LAST flex child of
-          `db-client-root`, after the shipped status strip (UI/UX §3.1). No wrapper, no layout
-          restructure, no new testid. Rendered only inside the provider (the product path). */}
-      {navigation === null ? null : <DatabaseClientNavigationFooter />}
     </Flex>
   );
 };
@@ -712,11 +669,7 @@ export class DatabaseClientFeature extends FredoApplicationClass {
   readonly hasSettings = true;
 
   render() {
-    return (
-      <DatabaseClientNavigationProvider>
-        <DatabaseClientFeatureView />
-      </DatabaseClientNavigationProvider>
-    );
+    return <DatabaseClientFeatureView />;
   }
 
   renderSettings() {

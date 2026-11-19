@@ -32,7 +32,6 @@ import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import { WireframeCanvasImpl } from '../components/WireframeCanvasImpl';
-import { WireframeNavigationProvider } from '../components/WireframeNavigationProvider';
 import type { WireframeElement } from '../model/elements';
 import type { WireframeDocument } from '../model/document';
 import { createNewWireframeDocument } from '../model/document';
@@ -49,6 +48,7 @@ import {
   subscribe,
   undo,
 } from '../store/wireframeDocumentStore';
+import { resetWireframeCanvasOperatorForTests } from '../components/wireframeCanvasOperator';
 
 interface MockNode {
   attrs: Record<string, any>;
@@ -345,16 +345,11 @@ function seedDocument(elements: WireframeElement[], selectedIds?: string[]): voi
 }
 
 /**
- * Mount the canvas inside the ONE navigation provider (Spec #3119, ST-5). The
- * canvas commits its pointer gestures through `host.runVerb`, so it needs the
- * same host the shell provides.
+ * Mount the canvas (Spec #3151, ST-5 — the navigation provider is deleted; the
+ * canvas writes straight to the store).
  */
 function renderCanvas() {
-  return renderWithChakra(
-    <WireframeNavigationProvider>
-      <WireframeCanvasImpl />
-    </WireframeNavigationProvider>,
-  );
+  return renderWithChakra(<WireframeCanvasImpl />);
 }
 
 function elementGroup(id = 'el-text'): { props: Record<string, any>; node: MockNode } {
@@ -444,6 +439,7 @@ function commitCountDuring(run: () => void): number {
 
 beforeEach(() => {
   resetWireframeStoreForTests();
+  resetWireframeCanvasOperatorForTests();
   konvaMock.groups.clear();
   konvaMock.lines.length = 0;
   konvaMock.transformer = null;
@@ -480,6 +476,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWireframeStoreForTests();
+  resetWireframeCanvasOperatorForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.removeAttribute('style');
@@ -525,9 +522,7 @@ describe('canvas host contract', () => {
     seedDocument([]);
     renderCanvas();
     expect(
-      screen.getByText(
-        'Add an element from the toolbar, or ask the Companion to draft a wireframe.',
-      ),
+      screen.getByText('Add an element from Insert to start your wireframe.'),
     ).toBeInTheDocument();
   });
 });

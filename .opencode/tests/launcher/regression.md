@@ -866,36 +866,37 @@
 
 ---
 
-## #3120 extension — the navigation-grounded launcher must NOT change the shipped launcher (G-136)
+## #3120 extension — the launcher must NOT change the shipped shell (G-136)
 
-> Issue #3120 adds the context header, the grouped navigation palette, the confirmation, the
-> undo route and `/ Ask`. Nothing is retired: the shipped launcher shell, the legacy `>` hotkey
-> action palette, Ctrl+Space, the smart-Enter/busy/wrap/dictation contracts and the seat geometry
-> remain IN FORCE. Run alongside R-1..R-74 and the `navigation` / `wireframe-navigation` suites.
-> **Verification policy: live.** Legacy-drive: the no-surface app is Mission Monitor (no registered
-> navigation host).
+> Issue #3120 briefly added a context header, a grouped navigation palette, a confirmation, an undo
+> route and `/ Ask`. The human-directed rescope rejected that experience, and the navigation engine
+> itself is deleted in #3151: the launcher now ships **app launch / search + the open-apps row +
+> the global command bar** and nothing else. Run this block alongside R-1..R-74.
+> **Verification policy: live.** The no-surface app is Mission Monitor.
+>
+> The rows below keep their behavioural outcome — the shipped launcher surface is unchanged by the
+> slice — and their prose is re-pointed at what actually ships.
 
-## R-75 — the legacy `>` action palette is byte-identical for an app with no navigation host
+## R-75 — `>` is ordinary query text; no action palette exists
 
-- [ ] R-75: Focus Mission Monitor → `Ctrl+Space` → `>` and a plain query; also `>` + a term that
-      matches a hotkey action.
-  **Expected:** the results region renders the shipped `LauncherActionList` (`launcher-action-entry`,
-  `launcher-action-tier`, `launcher-action-binding`, `launcher-action-unbound`, `launcher-action-empty`)
-  with the shipped props; Enter calls `runHotkeyAction(actionId,'palette')` and the action's own
-  side effect fires; NO `launcher-palette-list`, NO `launcher-context`, NO
-  `launcher-palette-announcer` (UI/UX §7's legacy invariant 1-3). Reference F-127/R-80.
-  - **Edge:** a no-surface app while Wireframe is open behind; `>` then clearing back to a plain
-    query (the source switches back, no orphan container); an unbound action row.
+- [ ] R-75: Focus Mission Monitor → `Ctrl+Space` → type `>` and a plain query; also `>` + text that
+      would once have matched a hotkey action.
+  **Expected:** `>` stays literal query text in `launcher-command-input`; the results region renders
+  the shipped app grid and open-apps row only — NO `launcher-palette-list`, NO `launcher-context`,
+  NO `launcher-action-entry` and NO `launcher-palette-announcer`; Enter takes the shipped
+  `resolveEnterAction` path against the literal text. Reference F-163.
+  - **Edge:** `>` alone; `>` then clearing back to a plain query (the grid returns in full, no
+    orphan container); a query matching no app (no launch, text retained).
 
 ## R-76 — the shipped launcher shell is untouched (grid, Ctrl+Space, focus, seat geometry)
 
-- [ ] R-76: With and without the Wireframe host, re-run the shipped quick paths: Ctrl+Space
+- [ ] R-76: With and without a Wireframe window, re-run the shipped quick paths: Ctrl+Space
       show+focus (never close, never listen), the grid filter + arrow nav + empty-grid no-op, the
       hint row, ESC idle/close with focus restore, the seat-slot wrapper `offsetWidth`/`offsetHeight`
       = 80/100 + `margin-bottom:16px`, and the command-bar `y` within ±1 px across states.
-  **Expected:** byte-for-byte the shipped outcomes (F-16..F-20, R-7, R-35, R-45..R-48, R-52, R-70..R-72);
-  the context header adds height BELOW the bar only, so the reply band's `barrierTop` and the
-  bar `y` are unchanged. Reference UI/UX §2.8.
+  **Expected:** byte-for-byte the shipped outcomes (F-16..F-20, R-7, R-35, R-45..R-48, R-52,
+  R-70..R-72). The launcher reads no application context, so no context header exists to add height
+  below the bar: the reply band's `barrierTop` and the bar `y` are unchanged. Reference UI/UX §2.8.
   - **Edge:** engaged + open-apps row present; 900×600; companion ON/OFF/away.
 
 ## R-77 — dictation holds and the no-transcript rule are unchanged
@@ -903,107 +904,105 @@
 - [ ] R-77: Hold Space on the focused EMPTY bar with voice enabled; release; then check the bar
       text path and the listening cues.
   **Expected:** the shipped hold/tap/space-safety contract holds (R-41/R-50/R-51/R-60); the
-  shipped listening cues are NOT re-animated or re-copied by P6; the voice turn still sends the
+  shipped listening cues are unchanged; the voice turn still sends the
   audio clip as its input with no transcript state added (`useVoiceDictation.ts`,
   `CompanionEntity`). Reference R-62.
-  - **Edge:** voice disabled mid-hold; a live capture + `>` Enter (dispatches nothing — D6).
+  - **Edge:** voice disabled mid-hold; a live capture + Enter (launches nothing).
 
-## R-78 — keyboard/pointer human intents keep the shipped no-confirm behaviour
+## R-78 — a pointer activation keeps the shipped no-confirm behaviour
 
-- [ ] R-78: In Wireframe select one element (L3), enter the Edit place (`e`), then press `x`
-      (`wireframe.element.delete`, a **destructive** verb) on the keyboard channel.
-  **Expected:** NO `launcher-confirmation` dialog; the delete applies immediately with exactly one
-  journal entry — the host policy gates only `launcher|voice|agent` channels (§3.2). The keyboard
-  adapter and the rail/trail/map are behaviour-identical to P5.
-  - **Edge:** the same verb from the launcher palette DOES confirm (F-141); the rail's delete/undo
-    affordances unchanged.
+- [ ] R-78: In Wireframe select one element, then click the `Delete` row in `wireframe-arrange`.
+  **Expected:** NO confirmation dialog; the delete applies immediately with exactly one history
+  entry (`store/wireframeHistory.ts`). There is no host risk policy and no confirmation requester:
+  the deleted `LauncherConfirmation` was the only confirmation host, and no application command has
+  one any more.
+  - **Edge:** the same verb from the Companion id also applies with no dialog; a locked element is
+    still deletable via the row.
 
-## R-79 — the refreshed attribution pins are updated, never deleted or weakened
+## R-79 — no navigation pin remains to refresh
 
-- [ ] R-79: `pnpm --filter @fredo/ui exec vitest run shared/navigation/__tests__/journal.test.ts
-      shared/navigation/__tests__/dispatch.test.ts shared/navigation/ui/__tests__/host.test.ts`.
-  **Expected:** the four P3/P4 `actor:'system'` assertions named in A1
-      (`journal.test.ts` + its siblings) now assert the requester-actor rule (§3.10) with the SAME
-      specificity (a companion-channel undo → `human`; a system undo → `system`); no assertion was
-      removed or loosened; the shipped undo COPY (`Nothing to undo.`, `navUndoMessage`, the five
-      `NON_UNDOABLE_CONSEQUENCES`) is unchanged. Reference F-147.
-  - **Edge:** a test renamed/relocated must be named in `## Tests Runs` (G-125); a deleted pin is a
-    FAIL of this row.
+- [ ] R-79: `pnpm --filter @fredo/ui test:run applications/wireframe` and
+      `pnpm --filter @fredo/ui test:run shared/companion`.
+  **Expected:** the deleted journal/dispatch/host test files do not exist (RETIRED.md names them)
+  and are cited nowhere as live pins. The
+  surviving undo pins are `applications/wireframe/__tests__/wireframeHistory.test.ts` (the
+  app-local bounded history, `WIREFRAME_HISTORY_LIMIT = 100`) and
+  `wireframeUndoAuthority.test.ts` ("no shared-journal reference survives"). Reference Q-29/Q-35.
+  - **Edge:** a row that cites a deleted pin path is a technique error, not a product FAIL.
 
-## R-80 — the no-surface launcher DOM carries none of the P6 surfaces
+## R-80 — the launcher DOM carries none of the retired surfaces
 
-- [ ] R-80: Snapshot the launcher DOM over Mission Monitor (resting + engaged + `>`), then over
-      Wireframe.
-  **Expected:** over a no-surface app the DOM has NO `launcher-context`, NO
-      `launcher-palette-announcer` (so no extra live region), NO `launcher-palette-list`, NO
-      `launcher-response`, NO confirmation node — the set differs from the Wireframe case ONLY by
-      the P6 nodes; every shipped node/testid is present and identical.
-  - **Edge:** an app with no registered navigation host; the minimised-Wireframe state (falls back).
+- [ ] R-80: Snapshot the launcher DOM over Mission Monitor (resting + engaged + a `>` query), then
+      over an open Wireframe window.
+  **Expected:** in BOTH cases the DOM has NO `launcher-context`, NO `launcher-palette-announcer`
+  (no extra live region), NO `launcher-palette-list`, NO `launcher-action-entry` and NO
+  confirmation node; every shipped node/testid (`launcher-command-bar`, `launcher-command-input`,
+  the grid, `launcher-open-apps`) is present and identical. The set must not differ between the two
+  cases at all — the launcher no longer reads an application's context.
+  - **Edge:** an app with no grounding source; the minimised-Wireframe state.
 
-## R-81 — the published manifest keeps every declared surface (no app loses its skill)
+## R-81 — the companion offer is the three static skills (no per-app projection)
 
-- [ ] R-81: On boot with Wireframe registered, read the published manifest (the Rust
-      `app_command_surfaces` return) and run the companion skill list.
-  **Expected:** every retained application that declares a published navigation surface appears
-      with its shipped commands; Wireframe appears from the NAVIGATION declaration (49 verbs +
-      `journal.undo`); no app is dropped, duplicated or renamed; the `skillName` = `appId` identity
-      holds; `listActions` remains the single reserved id. Reference F-136/F-137.
-  - **Edge:** two surfaces with the same `appId` (first-wins); a surface whose commands all lack a
-    description (still published, empty list). After P8 there is no legacy projection path.
+- [ ] R-81: On boot, read the companion skill offer through the shipped turn path and list the
+      Wireframe published ids.
+  **Expected:** the offer is exactly `open_app`, `close_app`, `doom_mode` from the ZERO-argument
+  `companion_skill_registry()` (`applications/llm_server/status.rs:691`, pinned at `:1462-1474`) —
+  no application-named skill, nothing generated, no per-application command facet. Wireframe's own
+  `wireframe.companion.listActions` row still exists in `WIREFRAME_ACTIONS`
+  (`actions/wireframeActions.ts:602`) and is invocable by companion name; it does not add a skill to
+  the offer.
+  - **Edge:** a second application declaring commands does not change the offer; reading the registry
+    twice returns the same three names (`status.rs:1478`).
 
-## R-81 note — P8 supersedes "legacy surface" wording
+## R-82 — no `/ Ask` affordance survives
 
-> #3122 deletes the legacy command-surface projection. This row's observable is unchanged ("no
-> retained app loses its published skill"); the source is now the navigation declaration only.
-> The exact boot set is asserted by `retainedApplicationSet.test.ts`.
+- [ ] R-82: With Wireframe focused, look for an `/ Ask` control on the canvas or in the property
+      panel; then open the launcher.
+  **Expected:** no `navigation-rail-ask` control exists (the rail was deleted with the engine) and
+  the launcher exposes no `/ Ask` entry; `Ctrl+Space` remains the ONE way to open it. The
+  pointer control strip (`wireframe-control-strip`) carries the Arrange/File/View/history controls
+  and nothing else. Reference Q-19.
+  - **Edge:** the launcher open while Wireframe is behind; a text-entry control focused in the panel.
 
-## R-82 — `/ Ask` enablement does not disturb the rail/map parity
+## R-83 — token-native, console clean, no re-render loop
 
-- [ ] R-82: With Wireframe focused, read the rail (rows, breadcrumb, `more…`, map affordance) and
-      open the `?` map; compare with the P4/P5 behaviour.
-  **Expected:** only the Ask affordance's state changed (`aria-disabled` omitted, reason node gone,
-      tooltip `Ask (k)`); every other rail row/ordering/breadcrumb/`more…`/map behaviour is
-      unchanged; the map overlay still opens/closes with its own Esc/focus contract. Reference
-      `wireframe-navigation` regression + `navigation` R-rows; UI/UX §2.7.
-  - **Edge:** the map open while the launcher is closed/open; the rail's Ask pressed twice.
-
-## R-83 — token-native, console clean, no re-render loop after the P6 slice
-
-- [ ] R-83: Static-grep the changed launcher/navigation files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
+- [ ] R-83: Static-grep the changed launcher files for `#[0-9a-fA-F]{3,8}` / `rgba(` /
       `rgb(` / `hsla(` / `var(--x)NN`; read `tauri_read_logs(source="console")` after every leg;
-      inspect the new state derivation for effect/memo deps.
+      inspect the launcher's state derivation for effect/memo deps.
   **Expected:** ZERO colour literals / no alpha-append (#2770); no `Error:`/`Uncaught`/`Maximum
-      update depth exceeded` (the pre-existing `motion() is deprecated` WARN exempt); the context
-      header derives via `useMemo` over primitives (`activeAppId` + host epoch), never an effect +
-      `setState` (#523); no polling.
-  - **Edge:** theme switch mid-palette; resize churn; open/close churn.
+      update depth exceeded` (the pre-existing `motion() is deprecated` WARN exempt); no derived
+      header memo exists to loop (the header is retired); no polling (#523).
+  - **Edge:** theme switch mid-query; resize churn; open/close churn.
 
 ## R-84 — build and suite gates stay green
 
 - [ ] R-84: `pnpm --filter @fredo/ui build`; `pnpm --filter @fredo/ui test:run`; `cargo check`
       (from `apps/tauri/src-tauri/`).
   **Expected:** build exit 0 with zero TS errors; the full suite green; `cargo check` with zero
-      warnings; no assertion weakened (the refreshed pins are named per G-125). Reference NFR-3.
+      warnings; no assertion weakened. Reference NFR-3.
   - **Edge:** a pre-existing unrelated failure named with its `main` baseline; a skipped test is
     not a pass.
 
-## R-85 — still ONE keydown listener, still element-scoped
+## R-85 — exactly ONE application keydown listener remains
 
-- [ ] R-85: Count `document` keydown listeners before/after opening the launcher and focusing
-      Wireframe; then press `c`, `ArrowRight` in the Wireframe window and `Ctrl+K` in the launcher.
-  **Expected:** the `document` keydown listener count is unchanged (the launcher's existing shell
-      handler was extended, no new `document` listener); the Wireframe adapter remains
-      element-scoped to its mount (a stroke typed into the launcher bar never reaches the engine);
-      the launcher's `Ctrl+K` never runs a hotkey action.
-  - **Edge:** both surfaces mounted at once; the launcher open while Wireframe is behind; rapid
-    focus changes between them.
+- [ ] R-85: Count `document` keydown listeners before/after opening the launcher; then press
+      `Ctrl+Space`, `Ctrl+Tab` and `Ctrl+Shift+Tab` with the launcher open and with a terminal
+      focused.
+  **Expected:** the count is unchanged by opening the launcher; the ONE capture-phase listener is
+      `installPlatformChords` (`shared/window-system/platformChords.ts:177`), reference-counted so
+      StrictMode's double effect is safe, and it matches ONLY the three chords — no bare key, no
+      sequence, no element binding (`:21`). A chord typed into a focused terminal is suppressed
+      (`chordSuppression.ts`, precedence `terminal > modal > text-entry > none`), and a chord typed
+      into a text control never leaves the field.
+  - **Edge:** both surfaces mounted at once; the launcher open with a terminal behind; rapid focus
+    changes between them.
 
-## R-86 — the confirmation store is inert without a launcher
+## R-86 — a destructive intent has no confirmation host
 
-- [ ] R-86: Drive a destructive verb from the keyboard (no launcher mounted) and from a relay while
-      the launcher is closed.
-  **Expected:** `requestLauncherConfirmation` resolves `false` immediately when no launcher surface
-      is mounted → `canceled-confirmation`, nothing applied, no journal entry, no console error; the
-      keyboard path still uses the shipped host `confirm` (true). Reference R-78/F-143.
-  - **Edge:** the launcher opening mid-request (a stale promise must not resolve later); two
-    requests in flight (E-84).
+- [ ] R-86: Drive a destructive action from the Companion id and from the pointer row, with the
+      launcher closed and open.
+  **Expected:** neither leg produces a confirmation dialog; the action applies (or is refused by the
+      selection gate), nothing writes a phantom history entry, and no console error appears.
+      `requestLauncherConfirmation` does not exist — the deleted `LauncherConfirmation` was its only
+      host. Reference R-78/F-141/F-143.
+  - **Edge:** the launcher opening mid-action (no stale promise can exist); two actions in flight.

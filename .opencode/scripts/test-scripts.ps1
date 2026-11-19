@@ -1687,6 +1687,35 @@ Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
   return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
 }
 
+# An agent that must EVIDENCE a committed absence guard must be able to RUN it (#3153).
+# The AUTHORING role (developer) needs the guard DIRECT (it writes the script and re-runs
+# it) plus the run-exitcode wrapper (its numeric EXITCODE/HITS receipt); the VERIFYING
+# role (tester) drives it through the wrapper, which is how its rows are written (G-399).
+# The grant must stay NARROW: per-script globs, never a general `.opencode/scripts/*`.
+Test-Script "Guard-evidence roles can run the retirement/prose guards they must prove (#3153)" {
+  $guard = "check-navigation-prose-retired.ps1"
+  $direct = "powershell -File .opencode/scripts/$guard"
+  $viaWrapper = "powershell -File .opencode/scripts/run-exitcode.ps1 -Command `"$direct`""
+  $failures = @()
+  # developer: direct + wrapper (both required — it authors the guard and needs the receipt).
+  foreach ($cmd in @($direct, $viaWrapper)) {
+    if ((Get-BashEffect "developer" $cmd) -ne "allow") { $failures += "developer cannot run '$cmd'" }
+  }
+  # tester: the wrapper route its rows are written in (direct access is deliberately not needed).
+  if ((Get-BashEffect "tester" $viaWrapper) -ne "allow") { $failures += "tester cannot drive the guard through run-exitcode" }
+  # Negatives: the grant must not generalise to other scripts, and the read-only
+  # auditor stays denied by deliberate decision (it judges the record, not the tree).
+  foreach ($cmd in @(
+    "powershell -File .opencode/scripts/dev-env.ps1 -Action Status",
+    "powershell -File .opencode/scripts/check-another-retired.ps1"
+  )) {
+    if ((Get-BashEffect "developer" $cmd) -ne "deny") { $failures += "developer grant over-broad: '$cmd' NOT denied" }
+  }
+  if ((Get-BashEffect "auditor" $direct) -ne "deny") { $failures += "auditor guard-execution must stay denied (judges the record, not the tree)" }
+  if ($failures.Count -gt 0) { throw "Guard-evidence gap: $($failures -join '; ')" }
+  return "developer: $guard direct + via run-exitcode; tester: via run-exitcode; grant narrow, auditor denied"
+}
+
 # Orchestrator may merge a FEATURE branch but never main/master (incl. --ff-only)
 Test-Script "SI git merge: feature allowed, main/master denied" {
   $feature = (Get-BashEffect "orchestrator" "git merge spec/633") -eq "allow"
@@ -2254,6 +2283,163 @@ Test-Script "Timeline refuses a second verdict-carrying Tests Runs flush per rou
     return "timeline G-020 dedup refused the second flush on #$issueNum"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3152: the sanctioned verdict SUPERSEDE. A round whose posted verdict is WRONG
+# (stale-by-head, or stamped under an advanced round) could never be corrected —
+# G-020 refuses the corrected verdict forever and no amend path exists. The
+# `reconcile-verdict` action posts a NEW authoritative verdict bearing a
+# machine-owned supersede marker; the record keeps BOTH comments (audit trail) and
+# `latest_verdict` (latest verdict-carrying comment) then reads the new one.
+Test-Script "reconcile-verdict supersedes the round's verdict (latest verdict flips)" {
+  $url = Mock-IssueCreate "temp: reconcile verdict" "reconcile scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $bodyFile = Join-Path $env:TEMP "fredo-reconcile-verdict.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # A round-1 FAIL verdict, posted through the normal channel.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`nan earlier failing verdict`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $out1 = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $out1Str = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
+    if ($out1Str -notmatch "COMMENTED: Tests Runs") { throw "first verdict should post, got: $out1Str" }
+    # The normal channel refuses the correction (G-020) — this is the #3152 deadlock.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: PASS`ncorrected: SELECT ... FROM telemetry_spans ... rows=4`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $dup = & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1
+    $dupStr = if ($dup -is [array]) { $dup -join "`n" } else { "$dup" }
+    if ($dupStr -notmatch "already exists for round") { throw "expected the G-020 duplicate refusal, got: $dupStr" }
+    # The sanctioned supersede clears it.
+    [System.IO.File]::WriteAllText($bodyFile, "Verdict: PASS`ncorrected: SELECT ... FROM telemetry_spans ... rows=4`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $rec = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "the earlier verdict tested a superseded tree tip" --body-file $bodyFile 2>&1
+    $recStr = if ($rec -is [array]) { $rec -join "`n" } else { "$rec" }
+    if ($LASTEXITCODE -ne 0) { throw "reconcile-verdict failed (exit $LASTEXITCODE): $recStr" }
+    if ($recStr -notmatch "RECONCILED") { throw "expected RECONCILED, got: $recStr" }
+    # BOTH verdicts remain on the timeline (never a rewrite) — the supersede is additive.
+    $cmts = @(Mock-IssueComments $issueNum)
+    $verdicts = @($cmts | Where-Object { $_ -match "(?m)^## Tests Runs\b" })
+    if ($verdicts.Count -ne 2) { throw "expected the original + superseding verdict to BOTH remain (2), got $($verdicts.Count)" }
+    if ($verdicts[-1] -notmatch "reconcile-verdict:supersedes") { throw "superseding verdict lacks the marker: $($verdicts[-1])" }
+    # The authoritative verdict is now PASS, and the transition can leave testing.
+    & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1 | Out-Null
+    $tr = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase audit 2>&1
+    $trStr = if ($tr -is [array]) { $tr -join "`n" } else { "$tr" }
+    if ($trStr -notmatch "TRANSITIONED") { throw "superseded PASS should clear the testing exit gate, got: $trStr" }
+    return "reconcile-verdict superseded the round verdict; both kept; PASS now authoritative (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3152 / G-020 must NOT be weakened into "unlimited verdicts": exactly ONE
+# supersede per round. A second reconcile in the same round is refused, and the
+# action requires an existing verdict to supersede (a first verdict goes through
+# the normal draft flush) plus a --reason (the supersede is audited).
+Test-Script "reconcile-verdict permits exactly one supersede per round" {
+  $url = Mock-IssueCreate "temp: reconcile cap" "reconcile cap scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  $bodyFile = Join-Path $env:TEMP "fredo-reconcile-cap.md"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText($bodyFile, "Verdict: PASS`ncorrected verdict`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    # No existing verdict in the round -> reconcile is refused (not a first-post path).
+    $none = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "no prior verdict" --body-file $bodyFile 2>&1
+    $noneStr = if ($none -is [array]) { $none -join "`n" } else { "$none" }
+    if ($LASTEXITCODE -eq 0) { throw "reconcile with no existing verdict must fail, got exit 0: $noneStr" }
+    if ($noneStr -notmatch "no verdict-carrying") { throw "expected no-existing-verdict refusal, got: $noneStr" }
+    # A reason is mandatory (the supersede is audited).
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`noriginal`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $noreason = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --body-file $bodyFile 2>&1
+    $noreasonStr = if ($noreason -is [array]) { $noreason -join "`n" } else { "$noreason" }
+    if ($LASTEXITCODE -eq 0) { throw "reconcile without --reason must fail, got exit 0: $noreasonStr" }
+    # The supersede path is NOT a bypass of the verdict content gate (G-104) — checked
+    # BEFORE the legitimate supersede so the one-supersede cap is not the tripwire.
+    $badBody = Join-Path $env:TEMP "fredo-reconcile-gate.md"
+    try {
+      [System.IO.File]::WriteAllText($badBody, "Verdict: PASS`n| AC1 | PASS | Screenshot: ac1-pass.jpeg |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+      $bypass = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "unviewable evidence" --body-file $badBody 2>&1
+      $bypassStr = if ($bypass -is [array]) { $bypass -join "`n" } else { "$bypass" }
+      if ($LASTEXITCODE -eq 0) { throw "an unviewable-evidence body must be refused by the shared gate, got exit 0: $bypassStr" }
+      if ($bypassStr -notmatch "unviewable evidence") { throw "expected the G-104 refusal on the supersede path, got: $bypassStr" }
+    } finally {
+      Remove-Item -LiteralPath $badBody -Force -ErrorAction SilentlyContinue
+    }
+    # First supersede is allowed; the SECOND in the same round is refused (G-020 holds).
+    $ok = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "first supersede" --body-file $bodyFile 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($okStr -notmatch "RECONCILED") { throw "first supersede should post, got: $okStr" }
+    $second = & rust-script $ps --issue $issueNum --agent tester --action reconcile-verdict --reason "second supersede" --body-file $bodyFile 2>&1
+    $secondStr = if ($second -is [array]) { $second -join "`n" } else { "$second" }
+    if ($LASTEXITCODE -eq 0) { throw "a second supersede in the same round must be refused, got exit 0: $secondStr" }
+    if ($secondStr -notmatch "exactly ONE supersede per round") { throw "expected the one-supersede cap, got: $secondStr" }
+    $verdicts = @(Mock-IssueComments $issueNum | Where-Object { $_ -match "(?m)^## Tests Runs\b" })
+    if ($verdicts.Count -ne 2) { throw "expected original + one supersede (2), got $($verdicts.Count)" }
+    return "reconcile-verdict: one supersede per round enforced, --reason + existing verdict required (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $bodyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3152 root cause: a verdict draft REFUSED by the content gate at the
+# testing-exit flush must NOT let the transition complete. Completing it advanced
+# the round (a rework re-entry counts) while the verdict stayed unposted, so the
+# corrected verdict posted under the ADVANCED round and collided with the next
+# round's legitimate verdict under G-020. The leg now fails CLOSED (draft kept).
+Test-Script "Refused verdict draft blocks the testing exit (no counter advance)" {
+  $url = Mock-IssueCreate "temp: counter advance" "counter scratch" "testing"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match($url, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # The #3152 draft shape: a Verdict line plus a bare image filename (G-104).
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | Screenshot: ac1-failure.jpeg |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    $before = (Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | Measure-Object).Count
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($LASTEXITCODE -ne 0) { throw "the transition should block, not hard-fail: $blockedStr" }
+    if ($blockedStr -match "TRANSITIONED") { throw "a refused verdict draft must NOT let the transition complete: $blockedStr" }
+    if ($blockedStr -notmatch "would advance the round") { throw "expected the counter-advance explanation, got: $blockedStr" }
+    # The transition did NOT complete: no implementation phase.started advanced the round.
+    $events = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json }
+    if (@($events | Where-Object { $_.event_name -eq "phase.started" -and $_.phase -eq "implementation" }).Count -ne 0) {
+      throw "the round-advancing implementation entry was appended despite the refusal"
+    }
+    $gf = @($events | Where-Object { $_.event_name -eq "guard.fired" -and $_.attributes.guardKey -eq "verdict_draft_refused_counter_advance" })
+    if ($gf.Count -ne 1) { throw "expected the counter-advance guard.fired event, got $($gf.Count)" }
+    # The draft is KEPT (never deleted) so the tester can fix it.
+    if (-not (Test-Path "$dir/tests-runs.md")) { throw "the refused draft must be kept on disk" }
+    # Fix the draft (https URL) -> the flush posts it and the transition completes.
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md", "Verdict: FAIL`n| AC1 | FAIL | ![ac1](https://github.com/user-attachments/assets/00000000-0000-0000-0000-000000000000) |`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    # The implementation-entry side-effect assembles the plan from the A2A file.
+    [System.IO.File]::WriteAllText("$dir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "fixed draft should free the leg, got: $okStr" }
+    return "refused verdict draft failed the testing exit closed; fixed draft freed it (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
     $global:LASTEXITCODE = 0
   }
@@ -4545,7 +4731,9 @@ $scripts = @(
   "wait-telemetry.ps1",
   "process-hygiene.ps1",
   "launch-artifact-probe.ps1",
-  "inspect-webview-config.ps1"
+  "inspect-webview-config.ps1",
+  "check-navigation-prose-retired.ps1",
+  "verify-installer-payload.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4556,6 +4744,127 @@ if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
+}
+
+# --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---
+# The guard is RED over the corpus until every prose sweep lands, so this block
+# asserts the instrument first (-SelfTest, all seven controls) and then asserts
+# the OUTCOME (the plain run is clean). The plain-run leg lands with ST-7 - the
+# sub-task that drives the corpus to zero - because landing it earlier would red
+# the harness for every developer in the slice and blur a real regression against
+# the known interim state (ST-2's ordering constraint).
+Write-Host "Navigation prose absence guard (Spec #3153):" -ForegroundColor Cyan
+$navProseGuard = ".opencode/scripts/check-navigation-prose-retired.ps1"
+
+Test-Script "guard: -SelfTest passes all seven controls" {
+  $out = & powershell -NoProfile -File $navProseGuard -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - POSITIVE",
+    "CONTROL 2 - NEGATIVE",
+    "CONTROL 3 - SEEDED ROOT",
+    "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+    "CONTROL 5 - IGNORED NON-SCAN",
+    "CONTROL 6 - SELF-REFERENCE",
+    "CONTROL 7 - ALLOWLIST AUDIT"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "seven controls pass (instrument proven; the corpus is ST-3..ST-7)"
+}
+
+# Durability leg (Spec #3153 round 2, F-4). The leg above runs in a DEV tree,
+# where `.opencode/tmp/` always exists - which is exactly how a control that
+# could not create a gitignored probe directory shipped green. A DETACHED
+# worktree at HEAD reproduces the pristine condition faithfully: it has no
+# `.opencode/tmp/`, and it HAS a `.git` marker, so `git check-ignore` still
+# answers (a hand-built scratch root or `git archive` would make every control
+# fail for the wrong reason). Bounded: one leg, one worktree, removed in finally.
+Test-Script "guard: -SelfTest passes in a pristine detached worktree" {
+  $scratch = Join-Path $env:TEMP ("fredo-navprose-" + [Guid]::NewGuid().ToString("N"))
+  $created = $false
+  try {
+    & git worktree add --detach $scratch HEAD 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      # Never skip: a leg that cannot establish its precondition must fail
+      # loudly (G-435), not report PASS by doing nothing.
+      throw "could not create the pristine worktree at ${scratch} (git exit $LASTEXITCODE)"
+    }
+    $created = $true
+    # The whole point: this tree must NOT already have the gitignored scratch dir.
+    if (Test-Path -LiteralPath (Join-Path $scratch ".opencode/tmp")) {
+      throw "the detached worktree unexpectedly carries .opencode/tmp - it is not pristine"
+    }
+    $out = & powershell -NoProfile -File $navProseGuard -SelfTest -Root $scratch 2>&1
+    $code = $LASTEXITCODE
+    $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($code -ne 0) { throw "pristine-tree self-test failed with exit ${code}: $text" }
+    foreach ($control in @(
+      "CONTROL 1 - POSITIVE",
+      "CONTROL 2 - NEGATIVE",
+      "CONTROL 3 - SEEDED ROOT",
+      "CONTROL 4 - OUT-OF-ROOT NON-SCAN",
+      "CONTROL 5 - IGNORED NON-SCAN",
+      "CONTROL 6 - SELF-REFERENCE",
+      "CONTROL 7 - ALLOWLIST AUDIT"
+    )) {
+      if (-not $text.Contains($control)) { throw "pristine-tree self-test is missing '$control'" }
+    }
+    if (-not $text.Contains("SELFTEST: PASS")) { throw "pristine-tree self-test did not report SELFTEST: PASS" }
+    return "self-test green in a detached worktree with no .opencode/tmp (the T2 that failed)"
+  }
+  finally {
+    if ($created) { & git worktree remove --force $scratch 2>&1 | Out-Null }
+    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
+  $out = & powershell -NoProfile -File $navProseGuard 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "plain guard run exited ${code} (expected 0): $text" }
+  # The guard reports `HITS: <total> (<n> not covered by the evidence allowlist)`.
+  # AC1's predicate is ZERO non-allowlisted hits; RESULT: CLEAN is the guard's own
+  # expression of that (a bare `HITS: 0` would mean the allowlisted corpus vanished).
+  if ($text -notmatch "HITS: \d+ \(0 not covered by the evidence allowlist\)") {
+    throw "plain guard run did not report zero non-allowlisted hits"
+  }
+  if ($text -notmatch "RESULT: CLEAN") { throw "plain guard run did not report 'RESULT: CLEAN'" }
+  if ($text -notmatch "Scanned files:") { throw "plain guard run printed no 'Scanned files:' line" }
+  if ($text -notmatch "Ignore filter:") { throw "plain guard run printed no 'Ignore filter:' line" }
+  return "AC1's absence predicate holds: zero non-allowlisted deleted-navigation references"
+}
+
+# --- Installer payload artifact gate (Spec #3158 ST-4, AC5) ---
+# A committed gate with no runner is not a guard: release.yml runs
+# verify-installer-payload.ps1 before any draft exists, and this leg proves the
+# instrument (all five controls) on every harness run, so a regression in the
+# gate is caught here instead of on a release branch.
+Write-Host "Installer payload artifact gate (Spec #3158):" -ForegroundColor Cyan
+$installerGate = ".opencode/scripts/verify-installer-payload.ps1"
+
+Test-Script "guard: -SelfTest passes all five controls" {
+  $out = & powershell -NoProfile -File $installerGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - PASS-ON-COMPLETE",
+    "CONTROL 2 - FAIL-ON-MISSING",
+    "CONTROL 3 - REFUSE-DEBUG-PATH",
+    "CONTROL 4 - REFUSE-NO-EXTRACTOR",
+    "CONTROL 5 - SELF-REFERENCE"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "five controls pass (artifact gate proven; a real installer run is the tester's receipt)"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).

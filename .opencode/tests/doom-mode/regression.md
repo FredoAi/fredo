@@ -210,4 +210,3 @@
 ### Links added by this slice
 
 - `.opencode/tests/mission-monitor/` — F-114 E2E regression gate (unchanged surface).
-- `.opencode/tests/hotkeys/` — the shared resting cluster the `view=doom` gate suppresses.

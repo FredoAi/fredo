@@ -62,6 +62,10 @@
   Mission Monitor PG boot.
 - `.opencode/tests/mission-monitor/` — live session render + `telemetry_spans` cross-check.
 - `.opencode/tests/settings/` — settings grouping/nav (Applications group).
-- `.opencode/tests/hotkeys/` — hotkey tier label + resolution.
 
 Any change to a listed "must-not-change" behavior = **FAIL** (the rename is name-only).
+
+> **R-2 / R-3 are false positives for the navigation retirement** (recorded here, not rewritten):
+> "tile keyboard navigation" is the launcher grid's arrow roving, and "hotkey resolution" is the
+> shipped absence of a per-application hotkey surface. Both are true of the shipped tree and neither
+> refers to the deleted engine, so both rows stand as written.

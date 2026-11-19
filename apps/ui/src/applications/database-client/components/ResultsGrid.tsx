@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Flex, HStack, Spinner, Text } from '@chakra-ui/react';
 import { LuArrowDown, LuArrowUp, LuArrowUpDown } from 'react-icons/lu';
 import { dbResultPage, normalizeDbError } from '../lib/api';
-import { registerDatabaseClientActionHandlers } from '../databaseClientSurface';
 import type { DbResultSet } from '../lib/types';
 
 /**
@@ -158,8 +157,9 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({
     }
   }, [connectionId, activeSet, loadingMore, pageSize, onResultSetUpdated, onLoadMoreError]);
 
-  // Spec #3121 (P7), ST-4 — report the ACTIVE result set (§D.4) and expose the shipped
-  // `loadMore` as the declared `sql-studio.results.loadMore` (same handler, one ref).
+  // #3151 ST-6 — report the ACTIVE result set (§D.4) so the shell's companion
+  // grounding carries it. (The navigation-surface handler registration that used
+  // to live here went with `databaseClientSurface.ts`.)
   const onActiveResultSetChangeRef = useRef(onActiveResultSetChange);
   useEffect(() => {
     onActiveResultSetChangeRef.current = onActiveResultSetChange;
@@ -167,22 +167,6 @@ export const ResultsGrid: React.FC<ResultsGridProps> = ({
   useEffect(() => {
     onActiveResultSetChangeRef.current?.(activeSet?.resultSetId ?? null);
   }, [activeSet?.resultSetId]);
-
-  const loadMoreRef = useRef({ loadMore, connectionId, activeSet, loadingMore });
-  loadMoreRef.current = { loadMore, connectionId, activeSet, loadingMore };
-  useEffect(
-    () =>
-      registerDatabaseClientActionHandlers({
-        resultsLoadMore: () => {
-          const current = loadMoreRef.current;
-          if (current.connectionId === null || current.activeSet === null) return false;
-          if (!current.activeSet.hasMore || current.loadingMore) return false;
-          void current.loadMore();
-          return true;
-        },
-      }),
-    [],
-  );
 
   if (running) {
     return (

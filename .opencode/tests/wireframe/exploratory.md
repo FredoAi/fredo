@@ -27,18 +27,21 @@ behaviour is wrong.
 - [ ] **E-4 Drag/resize interaction with zoom and pan.** At 400 % zoom + panned view, drag and
       resize an element. Does the committed geometry match the on-screen delta divided by scale,
       or does it drift (a classic screen-space vs page-space bug)?
-- [ ] **E-5 Selection during rapid undo/redo.** Hammer `u`/`y` 20× on a history containing
-      add/move/delete. Does `-selection-id` ever point at a removed element (stale selection,
-      panel showing dead properties)?
+- [ ] **E-5 Selection during rapid undo/redo.** Hammer `wireframe-undo`/`wireframe-redo` 20× on
+      a history containing add/move/delete. Does `-selection-id` ever point at a removed element
+      (stale selection, panel showing dead properties)?
 - [ ] **E-6 Lock + undo ordering.** Lock an element, move it (inert), then undo twice. Does the
       lock state and position stay coherent, or does undo resurrect a pre-lock position while
       the element is still locked?
-- [ ] **E-7 Text-entry suppression vs panel remount.** Select element A (text), focus the content
+- [ ] **E-7 Text entry inside the panel vs remount.** Select element A (text), focus the content
       field, type `1pkn`, then select element B (button) mid-typing. Do the typed characters stay
-      in the field, and do the declared navigation strokes resolve correctly when focus leaves?
-- [ ] **E-8 Key churn across windows.** Open Wireframe + Mission Monitor, toggle focus 20× while
-      pressing keys. Does the navigation bar's row set ever stick, does a duplicate-stroke
-      diagnostic ever appear, and does any key land in the wrong app?
+      in the field, and does nothing else happen (there is no per-application key surface for a
+      keystroke to reach)? Does the platform-chord suppression still classify the field as
+      `text-entry` (`shared/window-system/chordSuppression.ts`)?
+- [ ] **E-8 Focus churn across windows.** Open Wireframe + Mission Monitor, toggle focus 20× while
+      pressing keys and clicking strip rows. Does any command land in the wrong app, does a
+      pointer activation ever leak across a window boundary, and does a platform chord fire while
+      a modal is open?
 - [ ] **E-9 File seam abuse.** Point `FREDO_WIREFRAME_SAVE_PATH` / `_OPEN_PATH` /
       `_EXPORT_PATH` at (a) a directory, (b) a non-writable location, (c) an existing unrelated
       text file; then Save and Open. Repeat once with ONLY the shared
@@ -129,10 +132,10 @@ behaviour is wrong.
   canvas) — F-33 stays FAIL on the invariance clause. See E-21.
 - **E-18 unchanged.** A raw `llm-skill-call` reply still needs an in-flight skills generation.
 - **E-19 RESOLVED (offer).** The exact Gherkin sentence now opens the app from closed and drafts
-  `section{preset:'navbar'}` + `text{textStyle:'heading', text:'Reporter'}` +
-  `card{label:'Reporter reports'}` (count 3) via the REAL model path, and the reply names only
-  the performed steps. The live transport now offers the 4-skill registry
-  (`companion_skill_registry()`), so the offer was the whole defect.
+  `section{preset:'navbar'}` + `text{textStyle:'heading', text:'Reporter'}` + `card{label:'Reporter reports'}`
+  (count 3) via the REAL model path, and the reply names only the performed steps. The defect was the
+  offer: four skills were offered with no wireframe listener. The live transport now offers exactly
+  the three static skills from the ZERO-argument `companion_skill_registry()` (`status.rs:691-693`).
 - **[ ] E-20 (new, regression) An element drag pans the view.** `handlePanDragEnd`
   (`WireframeCanvasImpl.tsx:745-752`) is bound to the pan group and does not check
   `event.target === event.currentTarget`; Konva bubbles the element's `dragend` to it, so the
@@ -227,9 +230,10 @@ behaviour is wrong.
 - [ ] **E-30 Snap vs align-guide conflict.** With snap ON, drag an element so both the grid snap
       and a smart guide want to pull it. Which wins, and does the committed geometry land on the
       grid multiple? Record the guide count and the final x/y.
-- [ ] **E-31 Armed prefix under text entry / focus churn.** Arm the 250 ms navigation prefix,
-      then focus a panel field before the second key. Does the armed prefix leak or fire a stale
-      action after the timeout? Then repeat across a window focus change.
+- [ ] **E-31 Text entry under focus churn.** Focus a panel field, type a few characters, then
+      change window focus mid-typing. Do the characters stay in the field, does nothing else
+      happen (no application key is bound), and does the platform-chord suppression still
+      classify the field as `text-entry` (`shared/window-system/chordSuppression.ts`)?
 - [ ] **E-32 Companion under-sized honesty.** Invoke `wireframe.arrange.distribute` via the
       Companion with only 2 elements selected. Does it reply "nothing changed" (honest) or claim
       success? Cross-check `runWireframeAction`'s return.
@@ -244,53 +248,55 @@ behaviour is wrong.
 > `tauri_webview_*` result plus an uploaded capture (document state, no `telemetry_spans`
 > receipt expected). A confirmed finding PROMOTES to `functional.md` as a new `F-` row.
 
-- [ ] **E-34 Stale hook residue after rapid focus churn.** Toggle focus between the Wireframe
-      host and another window 20× (fast), then inspect the bar DOM. Does any legacy element-key
-      hook reappear (a stale render, a `visibility` remnant)? Record the navigation bar's row
-      count in both states and confirm `legacyAbsence.test.ts` is green.
-- [ ] **E-35 Bar row identity across the declaration.** With Wireframe + Mission Monitor + Dev
-      Mode open, check the navigation bar's `data-nav-verb-id` rows before/after toggling focus.
-      Do the Wireframe titles still read the declaration's verb title, never a stale string?
+- [ ] **E-34 Stale render residue after rapid focus churn.** Toggle focus between the Wireframe
+      host and another window 20× (fast), then inspect `wireframe-control-strip`'s DOM. Does any
+      control render a stale key hint or duplicate (a stale render, a `visibility` remnant)?
+      Record the strip's control count in both states — it is 23.
+- [ ] **E-35 Strip identity across a focus change.** With Wireframe + Mission Monitor + Dev
+      Mode open, check the strip's row set and the two history controls' disabled state
+      before/after toggling focus. Does every control keep its own DOM identity, and do the
+      accessible names stay the `WIREFRAME_ACTIONS` titles, never a stale string?
 - [ ] **E-36 Insert-menu composite boundary.** Open both insert menus (Section presets, Shape
-      kinds) and confirm the chevrons carry no legacy key hook and no chip, and that the main
-      insert control beside each chevron renders label + icon with no chip. Also confirm the
-      `wireframe.document.new` row has no `data-nav-keycap` hint and no `(hotkey)` suffix in its
-      accessible name.
+      kinds) and confirm the chevrons carry no key hint and no chip, and that the main
+      insert control beside each chevron renders label + icon with no chip. Also confirm every
+      control's accessible name carries no `(hotkey)` suffix.
 
-## Spec #3119 (P5) — probes for the declaration-driven surface
+## Spec #3119 (P5) / #3151 — probes for the pointer surface
 
-> The toolbar / command surface / hotkey carrier are gone; Wireframe is driven by six declared
-> places. These probes target the surfaces most likely to rot during the migration. Evidence is
-> LIVE (quoted tool result + capture). A confirmed finding PROMOTES to
-> `wireframe-navigation/functional.md` as `F-N<n>`.
+> The toolbar / command surface / hotkey carrier are gone and #3151 deleted the declared surface
+> they were re-pointed onto; Wireframe is driven by the 23-control pointer strip. These probes
+> target the surfaces most likely to rot. Evidence is LIVE (quoted tool result + capture). A
+> confirmed finding PROMOTES to `functional.md` as an `F-` row.
 
-- [ ] **E-37 The value-key gap.** Press Style `f`/`o`/`p`/`z`/`t` and Edit `r` with an element
-      selected. Record precisely what each does (cycle sequence / default value / focuses a panel
-      control / popover), whether it commits ONE entry, and whether the panel stays in sync. The
-      UI/UX decision for this behaviour is still open (plan Q-4) — this probe is what closes it.
-- [ ] **E-38 Stale armed prefix across a place change.** Arm a rect (`c r`) and, within 250 ms,
-      click a rail place row, then press another stroke. Does the stale prefix fire, leak into
-      the new place, or clear silently?
-- [ ] **E-39 Same stroke, four places.** `s` at root / in Create / in Arrange / in Style; `f` at
-      root / Arrange / Style; `u` at root / Arrange. Record the dispatched verb id each time —
-      any cross-place leakage means tier 2/4 were consulted while a place binding existed.
-- [ ] **E-40 Double announcement.** Enter and exit the same place repeatedly and trigger one
-      transient auto-exit. Count the updates in the single live region: identical consecutive
-      text must be ONE update; distinct text exactly one each.
-- [ ] **E-41 Focus survival across the auto-exit.** Focus a rail row button, `c`, `r`, drag.
-      After the auto-exit, is `document.activeElement` the same rail row (never `body`)? Repeat
-      with the map open so the dialog trap closes first.
-- [ ] **E-42 Toolbar/command-surface residue.** Search the running webview for any surviving
-      trace of the deleted path: the legacy toolbar/action testids, any legacy element-key
-      attribute under `wireframe-root`, the legacy carrier, and any legacy prefix pending state
-      on `body`. Any residue is a FAIL of AC7 (not an exploratory note); the literal absence is
-      gate-owned by `legacyAbsence.test.ts`.
-- [ ] **E-43 Journal growth.** Perform ~120 small mutations: responsiveness, the 10-entry trail
-      cap, and whether undo still walks back. The journal is intentionally unbounded this slice —
-      record the memory shape as an observation (named risk), not a defect.
+- [ ] **E-37 The property-panel value cycles.** Edit fill / border / appearance / radius / text
+      style from the property panel with an element selected. Record precisely what each does
+      (cycle sequence / default value / popover), whether it commits ONE entry, and whether the
+      panel stays in sync. The UI/UX decision for this behaviour is still open (plan Q-4) — this
+      probe is what closes it.
+- [ ] **E-38 Cross-menu activation leak.** Open `wireframe-arrange`, click a row, then
+      immediately open `wireframe-file-menu`. Does any residual activation leak into the second
+      popup, or does each menu's row act only inside its own popup?
+- [ ] **E-39 Same label, different clusters.** `Delete` / `Duplicate` live in the arrange menu;
+      `New` / `Open` / `Save As` / `Export PNG` in the file menu; `Zoom in` / `Zoom out` / `Fit
+      page` / `Reset view` / `Pan tool` are five separate view buttons. Record which control
+      handles each — any cross-cluster leak means two clusters published one testid.
+- [ ] **E-40 Duplicate announcement.** Because there is no narration channel, "announcement"
+      here means the accessible name a screen reader reads. Toggle focus between two windows
+      repeatedly: does each control expose exactly one accessible name (never a duplicate)?
+- [ ] **E-41 Focus survival across a pointer action.** Focus a strip row, activate a menu row,
+      then close the popup. Is `document.activeElement` a sane, non-`body`-trapped element
+      afterwards? Repeat with the File menu open so the popup trap closes first.
+- [ ] **E-42 Toolbar / keyboard-surface residue.** Search the running webview for any surviving
+      trace of the deleted path: the legacy toolbar testid, any element-key attribute under
+      `wireframe-root`, the legacy carrier, and any legacy pending/armed prefix state on `body`.
+      Any residue is a FAIL of AC7 (not an exploratory note).
+- [ ] **E-43 History growth.** Perform ~120 small mutations: responsiveness and whether undo still
+      walks back. The app-local history is bounded at `WIREFRAME_HISTORY_LIMIT = 100`
+      (`store/wireframeHistory.ts:27`) — record the eviction shape as an observation, not a defect.
 - [ ] **E-44 Companion path after the deletion.** Emit the nested `llm-skill-call` from
-      `regression.md` R-27 with the app closed and open. Does it fail closed with a clean
-      `Invalid` (no window, no mutation, no timeout), or does it hang / mutate / crash? Report the
+      `regression.md` R-27 with the app closed and open. The offer is the three static skills, so
+      the `wireframe` skill is not declared: record whether the emit is inert (no window, no
+      mutation, no reply, no timeout, no crash) — it must never hang, mutate or crash. Report the
       exact result to the Orchestrator for the P6 hand-off.
 
 ## Teardown (run after this suite)

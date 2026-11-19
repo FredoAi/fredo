@@ -1,9 +1,12 @@
 /**
  * Spec #3120 (rework) ST-2 — the teleport-attached instruction composer (DOM).
+ * Spec #3151 (ST-2) — re-pointed off the retired `NavigationHost` registry: the
+ * grounding source is now the application-level `registerCompanionGrounding`
+ * (no engine import anywhere in this file).
  *
  * Work bullet (c): open ⇒ the input is focused within one settle; Esc ⇒ the
  * composer is gone and focus lands on the app root (never `body`); submit ⇒ the
- * existing `ask` is called once with the resolved grounding envelope; an empty
+ * existing `ask` is called once with the resolved grounding payload; an empty
  * submit is a no-op.
  */
 
@@ -69,10 +72,12 @@ import {
   resetApplicationRegistryForTests,
 } from '@/applications/applicationRegistry';
 import type { FredoApplicationClass } from '@/shared/classes';
-import { registerNavigationHost } from '@/shared/navigation/ui/hostRegistry';
-import type { NavigationHost } from '@/shared/navigation/ui/host';
-import type { ContextEnvelope, Surface } from '@/shared/navigation/types';
-import { CAPABILITY_LIMITS } from '@/shared/navigation/types';
+import {
+  COMPANION_GROUNDING_VERSION,
+  registerCompanionGrounding,
+  resetCompanionGroundingForTests,
+} from '@/shared/companion/grounding';
+import type { CompanionGrounding } from '@/shared/companion/grounding';
 import {
   openWindow,
   resetWindowStoreForTests,
@@ -94,21 +99,18 @@ Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
 Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
 Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: 768 });
 
-function envelopeFor(appId: string): ContextEnvelope {
+function groundingFor(appId: string, appName: string): CompanionGrounding {
   return {
-    version: 1,
+    version: COMPANION_GROUNDING_VERSION,
     appId,
-    placePath: [{ id: 'root', label: 'Canvas', transient: false, sticky: false }],
+    appName,
     selection: { count: 1, kinds: ['card'], label: 'Card', ids: ['el-1'] },
-    verbs: [],
-    journal: { last: [], undoableCount: 0 },
     dirty: false,
-    limits: CAPABILITY_LIMITS,
   };
 }
 
-const WIREFRAME_ENVELOPE = envelopeFor('wireframe');
-const MISSION_ENVELOPE = envelopeFor('mission-monitor');
+const WIREFRAME_GROUNDING = groundingFor('wireframe', 'Wireframe');
+const MISSION_GROUNDING = groundingFor('mission-monitor', 'Mission Monitor');
 
 function fakeApp(id: string, name: string, showable = true): FredoApplicationClass {
   return {
@@ -120,16 +122,10 @@ function fakeApp(id: string, name: string, showable = true): FredoApplicationCla
   } as unknown as FredoApplicationClass;
 }
 
-let disposeHosts: Array<() => void> = [];
+let disposeGrounding: Array<() => void> = [];
 
-function registerHost(appId: string, envelope: ContextEnvelope): void {
-  disposeHosts.push(
-    registerNavigationHost({
-      appId,
-      surface: { appId } as unknown as Surface,
-      host: { describeContext: () => envelope } as unknown as NavigationHost,
-    }),
-  );
+function registerGrounding(appId: string, grounding: CompanionGrounding): void {
+  disposeGrounding.push(registerCompanionGrounding(appId, () => grounding));
 }
 
 // ── harnesses ────────────────────────────────────────────────────────────────
@@ -174,14 +170,15 @@ beforeEach(() => {
 
   resetApplicationRegistryForTests();
   resetCompanionComposerBridgeForTests();
+  resetCompanionGroundingForTests();
   resetWindowStoreForTests();
-  disposeHosts = [];
+  disposeGrounding = [];
 
   registerApplication(fakeApp('wireframe', 'Wireframe'));
   registerApplication(fakeApp('mission-monitor', 'Mission Monitor'));
   registerApplication(fakeApp('hidden-lab', 'Hidden Lab', false));
-  registerHost('wireframe', WIREFRAME_ENVELOPE);
-  registerHost('mission-monitor', MISSION_ENVELOPE);
+  registerGrounding('wireframe', WIREFRAME_GROUNDING);
+  registerGrounding('mission-monitor', MISSION_GROUNDING);
   openWindow({ id: 'wireframe', title: 'Wireframe', icon: null, component: null });
 
   const devAdapter = new DevAdapter();
@@ -198,9 +195,10 @@ afterEach(() => {
   vi.restoreAllMocks();
   resetApplicationRegistryForTests();
   resetCompanionComposerBridgeForTests();
+  resetCompanionGroundingForTests();
   resetWindowStoreForTests();
-  for (const dispose of disposeHosts) dispose();
-  disposeHosts = [];
+  for (const dispose of disposeGrounding) dispose();
+  disposeGrounding = [];
   localStorage.clear();
 });
 
@@ -395,7 +393,7 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
     expect(document.activeElement).toBe(getByTestId('app-root'));
   });
 
-  it('submit calls ask ONCE with the resolved grounding envelope', async () => {
+  it('submit calls ask ONCE with the resolved grounding payload', async () => {
     const statusSpy = vi
       .spyOn(adapterBridge, 'llmChatWithStatus')
       .mockImplementation(() => Promise.resolve());
@@ -419,7 +417,7 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
 
     await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(1));
     const [messages] = statusSpy.mock.calls[0];
-    expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(WIREFRAME_ENVELOPE) });
+    expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(WIREFRAME_GROUNDING) });
     expect(messages[messages.length - 1]).toEqual({ role: 'user', content: 'change the card label' });
     // The box stays open for the next turn (no transcript/history surface).
     expect(queryByTestId(COMPANION_COMPOSER_TESTID)).not.toBeNull();
@@ -451,7 +449,7 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
 
     await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(1));
     const [messages] = statusSpy.mock.calls[0];
-    expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(MISSION_ENVELOPE) });
+    expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(MISSION_GROUNDING) });
   });
 
   it('an empty submit is a no-op and keeps focus in the input', async () => {

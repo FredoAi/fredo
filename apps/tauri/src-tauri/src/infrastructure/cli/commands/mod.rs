@@ -1,3 +1,4 @@
+pub mod companion_probe;
 pub mod doom_export;
 pub mod emit;
 pub mod ingest;

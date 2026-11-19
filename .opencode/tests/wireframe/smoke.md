@@ -21,7 +21,8 @@
 - [ ] **S-3: Wireframe reachable from the launcher** — the launcher grid shows a `Wireframe`
       tile; activating it renders `[data-testid="wireframe-root"]` with
       `data-wireframe-page="1280x800"`, `-element-count="0"`, `-dirty="true"`, plus
-      `wireframe-canvas`, `wireframe-toolbar`, `wireframe-page-controls` and
+      `wireframe-canvas`, `wireframe-details-column`, `wireframe-control-strip`,
+      `wireframe-page-controls`, `wireframe-insert` and
       `wireframe-status`.
 - [ ] **S-4: Telemetry Settings accessible** — the Settings window renders its sections
       (Companion, Appearance, Fredo Setup, Telemetry) and shows NO Wireframe section
@@ -29,16 +30,18 @@
 - [ ] **S-5: Screenshot captured** —
       `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3070/e2e/smoke.jpeg")`
       succeeds.
-- [ ] **S-6: Core quick path — compose and select** — press `1` from the `default` focus gate
-      (`data-fredo-focus-context=default`), then click the created text element.
+- [ ] **S-6: Core quick path — compose and select** — open `wireframe-insert` → Elements →
+      `Text` (the pill inside the canvas region), then click the created text element.
       **Expected:** `-element-count` 0→1, `-selection-type`=`text`, the element is rendered,
       and a capture shows it on the page. Console clean.
-- [ ] **S-7: File quick path — save then reopen** — add one element, press `w`, confirm
+- [ ] **S-7: File quick path — save then reopen** — add one element, click
+      `wireframe-file-menu` → `Save As`, confirm
       `-dirty=false`, `wireframe-status` reads `Saved` and `-document-path` equals
-      `FREDO_WIREFRAME_SAVE_PATH`; then `document.new` and `o` (reads
+      `FREDO_WIREFRAME_SAVE_PATH`; then `New` and `Open` (reads
       `FREDO_WIREFRAME_OPEN_PATH`). **Expected:** count and page come back, console clean, and
       both legs run in the SAME env (per-command seams, C6 amended).
-- [ ] **S-7b: File cancel quick path** — in a `FREDO_WIREFRAME_CANCEL=1` launch press `w`.
+- [ ] **S-7b: File cancel quick path** — in a `FREDO_WIREFRAME_CANCEL=1` launch click the File
+      menu's `Save As` row.
       **Expected:** the document, its path and its dirty state are unchanged, NO file-error
       banner appears and no file is written; console clean.
 - [ ] **S-8: Companion quick path** — with Wireframe closed, emit
@@ -50,10 +53,12 @@
     — and the reply is the generic `Performed in Wireframe: …` copy instead of #3070's
     `Started a new wireframe for Reporter: …`. See `.opencode/tests/companion/` F-148 for the
     authoritative row.
-- [ ] **S-9 (historical — superseded by S-17/S-18):** the pre-P5 legacy bar quick path. The
-      current observable is the navigation bar (`navigation-bar`) over the Wireframe declaration;
-      focus another window and confirm the Wireframe rows disappear. The legacy element-key
-      channel is deleted in P8; its absence is gate-owned by `legacyAbsence.test.ts`.
+- [ ] **S-9 (the strip is the only control surface):** the pointer control strip quick path.
+      With Wireframe focused, `wireframe-control-strip` renders its 23 controls
+      (`wireframe-undo` / `wireframe-redo`, 5 `wireframe-view-item`, 12
+      `wireframe-arrange-item`, 4 `wireframe-file-item`) and `[data-testid="wireframe-toolbar"]`
+      is absent (0 nodes); focus another window and confirm no control surface appears anywhere
+      (every command is pointer-driven and window-scoped).
 - [ ] **S-10: CI-parity gate** — `pnpm --filter @fredo/ui build` exit 0, `pnpm --filter
       @fredo/ui test:run` green, `pnpm --filter @fredo/tauri build:webview` exit 0, and the
       Rust gates (`cargo check` / `cargo clippy -D warnings` / `cargo nextest run`, all
@@ -101,9 +106,9 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 - **S-8 FAIL (same root as F-47):** the Gherkin sentence produced prose, no draft, no window.
   `listActions` / `add.*` / `draftApp`'s executor are proven by F-43/F-44a; the model simply
   does not select the skill.
-- **S-9 PASS (historical):** with the host focused the then-shipped legacy bar listed the
-  Wireframe rows; they disappeared when the host was unfocused. (P5/P8 replaced this with the
-  navigation bar; the current rows are S-17/S-18.)
+- **S-9 PASS (historical record):** with the host focused the then-shipped legacy bar listed the
+  Wireframe rows; they disappeared when the host was unfocused. *(Re-pointed by #3151: the
+  current control surface is the pointer strip — see S-17/S-18.)*
 - **S-10 PASS:** build 2832 modules, 3056 tests, contrast 46/46, cargo check zero warnings
   (clippy/nextest/build:webview disclosed as not re-run; no Rust change in the fix commit).
 
@@ -128,9 +133,9 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
   CANCEL+FAIL_FILE showed no banner (cancel wins).
 - **S-8 PASS:** the binding Gherkin opens the app from closed and drafts navbar + "Reporter"
   heading + "Reporter reports" card through the real model path (Companion ON at home).
-- **S-9 PASS (historical):** the then-shipped legacy bar and toolbar key attributes were present
-  while focused; typed keys were suppressed in text entry. (P5/P8 replaced this with the
-  navigation bar and `data-nav-keycap` / `data-nav-verb-id`; the current rows are S-17/S-18.)
+- **S-9 PASS (historical record):** the then-shipped legacy bar and toolbar key attributes were
+  present while focused; typed keys were suppressed in text entry. *(Re-pointed by #3151: the
+  current control surface is the pointer strip — see S-17/S-18.)*
 - **S-10 PASS (tester-run):** typecheck ✓ · build 2832 modules ✓ · test:run 3077 ✓ ·
   contrast 46/46 ✓ · build:webview 2834 modules ✓ · cargo check/clippy zero warnings ✓ ·
   cargo test 1451 lib tests + integration suites ✓.
@@ -138,10 +143,10 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 ## Spec #3081 — added quick path
 
 - [x] **S-11: Discard-dialog quick path — token-coloured label.** Add one element (dirty),
-      **Round 1 (2026-10-26) — PASS.** Add text (count 1) → New → dialog renders; Discard label
+      **Round 1 (2026-10-26) — PASS.** Add text (count 1) → `New` → dialog renders; Discard label
       `rgb(12,17,23)` == resolved `--status-on-solids` `#0c1117`; ratio 5.11 (light) / 5.04 (dark);
       capture uploaded; console clean.
-      press **New**, confirm `[data-testid="wireframe-new-document-dialog"]` renders.
+      click the File menu's `New` row, confirm `[data-testid="wireframe-new-document-dialog"]` renders.
       **Expected:** the Discard button `[data-testid="wireframe-new-document-discard"]` exists,
       its `getComputedStyle(...).color` equals the resolved `--status-on-solids`, and the label
       is readable (contrast ≥ 4.5) against `status.error` in the current theme; a capture is
@@ -156,22 +161,25 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 > decimal string. **Verification policy: live** — quoted `tauri_webview_*` result + screenshot;
 > document state, no `telemetry_spans` receipt expected.
 
-- [ ] **S-12: Multi-select + group quick path** — from the `default` focus gate add two elements
-      (`1`, `2`), shift-click to select both, press `g` then `g`.
+- [ ] **S-12: Multi-select + group quick path** — add two elements from `wireframe-insert`
+      (Elements → `Text` and `Button`), shift-click to select both, click the `Group` row in
+      `wireframe-arrange`.
       **Expected:** `data-wireframe-selection-count`=2 before, `data-wireframe-group-count` 0→1,
       `data-wireframe-selection-group` non-empty and `wireframe-tag-group` rendered after;
       console clean.
-- [ ] **S-13: Snap + align quick path** — toggle snap (`g` `s`) and confirm
-      `data-wireframe-snap`=`true`; with two elements selected press `g` `a` (align left).
-      **Expected:** both left edges coincide in `-selection-geometry`; ONE `u` reverts; console
-      clean.
+- [ ] **S-13: Snap + align quick path** — click the `Snap to grid` row in `wireframe-arrange`
+      (it is a `role="menuitemcheckbox"`) and confirm `data-wireframe-snap`=`true`; with two
+      elements selected click `Align left`.
+      **Expected:** both left edges coincide in `-selection-geometry`; ONE `wireframe-undo`
+      click reverts; console clean.
 - [ ] **S-14: Guides quick path** — start a drag so an element nears another's edge.
       **Expected:** `[data-testid="wireframe-canvas"][data-wireframe-guides]` is a number > 0
       mid-drag and returns to `'0'` on drop; console clean.
-- [ ] **S-15 (historical — superseded).** The pre-P5 two-step legacy chord quick path. P5 deleted
-      the `g` namespace; Wireframe strokes are now the declaration's place keys. The current
-      pending/armed behaviour is the 250 ms navigation prefix rendered in `navigation-bar` (see
-      `functional.md` P5/P8 rows); console clean.
+- [ ] **S-15 (the strip is pointer-only).** The retired two-step namespace quick path no longer
+      exists. With Wireframe focused, pressing any bare key changes nothing (no application key
+      is bound); drive the control strip by pointer instead. The only keyboard surface is the
+      three platform chords plus the plain-`Tab` boundary hand-off
+      (`shared/window-system/`), and none of them reaches an application command; console clean.
 
 ## Spec #3087 — added quick path (chip removal)
 
@@ -181,57 +189,54 @@ Root defect detail + repro: see `functional.md` → "Round 1 result — served a
 > `tauri_webview_*` result + screenshot; document state, no `telemetry_spans` receipt expected.
 > Do **not** synthesize key events (E-22).
 
-- [ ] **S-16 (historical — superseded by S-17).** The toolbar/keycap quick path. P5 deleted the
-      toolbar and the 33 action controls; the current surface is the navigation bar with
-      `data-nav-keycap` hints. Press `c` then `t` to add a text element (`-element-count` 0→1);
-      capture the clean bar; console clean. Cross-ref `functional.md` F-84/F-86.
+- [ ] **S-16 (no key hint on any control).** The control-strip quick path. The toolbar and its
+      33 action controls are deleted; no control renders a key hint. Add a text element from
+      `wireframe-insert` (Elements → `Text`) (`-element-count` 0→1); confirm no `(hotkey)`
+      suffix appears on any accessible name and `wireframe-toolbar` is absent; capture the clean
+      control strip; console clean. Cross-ref `functional.md` F-84/F-86.
 
-## Spec #3119 (P5) — RE-BASELINE of the toolbar / hotkey quick paths
+## Spec #3119 (P5) / #3151 — RE-BASELINE of the toolbar / keyboard quick paths
 
-> The toolbar, the command surface and the hotkey carrier are DELETED; Wireframe is driven by a
-> declaration of six places. **The rows above are kept as history (G-125) — the amendments below
-> are the executable recipes.** The surface's own smoke lives in
-> `.opencode/tests/wireframe-navigation/smoke.md` (S-N1…S-N8).
+> The toolbar, the command surface, the hotkey carrier and (with #3151) the declared surface they
+> were re-pointed onto are all DELETED. Wireframe is driven by the 23-control pointer strip.
+> **The rows above keep their expected outcomes (G-125) — the amendments below are the executable
+> recipes.** The surface's own smoke lives in `.opencode/tests/navigation-retirement/smoke.md`.
 
-- **S-6 re-baselined:** "press `1` from the `default` focus gate" → press `c` then `t` (Create
-  place, text). `-element-count` 0→1, `-selection-type="text"`, `data-wireframe-place` back to
-  `wireframe.canvas` after the add. Icon (`i` → `m`) and shape are **map › Create** only.
-- **S-7 re-baselined:** `w` (save as) → `f` then `w`; `o` (open) → `f` then `o`. Everything else
-  (path seams, `-dirty=false`, status `Saved`, `-document-path`) is unchanged. `document.new`
-  → `f` `n`.
-- **S-7b re-baselined:** the `FREDO_WIREFRAME_CANCEL=1` leg presses `f` `w`; expectations
-  unchanged (nothing written, no banner, document/path/dirty unchanged).
-- **S-9 re-baselined (bar quick path):** Wireframe contributes **0** LEGACY element-key rows.
-  With Wireframe focused, the legacy bar carries no Wireframe row (its absence is gate-owned by
-  `legacyAbsence.test.ts`); the current observable is the navigation bar (`navigation-bar`) over
-  the declaration. **Non-vacuity control:** focus Mission Monitor → its navigation rows are
-  present.
-- **S-12 re-baselined (multi-select + group):** keys `1`/`2` → `c` `t` / `c` `b`; `g` `g` →
-  `a` `g`. `-selection-count`, `-group-count` and `wireframe-tag-group` expectations unchanged.
-- **S-13 re-baselined (snap + align):** `g s` → `a` `s`; `g a` (align left) → `a` `←`.
-  `-selection-geometry` edge coincidence and the ONE-`u` clause are unchanged (`u` at the root).
-- **S-15 superseded:** the `g` two-step namespace no longer exists; Wireframe strokes are place
-  keys. The nav engine's armed prefix is 250 ms and shows in `navigation-bar` / the hint.
-- **S-16 superseded:** `wireframe-toolbar` renders **0** nodes (the element is deleted) and
-  Wireframe mounts **0** `wireframe-action-*` controls. Replacement parity proof:
-  `wireframe-navigation` F-N13 (33-row manifest).
+- **S-6 re-baselined:** "add one element" → `wireframe-insert` → Elements → `Text`.
+  `-element-count` 0→1, `-selection-type="text"`. Icon and Shape are insert-menu items too.
+- **S-7 re-baselined:** save as → `wireframe-file-menu` → `Save As`; open → `Open`. Everything
+  else (path seams, `-dirty=false`, status `Saved`, `-document-path`) is unchanged. New → `New`.
+- **S-7b re-baselined:** the `FREDO_WIREFRAME_CANCEL=1` leg clicks `wireframe-file-menu` →
+  `Save As`; expectations unchanged (nothing written, no banner, document/path/dirty unchanged).
+- **S-9 re-baselined (strip quick path):** Wireframe renders exactly its 23 strip controls
+  (`wireframe-undo` / `wireframe-redo`, 5 view, 12 arrange, 4 file) on
+  `wireframe-control-strip`, and `[data-testid="wireframe-toolbar"]` is ABSENT. With another
+  window focused no control surface appears here. **Non-vacuity control:** focus Mission Monitor →
+  its own pointer surface is present.
+- **S-12 re-baselined (multi-select + group):** `wireframe-insert` (Elements → `Text`,
+  `Button`), then `wireframe-arrange` → `Group`. `-selection-count`, `-group-count` and
+  `wireframe-tag-group` expectations unchanged.
+- **S-13 re-baselined (snap + align):** `wireframe-arrange` → `Snap to grid`, then `Align left`.
+  `-selection-geometry` edge coincidence and the ONE-undo clause are unchanged (`wireframe-undo`).
+- **S-15 re-baselined:** the two-step namespace no longer exists and neither does any per-
+  application key surface. Pressing a key changes nothing; the pointer strip is the surface.
+- **S-16 re-baselined:** `wireframe-toolbar` renders **0** nodes (the element is deleted) and
+  Wireframe mounts **0** key hints. Replacement parity proof:
+  `wireframePointerControls.test.tsx` pins the 23-control row set.
 
-## Spec #3119 (P5) — added quick paths
+## Spec #3119 (P5) / #3151 — added quick paths
 
 > Env + driver as above (`-Spec 3119 -EnvId wf3119-a -EnvSlot 1 -RequireIsolation`, MCP port
 > `"16001"`). **Verification policy: live.**
 
-- [ ] **S-17: Navigation-shell quick path.** Open Wireframe from the launcher.
-      **Expected:** `wireframe-root[data-wireframe-place="wireframe.canvas"]`,
-      `navigation-bar` (six place rows + ≤ 8 verb rows), `navigation-trail`,
-      `navigation-map` trigger, `wireframe-canvas`; **no** `wireframe-toolbar`, **0**
-      `wireframe-action-*`, and zero legacy element-key rows while focused. Capture uploaded;
+- [ ] **S-17: Pointer-shell quick path.** Open Wireframe from the launcher.
+      **Expected:** `wireframe-root`, `wireframe-canvas`, `wireframe-details-column`,
+      `wireframe-control-strip` with its 23 controls, `wireframe-property-panel`,
+      `wireframe-status`; **no** `wireframe-toolbar`, **0** `wireframe-action-*`. Capture
+      uploaded; console clean.
+- [ ] **S-18: Arrange quick path.** With two elements selected, open `wireframe-arrange` and click
+      `Group` by accessible name inside the opened popup. Capture of the open menu uploaded;
       console clean.
-- [ ] **S-18: Place-entry quick path.** Press `c` (breadcrumb `Canvas › Create`, announcement
-      `Create — 9 actions`, rail 8 rows + `more…`), then `Escape` (breadcrumb `Canvas`,
-      announcement `Left Create — Canvas — 2 actions`). Capture of the Create rail uploaded;
-      console clean.
-- [ ] **S-19: Create-and-return quick path.** Press `c` `r`, drag a rectangle.
-      **Expected:** count 1, `data-wireframe-place` back to `wireframe.canvas` (transient
-      auto-exit), exactly ONE trail entry, exactly ONE announcement. Console clean.
-      Cross-ref `wireframe-navigation` F-N3/F-N10.
+- [ ] **S-19: Create quick path.** Open `wireframe-insert` → Elements → `Rectangle`, drag a
+      rectangle on the canvas.
+      **Expected:** count 1, `-selection-type`=`shape`, exactly ONE history entry. Console clean.

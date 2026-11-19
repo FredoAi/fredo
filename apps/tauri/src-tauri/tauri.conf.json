@@ -1,11 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Fredo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "identifier": "com.fredo.app",
   "build": {
     "beforeDevCommand": "pnpm --filter @fredo/fredo-opencode-plugin build && pnpm dev:webview",
     "beforeBuildCommand": "pnpm build:webview && pnpm --filter @fredo/fredo-opencode-plugin build",
+    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../.opencode/scripts/stage-engine-payload.ps1 -Profile release",
     "devUrl": "http://localhost:5174",
     "frontendDist": "../dist"
   },
@@ -50,6 +51,9 @@
       "frameworks": [],
       "providerShortName": null,
       "signingIdentity": null
+    },
+    "resources": {
+      "engine-payload/": ""
     },
     "externalBin": []
   }

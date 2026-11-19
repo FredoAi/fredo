@@ -18,7 +18,6 @@ import { useKonamiCode } from '../../../shared/hooks/useKonamiCode';
 import { useSecretCode } from '../../../shared/hooks/useSecretCode';
 import { DOOM_SECRET_CODE, useDoomMode, useDoomModeSkill } from '../../../shared/doom-mode';
 import { useAppOpenRequests } from '../hooks/useAppOpenRequests';
-import { useAppCommandSkill } from '../hooks/useAppCommandSkill';
 import { PgRecoveryBanner } from '../../postgres/components/PgRecoveryBanner';
 import type { FredoApplicationClass } from '../../../shared/classes/FredoApplicationClass';
 
@@ -219,13 +218,6 @@ const HomeDesktop: React.FC<HomeDesktopProps> = ({ registerOpenFeature }) => {
   // `doom_mode`, so it coexists with `useAppOpenRequests` on the same
   // `llm-skill-call` channel without cross-talk.
   useDoomModeSkill();
-
-  // Spec #3099 ST-6 — the ONE generic application-skill dispatcher (replaces
-  // the Wireframe-only `useWireframeSkill`): every published surface's list
-  // answer works with the app closed; every command is validated host-side
-  // against the PUBLISHED registry, then the app is opened through the ONE
-  // `openApp` and the intent is relayed to the owning application (G-124).
-  useAppCommandSkill({ openFeatureWindow: openApp, features: SHOWABLE_FEATURES });
 
   // Keep the refs in sync so transition callbacks always call the latest version,
   // and register the presentation-aware opener with the Home-level ref so the

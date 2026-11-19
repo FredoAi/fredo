@@ -1,6 +1,14 @@
 # ADR-2: Clean-Room Replacement, Not Incremental Extension
 
-- **Status:** Accepted
+- **Status:** Superseded (Spec #3153, slice 3 of 3) — the clean-room replacement it mandated
+  was itself reversed: the replacement (the NavigationEngine, #3151) was deleted rather than
+  completed. So was the premise that the keyboard surface is where Fredo's capabilities live:
+  the **companion** is the interaction surface now, not the keyboard. Its one surviving idea —
+  never maintain two authoritative capability paths — is
+  carried instead by the ADR-8 composer
+  (`apps/ui/src/shared/companion/composerBridge.ts`, `composerTarget.ts`) and by the companion's
+  exactly three static skills `open_app` / `close_app` / `doom_mode`. There is no migration
+  order and no migration phase left to bound.
 
 ## Context
 

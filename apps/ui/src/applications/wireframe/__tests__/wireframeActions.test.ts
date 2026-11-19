@@ -6,9 +6,9 @@
  * with no local `run`, and the `toolbar: true` parity flag) and proves every
  * action's side effect on the module-scoped store — no UI involved.
  *
- * Spec #3119 ST-4 REMOVES the legacy `hotkey` field from every row (keyboard
- * resolution now lives on `wireframeSurface`); the table keeps its `run`
- * handlers as the retained capability registry.
+ * Spec #3119 ST-4 removed the legacy `hotkey` field from every row; Spec #3151
+ * ST-5 removed the navigation surface, so this table is now the ONLY action
+ * registry and its `run` handlers are what the pointer controls call.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

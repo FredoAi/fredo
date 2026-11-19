@@ -736,14 +736,11 @@ async fn a_tool_offered_turn_emits_a_validated_tool_call_and_never_the_raw_body(
         started.detail
     );
 
-    // The shipped companion offer, obtained from the ONE shared builder — never a
-    // second registry construction (R-2; `voice_invariants` enforces it). With no
-    // published surfaces it is exactly the three static skills (`open_app`,
-    // `close_app`, `doom_mode`), which is what `skills::render_tools` then
-    // forwards verbatim into the turn.
-    let registry = crate::infrastructure::companion::surface_registry::build_companion_skill_registry(
-        &[],
-    );
+    // The shipped companion offer, obtained from the ONE shared accessor — never
+    // a second registry construction (R-2; `voice_invariants` enforces it). It is
+    // exactly the three static skills (`open_app`, `close_app`, `doom_mode`),
+    // which is what `skills::render_tools` then forwards verbatim into the turn.
+    let registry = crate::applications::llm_server::status::companion_skill_registry();
     let tools = crate::applications::llm_server::skills::render_tools(&registry)
         .as_array()
         .cloned()

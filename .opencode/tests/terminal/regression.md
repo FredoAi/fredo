@@ -504,25 +504,29 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
       change (`hasAttribute` === false, not `"false"`). See `functional.md` F-86.
       Edge: re-focus; window blur; a state surface showing.
 - [x] R-29 (**AC3 — the retained mechanism symbols survive**): `rg` over `apps/ui/src`.
-      EXPECTED: `syncTerminalPassthrough`, `isTerminalFocused`, `isPassthroughActive`,
-      `TERMINAL_ROOT_SELECTOR`, `BODY_PASSTHROUGH_ATTR`, `PASSTHROUGH_ANNOUNCEMENT_PREFIX`,
-      `installTerminalPassthrough`, `uninstallTerminalPassthrough`, `isTerminalPassthroughInstalled`,
-      `resetTerminalModeForTests`, `computeFocusContext` all still present; the install effect
-      (`TerminalWindow.tsx:433`) still mounts `installTerminalPassthrough`; the
-      `data-fredo-terminal-root="true"` host still present.
-      Edge: a removed retained symbol = FAIL (the removal is view-layer-deletion-only).
-- [x] R-30 (**AC4 — the one-time announcement retained**): `rg 'PASSTHROUGH_ANNOUNCEMENT_PREFIX'
-      apps/ui/src` and inspect `setPassthrough`.
-      EXPECTED: the prefix constant + the `announceNavigation(PASSTHROUGH_ANNOUNCEMENT_PREFIX)` call
-      are unchanged — the ONE remaining keyboard-mode affordance.
-      Edge: the ONE navigation announcer region still mounts (`navigation-announcer`); a second
-      legacy region would be a FAIL.
+      EXPECTED: `TERMINAL_ROOT_SELECTOR` is present in the shipped seam
+      (`shared/window-system/chordSuppression.ts:29`) and `classifyChordSuppression` returns
+      `'terminal'` for an active element inside it (`:98`); `data-fredo-terminal-root="true"` still
+      anchors the terminal host (`applications/terminal/components/SessionTerminal.tsx:344`).
+      The retired passthrough module's own symbols are gone with the engine — the mechanism is the
+      chord-suppression classifier, not a terminal-scoped listener.
+      Edge: a focus-derived `terminal` classification that stops short-circuiting the chords = FAIL.
+- [x] R-30 (**AC4 — passthrough is by focus, not by announcement**): `rg` over `apps/ui/src`.
+      EXPECTED: no annotation/announcement channel carries the terminal mode. A focused terminal
+      receives every keystroke because `isChordSuppressed()` reads `document.activeElement` and the
+      three platform chords decline to fire inside `[data-fredo-terminal-root="true"]`
+      (`shared/window-system/chordSuppression.ts:112-117`); clicking or focusing elsewhere hands the
+      keyboard back. There is **no** navigation announcer region and **no** announcement prefix —
+      a re-introduced announcement channel would be a FAIL.
+      Edge: the chords must still fire outside the terminal root (the positive control).
 - [x] R-31 (**AC3 — keyboard ownership / keystroke routing**): run `functional.md` F-87.
-      EXPECTED: a sentinel round-trips to the PTY; the ONE keydown path is unchanged
-      (`rg 'addEventListener\(.keydown' src/shared/navigation/ui/terminalPassthrough.ts` = 0); the
-      navigation command bar is untouched.
-      Edge: a keystroke while the navigation command bar has focus; the retired exit chord stays
-      retired.
+      EXPECTED: a sentinel round-trips to the PTY and the session stays `running`; there is no
+      per-terminal `keydown` listener (`rg 'addEventListener\(.keydown'` over
+      `applications/terminal/**` = 0 — the ONE capture-phase listener belongs to
+      `shared/window-system/platformChords.ts` and never routes an application command); no
+      application command bar exists to be "untouched".
+      Edge: a platform chord typed into a focused terminal is suppressed (the PTY receives it); the
+      retired exit chord stays retired.
 
 ### C-5 teardown (#3051 rows)
 

@@ -5,8 +5,8 @@
  * real module-scoped `windowStore` and assert:
  *  - the frame/content DOM hooks (`data-testid`, `data-focused`,
  *    `data-focused-window`) the contract block 7 + UI/UX §5 require,
- *  - a keyboard raise (engine `Ctrl+Tab`) puts DOM focus on the window's first
- *    CONTENT control — not a chrome button, never `body` (R-1.1/R-1.2),
+ *  - a keyboard raise (the re-homed `Ctrl+Tab` platform chord, #3151 ST-4) puts DOM focus on
+ *    the window's first CONTENT control — not a chrome button, never `body` (R-1.1/R-1.2),
  *  - the focused-window cue is not colour-only (title weight + `data-focused-title`),
  *  - plain Tab/Shift+Tab cross the window boundary; the target is scrolled into
  *    view before focus lands (R-1.5/R-1.6),
@@ -26,10 +26,7 @@ import {
   resetWindowStoreForTests,
   subscribeWindows,
 } from '../windowStore';
-import {
-  installNavigationKeyDispatch,
-  resetNavigationKeyDispatchForTests,
-} from '@/shared/navigation/ui';
+import { installPlatformChords, resetPlatformChordsForTests } from '../platformChords';
 import { focusPreviousWindow, resetWindowTraversalForTests } from '../traversal';
 
 function WindowHarness() {
@@ -66,7 +63,7 @@ let scrollSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   resetWindowStoreForTests();
   resetWindowTraversalForTests();
-  resetNavigationKeyDispatchForTests();
+  resetPlatformChordsForTests();
   document.body.innerHTML = '';
   scrollSpy = vi.fn();
   (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView = scrollSpy;
@@ -75,7 +72,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetWindowTraversalForTests();
-  resetNavigationKeyDispatchForTests();
+  resetPlatformChordsForTests();
   resetWindowStoreForTests();
   document.body.innerHTML = '';
   delete (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
@@ -103,11 +100,11 @@ describe('WindowFrame — traversal DOM hooks (contract block 7)', () => {
   });
 });
 
-// ── R-1.1/R-1.2 — engine chord raises + places content focus ─────────────────
+// ── R-1.1/R-1.2 — chord raises + places content focus ─────────────────────────
 
-describe('traversal — keyboard raise via the navigation chord (R-1.1/R-1.2)', () => {
+describe('traversal — keyboard raise via the platform chord (R-1.1/R-1.2)', () => {
   it('Ctrl+Tab raises the next window and focuses its first CONTENT control', () => {
-    installNavigationKeyDispatch();
+    installPlatformChords();
     openFeature('a');
     openFeature('b'); // 'b' focused
     renderWithChakra(<WindowHarness />);
@@ -125,7 +122,7 @@ describe('traversal — keyboard raise via the navigation chord (R-1.1/R-1.2)', 
   });
 
   it('ctrl+1..9 no longer switches windows (digits belong to element-scoped keys)', () => {
-    installNavigationKeyDispatch();
+    installPlatformChords();
     openFeature('a');
     openFeature('b');
     renderWithChakra(<WindowHarness />);

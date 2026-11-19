@@ -43,7 +43,7 @@ import type {
 } from '../../companion/composerTarget';
 import { getApplications } from '../../../applications/applicationRegistry';
 import { getWindowSnapshot } from '../../window-system/windowStore';
-import { describeContext } from '../../navigation/ui/hostRegistry';
+import { readCompanionGrounding } from '../../companion/grounding';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -180,9 +180,10 @@ function registerActiveCompanionEntity(handle: CompanionEntityHandle): () => voi
  * This is the ONE dispatch path (G-149) — both surfaces register the same handle
  * into this registry; never add a second, surface-specific route.
  *
- * #3120 ST-3 — the launcher may pass the focused app's current `ContextEnvelope`;
- * the entity prepends exactly one grounding `system` message to the SAME legacy
- * persona + user turn (no transcript/history is added).
+ * #3120 ST-3 — a caller may pass the target app's current grounding; the entity
+ * prepends exactly one grounding `system` message to the SAME legacy persona +
+ * user turn (no transcript/history is added). #3151 ST-2 — that payload is the
+ * application-level `CompanionGrounding`, never the retired engine envelope.
  */
 export function askActiveCompanion(
   text: string,
@@ -380,7 +381,8 @@ export interface CompanionEntityHandle {
    * while a generation is in flight the persisted disposition decides between
    * queueing (FIFO, auto-drained on settle) and a logical interrupt. Never void.
    * #3120 ST-3 — `options.context` prepends exactly one grounding `system` message
-   * (the current `ContextEnvelope`) before the legacy persona + user turn.
+   * (the target app's current `CompanionGrounding`) before the legacy persona + user
+   * turn.
    */
   ask: (text: string, options?: CompanionAskOptions) => CompanionSendResult;
   /**
@@ -1322,7 +1324,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       if (!next) { setQueuedSendCount(0); return; }
       setQueuedSendCount(queue.size());
       announceGenerationRef.current = true;
-      // #3120 ST-3 — the queued turn keeps its grounding envelope across the wait;
+      // #3120 ST-3 — the queued turn keeps its grounding payload across the wait;
       // a legacy send (absent key) rebuilds the byte-identical legacy pair.
       runGeneration(
         buildCompanionTurnMessages(
@@ -1457,7 +1459,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         if (!queue) return { outcome: 'rejected' };
         // REQ-5/REQ-6 — accept and wait, visibly; the settle handlers drain the
         // FIFO exactly once (synchronous dequeue before dispatch). #3120 ST-3 —
-        // the grounding envelope rides along with the queued turn.
+        // the grounding payload rides along with the queued turn.
         const result = queue.enqueue(text, options);
         setQueuedSendCount(queue.size());
         return result;
@@ -1547,9 +1549,10 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
         return {
           appId,
           appName,
-          // The grounding envelope is built ON DEMAND for the resolved target; a
-          // turn for an unregistered app stays ungrounded (never a stale envelope).
-          envelope: appId === null ? null : describeContext(appId),
+          // #3151 ST-2 — the grounding is the application-level projection, read
+          // ON DEMAND for the resolved target; a turn for an unregistered app stays
+          // ungrounded (never a stale payload).
+          grounding: appId === null ? null : readCompanionGrounding(appId),
           // Re-naming the SAME app is not an override (R-3.5).
           explicit: namedId !== null && namedId !== baseAppId,
         };
@@ -1559,14 +1562,14 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
     const composerTarget: CompanionTurnTarget = composerOpen
       ? buildTurnTarget(resolveBaseTargetApp(), '')
-      : { appId: null, appName: null, envelope: null, explicit: false };
+      : { appId: null, appName: null, grounding: null, explicit: false };
 
     const handleComposerSubmit = useCallback((text: string) => {
       const resolved = buildTurnTarget(resolveBaseTargetApp(), text);
       // The ONE dispatch funnel: the existing `ask` (skill-aware, same persona),
-      // grounded with `describeContext(targetApp)` when the app is registered.
+      // grounded with the target app's current grounding when it registered one.
       // An ungrounded turn omits the option key entirely (never `undefined`).
-      ask(text, resolved.envelope ? { context: resolved.envelope } : undefined);
+      ask(text, resolved.grounding ? { context: resolved.grounding } : undefined);
     }, [ask, buildTurnTarget, resolveBaseTargetApp]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
@@ -1605,7 +1608,18 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     }, [clearWatchdog]);
 
     // ── Click / double-click on avatar ─────────────────────────────────────────
-    // Single click → ask for a joke; double-click → open/close TicTacToe in the bubble
+    // Single click → ask for a joke AND open the instruction box; double-click →
+    // open/close TicTacToe in the bubble.
+    //
+    // #3151 ST-2 (AC5 / R-5.5) — the instruction box's only pointer entry point.
+    // The rail's `Ask` row (and the five nav providers that published open
+    // requests) are deleted with the navigation engine, so the surviving avatar
+    // click box is the ONE pointer opener. `openComposer()` is the context member
+    // exported by `useCompanion()` (`CompanionContextValue.openComposer`) — NOT
+    // the retired `requestCompanionComposerOpen` bridge. It only sets the transient
+    // `composerOpen` flag, so the render gate (`surface === 'overlay' &&
+    // composerOpen`) still keeps the composer off the home seat and out of a
+    // non-hosting window (R-5.4 untouched; no extra surface guard needed).
     const handleSpriteClick = useCallback(() => {
       // #2853 ST-3: a click/double-click is a companion interaction — reset the
       // idle timer (covers both the joke and the TicTacToe toggle).
@@ -1626,9 +1640,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       clickTimerRef.current = setTimeout(() => {
         clickTimerRef.current = null;
         console.log('[companion] single-click fired — showTicTacToe:', showTicTacToe);
-        if (!showTicTacToe) askForJoke();
+        if (!showTicTacToe) {
+          askForJoke();
+          // #3151 ST-2 (AC5) — the pointer opener, ADDED beside the shipped joke
+          // (preserved, never replaced). One composer per click: the render gate
+          // mounts exactly one `CompanionComposer`; a repeat request only bumps
+          // `composerRequestSeq` to re-focus (never a second instance).
+          openComposer();
+        }
       }, 250);
-    }, [askForJoke, showTicTacToe, notifyInteraction]);
+    }, [askForJoke, openComposer, showTicTacToe, notifyInteraction]);
 
     // Prefer the live streaming message; fall back to context message.
     // Strip any model control tokens that may leak through (e.g. <end_of_turn>).

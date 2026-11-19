@@ -23,6 +23,7 @@ jobs:
     outputs:
       ui: ${{ steps.chk.outputs.ui }}
       rust: ${{ steps.chk.outputs.rust }}
+      docs: ${{ steps.chk.outputs.docs }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: chk
@@ -56,6 +57,15 @@ jobs:
               - 'apps/tauri/**'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
+              - '.github/workflows/validate.yml'
+              - '.github/workflows/validate-fast.yml'
+            # Documentation and the durable test-suite prose (Spec #3153). The
+            # scanned roots of the prose absence guard: a docs-only PR must run the
+            # guard instead of passing with nothing evaluated (CI_GATE_CONTRACT.md).
+            docs:
+              - 'docs/**'
+              - '.opencode/tests/**'
+              - '.opencode/scripts/check-navigation-prose-retired.ps1'
               - '.github/workflows/validate.yml'
               - '.github/workflows/validate-fast.yml'
 
@@ -99,6 +109,25 @@ jobs:
       # missing provider mount); this leg does (G-251).
       - run: pnpm --filter @fredo/tauri build:webview
 
+  # docs-validate — the documentation prose gate (Spec #3153, AC1); NOT a required
+  # check (skipped on PRs that touch none of the `docs` filter paths). A docs-only
+  # PR used to run NOTHING (docs/CI_GATE_CONTRACT.md); this leg closes that gap by
+  # running the committed prose absence guard over `docs/` + `.opencode/tests/`.
+  docs-validate:
+    needs: paths
+    if: needs.paths.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # The guard proves the deleted keyboard-navigation vocabulary is taught by no
+      # current-state document and no surviving durable suite (outside the named
+      # evidence allowlist).
+      - name: Navigation prose absence guard
+        run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1
+      - name: Navigation prose absence guard (self-test)
+        run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1 -SelfTest
+
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
   #
   # Spec #3141 ST-1: the crate now links the in-process companion engine
@@ -115,7 +144,13 @@ jobs:
   rust-validate:
     needs: paths
     if: needs.paths.outputs.rust == 'true'
-    runs-on: windows-latest
+    # Pinned to windows-2022 (VS 2022 / MSVC 14.4x). `windows-latest` now ships
+    # VS 18 (MSVC 14.5x), whose STL asserts "expected Clang 22 or newer" during
+    # `llama-cpp-sys-4`'s bindgen step, so `cargo check` dies in a third-party
+    # header before any Fredo code compiles. The pin keeps the native toolchain
+    # the engine actually builds against; it is a toolchain choice, not a
+    # relaxation of any check.
+    runs-on: windows-2022
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -158,7 +193,21 @@ jobs:
       # cost of this leg and of every local build.
       - uses: jakoch/install-vulkan-sdk-action@7fe84289ddbf750f7eff9f8e4588e600e1dd06c8 # v1.8.1
         with:
-          cache: true
+          # `cache: false` is load-bearing, not an oversight. The action's SDK
+          # cache holds the SDK tree only; on a cache hit it skips the install
+          # path entirely, so `install_runtime` never runs and `vulkan-1.dll`
+          # is absent from every candidate directory (observed: the cached
+          # 1.4.363.1 tree had no `runtime\` folder at all). The SDK install is
+          # cheap next to the native engine build, so correctness wins here.
+          cache: false
+          # The SDK alone does not give us a loadable `vulkan-1.dll` on a
+          # Windows Server runner (the loader is not in `Bin` and the Server
+          # image does not carry it in System32). `ggml-vulkan.dll` imports it
+          # at LOAD time, so nextest cannot enumerate a single test binary
+          # without it. `install_runtime` copies it into
+          # `<VULKAN_SDK>\runtime\{x64,x86}`, which is the first candidate the
+          # discovery step below probes; that step still fails loud if absent.
+          install_runtime: true
       - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.87.4
         with:
           tool: cargo-nextest
@@ -404,12 +453,97 @@ jobs:
       - run: cargo nextest run --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --profile live
       - run: cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --locked -- -D warnings
 
+  # release-version-guard — a release PR may not carry version content `main` lacks.
+  #
+  # WHY THIS EXISTS
+  # ---------------
+  # The documented release flow (`docs/release-process.md` Step 5) is ONE-DIRECTIONAL:
+  # a release PR "brings `main` into `release/stable`", and a release sync sets the
+  # `release/stable` tree to EXACTLY `main` (the pattern `ced8d7a` / `03efd0e` used).
+  # So `main` is the source of truth for the version, and anything present ONLY on
+  # `release/stable` is transient: the next sync overwrites it with `main`'s content.
+  #
+  # That is what made PR #3156 a silent trap: it bumped the version to 0.2.0 on
+  # `release/stable` while `main` stayed on 0.1.0. The release that shipped was
+  # correct, but the NEXT sync would have reset the tree to `main`, silently
+  # rebuilding 0.1.0 and reusing the old tag. No check caught it; it took a manual
+  # post-release comparison.
+  #
+  # THE RULE (deliberately one rule, no heuristics):
+  #   On a PR into `release/stable`, every version-bearing file's content at the PR
+  #   head must EQUAL `main`'s content. That is exactly "this release brings main".
+  #   A PR that adds version content main does not have fails.
+  #
+  #   On a PR into `main` this job is a no-op: `main` is the source of truth, so a
+  #   main PR legitimately moves the version and the release line catches up at the
+  #   next sync. Failing it here would block the correct order of operations.
+  #
+  # No false positives: the normal release flow (main -> release/stable) has
+  # `pr == main` by construction, so it passes without any escape hatch.
+  release-version-guard:
+    needs: paths
+    if: always() && needs.paths.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+      - name: Assert a release PR brings main's version content
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          FILES=(
+            "apps/tauri/src-tauri/tauri.conf.json"
+            "apps/tauri/src-tauri/Cargo.toml"
+            "apps/tauri/src-tauri/Cargo.lock"
+            "apps/tauri/package.json"
+            "apps/ui/package.json"
+          )
+
+          if [ "$BASE_REF" != "release/stable" ]; then
+            echo "Base is '$BASE_REF', not release/stable — main is the source of truth,"
+            echo "so the version guard does not apply here. The release line catches up"
+            echo "at the next release/stable sync."
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin main "+${HEAD_SHA}:refs/pr/head" >/dev/null 2>&1 \
+            || { echo "::error::could not fetch main and the PR head"; exit 1; }
+
+          status=0
+          for f in "${FILES[@]}"; do
+            m="$(git show "origin/main:$f" 2>/dev/null || echo "__ABSENT__")"
+            p="$(git show "refs/pr/head:$f" 2>/dev/null || echo "__ABSENT__")"
+
+            if [ "$m" = "$p" ]; then
+              echo "OK    $f — matches main"
+              continue
+            fi
+
+            echo "::error file=$f::This release PR carries content for '$f' that main does not have. The documented flow is main -> release/stable, and a release sync sets the tree to exactly main — so this change would be silently reverted by the next sync. Land it on main first, then sync."
+            status=1
+          done
+
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "A release PR must bring main's version content, not introduce its own."
+            echo "Correct order: (1) the change lands on main, (2) sync main -> release/stable."
+            echo "See docs/release-process.md Step 5."
+            exit 1
+          fi
+          echo "Version invariant holds: this release PR brings main's version content."
+
   # validate — THE required check; always runs so it never goes "Expected" (AC2/AC3).
   # Fail-closed: a non-success `paths` result, or any leg result other than exactly
   # `success`/`skipped`, turns this check red. `if: always()` is load-bearing — without it
   # adding `paths` to `needs` would make this job skip when the discriminator fails.
   validate:
-    needs: [paths, ui-validate, rust-validate]
+    needs: [paths, ui-validate, rust-validate, docs-validate, release-version-guard]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -419,13 +553,15 @@ jobs:
           PATHS_RESULT: ${{ needs.paths.result }}
           UI_RESULT: ${{ needs.ui-validate.result }}
           RUST_RESULT: ${{ needs.rust-validate.result }}
+          DOCS_RESULT: ${{ needs.docs-validate.result }}
+          VERSION_GUARD_RESULT: ${{ needs.release-version-guard.result }}
         run: |
           status=0
           if [ "$PATHS_RESULT" != "success" ]; then
             echo "::error::paths discriminator result was '$PATHS_RESULT' (expected success) - failing closed"
             status=1
           fi
-          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT"; do
+          for entry in "ui-validate=$UI_RESULT" "rust-validate=$RUST_RESULT" "docs-validate=$DOCS_RESULT" "release-version-guard=$VERSION_GUARD_RESULT"; do
             leg="${entry%%=*}"
             result="${entry#*=}"
             case "$result" in
