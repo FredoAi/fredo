@@ -33,3 +33,22 @@ the origin note). The Tester adds probes below beyond the script.
   start's sweep the observed recovery, and is the whole demonstration bounded?
 - [ ] **E-10:** Does the ephemeral port change across restarts (no fixed-port leak), and does the
   app still connect to the new port on every leg?
+
+## Probes added by Spec #3180 (cluster-dir isolation / quarantine)
+
+- [ ] **E-11:** Cluster PATH exists as a FILE, not a directory (`FREDO_PG_DATA_DIR` at a path that is
+  a plain file). Does `inspect_cluster_dir` classify it as Residue (→ quarantine renames the file)
+  or does the boot fail typed — and never panic? Record which, and whether the user is told a next
+  step.
+- [ ] **E-12:** Two quarantine-able boots inside the same second — does the rename produce the same
+  `<dir>.rejected-<unix-ts>` target twice (a rename collision)? Does it suffix/retry, or fail typed?
+  A silent overwrite of the first quarantined dir would be data loss.
+- [ ] **E-13:** A residue file locked by another process (open handle) — does the quarantine rename
+  fail typed with `dataDirNotEmpty` + remedy + technical detail, or hang past the setup bound?
+- [ ] **E-14:** Copying a cluster while its postmaster is RUNNING (misuse of the F-24 producer) — does
+  the app refuse cleanly on the copy, or silently start on a torn cluster? (The sanctioned F-24
+  recipe copies only after `-Action Down`; this probe records the failure shape, not a PASS path.)
+- [ ] **E-15:** Repeated failed boots accumulate `cluster.rejected-*` siblings — is there any retention
+  rule, and does the set grow without bound (disk growth)? Record the growth, do not delete.
+- [ ] **E-16:** After a quarantine, is the app's own `<app>/postgres/log/postgres.log` untouched
+  (the rename must not move the log dir), i.e. does the tail still read the pre-quarantine log?
