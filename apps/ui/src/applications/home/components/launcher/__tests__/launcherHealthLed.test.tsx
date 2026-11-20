@@ -52,7 +52,7 @@ function healthFrom(snapshots: FredoHealthSnapshots): FredoHealth {
 const ALL_HEALTHY: FredoHealthSnapshots = {
   telemetry: 'healthy',
   companion: { modelFilesComplete: true },
-  llamaServer: { running: true, healthy: true },
+  llamaServer: { running: true, healthy: true, starting: false },
   postgres: { state: 'ready' },
 };
 
@@ -178,7 +178,12 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
   });
 
   it('a mandatory Postgres failure colours the overall `down` (never healthy)', async () => {
-    renderLed(healthFrom({ ...ALL_HEALTHY, postgres: { state: 'failed' } }));
+    renderLed(
+      healthFrom({
+        ...ALL_HEALTHY,
+        postgres: { state: 'failed', failureKind: 'unknown', error: 'boom' },
+      }),
+    );
     const trigger = await triggerLed();
 
     // (c) The overall dot's state is `down` (the colour-independent data-attr).
@@ -193,7 +198,8 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
     );
 
     expect(screen.getByTestId('desktop-status-led-overall')).toHaveTextContent('Down');
-    expect(screen.getByTestId('health-line-postgres')).toHaveTextContent('Not available');
+    // #3180 — a `failed` row carries its typed cause, not a bare "Not available".
+    expect(screen.getByTestId('health-line-postgres')).toHaveTextContent("didn't start");
 
     expect(trigger).toHaveAttribute(
       'aria-label',
@@ -201,26 +207,30 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
     );
   });
 
-  it('an installed-but-down companion degrades the overall to `degraded`', async () => {
+  it('an idle (not failed) companion engine is NEUTRAL and never degrades the overall (#3180)', async () => {
     renderLed(
-      healthFrom({ ...ALL_HEALTHY, llamaServer: { running: false, healthy: false } }),
+      healthFrom({
+        ...ALL_HEALTHY,
+        llamaServer: { running: false, healthy: false, starting: false },
+      }),
     );
     const trigger = await triggerLed();
 
-    // (c) The overall dot's state is `degraded` (optional subsystem down).
-    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
-      'data-health-state',
-      'degraded',
-    );
+    // #3180 — idle is `unknown` ("Checking"), never `down`/"Not running".
     expect(screen.getByTestId('health-line-llamaServer')).toHaveAttribute(
       'data-health-state',
-      'down',
+      'unknown',
     );
-    expect(screen.getByTestId('desktop-status-led-overall')).toHaveTextContent('Degraded');
+    expect(screen.getByTestId('health-line-llamaServer')).toHaveTextContent('Idle');
+    // A neutral engine does NOT degrade the aggregate.
+    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
+      'data-health-state',
+      'healthy',
+    );
 
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Degraded — Agent telemetry: Healthy; Companion engine: Down; Companion model: Healthy; Postgres: Healthy',
+      'Fredo health: Healthy — Agent telemetry: Healthy; Companion engine: Checking; Companion model: Healthy; Postgres: Healthy',
     );
   });
 
