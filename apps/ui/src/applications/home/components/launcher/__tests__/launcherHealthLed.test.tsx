@@ -20,11 +20,18 @@
  * The tooltip content is opened the way a user does — a pointer-over on the
  * focusable trigger (Ark opens on `pointer.move` after `openDelay`); the content
  * is portalled, so `screen` queries resolve it in `document.body`.
+ *
+ * Spec #3180 ST-4 extends this artifact: a `down` row renders its `remedy`
+ * (wrapping, never truncated) and its raw `technicalDetail` (mono, single line,
+ * native `title`), the composed `aria-label` appends the remedy for down rows
+ * only (never the technical detail), a `starting` engine row is neutral, and the
+ * presentational de-dupe renders a state phrase once. No new control, testid or
+ * tab stop is introduced.
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 
 import { renderWithChakra } from '@/shared/test-utils/renderWithChakra';
 import {
@@ -201,9 +208,10 @@ describe('Spec #3052 ST-3 — consolidated LED reads the aggregate health', () =
     // #3180 — a `failed` row carries its typed cause, not a bare "Not available".
     expect(screen.getByTestId('health-line-postgres')).toHaveTextContent("didn't start");
 
+    // #3180 ST-4 — the composed label appends the down row's remedy.
     expect(trigger).toHaveAttribute(
       'aria-label',
-      'Fredo health: Down — Agent telemetry: Healthy; Companion engine: Healthy; Companion model: Healthy; Postgres: Down',
+      'Fredo health: Down — Agent telemetry: Healthy; Companion engine: Healthy; Companion model: Healthy; Postgres: Down — Restart Fredo. If it keeps failing, open Settings → Database.',
     );
   });
 
@@ -295,5 +303,151 @@ describe('Spec #3064 ST-4 — the telemetry line gains the `degraded` state (tex
     expect(line).toHaveAttribute('data-health-state', 'healthy');
     expect(line).toHaveTextContent('Healthy');
     expect(line).toHaveTextContent('Streaming');
+  });
+});
+
+describe('Spec #3180 ST-4 — remedy + technical detail rendered in the LED rows', () => {
+  /** The binding `dataDirNotEmpty` remedy copy (authored by ST-3). */
+  const DATA_DIR_REMEDY =
+    "Move or rename the PostgreSQL cluster folder (postgres/cluster in Fredo's app-data folder), then restart Fredo. Nothing is removed.";
+  const RAW_PG_ERROR = 'initdb: error: el directorio no esta vacio';
+
+  /** A Postgres `failed` snapshot with the typed non-empty-dir cause. */
+  function failedPostgresHealth(): FredoHealth {
+    return healthFrom({
+      ...ALL_HEALTHY,
+      postgres: { state: 'failed', failureKind: 'dataDirNotEmpty', error: RAW_PG_ERROR },
+    });
+  }
+
+  it('a `down` row renders its remedy (wrapping) and the raw technical detail with a title', async () => {
+    renderLed(failedPostgresHealth());
+    await triggerLed();
+
+    const row = screen.getByTestId('health-line-postgres');
+    expect(row).toHaveAttribute('data-health-state', 'down');
+    // The inline scan line still carries the typed cause sentence.
+    expect(row).toHaveTextContent('The database folder Fredo uses already contains files.');
+
+    // The remedy is rendered and wraps (never truncated — AC-5).
+    const remedy = within(row).getByText((content) =>
+      content.includes('Move or rename the PostgreSQL cluster folder'),
+    );
+    expect(remedy).toHaveTextContent(DATA_DIR_REMEDY);
+    expect(getComputedStyle(remedy).whiteSpace).toBe('normal');
+    expect(getComputedStyle(remedy).whiteSpace).not.toBe('nowrap');
+    expect(getComputedStyle(remedy).overflowWrap).toBe('anywhere');
+
+    // The technical detail is a single ellipsised line whose title is its text.
+    const technical = row.querySelector<HTMLElement>('[title]');
+    expect(technical).not.toBeNull();
+    expect(technical).toHaveAttribute('title', RAW_PG_ERROR);
+    expect(technical).toHaveTextContent(RAW_PG_ERROR);
+    expect(getComputedStyle(technical as HTMLElement).whiteSpace).toBe('nowrap');
+    expect(getComputedStyle(technical as HTMLElement).textOverflow).toBe('ellipsis');
+    expect(getComputedStyle(technical as HTMLElement).fontFamily.toLowerCase()).toContain('mono');
+  });
+
+  it('a typed engine failure renders "Could not start" + remedy and code · lastError', async () => {
+    renderLed(
+      healthFrom({
+        ...ALL_HEALTHY,
+        llamaServer: {
+          running: false,
+          healthy: false,
+          starting: false,
+          lastErrorCode: 'gpuUnavailable',
+          lastError: 'no usable GPU on this machine',
+        },
+      }),
+    );
+    await triggerLed();
+
+    const row = screen.getByTestId('health-line-llamaServer');
+    expect(row).toHaveAttribute('data-health-state', 'down');
+    expect(row).toHaveTextContent('Could not start');
+    // The remedy names the surface that owns the action.
+    expect(row).toHaveTextContent('Open Settings → Companion.');
+    // The raw evidence survives in the technical detail (and its title).
+    const technical = row.querySelector<HTMLElement>('[title]');
+    expect(technical).toHaveAttribute(
+      'title',
+      'gpuUnavailable · no usable GPU on this machine',
+    );
+    expect(row).not.toHaveTextContent('Not running');
+  });
+
+  it('a `starting` engine row is neutral — never Down / Not running', async () => {
+    renderLed(
+      healthFrom({
+        ...ALL_HEALTHY,
+        llamaServer: { running: false, healthy: false, starting: true },
+      }),
+    );
+    await triggerLed();
+
+    const row = screen.getByTestId('health-line-llamaServer');
+    expect(row).toHaveAttribute('data-health-state', 'unknown');
+    expect(row).toHaveTextContent('Starting');
+    expect(row).not.toHaveTextContent('Not running');
+    expect(row).not.toHaveTextContent('Down');
+    // A neutral in-flight row never degrades the overall.
+    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
+      'data-health-state',
+      'healthy',
+    );
+  });
+
+  it('the aria-label carries the down remedy but never the technical detail', async () => {
+    renderLed(failedPostgresHealth());
+    const trigger = await triggerLed();
+
+    const label = trigger.getAttribute('aria-label') ?? '';
+    expect(label).toContain(DATA_DIR_REMEDY);
+    expect(label).not.toContain(RAW_PG_ERROR);
+    // Only the down row gains the clause; healthy rows stay byte-identical.
+    expect(label).toContain('Postgres: Down — ');
+    expect(label).toContain('Agent telemetry: Healthy; Companion engine: Healthy');
+  });
+
+  it('keeps exactly 4 health lines + 1 overall and zero interactive descendants', async () => {
+    renderLed(failedPostgresHealth());
+    await triggerLed();
+
+    const tooltip = screen.getByTestId('desktop-status-led-tooltip');
+    expect(
+      tooltip.querySelectorAll('[data-testid="desktop-status-led-overall"]'),
+    ).toHaveLength(1);
+    expect(tooltip.querySelectorAll('[data-testid^="health-line-"]')).toHaveLength(4);
+    // Hover/focus disclosure only — no button/link/tab-stop inside the tooltip.
+    expect(tooltip.querySelectorAll('button, a, [tabindex]')).toHaveLength(0);
+  });
+
+  it('renders a neutral row state phrase exactly once (presentational de-dupe)', async () => {
+    renderLed(
+      healthFrom({
+        ...ALL_HEALTHY,
+        companion: { modelFilesComplete: false },
+      }),
+    );
+    await triggerLed();
+
+    const countPhrase = (row: HTMLElement, phrase: string): number =>
+      (row.textContent?.match(new RegExp(phrase, 'g')) ?? []).length;
+
+    // "Not set up" appears as the state word only (detail suppressed).
+    expect(countPhrase(screen.getByTestId('health-line-llamaServer'), 'Not set up')).toBe(1);
+    expect(countPhrase(screen.getByTestId('health-line-companionModel'), 'Not set up')).toBe(1);
+
+    cleanup();
+    // "Checking" likewise collapses for an unresolved probe.
+    renderLed(
+      healthFrom({
+        ...ALL_HEALTHY,
+        companion: null,
+      }),
+    );
+    await triggerLed();
+    expect(countPhrase(screen.getByTestId('health-line-llamaServer'), 'Checking')).toBe(1);
   });
 });
