@@ -1,3 +1,11 @@
+// The served Tauri entry MUST load the same global stylesheets as the UI dev
+// entry (`apps/ui/src/main.tsx`). This entry is what `vite build` bundles into
+// `apps/tauri/dist` and what the installer ships, so omitting them is not a dev
+// nicety: the release artifact renders with browser-default fonts, no layout
+// reset and no theme tokens.
+import '../../ui/src/style.css';
+import '../../ui/src/assets/fonts/fira-mono.css';
+
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { ReactFlowProvider } from 'reactflow';
