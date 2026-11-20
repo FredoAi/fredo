@@ -31,7 +31,7 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 | License | **MIT OR Apache-2.0** (`llama-cpp-4`/`llama-cpp-sys-4` are dual-licensed; upstream `llama.cpp` is MIT) |
 | Upstream | https://github.com/ggml-org/llama.cpp |
 | Bindings upstream | https://github.com/eugenehp/llama-cpp-rs |
-| Distribution form | **Shipped as native runtime DLLs** beside `fredo.exe` in the install directory (the `engine-payload/` bundle resource tree) — no `llama-server` executable, no separate inference program, no runtime download of the engine |
+| Distribution form | **Shipped as native runtime DLLs** beside `fredo.exe` in the install directory (the `engine-payload/` bundle resource tree) — no `llama-server` executable, no separate inference program, no runtime download of the engine. **No TLS stack is shipped or required**: the engine is built with `LLAMA_OPENSSL=OFF` and every payload DLL is import-scanned (load-time and delay-load) to forbid a `libssl*`/`libcrypto*` import, so no OpenSSL library is distributed with Fredo and no OpenSSL licence obligation arises |
 | Use in Fredo | The companion's in-process inference engine (`applications/llm_server/engine/`): model loading, chat templating, sampling, MTP speculative decoding, and multimodal (`mtmd`) vision/audio encoding. |
 
 **Why it is recorded here.** `llama.cpp` is the engine that actually runs the companion model. It is

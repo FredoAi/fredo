@@ -297,7 +297,7 @@ The companion takes a screenshot of the board via `capture_screen_region`, sends
 pnpm build:tauri
 ```
 
-Local development builds produce installers for the host OS. The Windows NSIS `.exe` installer is the artifact that carries the companion engine: `bundle.resources` ships the `engine-payload/` DLL set beside `fredo.exe` in the install directory, and the release pipeline runs `.opencode/scripts/verify-installer-payload.ps1` on the produced installer before any draft release exists. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
+Local development builds produce installers for the host OS. The Windows NSIS `.exe` installer is the artifact that carries the companion engine: `bundle.resources` ships the `engine-payload/` DLL set beside `fredo.exe` in the install directory, and the release pipeline runs `.opencode/scripts/verify-installer-payload.ps1` on the produced installer before any draft release exists — that gate requires the 8 core payload modules present **and** import-scans every payload DLL present (load-time and delay-load imports) for a forbidden `libssl*`/`libcrypto*` or an unresolved dependency. **Officially released installers are Windows-only**: the gated `release/stable` pipeline (see [release-process.md](release-process.md)) builds the Windows NSIS `.exe` installer and publishes it to a **draft** GitHub Release, which the maintainer must review and publish. See `docs/SETUP.md` for the artifact locations.
 
 To verify an installer yourself, point the gate at the produced `.exe`:
 
@@ -305,7 +305,7 @@ To verify an installer yourself, point the gate at the produced `.exe`:
 powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
 ```
 
-The gate extracts the installer and prints one `PAYLOAD_PRESENT=<name>` line per core payload DLL plus `RESULT=PASS` when the payload is complete; a missing DLL fails it (exit 1), and a debug artifact, a missing installer or an unavailable extractor is refused (exit 2).
+The gate extracts the installer, prints one `PAYLOAD_PRESENT=<name>` line per core payload DLL, then import-scans every payload DLL present in the extracted tree (load-time **and** delay-load imports) and prints `ARTIFACT_PAYLOAD_SCANNED=<n> of=<n>` followed by `IMPORT_SCAN=PASS dlls=<n>` (`IMPORT_SCAN=FAIL dlls=<n>` otherwise); `RESULT=PASS` appears only when both halves pass. A missing core DLL fails it (exit 1), and so does a forbidden import (`ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT …`) or one the payload cannot satisfy (`ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT …`). An absent optional tool module is printed as `PAYLOAD_ABSENT_OPTIONAL=<name>` and is **not** a failure — only the 8 core names must be present. A debug artifact, a missing installer or an unavailable extractor is refused (exit 2).
 
 ### How is the `fredo` CLI installed?
 

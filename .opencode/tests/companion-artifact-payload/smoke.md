@@ -26,7 +26,11 @@
 
 - [ ] **S-3 — The staging script exists and its instrument is healthy.**
       `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -SelfTest")`.
-      **Expected:** `EXITCODE=0`; the seven `CONTROL n - <NAME>` lines present; no `[FAIL]`.
+      **Expected:** `EXITCODE=0`; all eleven `CONTROL n - <NAME>` lines present —
+      `1 - POSITIVE`, `2 - MISSING-CORE`, `3 - MISSING-LOADER`, `4 - IMPORT-GAP`, `5 - NO-CUDA`,
+      `6 - IDEMPOTENT`, `7 - SELF-REFERENCE` (unchanged) plus `8 - FORBIDDEN-IMPORT`,
+      `9 - DELAY-IMPORT`, `10 - NON-ROOT-IMPORT-GAP`, `11 - IMPORT-SCAN-COMPLETE` — and `SELFTEST:
+      PASS`; no `[FAIL]`.
 
 - [ ] **S-4 — The artifact gate exists and refuses the wrong artifact.** Read
       `.opencode/scripts/verify-installer-payload.ps1` (Read tool);
@@ -47,7 +51,7 @@
 
 - [ ] **S-6 — The artifact under test is this round's.**
       `RC("Get-ChildItem -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis' -File")`.
-      **Expected:** at least one `*-setup.exe` whose name carries `0.2.0` and whose `LastWriteTime`
+      **Expected:** at least one `*-setup.exe` whose name carries `0.2.2` and whose `LastWriteTime`
       is at/after this round's build start. A lone `0.1.0` file is a **stale artifact** (the bundle dir
       currently holds `Fredo_0.1.0_x64-setup.exe`) — record it as such and route to F-1, not a PASS.
 

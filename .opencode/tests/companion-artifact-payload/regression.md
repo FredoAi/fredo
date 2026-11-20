@@ -117,5 +117,22 @@
   - **Edge:** any surviving rewrite ⇒ **FAIL** — a build killed mid-rewrite leaves the tree with a
     mutated config plus a stray backup (the hazard ST-1 removes).
 
+## R-8 — Gate control counts are preserved, never relaxed (#3172)
+
+- [ ] **R-8.** Read the two instruments' control contracts:
+      `RC("powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -SelfTest")` and
+      `RC("powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -SelfTest")`;
+      read `.opencode/scripts/test-scripts.ps1`'s asserted control-name lists.
+  - **Expected:** the stager keeps `CONTROL 1 - POSITIVE` … `CONTROL 7 - SELF-REFERENCE` under their
+    unchanged names and assertions, and adds `8 - FORBIDDEN-IMPORT`, `9 - DELAY-IMPORT`,
+    `10 - NON-ROOT-IMPORT-GAP`, `11 - IMPORT-SCAN-COMPLETE`; the verifier keeps
+    `1 - PASS-ON-COMPLETE` … `5 - SELF-REFERENCE` unchanged and adds
+    `6 - ARTIFACT-FORBIDDEN-IMPORT`, `7 - ARTIFACT-DELAY-IMPORT`, `8 - ARTIFACT-IMPORT-GAP`; both
+    legs print `SELFTEST: PASS` with `EXITCODE=0`, and `test-scripts.ps1` asserts BOTH name lists.
+  - **Edge:** a renamed or dropped pre-existing control, or a weakened assertion ⇒ **FAIL** — the
+    extension is additive. The verifier's controls 1/2 fixtures moved from text stubs to synthetic
+    PEs (stricter, not relaxed; names and assertions unchanged). An unexecuted guard (no
+    `test-scripts.ps1` leg for a self-test set) ⇒ **FAIL** (G-406).
+
 _Evidence convention: pass cases keep `- [x]` and append the file:line or command output observed;
 fail cases leave `- [ ]` and mark `FAIL` with expected-vs-actual + repro._

@@ -8,6 +8,15 @@
 > `RESULT=` / `EXITCODE=` lines, the probe's JSON stdout, directory enumerations, SHA-256). No
 > `tauri_webview_*` probe: the installed release build registers no MCP bridge
 > (`src/lib.rs:197-207`).
+>
+> **#3172 control-set note.** The two gate instruments' deterministic control sets changed. The
+> stager's `-SelfTest` now has **eleven** controls (`1 - POSITIVE` … `7 - SELF-REFERENCE` unchanged,
+> plus `8 - FORBIDDEN-IMPORT`, `9 - DELAY-IMPORT`, `10 - NON-ROOT-IMPORT-GAP`,
+> `11 - IMPORT-SCAN-COMPLETE`) and the verifier's has **eight** (`1 - PASS-ON-COMPLETE` …
+> `5 - SELF-REFERENCE` unchanged, plus `6 - ARTIFACT-FORBIDDEN-IMPORT`,
+> `7 - ARTIFACT-DELAY-IMPORT`, `8 - ARTIFACT-IMPORT-GAP`). E-3 maps to stager
+> `CONTROL 3 - MISSING-LOADER`; E-4/E-4b to `CONTROL 6 - IDEMPOTENT` and controls 2–3; their
+> semantics are unchanged.
 
 - **E-1 — no extractor at all.** On a shell with neither `7z` on `PATH`, nor
   `$env:ProgramFiles\7-Zip\7z.exe`, nor a working NSIS `/S /D=` silent install, run
@@ -24,19 +33,25 @@
 
 - **E-3 — the Vulkan loader is undiscoverable.** Run
   `stage-engine-payload.ps1 -Profile release -VulkanLoader 'C:\no-such\vulkan-1.dll'`. Expect
-  `ERROR=VULKAN_LOADER_NOT_FOUND searched=<list>` + `EXITCODE=1`. Probe also: `$env:VULKAN_SDK`
-  pointing at a real directory whose `runtime\` subtree has no `x64` dir — does the candidate set
-  still find `$env:SystemRoot\System32\vulkan-1.dll`, and does it say which candidate answered?
+  `ERROR=VULKAN_LOADER_NOT_FOUND searched=<list>` + `EXITCODE=1`. The hermetic counterpart is the
+  stager `-SelfTest` `CONTROL 3 - MISSING-LOADER` (the same named refusal, synthetic fixture). Probe
+  also: `$env:VULKAN_SDK` pointing at a real directory whose `runtime\` subtree has no `x64` dir —
+  does the candidate set still find `$env:SystemRoot\System32\vulkan-1.dll`, and does it say which
+  candidate answered?
 
 - **E-4 — a stale `engine-payload/` from a previous run.** Leave a **foreign** file (e.g. a copied
   `ggml-cuda.dll`) in `apps\tauri\src-tauri\engine-payload\`, then run F-18. Does the staging pass
   remove it (all-or-nothing stage-then-rename) so exactly the allowlist remains? A surviving foreign
-  file ⇒ the idempotence contract is broken (promote).
+  file ⇒ the idempotence contract is broken (promote). The hermetic counterpart is
+  `CONTROL 6 - IDEMPOTENT` — a second staging run leaves exactly the allowlisted set, with no stale
+  file surviving.
 
 - **E-4b — an interrupted staging run.** Kill the staging script mid-copy (or make `-OutDir`
   read-only for one file). Is the previous good `engine-payload/` left intact (the sibling-temp +
   rename discipline), or is it half-written? A half-written dir that a subsequent bundle would ship
-  is a **finding** — the whole point of the all-or-nothing rename.
+  is a **finding** — the whole point of the all-or-nothing rename. The hermetic counterparts are
+  `CONTROL 2 - MISSING-CORE` and `CONTROL 3 - MISSING-LOADER`: both pre-seed `sentinel.txt` in
+  `-OutDir` and assert it survives a strict failure.
 
 - **E-5 — the probe with no GUI app running, from a directory with a hostile cwd.** Run F-14 from a
   cwd that also contains a *decoy* DLL set (a stale `ggml-base.dll` from an older build in the cwd).
