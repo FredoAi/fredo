@@ -180,8 +180,11 @@ jobs:
           Write-Host "INSTALLER=$full bytes=$((Get-Item -LiteralPath $full).Length)"
           "installer=$full" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      # 3. GATE - the produced ARTIFACT must contain the engine payload. This step
-      #    publishes nothing; on failure the draft step below is skipped.
+      # 3. GATE - the produced ARTIFACT must contain the engine payload, and the
+      #    OpenSSL-free build option must be checked in (Spec #3172 ST-4, AC5 /
+      #    R-5.2). This step publishes nothing; on failure the draft step below is
+      #    skipped. Order: static metadata assert -> both script self-tests ->
+      #    produced-installer verification -> PAYLOAD_GATE=PASS.
       - name: Verify installer payload
         id: gate
         shell: pwsh
@@ -190,6 +193,67 @@ jobs:
           INSTALLER: ${{ steps.locate.outputs.installer }}
         run: |
           $ErrorActionPreference = 'Stop'
+
+          # 3a. STATIC ASSERT - the checked-in CMake metadata table is the SINGLE
+          #     lever that disables OpenSSL for the engine build. Fail closed: an
+          #     absent, unreadable, or empty manifest is a failure, never a skip.
+          $manifestPath = 'apps/tauri/src-tauri/Cargo.toml'
+          if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            Write-Host "ENGINE_OPENSSL_ASSERT=FAIL manifest=$manifestPath reason=missing"
+            Write-Host '::error::ENGINE_OPENSSL_NOT_DISABLED'
+            exit 1
+          }
+          $manifestLines = @()
+          try {
+            $manifestLines = @(Get-Content -LiteralPath $manifestPath -ErrorAction Stop)
+          } catch {
+            Write-Host "ENGINE_OPENSSL_ASSERT=FAIL manifest=$manifestPath reason=unreadable"
+            Write-Host "::error::ENGINE_OPENSSL_NOT_DISABLED"
+            exit 1
+          }
+          if ($manifestLines.Count -eq 0) {
+            Write-Host "ENGINE_OPENSSL_ASSERT=FAIL manifest=$manifestPath reason=empty"
+            Write-Host '::error::ENGINE_OPENSSL_NOT_DISABLED'
+            exit 1
+          }
+          $sectionName = '[package.metadata.llama-cpp-sys-4.cmake]'
+          $optionLine = 'LLAMA_OPENSSL = "OFF"'
+          $inSection = $false
+          $sectionFound = $false
+          $optionFound = $false
+          foreach ($line in $manifestLines) {
+            $trimmed = $line.Trim()
+            if ($trimmed.StartsWith('[')) {
+              $inSection = ($trimmed -eq $sectionName)
+              if ($inSection) { $sectionFound = $true }
+              continue
+            }
+            if ($inSection -and $trimmed -eq $optionLine) { $optionFound = $true }
+          }
+          if (-not ($sectionFound -and $optionFound)) {
+            Write-Host "ENGINE_OPENSSL_ASSERT=FAIL manifest=$manifestPath section=$sectionFound option=$optionFound"
+            Write-Host '::error::ENGINE_OPENSSL_NOT_DISABLED'
+            exit 1
+          }
+          Write-Host "ENGINE_OPENSSL_ASSERT=PASS manifest=$manifestPath section=$sectionName option=$optionLine"
+
+          # 3b. SELF-TESTS - both gate instruments must prove themselves before
+          #     either is trusted against the produced artifact.
+          & powershell -NoProfile -File .opencode/scripts/stage-engine-payload.ps1 -SelfTest
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "::error::STAGE_ENGINE_PAYLOAD_SELFTEST_FAILED exit=$code"
+            exit 1
+          }
+          & powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -SelfTest
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "::error::VERIFY_INSTALLER_PAYLOAD_SELFTEST_FAILED exit=$code"
+            exit 1
+          }
+
+          # 3c. ARTIFACT VERIFICATION - the payload must be INSIDE the produced
+          #     installer (a build log is never a substitute).
           if ([string]::IsNullOrWhiteSpace($env:INSTALLER)) {
             Write-Host '::error::PAYLOAD_INCOMPLETE_IN_ARTIFACT installer path is empty'
             exit 1

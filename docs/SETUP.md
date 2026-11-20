@@ -174,9 +174,9 @@ A local build produces an installer for your current OS in `apps/tauri/src-tauri
 
 ### Companion engine payload
 
-The companion engine is **not** linked into `fredo.exe`: the `dynamic-link` build produces the ggml/llama/mtmd runtime as DLLs, and `build.beforeBundleCommand` runs `.opencode/scripts/stage-engine-payload.ps1`, which stages the canonical allowlist (`.opencode/scripts/payload-manifest.json`) into `apps/tauri/src-tauri/engine-payload/`. `bundle.resources` (`{"engine-payload/": ""}`) installs that tree **beside `fredo.exe` in the install directory**, so the 8 core payload DLLs live next to the binary — not in a separate program and not behind a second install step.
+The companion engine is **not** linked into `fredo.exe`: the `dynamic-link` build produces the ggml/llama/mtmd runtime as DLLs, and `build.beforeBundleCommand` runs `.opencode/scripts/stage-engine-payload.ps1`, which stages the canonical allowlist (`.opencode/scripts/payload-manifest.json`) into `apps/tauri/src-tauri/engine-payload/`. `bundle.resources` (`{"engine-payload/": ""}`) installs that tree **beside `fredo.exe` in the install directory** — not in a separate program and not behind a second install step. The staged set is **14 DLLs: 8 core modules + 6 optional tool modules**, and the staging gate import-scans **every one of them**, both load-time and delay-load imports, so an unresolved dependency — or a forbidden `libssl*`/`libcrypto*` import — fails the build instead of the user's launch.
 
-The release pipeline refuses to publish a draft whose installer is missing any of those DLLs: `.opencode/scripts/verify-installer-payload.ps1` extracts the produced NSIS `.exe` and asserts every core payload name is present with bytes > 0. To verify a local installer the same way:
+The release pipeline refuses to publish a draft whose installer fails the artifact gate: `.opencode/scripts/verify-installer-payload.ps1` extracts the produced NSIS `.exe`, requires the **8 core** payload names to be present and non-empty, and then import-scans **every payload DLL actually present** in the extracted tree (core and any tool module) for forbidden or unresolved load-time and delay-load imports. The artifact gate never demands all 14: an optional tool module that did not ship is reported as `PAYLOAD_ABSENT_OPTIONAL=<name>` and is not a failure. To verify a local installer the same way:
 
 ```bash
 powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
@@ -210,7 +210,7 @@ To confirm an installer carries the engine payload, run the artifact gate on the
 powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Installer <path-to-the-setup.exe>
 ```
 
-`RESULT=PASS` means every core payload DLL was found inside the extracted install; `PAYLOAD_MISSING=<name>` with exit 1 means the installer is incomplete.
+`RESULT=PASS` means the installer passed **both** halves of the gate: every core payload DLL was found inside the extracted install, **and** every payload DLL present was import-scanned clean — the run prints `ARTIFACT_PAYLOAD_SCANNED=<n> of=<n>` and then `IMPORT_SCAN=PASS dlls=<n>` (`IMPORT_SCAN=FAIL dlls=<n>` otherwise). `PAYLOAD_MISSING=<name>` with exit 1 means the installer is incomplete. A forbidden import (`ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT dll=<dll> module=<module> kind=<import|delay-import>`) or an import the payload cannot satisfy (`ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT edge=<dll> -> <module> kind=<import|delay-import>`) also fails the gate, exit 1. `PAYLOAD_ABSENT_OPTIONAL=<name>` only names an optional tool module that was not shipped — it is a report, not a failure.
 
 ## Headless Ingest (capturing telemetry with the GUI closed)
 

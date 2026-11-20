@@ -4843,12 +4843,14 @@ Test-Script "guard: plain run is clean (0 non-allowlisted, exit 0)" {
 # --- Installer payload artifact gate (Spec #3158 ST-4, AC5) ---
 # A committed gate with no runner is not a guard: release.yml runs
 # verify-installer-payload.ps1 before any draft exists, and this leg proves the
-# instrument (all five controls) on every harness run, so a regression in the
-# gate is caught here instead of on a release branch.
+# instrument (all eight controls, Spec #3172 ST-3 added 6-8: the produced
+# artifact's payload DLLs are import-scanned, not only name-checked) on every
+# harness run, so a regression in the gate is caught here instead of on a
+# release branch.
 Write-Host "Installer payload artifact gate (Spec #3158):" -ForegroundColor Cyan
 $installerGate = ".opencode/scripts/verify-installer-payload.ps1"
 
-Test-Script "guard: -SelfTest passes all five controls" {
+Test-Script "guard: -SelfTest passes all eight controls" {
   $out = & powershell -NoProfile -File $installerGate -SelfTest 2>&1
   $code = $LASTEXITCODE
   $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -4858,13 +4860,48 @@ Test-Script "guard: -SelfTest passes all five controls" {
     "CONTROL 2 - FAIL-ON-MISSING",
     "CONTROL 3 - REFUSE-DEBUG-PATH",
     "CONTROL 4 - REFUSE-NO-EXTRACTOR",
-    "CONTROL 5 - SELF-REFERENCE"
+    "CONTROL 5 - SELF-REFERENCE",
+    "CONTROL 6 - ARTIFACT-FORBIDDEN-IMPORT",
+    "CONTROL 7 - ARTIFACT-DELAY-IMPORT",
+    "CONTROL 8 - ARTIFACT-IMPORT-GAP"
   )) {
     if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
   }
   if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
   if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
-  return "five controls pass (artifact gate proven; a real installer run is the tester's receipt)"
+  return "eight controls pass (artifact gate proven; a real installer run is the tester's receipt)"
+}
+
+# --- Engine payload stager (Spec #3172 ST-3) ---
+# The stager's self-test (eleven controls) has never had a runner in CI or this
+# harness. Without one, a regression in the import/delay-import scan or in the
+# all-or-nothing swap ships unproven. This leg is that runner.
+Write-Host "Engine payload stager (Spec #3172):" -ForegroundColor Cyan
+$payloadStager = ".opencode/scripts/stage-engine-payload.ps1"
+
+Test-Script "stager: -SelfTest passes all eleven controls" {
+  $out = & powershell -NoProfile -File $payloadStager -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($control in @(
+    "CONTROL 1 - POSITIVE",
+    "CONTROL 2 - MISSING-CORE",
+    "CONTROL 3 - MISSING-LOADER",
+    "CONTROL 4 - IMPORT-GAP",
+    "CONTROL 5 - NO-CUDA",
+    "CONTROL 6 - IDEMPOTENT",
+    "CONTROL 7 - SELF-REFERENCE",
+    "CONTROL 8 - FORBIDDEN-IMPORT",
+    "CONTROL 9 - DELAY-IMPORT",
+    "CONTROL 10 - NON-ROOT-IMPORT-GAP",
+    "CONTROL 11 - IMPORT-SCAN-COMPLETE"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "eleven controls pass (stager's import/delay-import scan and swap proven)"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
@@ -4960,6 +4997,35 @@ Test-Script "launch-artifact-probe.ps1: debug refusal + fast probe + teardown" {
   if ($calls.Count -gt 0) { throw "launch-artifact-probe must not call Test-NetConnection (it stalls on CLOSED ports)" }
   if (-not $src.Contains("\debug\")) { throw "launch-artifact-probe must refuse a \debug\ exe" }
   return "launch-artifact-probe: debug refusal + BeginConnect(600ms) + bridge scan + teardown"
+}
+
+# INLINE regression gate for the #3172 ST-5 hang. The pre-fix probe launched the
+# GUI with `Start-Process -RedirectStandardOutput`, whose child inherited the
+# CALLER's stdout pipe handles: an inline invocation (this leg) then blocked for
+# the lifetime of the leftover app/WebView2 tree, long after the probe printed
+# RESULT=PASS. `-SelfTest` is hermetic (no artifact, no model) and must return
+# well inside 15 s WITH its stdout captured through a pipe -- if the launch ever
+# reverts to plain inheritance, this very call hangs the harness.
+Test-Script "launch-artifact-probe.ps1: -SelfTest returns inline (no inherited stdout)" {
+  $probePath = ".opencode/scripts/launch-artifact-probe.ps1"
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $out = & powershell -NoProfile -File $probePath -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $watch.Stop()
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  $elapsed = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+  if ($code -ne 0) { throw "inline self-test exited ${code}: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "inline self-test did not report SELFTEST: PASS" }
+  foreach ($control in @(
+    "CONTROL 1 - DETACHED-LAUNCH",
+    "CONTROL 2 - REFUSALS",
+    "CONTROL 3 - SELF-REFERENCE"
+  )) {
+    if (-not $text.Contains($control)) { throw "self-test transcript is missing '$control'" }
+  }
+  if (-not $text.Contains("DETACH_RETURN_SECONDS=")) { throw "self-test printed no DETACH_RETURN_SECONDS=" }
+  if ($elapsed -gt 15) { throw "the inline self-test took ${elapsed}s (expected < 15s)" }
+  return "inline self-test returned in ${elapsed}s with stdout captured; SELFTEST: PASS"
 }
 
 Test-Script-Syntax "webview-security-evidence skill" ".opencode/skills/webview-security-evidence/SKILL.md"
