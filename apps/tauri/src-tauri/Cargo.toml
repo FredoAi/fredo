@@ -1,6 +1,6 @@
 [package]
 name = "fredo"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 # Selects the app binary for bare `cargo run` invocations (`tauri dev` ->
 # `cargo run`). The crate has a single binary, `fredo`.
