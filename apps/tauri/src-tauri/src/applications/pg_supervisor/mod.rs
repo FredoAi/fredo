@@ -45,7 +45,9 @@ pub const PG_PID_KEY: &str = "postgres_pid";
 /// Image name the managed postmaster must report for the PID-reuse guard to
 /// treat a persisted PID as OUR server.
 pub const POSTGRES_IMAGE: &str = "postgres.exe";
-/// Data-directory subdirectory under the app data dir (`{app_data_dir}/postgres`).
+/// Supervisor-home subdirectory under the app data dir (`{app_data_dir}/postgres`).
+/// The CLUSTER itself lives in `<this>/cluster` (Spec #3180 ST-1) — see
+/// [`cluster_dir::PG_CLUSTER_SUBDIR`] and [`resolve_data_dir`].
 pub const PG_DATA_SUBDIR: &str = "postgres";
 /// Distribution-directory subdirectory under the app data dir.
 pub const PG_INSTALL_SUBDIR: &str = "postgres-install";
@@ -72,12 +74,14 @@ pub const FREDO_INGEST_DESCRIPTOR_ENV: &str = "FREDO_INGEST_DESCRIPTOR";
 /// descriptor PID-reuse guard ([`descriptor::is_live`]) to treat the published
 /// PID as OUR daemon (mirrors [`POSTGRES_IMAGE`]).
 pub const FREDO_IMAGE: &str = "fredo.exe";
-/// Log subdirectory under the PostgreSQL data dir (`<data_dir>/log`). The
-/// postmaster's logging collector is pointed here through the crate's
-/// `Settings::configuration` hook (Spec #2978 S4 / Q-17), so this is the ONE
-/// directory [`state::pg_server_log_tail`] reads.
+/// Log subdirectory under the supervisor home (`<app_data_dir>/postgres/log`).
+/// The postmaster's logging collector is pointed at this ABSOLUTE directory
+/// through the crate's `Settings::configuration` hook (Spec #2978 S4 / Q-17,
+/// relocated out of the cluster dir by Spec #3180 ST-1), so this is the ONE
+/// directory [`state::pg_server_log_tail`] reads. It is a SIBLING of the cluster
+/// directory, never inside it.
 pub const PG_LOG_SUBDIR: &str = "log";
-/// Postmaster log filename (`<data_dir>/log/postgres.log`); fixed by the
+/// Postmaster log filename (`<log dir>/postgres.log`); fixed by the
 /// `log_filename` server configuration so the tail path is deterministic.
 pub const PG_LOG_FILENAME: &str = "postgres.log";
 /// Ephemeral loopback bind host (never `0.0.0.0`).
@@ -136,12 +140,14 @@ fn force_db_migration_fail_with(value: Option<&str>) -> bool {
 // ── Test hooks (Spec #2974 fix round: inert when unset — default behaviour is
 //    byte-identical to the slice-1 path) ───────────────────────────────────────
 
-/// **FS-1** test hook: when set (non-blank) the managed PostgreSQL data dir is
-/// this path instead of `<app_data_dir>/<PG_DATA_SUBDIR>`. The distribution
-/// (install) dir has its own override ([`PG_INSTALL_DIR_ENV`]); the lock
-/// directory has its own override ([`PG_LOCK_DIR_ENV`], default
-/// `<app_data_dir>`), so the exclusive lock keeps a stable location. Inert when
-/// unset.
+/// **FS-1** test hook: when set (non-blank) the managed PostgreSQL CLUSTER data
+/// dir is this path, verbatim, instead of the resolved default
+/// (`<app_data_dir>/postgres/cluster`, or the legacy `<app_data_dir>/postgres`
+/// when it already holds a cluster). The postmaster log then lives at
+/// `<this>/log`. The distribution (install) dir has its own override
+/// ([`PG_INSTALL_DIR_ENV`]); the lock directory has its own override
+/// ([`PG_LOCK_DIR_ENV`], default `<app_data_dir>`), so the exclusive lock keeps a
+/// stable location. Inert when unset.
 pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
 /// **G-275** induction seam (Spec #2978 S2): when set (non-blank) the managed
 /// PostgreSQL distribution/installation dir is this path instead of
@@ -246,16 +252,30 @@ pub fn skip_server_knobs() -> bool {
     }
 }
 
-/// Resolve the managed data dir (**FS-1**): the non-blank [`PG_DATA_DIR_ENV`]
-/// override when set, else `<app_data_dir>/<PG_DATA_SUBDIR>`. One shared rule so
-/// the sweep, the [`runtime::PgRuntime`] settings, and the reported `data_dir`
-/// can never diverge.
+/// Resolve the managed CLUSTER data dir — the directory `initdb` targets
+/// (Spec #3180 ST-1). Delegates to [`cluster_dir::resolve_cluster_dir`], whose
+/// precedence is: a non-blank [`PG_DATA_DIR_ENV`] override verbatim → else the
+/// LEGACY `<app_data_dir>/postgres` when it already holds a cluster
+/// (`postgresql.conf` present) → else the dedicated
+/// `<app_data_dir>/postgres/cluster`.
+///
+/// The name is kept so every caller is untouched; the semantics narrow to "the
+/// cluster directory". One shared rule so the sweep, the [`runtime::PgRuntime`]
+/// settings, and the reported `data_dir` can never diverge.
 pub fn resolve_data_dir(app_data_dir: &Path) -> PathBuf {
-    match std::env::var(PG_DATA_DIR_ENV) {
-        Ok(value) if !value.trim().is_empty() => PathBuf::from(value.trim()),
-        _ => app_data_dir.join(PG_DATA_SUBDIR),
-    }
+    cluster_dir::resolve_cluster_dir(app_data_dir)
 }
+
+/// Resolve the managed postmaster LOG dir (Spec #3180 ST-1): `<override>/log`
+/// when the FS-1 override is set, else `<app_data_dir>/postgres/log`. A SIBLING
+/// of the cluster dir — never inside the `initdb` target. Re-exported from
+/// [`cluster_dir::resolve_log_dir`].
+pub use cluster_dir::resolve_log_dir;
+
+/// Cluster-directory isolation + residue quarantine + log-dir resolution
+/// (Spec #3180 ST-1). The cluster lives in a dedicated directory so Fredo's own
+/// log writes can never make `initdb` refuse; residue is quarantined by rename.
+pub mod cluster_dir;
 
 /// Resolve the managed distribution/installation dir (Spec #2978 S2): the
 /// non-blank [`PG_INSTALL_DIR_ENV`] override when set, else
@@ -288,12 +308,15 @@ fn resolve_lock_dir_with(override_value: Option<&str>, app_data_dir: &Path) -> P
     }
 }
 
-/// `<data_dir>/log/postgres.log` — the ONE path rule for the postmaster log,
-/// shared by the crate settings that create it ([`runtime::PgRuntime`]) and the
-/// read-only tail ([`state::pg_server_log_tail`]), so the writer and the reader
-/// can never diverge.
-pub fn pg_log_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(PG_LOG_SUBDIR).join(PG_LOG_FILENAME)
+/// `<log_dir>/postgres.log` — the ONE path rule for the postmaster log, shared by
+/// the crate settings that create it ([`runtime::PgRuntime`], which receives the
+/// ABSOLUTE log dir as `log_directory`) and the read-only tail
+/// ([`state::pg_server_log_tail`]), so the writer and the reader can never
+/// diverge. The parameter is the resolved LOG directory ([`resolve_log_dir`]),
+/// NOT the cluster data dir (Spec #3180 ST-1 relocated the log out of the
+/// `initdb` target).
+pub fn pg_log_path(log_dir: &Path) -> PathBuf {
+    log_dir.join(PG_LOG_FILENAME)
 }
 
 /// The **FS-3** stop-hang duration, capped at [`PG_CONTROL_TIMEOUT`]; `None` when
