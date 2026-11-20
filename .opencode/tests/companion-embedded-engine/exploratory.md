@@ -34,3 +34,20 @@
   switching to `cpu` then `Start companion engine` must recover; (b) model files **missing** —
   the control must be **absent** (only `Download model files`). Does a change to the persist /
   branch logic ever re-hide the control in case (a)? That is the AC-25 dead end returning.
+
+## Probes added by Spec #3180 (launch auto-start / in-flight state)
+
+- Probe: quit the app DURING the launch start (model still loading) — is teardown bounded, is the
+  engine thread joined/abandoned cleanly, and does the next launch start cleanly with no orphan
+  process (`Get-Process -Name fredo,llama-server`)?
+- Probe: a `llama-server-status` push that lands BEFORE the webview's health listener mounts (a very
+  fast start) — does the line still converge within one poll, or stay stale forever?
+- Probe: `stop_llama_server` issued DURING the launch start (a user racing the auto-start) — a clean
+  stop, a typed `busy`, or a double start? Record the ordering and whether exactly one engine ends up
+  loaded.
+- Probe: a persisted `gpu` mode on a CPU-only host (no force seam) — does the launch start fail typed
+  `gpuUnavailable` (with remedy) rather than silently degrade to CPU?
+- Probe: remote/edge — the model files are removed WHILE the launch start is loading — typed
+  `ModelMissing`/`modelLoadFailed` surfaced with a remedy, or a raw library string?
+- Probe: two consecutive cold launches with `cpu` persisted — is the hydration wait honoured on BOTH
+  (the reported `backendMode`/`backend` never shows the pre-hydration default)?
