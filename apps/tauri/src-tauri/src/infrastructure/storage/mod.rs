@@ -134,6 +134,16 @@ impl SettingsStore {
         Ok(self.cache.get(key))
     }
 
+    /// Whether [`Self::hydrate`] has finished (or failed and settled).
+    ///
+    /// A consumer that must read a PERSISTED value synchronously (the launch
+    /// auto-start resolving the backend mode / models dir) waits on this before
+    /// it reads, so it can never act on the pre-hydration default
+    /// (Spec #3180 ST-2).
+    pub fn is_hydrated(&self) -> bool {
+        self.hydrated.load(Ordering::SeqCst)
+    }
+
     /// Write one value: update the cache immediately, then durably upsert into
     /// PostgreSQL. Before hydration the write is buffered and flushed by
     /// [`Self::hydrate`] (R-2.2/R-2.3).
@@ -410,6 +420,17 @@ mod tests {
             store.cached_get("test.buffered_key").unwrap(),
             Some("post-hydration".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn is_hydrated_flips_only_after_hydrate_settles() {
+        // Spec #3180 ST-2: the launch auto-start gates on this flag, so it must
+        // be false before hydrate and true afterwards — even on a no-pool
+        // hydrate (which settles on defaults rather than failing the boot).
+        let (_dir, store) = make_store();
+        assert!(!store.is_hydrated());
+        store.hydrate().await.expect("hydrate must not fail the boot");
+        assert!(store.is_hydrated());
     }
 
     #[tokio::test]

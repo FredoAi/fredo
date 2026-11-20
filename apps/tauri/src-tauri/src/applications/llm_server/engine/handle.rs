@@ -49,6 +49,13 @@ pub const ENGINE_COMMAND_CAPACITY: usize = 8;
 pub struct EngineStatusSnapshot {
     /// The engine is loaded and able to serve.
     pub loaded: bool,
+    /// A start is IN FLIGHT (Spec #3180 ST-2).
+    ///
+    /// Published `true` BEFORE a `Start` command reaches the engine thread and
+    /// cleared by the terminal snapshot, so a status read during a (up to
+    /// [`DEFAULT_START_BUDGET`]) model load reports "starting" rather than
+    /// "not running". Never the same thing as `!loaded`: idle is neither.
+    pub starting: bool,
     /// The typed failure of the most recent start, if it failed.
     pub last_error_code: Option<CompanionEngineErrorCode>,
     /// Curated detail for the most recent failure.
@@ -144,6 +151,34 @@ impl CompanionEngineHandle {
         Arc::clone(&self.slot)
     }
 
+    /// Whether a start is already in flight or an engine is already loaded.
+    ///
+    /// The launch auto-start (Spec #3180 ST-2) consults this before it requests
+    /// a start so a SECOND concurrent `Start` can never be queued behind the one
+    /// in flight — the engine thread is single-flight and the slot is the ONE
+    /// truthful source for both states.
+    pub fn is_starting_or_loaded(&self) -> bool {
+        let guard = match self.slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.snapshot.starting || guard.snapshot.loaded
+    }
+
+    /// Set the in-flight `starting` flag on the shared snapshot.
+    ///
+    /// Only the ONE boolean is written, so everything else the slot carries (a
+    /// previous load's device set, the last typed failure) survives the
+    /// transition. A poisoned lock is recovered rather than propagated: the flag
+    /// is a display echo, never a value correctness depends on.
+    fn record_starting(&self, starting: bool) {
+        let mut guard = match self.slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.snapshot.starting = starting;
+    }
+
     /// Request a bounded start and wait for the terminal outcome.
     ///
     /// Sends the `Start` command, then waits on the reply channel up to the
@@ -168,7 +203,13 @@ impl CompanionEngineHandle {
         let Some(commands) = self.commands.as_ref() else {
             return CompanionEngineStartResult::failure(CompanionEngineErrorCode::BackendInitFailed);
         };
+        // Publish the in-flight flag BEFORE the command is sent: the model load
+        // can run for up to `DEFAULT_START_BUDGET`, and a status read in that
+        // window must report `starting`, never "not running" (Spec #3180 ST-2).
+        self.record_starting(true);
         if let Err(error) = commands.try_send(EngineCommand::Start(request)) {
+            // Nothing reached the engine thread, so no start is in flight.
+            self.record_starting(false);
             return match error {
                 TrySendError::Full(_) => {
                     CompanionEngineStartResult::failure(CompanionEngineErrorCode::Busy)
@@ -178,10 +219,15 @@ impl CompanionEngineHandle {
                 }
             };
         }
-        match reply_rx.recv_timeout(self.budget) {
+        let outcome = match reply_rx.recv_timeout(self.budget) {
             Ok(outcome) => outcome,
             Err(_) => CompanionEngineStartResult::failure(CompanionEngineErrorCode::StartTimeout),
-        }
+        };
+        // The terminal outcome is known here: the engine thread's own publish is
+        // racy with this return, so the in-flight flag is cleared on THIS side
+        // too. Both writers set the same value, so the order does not matter.
+        self.record_starting(false);
+        outcome
     }
 
     /// Request a stop (best-effort; lifecycle commands are rare).
@@ -195,6 +241,7 @@ impl CompanionEngineHandle {
         }
         if let Ok(mut slot) = self.slot.lock() {
             slot.snapshot.loaded = false;
+            slot.snapshot.starting = false;
         }
     }
 
@@ -320,5 +367,97 @@ mod tests {
         );
         drop(guard);
         handle.stop();
+    }
+
+    // ── Spec #3180 ST-2: the in-flight `starting` state ──────────────────────
+
+    /// `starting` brackets a start: it is published BEFORE the command reaches
+    /// the engine thread, and the terminal snapshot clears it.
+    ///
+    /// The worker below stands in for the engine thread so the in-flight window
+    /// is deterministic (a real load would be racy to observe): the command is
+    /// only read AFTER `start()` recorded the flag, so the handshake proves the
+    /// publication ordering, not a timing coincidence.
+    #[test]
+    fn a_start_publishes_starting_before_the_command_and_clears_it_after() {
+        let (commands, receiver) = mpsc::sync_channel(ENGINE_COMMAND_CAPACITY);
+        let slot = Arc::new(Mutex::new(EngineSlot::default()));
+        let handle = Arc::new(CompanionEngineHandle {
+            commands: Some(commands),
+            slot: Arc::clone(&slot),
+            thread: Mutex::new(None),
+            budget: Duration::from_secs(5),
+        });
+
+        let (seen_tx, seen_rx) = mpsc::sync_channel::<()>(1);
+        let (finish_tx, finish_rx) = mpsc::sync_channel::<()>(1);
+        let worker_slot = Arc::clone(&slot);
+        let worker = thread::spawn(move || {
+            let EngineCommand::Start(request) = receiver.recv().expect("a start command") else {
+                panic!("expected a Start command");
+            };
+            let _ = seen_tx.send(());
+            let _ = finish_rx.recv();
+            let _ = request.reply.send(CompanionEngineStartResult::failure(
+                CompanionEngineErrorCode::ModelMissing,
+            ));
+            // The terminal snapshot the engine thread publishes.
+            let mut guard = worker_slot.lock().expect("worker slot");
+            guard.snapshot = EngineStatusSnapshot::default();
+        });
+
+        let paths = paths::EnginePaths {
+            model: std::path::PathBuf::from("C:/definitely/not/a/model.gguf"),
+            mmproj: std::path::PathBuf::new(),
+            mtp: std::path::PathBuf::new(),
+            log: None,
+        };
+        let starter = Arc::clone(&handle);
+        let start_thread = thread::spawn(move || starter.start(paths, CompanionBackendMode::Cpu));
+
+        seen_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the engine thread saw the start");
+        assert!(
+            handle.is_starting_or_loaded(),
+            "an in-flight start must be visible to the launch guard"
+        );
+        assert!(
+            slot.lock().expect("slot").snapshot.starting,
+            "`starting` must be true while the start is in flight"
+        );
+
+        let _ = finish_tx.send(());
+        let outcome = start_thread.join().expect("the start thread must not panic");
+        assert!(!outcome.success);
+        worker.join().expect("the worker must not panic");
+        assert!(
+            !slot.lock().expect("slot").snapshot.starting,
+            "the terminal snapshot must clear `starting`"
+        );
+        assert!(!handle.is_starting_or_loaded());
+    }
+
+    /// The launch guard covers BOTH a load in flight and an already-loaded
+    /// engine, so a second start can never be sent behind the first.
+    #[test]
+    fn the_start_guard_covers_a_load_in_flight_and_a_loaded_engine() {
+        let handle = CompanionEngineHandle::spawn();
+        assert!(!handle.is_starting_or_loaded(), "a fresh handle is idle");
+        {
+            let slot = handle.slot();
+            let mut guard = slot.lock().expect("slot");
+            guard.snapshot.starting = true;
+        }
+        assert!(handle.is_starting_or_loaded(), "in flight ⇒ guarded");
+        {
+            let slot = handle.slot();
+            let mut guard = slot.lock().expect("slot");
+            guard.snapshot.starting = false;
+            guard.snapshot.loaded = true;
+        }
+        assert!(handle.is_starting_or_loaded(), "loaded ⇒ guarded");
+        handle.stop();
+        assert!(!handle.is_starting_or_loaded(), "stopped ⇒ not guarded");
     }
 }
