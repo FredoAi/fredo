@@ -222,7 +222,7 @@ fredo ingest [--data-dir <PATH>] [--pg-data-dir <PATH>] [--lock-dir <PATH>] [--g
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--data-dir` | OS app-data dir | Override the resolved app-data dir (`FREDO_DATA_DIR`) |
-| `--pg-data-dir` | `<data-dir>/postgres` | Override the PostgreSQL data dir (`FREDO_PG_DATA_DIR`) |
+| `--pg-data-dir` | `<data-dir>/postgres/cluster` — or the legacy `<data-dir>/postgres` when it already holds a cluster (`postgresql.conf` present) | Override the PostgreSQL cluster data dir (`FREDO_PG_DATA_DIR`). The flag/env always wins verbatim; by default the postmaster log lives in the sibling `<data-dir>/postgres/log` (under an override, `<override>/log`) |
 | `--lock-dir` | `<data-dir>` | Directory holding the exclusive `postgres.lock` + the headless descriptor (`FREDO_PG_LOCK_DIR`) |
 | `--grpc-port` | `4317` | OTLP gRPC receiver port (`FREDO_INGEST_GRPC_PORT`) |
 | `--http-port` | `4318` | OTLP HTTP receiver port (`FREDO_INGEST_HTTP_PORT`) |

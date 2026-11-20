@@ -281,8 +281,15 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
   // aggregate provides (`telemetry → llamaServer → companionModel → postgres`);
   // the UI never re-sorts them.
   const overallWord = OVERALL_STATE_WORD[health.overall];
+  // #3180 ST-4 — a `down` row always names its next step: append the remedy to
+  // the composed accessible label for down rows that carry one. The raw
+  // `technicalDetail` is deliberately NOT part of the polite live label (it
+  // stays reachable as rendered text + the native `title`).
   const healthLabel = `Fredo health: ${overallWord} — ${health.subsystems
-    .map((line) => `${line.label}: ${SUBSYSTEM_STATE_WORD[line.state]}`)
+    .map((line) => {
+      const stateWord = `${line.label}: ${SUBSYSTEM_STATE_WORD[line.state]}`;
+      return line.state === 'down' && line.remedy ? `${stateWord} — ${line.remedy}` : stateWord;
+    })
     .join('; ')}`;
 
   // Keyboard-hints row + the dot-grid accent thumb reveal ONLY in the engaged state.
@@ -447,7 +454,10 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
             >
               {time}
             </Text>
-            <Tooltip.Root positioning={{ placement: 'bottom' }} openDelay={150} closeDelay={0}>
+            {/* `closeDelay` 200 ms (#3180 ST-4): a down row can grow to three
+                lines, so the remedy copy survives the pointer leaving the 16px
+                trigger. Interaction model unchanged (hover/focus only). */}
+            <Tooltip.Root positioning={{ placement: 'bottom' }} openDelay={150} closeDelay={200}>
               <Tooltip.Trigger asChild>
                 <Box
                   as="span"
@@ -526,37 +536,94 @@ export const LauncherChrome: React.FC<LauncherChromeProps> = ({
                           {overallWord}
                         </Text>
                       </Box>
-                      {health.subsystems.map((line) => (
-                        <Box
-                          key={line.id}
-                          data-testid={`health-line-${line.id}`}
-                          data-health-state={line.state}
-                          display="flex"
-                          alignItems="center"
-                          gap="6px"
-                          flexWrap="wrap"
-                          minWidth="0"
-                        >
+                      {health.subsystems.map((line) => {
+                        const stateWord = SUBSYSTEM_STATE_WORD[line.state];
+                        // Presentational de-dupe (#3180 ST-4): a neutral row already
+                        // says "Not set up" / "Checking" as its state word, so the
+                        // detail phrase is only rendered when it adds information.
+                        const showDetail = line.detail !== stateWord;
+                        return (
                           <Box
-                            as="span"
-                            aria-hidden="true"
-                            width="8px"
-                            height="8px"
-                            borderRadius="50%"
-                            flexShrink={0}
-                            bg={healthToken(line.state)}
-                          />
-                          <Text color="var(--text-primary)" fontWeight={500} whiteSpace="normal">
-                            {line.label}
-                          </Text>
-                          <Text color="var(--text-secondary)" fontWeight={300} whiteSpace="normal">
-                            {SUBSYSTEM_STATE_WORD[line.state]}
-                          </Text>
-                          <Text color="var(--text-secondary)" fontWeight={300} whiteSpace="normal">
-                            {line.detail}
-                          </Text>
-                        </Box>
-                      ))}
+                            key={line.id}
+                            data-testid={`health-line-${line.id}`}
+                            data-health-state={line.state}
+                            display="flex"
+                            flexDirection="column"
+                            gap="4px"
+                            minWidth="0"
+                          >
+                            {/* The shipped inline scan line: dot · label · state word · detail. */}
+                            <Box
+                              display="flex"
+                              alignItems="center"
+                              gap="6px"
+                              flexWrap="wrap"
+                              minWidth="0"
+                            >
+                              <Box
+                                as="span"
+                                aria-hidden="true"
+                                width="8px"
+                                height="8px"
+                                borderRadius="50%"
+                                flexShrink={0}
+                                bg={healthToken(line.state)}
+                              />
+                              <Text color="var(--text-primary)" fontWeight={500} whiteSpace="normal">
+                                {line.label}
+                              </Text>
+                              <Text
+                                color="var(--text-secondary)"
+                                fontWeight={300}
+                                whiteSpace="normal"
+                              >
+                                {stateWord}
+                              </Text>
+                              {showDetail && (
+                                <Text
+                                  color="var(--text-secondary)"
+                                  fontWeight={300}
+                                  whiteSpace="normal"
+                                >
+                                  {line.detail}
+                                </Text>
+                              )}
+                            </Box>
+                            {/* The next step (down rows) — wraps, never truncated. */}
+                            {line.remedy && (
+                              <Text
+                                paddingLeft="14px"
+                                color="var(--text-primary)"
+                                fontWeight={400}
+                                lineHeight="1.5"
+                                whiteSpace="normal"
+                                overflowWrap="anywhere"
+                                minWidth="0"
+                              >
+                                {line.remedy}
+                              </Text>
+                            )}
+                            {/* Raw backend evidence — mono, muted, single ellipsised line. */}
+                            {line.technicalDetail && (
+                              <Text
+                                paddingLeft="14px"
+                                fontFamily="mono"
+                                fontSize="10px"
+                                lineHeight="1.4"
+                                color="var(--text-secondary)"
+                                whiteSpace="nowrap"
+                                overflow="hidden"
+                                textOverflow="ellipsis"
+                                maxWidth="100%"
+                                minWidth="0"
+                                title={line.technicalDetail}
+                              >
+                                {line.technicalDetail}
+                              </Text>
+                            )}
+                          </Box>
+                        );
+                      })}
                     </Box>
                   </Tooltip.Content>
                 </Tooltip.Positioner>

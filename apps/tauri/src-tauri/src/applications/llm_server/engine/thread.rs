@@ -136,6 +136,8 @@ impl EngineState {
     fn snapshot(&self) -> EngineStatusSnapshot {
         EngineStatusSnapshot {
             loaded: true,
+            // The terminal snapshot: no start is in flight once a load landed.
+            starting: false,
             last_error_code: None,
             last_error: None,
             backend: self.backend_kind,
@@ -229,6 +231,8 @@ pub fn run(receiver: Receiver<EngineCommand>, slot: Arc<Mutex<EngineSlot>>) {
                     );
                     let snapshot = EngineStatusSnapshot {
                         loaded: state.is_some(),
+                        // The explicit start settled (successfully or not).
+                        starting: false,
                         last_error_code: Some(code),
                         last_error: Some(detail),
                         backend: state.as_ref().and_then(|s| s.backend_kind),
@@ -373,6 +377,16 @@ fn ensure_started<'s>(
     // records it through the SAME helper — otherwise `backendMode` stayed `Auto`
     // while a lazily started engine actually ran `gpu`.
     super::handle::EngineSlot::record_requested_mode(slot, mode);
+    // Publish the in-flight state BEFORE the load begins, so the LAZY path is as
+    // visible as an explicit start (Spec #3180 ST-2): a status read during the
+    // (up to 120 s) load reports "starting", never "not running".
+    publish(
+        slot,
+        EngineStatusSnapshot {
+            starting: true,
+            ..EngineStatusSnapshot::default()
+        },
+    );
     let (reply, _receiver) = std::sync::mpsc::sync_channel(1);
     let request = StartRequest {
         paths: paths.clone(),
@@ -402,6 +416,8 @@ fn ensure_started<'s>(
             );
             let snapshot = EngineStatusSnapshot {
                 loaded: false,
+                // The lazy start settled with a typed failure.
+                starting: false,
                 last_error_code: Some(code),
                 last_error: Some(detail),
                 backend: None,

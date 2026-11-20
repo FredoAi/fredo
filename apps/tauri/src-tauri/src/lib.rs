@@ -394,6 +394,13 @@ pub fn run() {
             // are `!Send`); commands talk to it through the bounded handle.
             app.manage(applications::llm_server::commands::CompanionEngineState::default());
 
+            // -- Companion launch auto-start (Spec #3180 ST-2) -----------------
+            // A fresh install must be up and healthy without the user finding
+            // the setup step. The start is hydration-gated, model-files-gated,
+            // process-once and SPAWNED: `setup` returns immediately, so boot is
+            // never blocked by the (up to 120 s) model load.
+            applications::llm_server::start_companion_engine_on_launch(app.handle());
+
             // -- Doom native engine state (Spec #3023 ST-2) --------------------
             // The native in-process Doom engine session (exactly-one) lives in
             // this state and is driven via the `applications::doom` commands

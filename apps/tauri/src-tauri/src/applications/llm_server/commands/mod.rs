@@ -11,8 +11,9 @@
 //!
 //! [`LlamaServerStatus`] keeps its EXISTING fields (byte-for-byte wire
 //! stability — AC-26) and carries the ADDITIVE fields `lastErrorCode`,
-//! `backend`, `backendMode`, `devices`, `modelId`, `mtpStats`. Every NEW
-//! optional field is carried as an ABSENT KEY when unset (never an explicit
+//! `backend`, `backendMode`, `devices`, `modelId`, `mtpStats`, and `starting`
+//! (Spec #3180 ST-2: always present, `true` while a start is in flight). Every
+//! NEW optional field is carried as an ABSENT KEY when unset (never an explicit
 //! `null`, NFR-9); the PRE-EXISTING optional fields keep their current
 //! explicit-`null` form.
 //!
@@ -57,6 +58,11 @@ pub mod engine;
 pub struct LlamaServerStatus {
     pub running: bool,
     pub healthy: bool,
+    /// A start is IN FLIGHT (Spec #3180 ST-2). ADDITIVE and ALWAYS PRESENT on
+    /// the wire (never an absent key, never `null`) — like `backendMode` /
+    /// `devices`, so the webview can distinguish an idle engine (`false`) from a
+    /// load that is still running (`true`).
+    pub starting: bool,
     pub port: Option<u16>,
     pub pid: Option<u32>,
     pub config_path: String,
@@ -92,6 +98,7 @@ impl LlamaServerStatus {
         Self {
             running: snapshot.loaded,
             healthy: snapshot.loaded,
+            starting: snapshot.starting,
             // In-process: there is no port and no process id.
             port: None,
             pid: None,
@@ -113,6 +120,7 @@ impl LlamaServerStatus {
         Self {
             running: false,
             healthy: false,
+            starting: false,
             port: None,
             pid: None,
             config_path: String::new(),
@@ -234,6 +242,11 @@ mod tests {
         // The always-present additive fields are present.
         assert_eq!(value["backendMode"], "auto");
         assert_eq!(value["devices"], serde_json::json!([]));
+        assert_eq!(
+            value["starting"],
+            serde_json::json!(false),
+            "`starting` is always present (never an absent key): {value}"
+        );
 
         // The PRE-EXISTING optional fields keep their explicit-null wire form
         // (AC-26 stability): port / pid / lastError serialize as null.
@@ -249,6 +262,7 @@ mod tests {
     fn loaded_status_carries_every_optional_additive_key_with_its_value() {
         let snapshot = super::super::engine::handle::EngineStatusSnapshot {
             loaded: true,
+            starting: false,
             last_error_code: Some(super::super::engine::CompanionEngineErrorCode::GpuUnavailable),
             last_error: Some("no GPU".to_string()),
             backend: Some(CompanionBackendKind::Gpu),
@@ -279,6 +293,7 @@ mod tests {
 
         // The present case: every additive key is present with the right value.
         assert_eq!(value["backend"], "gpu");
+        assert_eq!(value["starting"], serde_json::json!(false));
         assert_eq!(value["lastErrorCode"], "gpuUnavailable");
         assert_eq!(value["modelId"], "gemma-4-E2B-it-qat-UD-Q4_K_XL");
         assert_eq!(value["backendMode"], "gpu");
@@ -295,6 +310,34 @@ mod tests {
         // In-process: port and pid are ALWAYS null, never a number.
         assert!(value["port"].is_null());
         assert!(value["pid"].is_null());
+    }
+
+    /// G-413 wire proof for the new field: `starting` is a SERIALIZED,
+    /// ALWAYS-PRESENT key — `false` while idle and `true` while a start is in
+    /// flight — and the in-flight payload does not claim the engine is running.
+    #[test]
+    fn the_starting_key_is_present_and_true_while_a_start_is_in_flight() {
+        let idle = serde_json::to_value(LlamaServerStatus::idle(CompanionBackendMode::Auto))
+            .expect("serialize idle");
+        assert_eq!(
+            idle.get("starting"),
+            Some(&serde_json::json!(false)),
+            "an idle status must carry `starting: false`: {idle}"
+        );
+
+        let slot = EngineSlot {
+            snapshot: super::super::engine::handle::EngineStatusSnapshot {
+                starting: true,
+                ..Default::default()
+            },
+            mode: CompanionBackendMode::Cpu,
+        };
+        let in_flight = serde_json::to_value(LlamaServerStatus::from_slot(&slot))
+            .expect("serialize in-flight");
+        assert_eq!(in_flight["starting"], serde_json::json!(true));
+        assert_eq!(in_flight["running"], serde_json::json!(false));
+        assert_eq!(in_flight["healthy"], serde_json::json!(false));
+        assert_eq!(in_flight["backendMode"], "cpu");
     }
 
     /// The status surface resolves no model path from a persisted per-file
