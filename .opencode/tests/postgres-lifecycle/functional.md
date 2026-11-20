@@ -232,3 +232,184 @@ ran with the env vars UNSET.
   path (env unset), so this is pre-existing default-path robustness, not a round-2 regression.
   **Needs a dedicated hardening item** (reclaim a stuck survivor / wait for full tree death before
   `pg.start()`).
+
+---
+
+## Spec #3180 — reinstall-safe cluster layout, quarantine recovery, legacy carve-out, typed non-empty cause
+
+> Feature issue **#3180** (two first-run defects on the shipped 0.2.4 artifact). This section
+> **re-scopes F-2** and adds F-20…F-28. Verification policy: **LIVE** — each row is a running-app
+> behaviour. Receipts are live webview / IPC results (`pg_supervisor_status`, the rendered health
+> rows) plus in-repo filesystem receipts under `.opencode/tmp/3180/`; **this feature emits no OTLP
+> producer of its own**, so a `telemetry_spans` query is neither required nor sufficient for these
+> rows (F-15's span leg still governs the suite's row-pipeline invariant when that row is run).
+> Evidence frames are named without image extensions (G-104).
+>
+> **Layout under test (binding names, re-derived from the plan's names block):** cluster
+> `<app_data_dir>/postgres/cluster`; postmaster log `<app_data_dir>/postgres/log/postgres.log`
+> (outside the cluster dir); lock `<app_data_dir>/postgres.lock`; legacy cluster
+> `<app_data_dir>/postgres` used **iff** `postgresql.conf` exists there (the crate's own
+> `is_initialized` predicate). `FREDO_PG_DATA_DIR` still wins: cluster = that dir, log =
+> `<that>/log`. Declared bounds (unchanged, `pg_supervisor/mod.rs:330-336`): control **180 s**,
+> setup **600 s**, start **180 s**, ready **60 s**.
+>
+> **G-440 — one environment, sequential boots.** Every leg runs on the round's ONE isolated env
+> (`dev-env.ps1 -Action Up -Spec 3180 -EnvId <id> -EnvSlot <n> -RequireIsolation`), one boot at a
+> time, each boot carrying the leg's own `-EnvVar` set. Legs that need opposite seam values are
+> SEQUENTIAL boots, never concurrent envs. `-EnvVar` takes ONE comma-delimited argument (repeated
+> flags fail under `powershell -File`); values must not contain a comma. Reuse ONE extracted
+> distribution via `FREDO_PG_INSTALL_DIR=<env-root>/postgres-install` on the scratch-dir legs so
+> each leg does not re-acquire the PostgreSQL archive (acquisition itself is out of scope here).
+>
+> **Fixture root:** `.opencode/tmp/3180/` (in-repo, writable — G-172). Nothing outside the repo is
+> required or read.
+
+### Re-scope — F-2's "non-empty dir ⇒ failed" leg is SUPERSEDED (#3180)
+
+- [ ] **F-2 (RE-SCOPED #3180).** The #2974 round-2 receipt for F-2 drove a *corrupt/non-empty*
+  override dir and got `failed` with `[setup] … initdb: directory not empty`. That is **exactly the
+  defect class #3180 removes**: a non-empty, non-initialised cluster dir is now QUARANTINED by
+  rename and a fresh cluster is initialised (F-22), so that recipe no longer produces `failed` and
+  must not be read as a regression when it goes green.
+  The fail-closed F-2 leg keeps its SHAPE, driven by a genuinely un-recoverable setup instead:
+  `FREDO_PG_DATA_DIR=<residue dir>` + `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1` (F-25) ⇒ `failed` with a
+  structured `[setup]` error, no port/pid, bounded elapsed, teardown complete (0 `postgres.exe`).
+  A non-empty dir WITHOUT the seam ⇒ **F-22 PASS**, never F-2 failure.
+
+### Cases
+
+- [ ] **F-20 (AC-1 / R-1.1, LIVE) — clean profile, DEFAULT layout: initdb runs in `postgres/cluster`, ready within the declared bounds.**
+  - **Data:** `dev-env.ps1 -Action Clean -EnvId <id>`, then
+    `-Action Up -Spec 3180 -EnvId <id> -EnvSlot <n> -RequireIsolation -EnvVar "FREDO_PG_DATA_DIR="`
+    (an empty value unsets the override ⇒ default layout). Predicate: `check_companion_readiness`
+    is irrelevant here; PG only.
+  - **Steps:** poll `pg_supervisor_status` (via
+    `tauri_webview_execute_js`: `(() => __TAURI__.core.invoke('pg_supervisor_status'))()`) until
+    `state` is terminal or the declared bounds elapse; then list `<app-data>/postgres/` and
+    `<app-data>/postgres/cluster/`.
+  - **Expected:** `state:"ready"`; `dataDir` ends `postgres\cluster`; `logPath` ends
+    `postgres\log\postgres.log`; `port`/`pid` populated; elapsed ≤ declared bounds (setup ≤600 s,
+    start ≤180 s, readiness ≤60 s after setup) with no `failed` sample. Directory listing:
+    `postgres\log\postgres.log` exists; `postgres\cluster\postgresql.conf` exists;
+    **`postgres\cluster\log\` does NOT exist** (the app's own log dir is outside the cluster);
+    `postgres\cluster\start.log` MAY exist (crate-owned, written by
+    `postgresql_embedded`'s `pg_ctl --log`) and is harmless **because the next boot skips initdb** —
+    prove that with the edge below.
+  - **Edge (mandatory):** a SECOND boot on the same profile ⇒ `state:"ready"` with the SAME
+    `dataDir` (no `initdb`, no `cluster.rejected-*` sibling). This is the discriminator that a
+    crate-written `start.log` inside an initialised cluster is not residue.
+  - **FAIL:** `dataDir` ends `postgres` (pre-change layout); `failed`; `state:"starting"` past the
+    bound.
+
+- [ ] **F-21 (AC-2.1 / R-2.1, LIVE) — reinstall residue at the OLD layout: ready, and nothing the user left behind is deleted.**
+  - **Data:** create `<scratch>/data/postgres/` holding `start.log` and `log/postgres.log` (byte
+    copies of residue produced by a real earlier run — any earlier boot of this env produces both;
+    copy them after `-Action Down`), plus `<scratch>/lock/postgres.lock` containing garbage text.
+    Boot: `-EnvVar "FREDO_DATA_DIR=<scratch>/data","FREDO_PG_DATA_DIR=","FREDO_PG_LOCK_DIR=<scratch>/lock","FREDO_PG_INSTALL_DIR=<env-root>/postgres-install"`.
+  - **Expected:** `state:"ready"`; `dataDir` = `<scratch>/data/postgres/cluster`; both residue files
+    **still present with unchanged content** (hash before == after); the seeded `postgres.lock` is
+    replaced/cleared (its text is no longer the seeded garbage); **no manual delete step anywhere in
+    the drive transcript**. Elapsed within the declared bounds.
+  - **Edge:** the same residue with the cluster subdir already present and initialised ⇒ second
+    boot reuses it (no `cluster.rejected-*`).
+  - **FAIL:** `failed` with an `initdb … directory not empty` message; any seeded residue file
+    missing or rewritten; the drive required the tester to delete a file (R-2.1's "SHALL NOT require
+    the user to delete anything").
+
+- [ ] **F-22 (AC-2.2 / R-2.2, LIVE) — residue INSIDE the cluster dir ⇒ quarantine by rename, fresh cluster, files preserved.**
+  - **Data:** `<scratch>/quarantine/` holding `start.log` + `log/postgres.log` and **no**
+    `postgresql.conf`; boot with `-EnvVar "FREDO_PG_DATA_DIR=<scratch>/quarantine","FREDO_PG_INSTALL_DIR=<env-root>/postgres-install"`.
+  - **Expected:** `state:"ready"`; `dataDir` = `<scratch>/quarantine` (the override is used
+    verbatim); a sibling `<scratch>/quarantine.rejected-<unix-ts>` exists and contains the ORIGINAL
+    `start.log` + `log/postgres.log` with unchanged bytes; `<scratch>/quarantine/postgresql.conf`
+    now exists. Nothing deleted.
+  - **Edge (paired control — mandatory):** the identical directory booted WITHOUT
+    `FREDO_PG_CLUSTER_QUARANTINE_FAIL` must be `ready`; booted WITH it, F-25. The pair is the
+    discriminator that the seam, not the residue, produced the failure.
+  - **FAIL:** no `*.rejected-*` sibling; a residue file removed; `failed`.
+
+- [ ] **F-23 (AC-2.3 / R-2.3, LIVE) — a stale `postgres.lock` with no live holder never blocks the cluster.**
+  - **Data:** `<scratch>/lock2/postgres.lock` containing a plausible but NON-running PID (e.g.
+    `4000000`) plus garbage; no cluster at the resolved path; boot with
+    `-EnvVar "FREDO_PG_LOCK_DIR=<scratch>/lock2","FREDO_PG_DATA_DIR=<scratch>/lock-cluster","FREDO_PG_INSTALL_DIR=<env-root>/postgres-install"`.
+  - **Expected:** `state:"ready"`; no lock-refusal error; the lock file is replaced/cleared after
+    the boot. **Edge:** a zero-byte lock file and a malformed (non-numeric) lock file both behave
+    identically.
+  - **FAIL:** a refusal, a `failed` state, or the stale file still holding the seeded text after a
+    successful boot.
+
+- [ ] **F-24 (AC-3 / R-3.1 + R-3.2, LIVE) — legacy cluster at the pre-change path is USED, not re-initialised; its rows stay readable.**
+  - **Data producer (in-repo, deterministic):** (1) boot the env once (F-20 shape), persist a known
+    row through the product's own settings plane —
+    `__TAURI__.core.invoke('save_setting', { key: 'llama_server_backend', value: 'cpu' })`; confirm
+    `get_setting('llama_server_backend') === 'cpu'`; (2) `dev-env.ps1 -Action Down -EnvId <id>`;
+    (3) `Copy-Item` the initialised cluster dir to `<scratch>/legacy-data/postgres/` (destination
+    under `.opencode/`); (4) boot with
+    `-EnvVar "FREDO_DATA_DIR=<scratch>/legacy-data","FREDO_PG_DATA_DIR=","FREDO_PG_INSTALL_DIR=<env-root>/postgres-install"`.
+  - **Expected:** `state:"ready"`; `dataDir` = `<scratch>/legacy-data/postgres` — **NOT**
+    `…/postgres/cluster` (the legacy carve-out fired); `postgresql.conf` present with its pre-copy
+    byte length unchanged; **`get_setting('llama_server_backend') === 'cpu'`** (the row written by
+    the earlier version survives — initdb did NOT run, because initdb yields an empty cluster).
+  - **Edge (mandatory discriminator):** a dir at the pre-change path that has `PG_VERSION` but NO
+    `postgresql.conf` is **not** a cluster (crate-predicate parity) ⇒ `dataDir` ends
+    `postgres\cluster` and the boot is fresh. This is the row that proves the predicate is
+    `postgresql.conf`, not `PG_VERSION`.
+  - **Edge:** the same inverted via the override —
+    `FREDO_PG_DATA_DIR=<scratch>/legacy-copy>` (a copy WITH `postgresql.conf`) ⇒ used as-is, row
+    still readable.
+  - **FAIL:** `dataDir` ends `cluster` while a legacy `postgresql.conf` existed; the known row gone;
+    `postgresql.conf` rewritten/shrunk; `*.rejected-*` created for a valid cluster (a valid cluster
+    must never be quarantined).
+
+- [ ] **F-25 (AC-5.1 / R-5.1 + R-5.3, LIVE) — a cluster that cannot be initialised names cause + remedy + technical detail (typed `dataDirNotEmpty`).**
+  - **Data:** `<scratch>/quarantine/` as in F-22, booted WITH
+    `-EnvVar "FREDO_PG_DATA_DIR=<scratch>/quarantine","FREDO_PG_CLUSTER_QUARANTINE_FAIL=1","FREDO_PG_INSTALL_DIR=<env-root>/postgres-install"`.
+  - **Steps:** read the IPC payload, then read the row with the ONE-SHOT recipe (focus
+    `[data-testid="desktop-status-led"]`, wait ~300 ms, read
+    `[data-testid="health-line-postgres"]` + the trigger's `aria-label` in the same `execute_js`
+    call) — focus, not a bare hover.
+  - **Expected (two separate reads — do not conflate them):** (i) from the RAW IPC payload
+    `pg_supervisor_status`: `state:"failed"`, **`failureKind:"dataDirNotEmpty"`** (the new additive
+    member; `null`/absent here means the BACKEND did not emit it — FAIL), `error` non-empty and
+    naming the directory; (ii) from the RENDERED row: `data-health-state="down"` with a cause
+    sentence (the failure-kind copy — an absent cause while the IPC carried the kind means the
+    frontend's closed `isFailureKind` validator dropped the new member at
+    `apps/ui/src/applications/postgres/postgresConfigStore.ts:133`/`:234` — FAIL), a **remedy**
+    naming the next step (the resolved cluster path and move/rename, then restart Fredo), and a
+    **technical detail** equal to the `error` string. Overall `data-health-state="down"` (Postgres
+    is mandatory). Bounded: the failure lands well inside the setup bound, teardown complete (no
+    `postgres.exe` left).
+  - **FAIL:** bare `Down` / `Not available` with no remedy or technical detail; `failureKind` null on
+    the raw payload; a cause sentence missing while the payload carried the kind (the closed
+    validator); a raw library string as the ONLY copy with no next step; an unbounded wait.
+
+- [ ] **F-26 (NFR / G-275 non-vacuity, LIVE) — the three layouts and the quarantine are pinned by ST-1's inline tests.**
+  - **Data:** ST-1's committed `#[cfg(test)]` pins (the three layouts, quarantine-by-rename,
+    `postgresql.conf` parity, the classifier arm, `log_path` derivation). Record = the green CI
+    `rust-validate` run on the tested head SHA plus the non-draft
+    `## Developer ST-1 — verification` comment (the tester's shell may have no `cargo`; a
+    `cargo test --locked` run, disclosed as a runner swap per G-282, is also acceptable evidence).
+  - **Expected:** all pins green. **This row is corroboration only** — the live rows F-20…F-25 are
+    the ground (G-435/G-406: a suite-only claim is never a PASS).
+
+- [ ] **F-27 (regression / #2978 S4, LIVE) — the relocated postmaster log is still written and still tailed.**
+  - **Data:** any `state:"ready"` boot (F-20 or F-21). Read `pg_supervisor_status.logPath` and the
+    shipped `pg_server_log_tail`.
+  - **Expected:** `logPath` = `<log dir>/postgres.log` (default layout:
+    `<app-data>/postgres/log/postgres.log`; override: `<override>/log/postgres.log`); that file
+    exists and is non-empty; the tail returns its last lines. The pre-change rule derived the tail
+    from the DATA dir, so a stale derivation points inside `cluster/` and returns nothing.
+  - **FAIL:** `logPath` inside `cluster/`; tail empty while the file has content.
+
+- [ ] **F-28 (regression / no destructive recovery, LIVE + STATIC) — quarantine never deletes, and the destructive paths are untouched.**
+  - **Data:** the post-F-22 state; plus a static read of `pg_database_reset` and the consent-gated
+    reset banner diff.
+  - **Expected:** the `*.rejected-*` sibling's file inventory equals the seeded inventory (same
+    names, same bytes); no code hunk touches `pg_database_reset` or the reset-banner consent flow;
+    `FREDO_PG_DATA_DIR` semantics stay byte-identical (the override is used verbatim, log at
+    `<override>/log`).
+  - **FAIL:** a deletion; a reset/banner hunk; an override value normalised/rewritten.
+
+- [ ] **N-3180 (non-functional):** every leg time-bounded (no unbounded wait, no hang — G-263);
+  `cargo check --locked` zero warnings and `pnpm --filter @fredo/ui build` clean (record = CI on the
+  tested head SHA); nothing left running after `-Action Down` (0 `postgres.exe`).
