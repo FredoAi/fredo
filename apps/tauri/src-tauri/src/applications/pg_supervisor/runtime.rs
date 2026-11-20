@@ -464,6 +464,16 @@ fn build_settings(
     settings
 }
 
+/// The three filesystem roots a [`PgRuntime`] is assembled from (Spec #3180
+/// ST-1-ci1). Grouping them keeps [`PgRuntime::assemble`] within clippy's
+/// argument limit without changing any constructor's argument list or the
+/// resulting settings.
+struct SettingsPaths<'a> {
+    data_dir: &'a Path,
+    install_dir: &'a Path,
+    log_dir: &'a Path,
+}
+
 impl PgRuntime {
     /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`, or
     /// the **FS-1** [`super::PG_DATA_DIR_ENV`] override when set; install dir
@@ -482,9 +492,11 @@ impl PgRuntime {
         // the ONE `app_data_dir` through the shared rules, so they can never
         // diverge (the log is a SIBLING of the cluster, never inside it).
         Self::assemble(
-            &super::resolve_data_dir(app_data_dir),
-            &super::resolve_install_dir(app_data_dir),
-            &super::resolve_log_dir(app_data_dir),
+            SettingsPaths {
+                data_dir: &super::resolve_data_dir(app_data_dir),
+                install_dir: &super::resolve_install_dir(app_data_dir),
+                log_dir: &super::resolve_log_dir(app_data_dir),
+            },
             password,
             kill,
             pg_stop_with_env_hook,
@@ -530,9 +542,11 @@ impl PgRuntime {
         config: &PgSupervisorConfig,
     ) -> Self {
         Self::assemble(
-            data_dir,
-            install_dir,
-            log_dir,
+            SettingsPaths {
+                data_dir,
+                install_dir,
+                log_dir,
+            },
             password,
             kill_pid_tree,
             pg_stop_with_env_hook,
@@ -556,7 +570,18 @@ impl PgRuntime {
         stop: StopFn,
     ) -> Self {
         let log_dir = data_dir.join(super::PG_LOG_SUBDIR);
-        Self::assemble(data_dir, install_dir, &log_dir, password, kill, stop, 0, None)
+        Self::assemble(
+            SettingsPaths {
+                data_dir,
+                install_dir,
+                log_dir: &log_dir,
+            },
+            password,
+            kill,
+            stop,
+            0,
+            None,
+        )
     }
 
     /// Assemble a runtime from explicit dirs, seams, bind `port`, and an optional
@@ -565,21 +590,19 @@ impl PgRuntime {
     /// byte-identical to the pre-ST-2 path; [`Self::with_config`] passes the
     /// persisted config's port + verbosity.
     fn assemble(
-        data_dir: &Path,
-        install_dir: &Path,
-        log_dir: &Path,
+        paths: SettingsPaths<'_>,
         password: String,
         kill: KillTreeFn,
         stop: StopFn,
         port: u16,
         log_min_messages: Option<&str>,
     ) -> Self {
-        let data_dir = data_dir.to_path_buf();
-        let install_dir = install_dir.to_path_buf();
+        let data_dir = paths.data_dir.to_path_buf();
+        let install_dir = paths.install_dir.to_path_buf();
         let settings = build_settings(
             &data_dir,
             &install_dir,
-            log_dir,
+            paths.log_dir,
             password,
             port,
             log_min_messages,
