@@ -30,9 +30,9 @@
 > permission is unconditional) and quote the lines into the verdict; every *executing* step is an
 > `RC(...)` command.
 >
-> **One canonical gate run.** The invocation in F-1 (OutDir `.opencode\tmp\release-gate\3181-gate`)
-> is the SINGLE `-Mode gate` run that supplies F-1, F-3(a), F-5–F-13 and F-21. Do not re-run per
-> row. Separately: the manual run (F-19/F-20), the three negative legs (F-14–F-16), the red run
+> **One canonical gate run.** The invocation in F-1 (a fresh OutDir `.opencode\tmp\release-gate\3181-gate-<stamp>`,
+> one per run) is the SINGLE `-Mode gate` run that supplies F-1, F-3(a), F-5–F-13 and F-21. Do not
+> re-run per row. Separately: the manual run (F-19/F-20), the three negative legs (F-14–F-16), the red run
 > (F-22), and the **REQUIRED** CSP-revert bundle build + gate (F-15b, **last**).
 >
 > **Serving state:** the spec branch tip at the round's tested head SHA. Record `git rev-parse HEAD`
@@ -69,7 +69,7 @@
 ## AC1 — wired before publishing
 
 - [ ] **F-1 (REQ-1.1, the canonical run drives the PRODUCED installer).**
-  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.4_x64-setup.exe' -Mode gate -OutDir '.opencode\tmp\release-gate\3181-gate'")`;
+  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.4_x64-setup.exe' -Mode gate -OutDir '.opencode\tmp\release-gate\3181-gate-<stamp>'")`;
   then `RC("Get-Item -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.4_x64-setup.exe'")`
   and `RC("Get-FileHash -Algorithm SHA256 -LiteralPath 'apps\tauri\src-tauri\target\release\bundle\nsis\Fredo_0.2.4_x64-setup.exe'")`.
   - **Expected:** `EXITCODE=0`; `GATE_INSTALLER=` names that exact path; `receipt.installer.sha256`
@@ -81,7 +81,7 @@
     installer (`LastWriteTime` before this round's build start) ⇒ **FAIL** (G-425). A differing
     stem with the `0.2.4` version segment ⇒ record the stem, continue — do not fail on the stem.
   - **Evidence:** POSTED `## Tests Runs` quotes `bytes=`, `sha256=`, `mtime=`, `GATE_INSTALLER=`;
-    `.opencode/tmp/release-gate/3181-gate/receipt.json`.
+    the run's `OUTDIR=` and its `receipt.json`.
 
 - [ ] **F-2 (REQ-1.2, the gate step sits after payload verify and before the only draft publish).**
   Five separate calls:
@@ -127,15 +127,22 @@
 
 ## AC2 — the seven assertions in one pass
 
-- [ ] **F-5 (REQ-2.0, one pass, one verdict, one receipt).** The F-1 run plus
-  `RC("Get-ChildItem -LiteralPath '.opencode\tmp\release-gate\3181-gate' -File")`.
-  - **Expected:** exactly **one** `VERDICT=PASS` line in `gate.log`; exactly one `receipt.json` in
-    the OutDir root; `receipt.checks[].id` contains each of `REQ-2.1`…`REQ-2.7` exactly once, all
-    `ok: true`; `receipt.mode="gate"`; `receipt.exitCode` equals `EXITCODE=`; `receipt.errors` empty
-    or absent; `receipt.durationSeconds` present.
+- [ ] **F-5 (REQ-2.0, one pass, one verdict, one receipt, in a FRESH stamped OutDir).** The F-1 run
+  (which now takes a fresh `3181-gate-<stamp>` OutDir, one per run) plus
+  `RC("Get-ChildItem -LiteralPath '<the OUTDIR= the run recorded>' -File")`.
+  - **Expected:** the harness picks a **fresh stamped** OutDir per run and records it once as
+    `OUTDIR=` in `gate.log`; exactly **one** `VERDICT=PASS` line in `gate.log`; exactly one
+    `receipt.json` **in the directory named by `OUTDIR=`**; `receipt.checks[].id` contains each of
+    `REQ-2.1`…`REQ-2.7` exactly once, all `ok: true`; `receipt.mode="gate"`; `receipt.exitCode`
+    equals `EXITCODE=`; `receipt.errors` empty or absent; `receipt.durationSeconds` present.
   - **Edge:** two receipts ⇒ **FAIL** (not one pass); exit 0 with `ok: false` ⇒ **FAIL**; exit 0
-    with `verdict != PASS` ⇒ **FAIL**; a missing clause id ⇒ **FAIL**.
-  - **Evidence:** POSTED `## Tests Runs` quotes `VERDICT=` + the seven `checks[]` entries.
+    with `verdict != PASS` ⇒ **FAIL**; a missing clause id ⇒ **FAIL**; an **unusable/locked** OutDir
+    (the harness cannot create/write/delete a probe file or clear a stale run dir) ⇒
+    `GATE_REFUSED:reason=outdir-unusable|outdir-locked detail=<path>:<error>`, exit **2** — a
+    **REFUSED** (`NOT RUN — named precondition`), **never** a silent reuse of a stale tree and
+    never a PASS.
+  - **Evidence:** POSTED `## Tests Runs` quotes `OUTDIR=`, `VERDICT=` and the seven `checks[]`
+    entries.
 
 - [ ] **F-6 (REQ-2.1, extraction with no elevation and no dev toolchain).** Read `gate.log` and
   `run-fresh/launch-report.log` from the F-1 run.
@@ -194,22 +201,40 @@
   - **Evidence:** POSTED `## Tests Runs` quotes the `CHECK REQ-2.3` line **and the `SURFACE_RECT=`
     line verbatim** (the live-receipt token); `run-fresh/cdp.json`.
 
-- [ ] **F-9 (REQ-2.4 fresh, DB reaches `ready` in the bound).** Read `run-fresh/cdp.json`.
-  - **Expected:** `db.state="ready"` within `-DbReadySecs` (180); `db.dataDir` is the fresh run's
-    dir; `db.port` and `db.pid` present; no `DB_NOT_READY:fresh`.
-  - **Edge:** `disabled`/`starting` at the bound ⇒ `DB_NOT_READY:fresh` + exit 1; a bound expiring
-    is a named failure, never a hang.
-  - **Evidence:** POSTED `## Tests Runs` quotes the `db` object + the REQ-2.4 check line.
+- [ ] **F-9 (REQ-2.4 fresh, DB reaches `ready` in the bound, proven ISOLATED to the run dir).** Read
+  `run-fresh/cdp.json` and the `DB_EFFECTIVE_DIR=fresh=` / `DB_ISOLATION=` lines; cross-check the app's
+  own `pg_supervisor_status` `dataDir`.
+  - **Expected:** `db.state="ready"` within `-DbReadySecs` (180, counted only from a ready document);
+    `db.dataDir` read from the product's `pg_supervisor_status` **EQUALS** the probe's
+    `FREDO_PG_DATA_DIR` verbatim — `<OUTDIR>\run-fresh\postgres\cluster`; the harness prints
+    `DB_EFFECTIVE_DIR=fresh=<that path>` and `DB_ISOLATION=isolated`; `db.port` and `db.pid` present;
+    no `DB_NOT_READY:fresh`.
+  - **Edge:** a `db.dataDir` equal to the shared OS profile `%APPDATA%\com.fredo.app\postgres\cluster`
+    ⇒ `GATE_REFUSED:reason=db-isolation-shared` (G-449 — the product's supervisor resolved the OS
+    app-data dir rather than the `FREDO_PG_DATA_DIR` seam), exit **2**, `NOT RUN — named
+    precondition` — **never** a PASS and **never** a `DB_NOT_READY`; any other non-equal value ⇒
+    `GATE_REFUSED:reason=db-isolation-mismatch expected=<e> observed=<o>` + exit 2. `disabled`/
+    `starting` at the bound ⇒ `DB_NOT_READY:fresh` + exit 1; a bound expiring is a named failure,
+    never a hang.
+  - **Evidence:** POSTED `## Tests Runs` quotes the `db` object, the `DB_EFFECTIVE_DIR=fresh=` +
+    `DB_ISOLATION=isolated` lines, and the REQ-2.4 check line.
 
-- [ ] **F-10 (REQ-2.4 dirty, `ready` + `<cluster>.rejected-*` sibling).** Read `run-dirty/cdp.json`
-  and the `QUARANTINE_EVIDENCE=` line.
-  - **Expected:** `db.state="ready"` within the bound; a `<cluster>.rejected-<unix_ts>` sibling under
-    `<DataDir>/postgres/` containing the seeded `start.log` (rename, never delete —
-    `cluster_dir.rs:48-53`); no `DB_NOT_READY:dirty`.
+- [ ] **F-10 (REQ-2.4 dirty, `ready` + `<cluster>.rejected-*` sibling, proven ISOLATED).** Read
+  `run-dirty/cdp.json` and the `QUARANTINE_EVIDENCE=` line; cross-check `DB_EFFECTIVE_DIR=dirty=` and
+  `WEBVIEW2_USER_DATA_DIR=`.
+  - **Expected:** `db.state="ready"` within the bound; the seeded residue is
+    `<FREDO_PG_DATA_DIR>\start.log` — i.e. `<OUTDIR>\run-dirty\postgres\cluster\start.log`; a
+    `<OUTDIR>\run-dirty\postgres\cluster.rejected-<unix_ts>` sibling is produced (rename, never
+    delete — `cluster_dir.rs:48-53`); `QUARANTINE_EVIDENCE=` names that sibling; the run records
+    `DB_EFFECTIVE_DIR=dirty=<OUTDIR>\run-dirty\postgres\cluster` and
+    `WEBVIEW2_USER_DATA_DIR=<OUTDIR>\run-dirty\webview2`; no `DB_NOT_READY:dirty`.
   - **Edge:** ready but no sibling ⇒ `DB_QUARANTINE_MISSING`; residue deleted instead of renamed ⇒
     `DB_QUARANTINE_MISSING`; ready with no `QUARANTINE_EVIDENCE=` line ⇒ instrument gap (route to
-    ST-3), not a product PASS.
-  - **Evidence:** POSTED `## Tests Runs` quotes `QUARANTINE_EVIDENCE=<path>` + the dirty `db` object.
+    ST-3), not a product PASS; a **blank frame** (`about:blank`) ⇒ `CDP_UNAVAILABLE:blank-document`
+    (never `UNSTYLED`), the DB clause is skipped and the run is an **instrument re-drive**, not a
+    dirty-DB verdict; a shared-dir `DB_EFFECTIVE_DIR=dirty=` ⇒ `GATE_REFUSED:reason=db-isolation-*`.
+  - **Evidence:** POSTED `## Tests Runs` quotes `QUARANTINE_EVIDENCE=<path>`,
+    `DB_EFFECTIVE_DIR=dirty=<path>`, `WEBVIEW2_USER_DATA_DIR=<path>` and the dirty `db` object.
 
 - [ ] **F-11 (REQ-2.5, one companion turn answered THROUGH THE APP).** Read the `companion` object
   in `run-fresh/cdp.json`.
@@ -239,41 +264,57 @@
     FAIL.
   - **Evidence:** POSTED `## Tests Runs` quotes the three `PORT_` lines.
 
-- [ ] **F-13 (REQ-2.7, the evidence set, on pass AND fail).**
-  `RC("Get-ChildItem -LiteralPath '.opencode\tmp\release-gate\3181-gate' -Recurse -File")`, then per
-  PNG `RC("Get-Item -LiteralPath '<png>'")` and `RC("Get-FileHash -Algorithm SHA256 -LiteralPath '<png>'")`.
-  - **Expected:** `gate.log`, `receipt.json`, `installer-payload/`,
+- [ ] **F-13 (REQ-2.7, the evidence set, on pass AND fail, in the run's recorded OutDir).**
+  Read the canonical run's recorded `OUTDIR=` from `gate.log`, then
+  `RC("Get-ChildItem -LiteralPath '<the OUTDIR=>' -Recurse -File")`, then per PNG
+  `RC("Get-Item -LiteralPath '<png>'")` and `RC("Get-FileHash -Algorithm SHA256 -LiteralPath '<png>'")`.
+  - **Expected:** the evidence set lives under the canonical run's **recorded `OUTDIR=`** (not a
+    hard-coded path): `gate.log`, `receipt.json`, `installer-payload/`,
     `run-fresh/{stdout.log,stderr.log,launch-report.log,cdp.json,screenshot.png}`,
-    `run-dirty/{…same set}`; each PNG ≥ 8 bytes with first 8 bytes `89 50 4E 47 0D 0A 1A 0A`;
-    `Length` + SHA-256 recorded; no `EVIDENCE_MISSING:`.
+    `run-dirty/{…same set}` — **`run-dirty\cdp.json` + its screenshot are required**; each PNG ≥ 8
+    bytes with first 8 bytes `89 50 4E 47 0D 0A 1A 0A`; each PNG's `bytes=`/`sha256=`/IHDR recorded
+    **as prose** (no upload); no `EVIDENCE_MISSING:`.
   - **Edge:** missing/zero-byte/non-PNG ⇒ `EVIDENCE_MISSING:screenshot` + exit 1; a PNG that is a
     white rectangle (S3 false) ⇒ `UNSTYLED:screenshot-frame S3=…` **and the PNG is still written**
-    (the failure evidence); a missing `stdout.log` ⇒ `EVIDENCE_MISSING:stdout`.
-  - **Evidence:** POSTED `## Tests Runs` quotes the recursive listing + each PNG's `bytes=`/`sha256=`.
+    (the failure evidence); a missing `stdout.log` ⇒ `EVIDENCE_MISSING:stdout`; a missing
+    `run-dirty\cdp.json` ⇒ `CDP_UNAVAILABLE`/`EVIDENCE_MISSING:cdp` ⇒ the row **FAILS**.
+  - **Evidence:** POSTED `## Tests Runs` quotes `OUTDIR=`, the recursive listing + each PNG's
+    `bytes=`/`sha256=` (prose).
 
 ## AC3 — fail-closed negative legs, demonstrated
 
-- [ ] **F-14 (REQ-3.1, MissingDll).**
-  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer '<installer>' -Mode negative -Negative MissingDll -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-dll'")`.
-  - **Expected:** `NEGATIVE_EXPECTED=LAUNCH_EXIT:-1073741515`; `NEGATIVE_OBSERVED` contains
-    `LAUNCH_EXIT:-1073741515` (accept `3221225781`); `GATE_EXIT=1`; outer `EXITCODE=0`;
+- [ ] **F-14 (REQ-3.1, MissingDll — the exit code read through the RETAINED handle).**
+  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer '<installer>' -Mode negative -Negative MissingDll -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-dll-<stamp>'")`.
+  - **Expected:** the probe emits `EXIT_CODE=-1073741515` in its transcript (read through the
+    **retained launch handle** — `Get-DetachedChildExitCode`, not a re-opened `Get-Process`), beside
+    `EXIT_CODE_STATUS=observed`; `NEGATIVE_EXPECTED=LAUNCH_EXIT:-1073741515`; `NEGATIVE_OBSERVED`
+    contains `LAUNCH_EXIT:-1073741515` (accept `3221225781`); `GATE_EXIT=1`; outer `EXITCODE=0`;
     `negative-missing-dll/` evidence; the canonical `installer-payload/` tree byte-identical
     afterwards.
   - **Edge:** deleting from the ORIGINAL tree ⇒ **FAIL** (copies only); the gate still starting the
-    app ⇒ `NEGATIVE_NOT_REPRODUCED`; a different code ⇒ `NEGATIVE_WRONG_ERROR`.
-  - **Evidence:** POSTED `## Tests Runs` quotes the three literals + `EXITCODE=`.
+    app ⇒ `NEGATIVE_NOT_REPRODUCED`; a different code ⇒ `NEGATIVE_WRONG_ERROR`; a **missing or
+    unreadable** exit code (`EXIT_CODE_STATUS=unreadable`/`not-exited`, no `EXIT_CODE=`) ⇒
+    `NEGATIVE_INSTRUMENT_FAILURE:<detail>` — **never** `NEGATIVE_WRONG_ERROR` (an instrument that
+    cannot read the code observed nothing about the device under test).
+  - **Evidence:** POSTED `## Tests Runs` quotes `EXIT_CODE=`/`EXIT_CODE_STATUS=` and the three
+    `NEGATIVE_*`/`GATE_EXIT=` literals + `EXITCODE=`.
 
 - [ ] **F-15 (REQ-3.2a, Csp — the in-gate detector control; the CI-executable half of AC3).**
-  `RC("… -Mode negative -Negative Csp -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-csp'")`.
+  `RC("… -Mode negative -Negative Csp -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-csp-<stamp>'")`.
   - **Expected:** the leg induces the 0.2.3 condition in the live document (nonce-bearing `style-src`
-    via `Page.addScriptToEvaluateOnNewDocument` + `Page.reload`); the inner gate emits **both**
+    via `Page.addScriptToEvaluateOnNewDocument` + `Page.reload`); the **generated CSP wrapper invokes
+    the ABSOLUTE `$PSHOME\powershell.exe`** (asserted at write time — no bare `& powershell`, which
+    cannot resolve under the sanitised child `PATH`); the wrapper emits `CSP_POLICY_HOOK_EXIT=<n>`
+    **non-empty and equal to the hook's own exit**; the inner gate emits **both**
     `CSP_VIOLATION:<detail>` **and** `UNSTYLED:<detail>` with `GATE_EXIT=1`; outer `EXITCODE=0`;
     `NEGATIVE_OBSERVED` contains both ids; `negative-csp/` evidence exists.
   - **Edge:** only `UNSTYLED` observed ⇒ the 0.2.3 mechanism was not reproduced ⇒
     `NEGATIVE_WRONG_ERROR` and the leg **FAILS**; a plain `<style>` with no nonce policy is **not**
-    the condition; the shipped installer must be re-asserted unchanged (digest) after the leg.
-  - **Evidence:** POSTED `## Tests Runs` quotes `NEGATIVE_EXPECTED=`, `NEGATIVE_OBSERVED=`,
-    `GATE_EXIT=`, `EXITCODE=` and the inner `CSP_VIOLATION:`/`UNSTYLED:` lines.
+    the condition; an **unrunnable** hook (absolute path missing, `CSP_POLICY_HOOK_EXIT=unrunnable`)
+    ⇒ `NEGATIVE_INSTRUMENT_FAILURE` (an instrument that never ran proves nothing); the shipped
+    installer must be re-asserted unchanged (digest) after the leg.
+  - **Evidence:** POSTED `## Tests Runs` quotes `CSP_POLICY_HOOK_EXIT=`, `NEGATIVE_EXPECTED=`,
+    `NEGATIVE_OBSERVED=`, `GATE_EXIT=`, `EXITCODE=` and the inner `CSP_VIOLATION:`/`UNSTYLED:` lines.
 
 - [ ] **F-15b (REQ-3.2b — bundle-level CSP revert; REQUIRED per the owner directive; runs LAST).**
   In this order: **(1)** copy the installer of record aside to
@@ -287,33 +328,43 @@
   `{"app":{"security":{"dangerousDisableAssetCspModification":false}}}`; **(3)** copy the newly
   produced installer to `.opencode\tmp\release-gate\csp-revert-installer\`; **(4)**
   `RC("… -Installer '.opencode\tmp\release-gate\csp-revert-installer\<setup.exe>' -Mode gate -OutDir '.opencode\tmp\release-gate\3181-csp-revert'")`.
-  - **Expected:** the reverted installer's gate run **exits non-zero** and names
-    `CSP_VIOLATION:<detail>` and/or `UNSTYLED:<detail>`; `receipt.verdict=FAIL` with those ids in
-    `errors[]`; the receipt/skill records the **technical equivalence** — a `--config` overlay
-    deep-merges and cannot delete a key, so `dangerousDisableAssetCspModification: false` means
-    "asset CSP modification is NOT disabled" → Tauri re-injects the nonce into `style-src` → the
-    0.2.3 mechanism exactly; the installer-of-record copy's SHA-256 is **unchanged** at the end.
+  - **Expected:** the reverted installer's gate run **exits non-zero** and, **on a RENDERED
+    document**, names the **PAIR**: `CSP_VIOLATION:<detail>` naming a nonce-bearing `style-src` AND
+    `UNSTYLED:<detail>` with `emotionRules=0`, together with `screenshot.criteria.S1=true`,
+    `readyState=complete`, `href=http://tauri.localhost/`, `bodyChildren>=1`; `receipt.verdict=FAIL`
+    with those ids in `errors[]`; the receipt/skill records the **technical equivalence** — a
+    `--config` overlay deep-merges and cannot delete a key, so
+    `dangerousDisableAssetCspModification: false` means "asset CSP modification is NOT disabled" →
+    Tauri re-injects the nonce into `style-src` → the 0.2.3 mechanism exactly; the
+    installer-of-record copy's SHA-256 is **unchanged** at the end.
   - **Edge:** **not running this row ⇒ FAIL of F-15b** (no `NOT RUN`/disclosure branch; G-435). It
     re-bundles over the shared bundle path (G-446) ⇒ forbidden before F-1…F-22 complete; the bundle
     path then holds the reverted build and the record copy is the artifact of record — say so. The
     gate must never invoke `tauri`/`pnpm` (NF-2): the build is a tester step **outside** the harness.
     An overlay changing any key other than `app.security.dangerousDisableAssetCspModification` ⇒
     **FAIL** (gate relaxation). A receipt claiming a literal **key deletion** ⇒ **FAIL** (the
-    overlay can only deep-merge).
+    overlay can only deep-merge). A blank frame (`about:blank`, `bodyChildren=0`) ⇒ an
+    **instrument re-drive** (`CDP_UNAVAILABLE:blank-document`) — the `UNSTYLED` **cannot** be
+    attributed to the revert, so a run whose frame is blank is **not** a PASS of this row.
   - **Evidence:** POSTED `## Tests Runs` quotes the overlay's content, the build's exit line, the
-    reverted run's `verdict` + `errors[]`, and the unchanged installer-of-record digest.
+    reverted run's `verdict` + `errors[]` + the `CSP_VIOLATION`/`UNSTYLED`/`S1`/`href`/`bodyChildren`
+    literals, and the unchanged installer-of-record digest.
 
-- [ ] **F-16 (REQ-3.3, Database).**
-  `RC("… -Mode negative -Negative Database -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-db'")`.
-  - **Expected:** the leg seeds `<DataDir>/postgres/cluster/start.log` and sets
-    `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1` (`cluster_dir.rs:57`, read at `:266-271`); the inner gate
-    emits `DB_NOT_READY:dirty` within the bound with `GATE_EXIT=1`; outer `EXITCODE=0`;
+- [ ] **F-16 (REQ-3.3, Database — the wedge must reach the run's OWN cluster dir).**
+  `RC("… -Mode negative -Negative Database -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-db-<stamp>'")`.
+  - **Expected:** the leg's probe sets `FREDO_PG_DATA_DIR=<OUTDIR>\negative-database\run-dirty\postgres\cluster`
+    (and seeds `<that>\start.log`), sets `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1`
+    (`cluster_dir.rs:57`, read at `:266-271`); the inner gate reports
+    `DB_EFFECTIVE_DIR=dirty=` **equal to that path** (cross-checked as `NEGATIVE_LEG_EFFECTIVE_DIR=`)
+    and emits `DB_NOT_READY:dirty` within the bound with `GATE_EXIT=1`; outer `EXITCODE=0`;
     `NEGATIVE_OBSERVED` contains `DB_NOT_READY:dirty`.
   - **Edge:** seam not set ⇒ residue quarantined ⇒ gate passes ⇒ `NEGATIVE_NOT_REPRODUCED` (leg
-    FAIL); observed `DB_QUARANTINE_MISSING` ⇒ wrong id; writing into a shared cluster dir ⇒ **FAIL**
-    (per-run `-DataDir` only).
-  - **Evidence:** POSTED `## Tests Runs` quotes the seam line + `NEGATIVE_EXPECTED=`/
-    `NEGATIVE_OBSERVED=`/`GATE_EXIT=`/`EXITCODE=`.
+    FAIL); observed `DB_QUARANTINE_MISSING` ⇒ wrong id; a **shared-dir** `DB_EFFECTIVE_DIR=dirty=`
+    (the `%APPDATA%\com.fredo.app\postgres\cluster` value) ⇒ `NEGATIVE_INSTRUMENT_FAILURE` (the
+    instrument never addressed the device under test); writing into a shared cluster dir (any write
+    under `%APPDATA%`) ⇒ **FAIL**.
+  - **Evidence:** POSTED `## Tests Runs` quotes `NEGATIVE_LEG_EFFECTIVE_DIR=`, the `DB_EFFECTIVE_DIR=dirty=`
+    line, the seam line + `NEGATIVE_EXPECTED=`/`NEGATIVE_OBSERVED=`/`GATE_EXIT=`/`EXITCODE=`.
 
 - [ ] **F-17 (REQ-3.4, negative-mode literals and exit semantics; one class, one id).** Read the
   three receipts from F-14/F-15/F-16 plus
@@ -345,7 +396,7 @@
 ## AC4 — manual entry
 
 - [ ] **F-19 (REQ-4.1, the manual entry runs the identical assertion set).**
-  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer '<installer>' -Mode gate -Manual -OutDir '.opencode\tmp\release-gate\3181-manual'")`.
+  `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer '<installer>' -Mode gate -Manual -OutDir '.opencode\tmp\release-gate\3181-manual-<stamp>'")`.
   - **Expected:** `MANUAL_ENTRY=true`; `EXITCODE=0`; `receipt.manual=true`; `receipt.checks[].id`
     set identical to the canonical run's; `receipt.verdict` identical (`PASS`); top-level key set
     `schemaVersion, mode, manual, startedUtc, durationSeconds, installer, verdict, exitCode, checks,
@@ -432,12 +483,17 @@
 ## Non-functional
 
 - [ ] **F-25 (NF-bounded wall-clock, never a hang).** Read `receipt.durationSeconds` + per-clause
-  timings.
-  - **Expected:** ≤ 2400 s total; launch ≤ 300 s; DB ≤ 180 s/profile; companion ≤ 600 s; no clause
-    exceeded its bound silently.
-  - **Edge:** a bound expiring is that clause's named failure; a run that hangs with no
-    `receipt.json` is a harness **FAIL** — quote its last log line.
-  - **Evidence:** POSTED `## Tests Runs` quotes `durationSeconds` + the bound lines.
+  timings (`BOOT_SETTLE=`, `SETTLE_*=`, the DB bound).
+  - **Expected:** ≤ 2400 s total; launch ≤ 300 s; DB ≤ 180 s/profile **counted only from a ready
+    document**; boot-settle (`Wait-DocumentReady`) ≤ 60 s; per-profile launch settle
+    (`Wait-LaunchSettled`) ≤ 30 s; the derived hook window is
+    `HOOK_WINDOW_SECS = BootSettle(60) + DbReadySecs(180) + 30 = 270` (cap 360); companion ≤ 600 s;
+    no clause exceeded its bound silently.
+  - **Edge:** a bound expiring is that clause's named failure (`CDP_UNAVAILABLE:blank-document`,
+    `GATE_REFUSED:reason=host-not-settled label=<fresh|dirty>`, `DB_NOT_READY:*`); a run that hangs
+    with no `receipt.json` is a harness **FAIL** — quote its last log line.
+  - **Evidence:** POSTED `## Tests Runs` quotes `durationSeconds` + the `HOOK_WINDOW_SECS=` /
+    `BOOT_SETTLE=` / `SETTLE_*=` bound lines.
 
 - [ ] **F-26 (NF-stdlib only, no new dependencies).** Read the three gate files; search them for
   `Install-Module`, `Install-Package`, `npm `, `pnpm `, `npx `, `pip `, `bun `, `Invoke-RestMethod http`.
@@ -501,15 +557,19 @@
     `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR` in that control's transcript.
   - **(B) live induction (no GUI):** write a 16-byte non-PE file
     `.opencode/tmp/release-gate/not-an-installer.exe` from a tmp script, then
-    `RC("… -Mode negative -Negative Database -SkipCompanion -Installer '.opencode\tmp\release-gate\not-an-installer.exe' -OutDir '.opencode\tmp\release-gate\3181-neg-instrument'")`
+    `RC("… -Mode negative -Negative Database -SkipCompanion -Installer '.opencode/tmp/release-gate/not-an-installer.exe' -OutDir '.opencode\tmp\release-gate\3181-neg-instrument-<stamp>'")`
     ⇒ non-zero exit with the instrument-failure class (`NEGATIVE_INSTRUMENT_FAILURE:<detail>` /
-    `GATE_REFUSED`), **never** `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`.
+    `GATE_REFUSED`), **never** `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`. An **extraction
+    refusal** (`NEGATIVE_LEG_EXTRACT=FAIL exit=2`) and a child transcript carrying
+    `RESULT=REFUSED`/`GATE_REFUSED` are the instrument class (the extraction instrument observed
+    nothing about the device under test), **not** a `NEGATIVE_WRONG_ERROR`.
   - **(C) round-1 regression:** the canonical `gate.log` must not classify a child that never ran as
     an observation — a `CHILD … EXIT=1` carrying a binder/stderr diagnostic must not be followed by
     `NEGATIVE_LEG_LOAD=survived` (the round-1 misread) or by `NEGATIVE_OBSERVED=none` treated as
     `NEGATIVE_WRONG_ERROR`.
-  - **Expected:** (A) control `[PASS]` with the id; (B) instrument-failure class + non-zero exit;
-    (C) no misclassification on a child that could not run.
+  - **Expected:** (A) control `[PASS]` with the id; (B) instrument-failure class + non-zero exit —
+    for the non-PE fixture, an extraction refusal, or a `RESULT=REFUSED`/`GATE_REFUSED` child; (C) no
+    misclassification on a child that could not run.
   - **Edge:** `NEGATIVE_OBSERVED=none` **with** a non-zero `GATE_EXIT` and **no** inner named error is
     an **instrument failure**, never `NEGATIVE_WRONG_ERROR` (round 1 misclassified exactly this). A
     leg that silently skips the instrument ⇒ **FAIL** (G-435). A leg that ignores the `-Installer` it

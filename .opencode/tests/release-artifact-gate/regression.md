@@ -112,13 +112,20 @@
     is **strengthened, not weakened** — the ban now covers every gate-owned child runner, not only
     the app launch.
   - **Expected:** `SELFTEST: PASS` with the three original controls (including the inline-handle
-    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`); the probe
+    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`) **and the
+    retained-handle exit-code control `DETACHED-EXIT-CODE`** (assert it by **NAME**, not a guessed
+    ordinal — the round-4 plan literal called it control "6" but the probe **shipped it as control 8**
+    after controls 6/7 were added; the emitted line is `CONTROL 8 - DETACHED-EXIT-CODE` with
+    `DETACHED_CHILD_EXIT=42` / `DETACHED_CHILD_EXIT_STATUS=observed` and `[PASS]`. **Disclosed
+    plan-literal deviation: plan said "6", shipped as control 8; the row pins the NAME.**); the probe
     still calls `Start-DetachedProcess` as its only GUI launch and `Import-Module`s
     `detach-process.psm1`; `detach-process.psm1` carries `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
     `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`; `-CdpPort`/`-CdpProbe` are
     **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath` semantics are unchanged;
     **`-Ports` still accepts the driver's three-port list** and the probe's own self-test covers the
-    port-binding form (`functional.md` F-28) — the round-1 fix must not regress it.
+    port-binding form (`functional.md` F-28) — the round-1 fix must not regress it. **Stream-B gate
+    controls are asserted by NAME only** (`OUTDIR-UNUSABLE`, `DB-ISOLATION-MISMATCH`,
+    `BLANK-FRAME-NOT-ATTRIBUTED`, `HOST-SETTLED`), never by a guessed ordinal.
   - **Edge:** a second spawn path for the app (a `Start-Process`/`Process::Start` outside the
     primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); **any `-NoNewWindow` +
     redirect combination in a gate-owned runner** (the gate, the negative module, the probe, the
