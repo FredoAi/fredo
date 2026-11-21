@@ -527,9 +527,11 @@
   - **(a) the harness self-test carries the spawn control:**
     `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -SelfTest")`
     ⇒ `SELFTEST: PASS`, a control line
-    `CONTROL 25 CHILD-RUNNER-NO-INHERIT - the child runner returns with the grandchild still alive (no inherited handles)` `[PASS]`,
-    and the stdout facts `RUNNER_RETURN_SECONDS=<s>` with `<s>` ≤ 5, `RUNNER_CHILD_ALIVE=True`, and a
-    non-zero `RUNNER_CHILD_PID=`. The child is **never killed** — a kill would mask a leaked handle.
+    `CONTROL CHILD-RUNNER-NO-INHERIT - the child runner returns with the grandchild still alive (no inherited handles)`
+    (source section **25**; the harness prints named controls without ordinals, so assert the NAME),
+    its `[PASS]`, and the stdout facts `RUNNER_RETURN_SECONDS=<s>` with `<s>` ≤ 5,
+    `RUNNER_CHILD_ALIVE=True`, and a non-zero `RUNNER_CHILD_PID=`. The child is **never killed** — a
+    kill would mask a leaked handle.
   - **(b) the inline, pipe-captured, bounded wrapper leg — the human's exact symptom:**
     `RC("powershell -NoProfile -File .opencode/scripts/run-exitcode.ps1 -Command \"powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -SelfTest\"")`
     ⇒ the **full** self-test transcript is printed **and** the wrapper prints `EXITCODE=0`; no
