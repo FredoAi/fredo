@@ -132,6 +132,10 @@
                            parameter-binder error. Also pins the single-port
                            form, the `;` and whitespace separators, and a
                            non-integer token refusal.
+     8 - DETACHED-EXIT-CODE (`cmd /c exit 42` through Start-DetachedProcess) the
+                           retained process handle makes
+                           `Get-DetachedChildExitCode` return the SIGNED exit
+                           code 42 -- the ONE exit-code seam.
      `SELFTEST: PASS` + exit 0 when every control passes.
 
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
@@ -228,6 +232,14 @@
   DESCRIPTION). Needs no artifact, no ports and no model. Exits 0 when every
   control passes, 3 on a control failure.
 
+.PARAMETER DbReadySecs
+  Database-ready bound handed to the -CdpProbe hook as GATE_DB_READY_SECS.
+  Default 180.
+
+.PARAMETER BootSettleSecs
+  Boot-settle bound handed to the -CdpProbe hook as GATE_BOOT_SETTLE_SECS.
+  Default 60.
+
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe apps\tauri\src-tauri\target\release\fredo.exe -Ports 16932,9223 -RequireClosed
 
@@ -264,7 +276,9 @@ param(
   [switch]$ProbeOnly,
   [switch]$SelfTest,
   [int]$CdpPort = 0,
-  [string]$CdpProbe = ''
+  [string]$CdpProbe = '',
+  [int]$DbReadySecs = 180,
+  [int]$BootSettleSecs = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -345,6 +359,18 @@ if (-not $SelfTest) {
 
   if ($WaitSecs -lt 1 -or $WaitSecs -gt 900) {
     Write-Probe "ERROR: -WaitSecs must be 1..900 (got $WaitSecs)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if ($DbReadySecs -lt 1 -or $DbReadySecs -gt 3600) {
+    Write-Probe "ERROR: -DbReadySecs must be 1..3600 (got $DbReadySecs)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if ($BootSettleSecs -lt 1 -or $BootSettleSecs -gt 3600) {
+    Write-Probe "ERROR: -BootSettleSecs must be 1..3600 (got $BootSettleSecs)."
     Write-Probe 'RESULT=REFUSED'
     exit 2
   }
@@ -439,6 +465,26 @@ function Test-TcpPortOpen {
   } finally {
     try { $client.Close() } catch {}
   }
+}
+
+# Ask the OS for an ephemeral loopback port by binding 127.0.0.1:0, then release
+# it. Retries a bounded number of times; returns 0 when no port could be bound.
+# The release gate uses this to hand the launched profile deterministic, free
+# OTLP ingest ports so two runs (or a live dev instance) never collide.
+function Get-FreeTcpPort {
+  param([int]$Attempts = 5)
+  for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+    try {
+      $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+      $listener.Start()
+      $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+      $listener.Stop()
+      return [int]$port
+    } catch {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  return 0
 }
 
 function Get-AllProcesses {
@@ -579,20 +625,27 @@ function Invoke-WindowHook {
     [string]$DataDir,
     [string]$ProbeLogDir,
     [int]$WindowSecs,
-    [string]$Assertions
+    [string]$Assertions,
+    [string]$PgDataDir = '',
+    [int]$DbReadySecs = 180,
+    [int]$BootSettleSecs = 60
   )
 
   if ([string]::IsNullOrWhiteSpace($Assertions)) {
     $Assertions = 'styled,database,companion,screenshot'
   }
 
-  # Binding hook environment (Spec #3181, section A). The child inherits these.
+  # Binding hook environment (Spec #3181, section A; round 4 adds the profile
+  # seams). The child inherits these.
   $env:GATE_EXE = $ExePath
   $env:GATE_CDP_PORT = [string]$CdpPort
   $env:GATE_DATA_DIR = $DataDir
   $env:GATE_LOG_DIR = $ProbeLogDir
   $env:GATE_WINDOW_SECS = [string]$WindowSecs
   $env:GATE_ASSERTIONS = $Assertions
+  $env:GATE_PG_DATA_DIR = $PgDataDir
+  $env:GATE_DB_READY_SECS = [string]$DbReadySecs
+  $env:GATE_BOOT_SETTLE_SECS = [string]$BootSettleSecs
 
   $hookOut = Join-Path $ProbeLogDir 'window-hook-stdout.log'
   $hookErr = Join-Path $ProbeLogDir 'window-hook-stderr.log'
@@ -1088,6 +1141,39 @@ exit 1
       Write-Probe ("  [FAIL] ports-bind control threw: {0}" -f $_.Exception.Message)
       $controlFailures++
     }
+
+    # ---- CONTROL 8 - DETACHED-EXIT-CODE --------------------------------
+    # The ONE exit-code seam (A1): a child is launched through the SAME primitive
+    # the GUI uses, `cmd /c exit 42` exits, and the non-blocking handle read must
+    # return the SIGNED exit code -- never a Process object re-opened by PID.
+    Write-Probe 'CONTROL 8 - DETACHED-EXIT-CODE'
+    try {
+      $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+      $exitChildPid = 0
+      $detachedExit = $null
+      $detachedStatus = 'unreadable'
+      $exitChildPid = Start-DetachedProcess -FilePath $cmdExe -ArgumentString '/c exit 42' -WorkingDirectory '' -StdOutPath '' -StdErrPath ''
+      $exitDeadline = (Get-Date).AddSeconds(15)
+      while ((Get-Date) -lt $exitDeadline) {
+        $exitProbe = Get-DetachedChildExitCode -ProcessId $exitChildPid
+        $detachedStatus = $exitProbe.Status
+        if ($exitProbe.Status -eq 'observed') { $detachedExit = $exitProbe.Code; break }
+        if ($exitProbe.Status -eq 'unreadable') { break }
+        Start-Sleep -Milliseconds 100
+      }
+      Write-Probe "DETACHED_CHILD_EXIT=$detachedExit"
+      Write-Probe "DETACHED_CHILD_EXIT_STATUS=$detachedStatus"
+      if ($detachedStatus -eq 'observed' -and $detachedExit -eq 42) {
+        Write-Probe '  [PASS] the retained handle returns the signed exit code 42'
+      } else {
+        Write-Probe ("  [FAIL] status={0} exit={1} (expected observed 42)" -f $detachedStatus, $detachedExit)
+        $controlFailures++
+      }
+      if ($exitChildPid -gt 0) { Close-DetachedChild -ProcessId $exitChildPid }
+    } catch {
+      Write-Probe ("  [FAIL] detached exit-code control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
   } finally {
     if ($detachChildPid -gt 0) {
       # Deliberately NOT killed: the child must outlive this script, so a leaked
@@ -1184,7 +1270,61 @@ if (-not [string]::IsNullOrWhiteSpace($env:FREDO_DATA_DIR)) {
 } else {
   $appDataDir = ''
 }
+
+# ---- Profile seams (DB / WebView2 / OTLP) ------------------------------------
+# The gate drives a RELEASE profile. Point the product's own override knobs at
+# the run's -DataDir so the cluster, its lock and the WebView2 user data are all
+# inside the profile teardown owns (and the dirty seed at
+# <DataDir>\postgres\cluster\start.log is exactly <FREDO_PG_DATA_DIR>\start.log).
+# The seams apply only when a data dir is supplied; without one the caller is
+# using the real profile and this probe must not create anything in it.
+$pgDataDir = ''
+$pgLockDir = ''
+$webview2Dir = ''
+if (-not [string]::IsNullOrWhiteSpace($env:FREDO_DATA_DIR)) {
+  $profileBase = $env:FREDO_DATA_DIR
+  $pgDataDir = Join-Path (Join-Path $profileBase 'postgres') 'cluster'
+  $pgLockDir = Join-Path $profileBase 'pg-lock'
+  $webview2Dir = Join-Path $profileBase 'webview2'
+  try {
+    New-Item -ItemType Directory -Path $pgDataDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $pgLockDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $webview2Dir -Force | Out-Null
+  } catch {
+    Write-Probe "ERROR: cannot create the profile dirs under ${profileBase}: $($_.Exception.Message)"
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+  $env:FREDO_PG_DATA_DIR = $pgDataDir
+  $env:FREDO_PG_LOCK_DIR = $pgLockDir
+  $env:WEBVIEW2_USER_DATA_FOLDER = $webview2Dir
+}
+
+# Deterministic, FREE OTLP ingest ports, so the launched profile owns them for
+# this run and can never collide with a live dev instance or a prior run.
+$otlpGrpcPort = 0
+$otlpHttpPort = 0
+$otlpOk = $false
+for ($attempt = 0; $attempt -lt 8; $attempt++) {
+  $otlpGrpcPort = Get-FreeTcpPort
+  $otlpHttpPort = Get-FreeTcpPort
+  if ($otlpGrpcPort -gt 0 -and $otlpHttpPort -gt 0 -and $otlpGrpcPort -ne $otlpHttpPort) {
+    $otlpOk = $true
+    break
+  }
+}
+if (-not $otlpOk) {
+  Write-Probe 'ERROR=OTLP_PORTS_UNAVAILABLE'
+  Write-Probe 'RESULT=REFUSED'
+  exit 2
+}
+$env:FREDO_INGEST_GRPC_PORT = "$otlpGrpcPort"
+$env:FREDO_INGEST_HTTP_PORT = "$otlpHttpPort"
+
 Write-Probe "APP_DATA_DIR=$appDataDir"
+Write-Probe "PG_DATA_DIR=$pgDataDir"
+Write-Probe "WEBVIEW2_USER_DATA_DIR=$webview2Dir"
+Write-Probe "OTLP_PORTS=$otlpGrpcPort,$otlpHttpPort"
 
 # ---- -ProbeOnly: the CLI legs alone, no bounded window -----------------------
 # Same leg implementation as the combined run, minus the launch/port/bridge/
@@ -1214,9 +1354,11 @@ $beforePg = Get-PostgresPids
 
 # ---- Launch + bounded observation --------------------------------------------
 $p = $null
+$launchPid = 0
 $launchError = $null
 $appExited = $false
 $appExitCode = $null
+$exitCodeStatus = 'not-exited'
 $elapsedSeconds = 0.0
 $portState = @{}
 $bridgeHits = 0
@@ -1246,7 +1388,7 @@ try {
   # running. A non-zero exit or a timeout becomes a FAILURE= line in the report.
   if (-not [string]::IsNullOrWhiteSpace($CdpProbe)) {
     Write-Phase 'window-hook'
-    $hookResult = Invoke-WindowHook -HookPath $CdpProbe -ExePath $exePath -CdpPort $CdpPort -DataDir $appDataDir -ProbeLogDir $LogDir -WindowSecs $WaitSecs -Assertions $gateAssertions
+    $hookResult = Invoke-WindowHook -HookPath $CdpProbe -ExePath $exePath -CdpPort $CdpPort -DataDir $appDataDir -ProbeLogDir $LogDir -WindowSecs $WaitSecs -Assertions $gateAssertions -PgDataDir $pgDataDir -DbReadySecs $DbReadySecs -BootSettleSecs $BootSettleSecs
     if (-not [string]::IsNullOrWhiteSpace($hookResult.FailureName)) {
       $windowHookFailure = $hookResult.FailureName
     }
@@ -1261,7 +1403,17 @@ try {
     }
   }
   $elapsedSeconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
-  if ($appExited) { $appExitCode = $p.ExitCode }
+  if ($appExited) {
+    # The ONE exit-code read: the retained launch handle (A1). A re-opened
+    # Process object cannot read ExitCode after the detached child exits here.
+    $exitProbe = Get-DetachedChildExitCode -ProcessId $launchPid
+    if ($exitProbe.Status -eq 'observed') {
+      $appExitCode = [int]$exitProbe.Code
+      $exitCodeStatus = 'observed'
+    } else {
+      $exitCodeStatus = 'unreadable'
+    }
+  }
 
   foreach ($port in $probePorts) {
     $portState[$port] = Test-TcpPortOpen -Port $port
@@ -1327,6 +1479,12 @@ try {
     while (-not $p.HasExited -and (Get-Date) -lt $exitDeadline) {
       Start-Sleep -Milliseconds 200
     }
+
+    # 4) Release the retained launch handle (A1). Done LAST so the exit-code read
+    #    during the window used the handle, not a re-opened Process object.
+    if ($launchPid -gt 0) {
+      try { Close-DetachedChild -ProcessId $launchPid } catch {}
+    }
   }
 }
 
@@ -1387,6 +1545,7 @@ if ($RequireClosed) {
 Write-Phase 'report'
 Write-Probe "ELAPSED_SECONDS=$elapsedSeconds"
 Write-Probe "HAS_EXITED=$appExited"
+Write-Probe "EXIT_CODE_STATUS=$exitCodeStatus"
 if ($null -ne $appExitCode) { Write-Probe "EXIT_CODE=$appExitCode" }
 foreach ($port in $probePorts) {
   Write-Probe ("PORT_{0}={1}" -f $port, $(if ($portState[$port]) { 'open' } else { 'closed' }))

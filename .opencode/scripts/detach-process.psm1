@@ -166,9 +166,16 @@ public static class FredoDetach
         return handle;
     }
 
+    // Launch a child and hand the caller the process HANDLE (out param) as well
+    // as the PID. The handle is the ONLY exit-code read the caller needs: a
+    // Process object re-opened by PID cannot read ExitCode once a detached child
+    // has exited on this host, so the caller retains this handle, waits on it and
+    // asks the kernel (GetExitCodeProcess). The handle is NEVER closed here on the
+    // success path -- ownership transfers to the caller (Spec #3181 round 4).
     public static int Launch(string applicationName, string commandLine, string workingDirectory,
-        string stdoutPath, string stderrPath)
+        string stdoutPath, string stderrPath, out IntPtr processHandle)
     {
+        processHandle = IntPtr.Zero;
         IntPtr stdIn = IntPtr.Zero;
         IntPtr stdOut = IntPtr.Zero;
         IntPtr stdErr = IntPtr.Zero;
@@ -236,12 +243,15 @@ public static class FredoDetach
                 throw new Win32Exception(launchError, "CreateProcessW error=" + launchError.ToString()
                     + " app=[" + applicationName + "] cmd=[" + commandLine + "]");
             }
+            processHandle = pi.hProcess;
             return pi.dwProcessId;
         }
         finally
         {
             if (pi.hThread != IntPtr.Zero) { CloseHandle(pi.hThread); }
-            if (pi.hProcess != IntPtr.Zero) { CloseHandle(pi.hProcess); }
+            // Only close the process handle when ownership did NOT transfer (the
+            // success path sets processHandle before returning).
+            if (pi.hProcess != IntPtr.Zero && processHandle == IntPtr.Zero) { CloseHandle(pi.hProcess); }
             if (attributeList != IntPtr.Zero)
             {
                 if (attributeListReady) { DeleteProcThreadAttributeList(attributeList); }
@@ -254,45 +264,54 @@ public static class FredoDetach
         }
     }
 
-    // Wait for a DIRECT child to exit and return its exit code. This does NOT use
-    // Get-Process: a Process object re-opened by PID cannot read ExitCode once the
-    // detached child has exited on this host (observed: HasExited=true while
-    // ExitCode is unreadable and GetProcessById reports "not running"), so we hold
-    // our own SYNCHRONIZE/QUERY handle and ask the kernel. The descendant tree is
-    // never involved -- only the PID we launched.
-    // Return: >= 0 = exit code (unsigned 32-bit carried in a long);
-    //         -1 = OpenProcess failed (process already gone);
-    //         -2 = WAIT_TIMEOUT;
-    //         -3 = WAIT_FAILED or GetExitCodeProcess failed.
-    public static long WaitAndGetExitCode(int processId, int timeoutMs)
+    // Open a SYNCHRONIZE/QUERY handle for an already-running process. Used only
+    // as the fallback when the module did not retain the launch handle.
+    public static IntPtr OpenProcessHandle(int processId)
     {
         const uint SYNCHRONIZE = 0x00100000;
         const uint QUERY_LIMITED = 0x00001000;
         const uint QUERY = 0x00000400;
-        const uint WAIT_OBJECT_0 = 0;
-        const uint WAIT_TIMEOUT = 0x00000102;
         IntPtr handle = OpenProcess(SYNCHRONIZE | QUERY_LIMITED, false, processId);
         if (handle == IntPtr.Zero) { handle = OpenProcess(SYNCHRONIZE | QUERY, false, processId); }
-        if (handle == IntPtr.Zero) { return -1; }
-        try
-        {
-            uint ms = timeoutMs <= 0 ? 0xFFFFFFFF : (uint)timeoutMs;
-            uint result = WaitForSingleObject(handle, ms);
-            if (result == WAIT_TIMEOUT) { return -2; }
-            if (result != WAIT_OBJECT_0) { return -3; }
-            uint code;
-            if (!GetExitCodeProcess(handle, out code)) { return -3; }
-            return (long)code;
-        }
-        finally
-        {
-            CloseHandle(handle);
-        }
+        return handle;
+    }
+
+    public static void CloseProcessHandle(IntPtr handle)
+    {
+        CloseQuietly(handle);
+    }
+
+    // Peek at an ALREADY-HELD handle. The caller owns the handle; it is never
+    // closed here. timeoutMs < 0 waits forever, 0 returns immediately when the
+    // child is still running, > 0 bounds the wait.
+    // Return: >= 0 = exit code (unsigned 32-bit carried in a long);
+    //         -1 = still running (WAIT_TIMEOUT);
+    //         -2 = invalid handle / WAIT_FAILED;
+    //         -3 = GetExitCodeProcess failed.
+    public static long PeekExitCode(IntPtr handle, int timeoutMs)
+    {
+        const uint WAIT_OBJECT_0 = 0;
+        const uint WAIT_TIMEOUT = 0x00000102;
+        if (handle == IntPtr.Zero || handle == InvalidHandle) { return -2; }
+        uint ms = timeoutMs < 0 ? 0xFFFFFFFF : (uint)timeoutMs;
+        uint result = WaitForSingleObject(handle, ms);
+        if (result == WAIT_TIMEOUT) { return -1; }
+        if (result != WAIT_OBJECT_0) { return -2; }
+        uint code;
+        if (!GetExitCodeProcess(handle, out code)) { return -3; }
+        return (long)code;
     }
 }
 '@
 
 $script:DetachTypeLoaded = $false
+
+# The retained launch handles, keyed by PID. `Start-DetachedProcess` registers
+# the CreateProcess handle here; `Wait-DetachedChild` / `Get-DetachedChildExitCode`
+# / `Close-DetachedChild` consume and close it. This is the ONE exit-code seam
+# (Spec #3181 round 4): a Process object re-opened by PID cannot read ExitCode
+# after a detached child has exited on this host.
+if ($null -eq $script:DetachedHandles) { $script:DetachedHandles = @{} }
 
 function Initialize-DetachType {
   if ($script:DetachTypeLoaded) { return }
@@ -307,7 +326,8 @@ function Initialize-DetachType {
 }
 
 # The ONE launch primitive for a GUI app and for a bounded child runner. Empty
-# StdOutPath/StdErrPath route that stream to the NUL device. Returns the PID.
+# StdOutPath/StdErrPath route that stream to the NUL device. Returns the PID; the
+# retained process handle is registered in the module map (keyed by PID).
 function Start-DetachedProcess {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -324,36 +344,106 @@ function Start-DetachedProcess {
   if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
     $working = [System.IO.Path]::GetFullPath($WorkingDirectory)
   }
-  return [int][FredoDetach]::Launch($application, $commandLine, $working, $StdOutPath, $StdErrPath)
+  $handle = [IntPtr]::Zero
+  $processId = [int][FredoDetach]::Launch($application, $commandLine, $working, $StdOutPath, $StdErrPath, [ref]$handle)
+  if ($processId -gt 0 -and $handle -ne [IntPtr]::Zero) {
+    # A reused PID: release the stale handle before replacing it.
+    if ($script:DetachedHandles.ContainsKey($processId)) {
+      try { [FredoDetach]::CloseProcessHandle([IntPtr]$script:DetachedHandles[$processId]) } catch {}
+      $script:DetachedHandles.Remove($processId)
+    }
+    $script:DetachedHandles[$processId] = $handle
+  }
+  return $processId
 }
 
-# Wait for a DIRECT child (by PID) to exit and return its exit code. Waits on the
-# kernel handle for THAT PID only and NEVER walks the descendant tree -- a
-# grandchild that lingers must not keep the caller waiting (G-450 / G-448's
-# descendant-wait trap). Uses a native SYNCHRONIZE handle (not Get-Process, whose
-# re-opened Process object cannot read ExitCode after a detached child exits on
-# this host). Returns $null when the process is already gone or -TimeoutSecs
-# (default 0 = unbounded) elapsed.
+# Wait for a DIRECT child (by PID) to exit and return its exit code. Uses the
+# REGISTERED launch handle when present (the reliable read), falling back to
+# OpenProcess only when the handle is absent (e.g. after a module re-import), and
+# closes/unregisters it. Waits on the kernel handle for THAT PID only and NEVER
+# walks the descendant tree -- a grandchild that lingers must not keep the caller
+# waiting (G-450 / G-448's descendant-wait trap). Returns $null when the process
+# is already gone or -TimeoutSecs (default 0 = unbounded) elapsed.
 function Wait-DetachedChild {
   param(
     [Parameter(Mandatory = $true)][int]$ProcessId,
     [int]$TimeoutSecs = 0
   )
   Initialize-DetachType
-  $timeoutMs = 0
+  $timeoutMs = -1
   if ($TimeoutSecs -gt 0) {
     $timeoutMs = [int]([Math]::Min([int64]$TimeoutSecs * 1000, [int64]2147483647))
   }
-  $raw = [long][FredoDetach]::WaitAndGetExitCode([int]$ProcessId, $timeoutMs)
-  if ($raw -lt 0) { return $null }
-  # Exit code arrives as an unsigned 32-bit value; convert to the signed int the
-  # OS reports (e.g. 0xC0000135 -> -1073741515) so callers match native codes.
-  $unsigned = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([long]$raw), 0)
-  return [System.BitConverter]::ToInt32([System.BitConverter]::GetBytes([uint32]$unsigned), 0)
+  $handle = [IntPtr]::Zero
+  if ($script:DetachedHandles.ContainsKey($ProcessId)) {
+    $handle = [IntPtr]$script:DetachedHandles[$ProcessId]
+    $script:DetachedHandles.Remove($ProcessId)
+  } else {
+    $handle = [FredoDetach]::OpenProcessHandle([int]$ProcessId)
+    if ($handle -eq [IntPtr]::Zero) { return $null }
+  }
+  try {
+    $raw = [long][FredoDetach]::PeekExitCode($handle, [int]$timeoutMs)
+    if ($raw -lt 0) { return $null }
+    # Exit code arrives as an unsigned 32-bit value; convert to the signed int the
+    # OS reports (e.g. 0xC0000135 -> -1073741515) so callers match native codes.
+    $unsigned = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([long]$raw), 0)
+    return [System.BitConverter]::ToInt32([System.BitConverter]::GetBytes([uint32]$unsigned), 0)
+  } finally {
+    [FredoDetach]::CloseProcessHandle($handle)
+  }
+}
+
+# NON-BLOCKING exit-code read for a launched child (Spec #3181 round 4). Uses the
+# registered launch handle (fallback: OpenProcess) and a zero-timeout wait, so it
+# never blocks the caller's own observation window. Returns
+#   Status='observed'    Code=<signed int32>
+#   Status='not-exited'  Code=$null
+#   Status='unreadable'  Code=$null
+# The registered handle is NOT closed here -- Close-DetachedChild owns it (a later
+# non-blocking read of the same PID must still work during the window).
+function Get-DetachedChildExitCode {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+  Initialize-DetachType
+  $handle = [IntPtr]::Zero
+  $opened = $false
+  if ($script:DetachedHandles.ContainsKey($ProcessId)) {
+    $handle = [IntPtr]$script:DetachedHandles[$ProcessId]
+  } else {
+    $handle = [FredoDetach]::OpenProcessHandle([int]$ProcessId)
+    if ($handle -eq [IntPtr]::Zero) {
+      return [pscustomobject]@{ Status = 'unreadable'; Code = $null }
+    }
+    $opened = $true
+  }
+  try {
+    $raw = [long][FredoDetach]::PeekExitCode($handle, 0)
+    if ($raw -eq -1) { return [pscustomobject]@{ Status = 'not-exited'; Code = $null } }
+    if ($raw -lt 0) { return [pscustomobject]@{ Status = 'unreadable'; Code = $null } }
+    $unsigned = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([long]$raw), 0)
+    $signed = [System.BitConverter]::ToInt32([System.BitConverter]::GetBytes([uint32]$unsigned), 0)
+    return [pscustomobject]@{ Status = 'observed'; Code = $signed }
+  } finally {
+    if ($opened) { [FredoDetach]::CloseProcessHandle($handle) }
+  }
+}
+
+# Release the retained launch handle for a child the caller is done observing.
+# Idempotent: a PID with no registered handle is a no-op.
+function Close-DetachedChild {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+  Initialize-DetachType
+  if ($script:DetachedHandles.ContainsKey($ProcessId)) {
+    $handle = [IntPtr]$script:DetachedHandles[$ProcessId]
+    $script:DetachedHandles.Remove($ProcessId)
+    [FredoDetach]::CloseProcessHandle($handle)
+  }
 }
 
 Export-ModuleMember -Function @(
   'Initialize-DetachType',
   'Start-DetachedProcess',
-  'Wait-DetachedChild'
+  'Wait-DetachedChild',
+  'Get-DetachedChildExitCode',
+  'Close-DetachedChild'
 )

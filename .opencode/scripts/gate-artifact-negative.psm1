@@ -38,10 +38,13 @@ driver):
     NEGATIVE_INSTRUMENT_FAILURE:<detail>          (instrument failure only)
     NEGATIVE_EXPECTED=<id[,id]>
     NEGATIVE_OBSERVED=<id[,id]>            (<none> when nothing fired)
+    NEGATIVE_LEG_EFFECTIVE_DIR=<dir>       (Database leg; from the hook's DB_EFFECTIVE_DIR=)
     GATE_EXIT=<n>
     NEGATIVE_CONTROL=REPRODUCED|NOT_REPRODUCED|WRONG_ERROR|INSTRUMENT_FAILURE leg=<leg>
     NEGATIVE_NOT_REPRODUCED | NEGATIVE_WRONG_ERROR | NEGATIVE_INSTRUMENT_FAILURE
                                                             (on failure)
+    CSP_POLICY_HOOK_EXIT=<n|unrunnable>    (generated Csp wrapper)
+    CSP_INSTRUMENT=FAIL reason=<r>         (generated Csp wrapper: host cannot start)
 
 INSTRUMENT FAILURE IS ITS OWN CLASS (round-2 fix). A leg decides ONLY on what a
 child actually reported. When the child died before printing a usable transcript,
@@ -283,6 +286,42 @@ function Get-NegativeObservedErrorIds {
         }
     }
     return @($ids)
+}
+
+# Map the probe's observed `EXIT_CODE=` to the leg's expected id form. Returns
+# `LAUNCH_EXIT:<signed>` (the probe/API signed int32) or '' when the transcript
+# carries no readable code. The unsigned dword alias (e.g. 3221225781 for
+# 0xC0000135) is accepted and normalised to the signed value, so a probe that
+# reads the code either way satisfies the MissingDll expectation (round 4, A4).
+function Get-NegativeLaunchExitFromLines {
+    param([string[]]$Lines)
+
+    foreach ($line in @($Lines)) {
+        $text = ([string]$line).Trim()
+        if ($text -match '^EXIT_CODE=\s*(-?[0-9]+)\s*$') {
+            $raw = [int64]$Matches[1]
+            if ($raw -eq $script:MissingDllAlias) { $raw = -1073741515 }
+            return 'LAUNCH_EXIT:' + $raw.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        }
+    }
+    return ''
+}
+
+# Parse the hook's effective PG data dir from its transcript. The hook emits
+# `DB_EFFECTIVE_DIR=<fresh|dirty>=<absolute path>` (Stream B, round 4); a bare
+# `DB_EFFECTIVE_DIR=<path>` is also accepted. Returns the path ('' when absent).
+function Get-NegativeEffectiveDirFromLines {
+    param([string[]]$Lines)
+
+    foreach ($line in @($Lines)) {
+        $text = ([string]$line).Trim()
+        if ($text -match '^DB_EFFECTIVE_DIR=(.+?)\s*$') {
+            $value = $Matches[1].Trim()
+            if ($value -match '^(fresh|dirty)=(.*)$') { return $Matches[2].Trim() }
+            return $value
+        }
+    }
+    return ''
 }
 
 function Test-NegativeOutcome {
@@ -550,6 +589,15 @@ function New-NegativeCspHook {
         throw ('fredo-cdp.psm1 was not found: ' + $CdpModulePath)
     }
 
+    # The hook is spawned with the SANITISED PATH, where a bare `powershell` does
+    # not resolve. Embed the ABSOLUTE PowerShell host and assert it exists at
+    # generation time (round 4, A5): a bare name was an instrument death, not a
+    # CSP finding.
+    $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
+        throw ('the Windows PowerShell host was not found: ' + $powerShellExe)
+    }
+
     $hookPath = (Resolve-Path -LiteralPath $WindowHookPath).Path
     $modulePath = (Resolve-Path -LiteralPath $CdpModulePath).Path
     New-NegativeDirectory -Path $LegDir
@@ -565,6 +613,7 @@ function New-NegativeCspHook {
     [void]$lines.Add('$ErrorActionPreference = ' + $quote + 'Continue' + $quote)
     [void]$lines.Add('$cdpModule = ' + $quote + $modulePath + $quote)
     [void]$lines.Add('$windowHook = ' + $quote + $hookPath + $quote)
+    [void]$lines.Add('$powerShellExe = ' + $quote + $powerShellExe + $quote)
     [void]$lines.Add('Import-Module -Name $cdpModule -Force')
     [void]$lines.Add('')
     [void]$lines.Add('$port = 0')
@@ -654,11 +703,23 @@ function New-NegativeCspHook {
     [void]$lines.Add('')
     [void]$lines.Add('# This session STAYS OPEN while the hook runs, so the registered policy also')
     [void]$lines.Add('# replays into every new document the hook creates.')
-    [void]$lines.Add('& powershell -NoProfile -File $windowHook')
-    [void]$lines.Add('$code = $LASTEXITCODE')
+    [void]$lines.Add('# ABSOLUTE host (A5): the probe sanitises PATH, where a bare `powershell`')
+    [void]$lines.Add('# does not resolve. An unrunnable host is an INSTRUMENT failure, never a CSP')
+    [void]$lines.Add('# finding.')
+    [void]$lines.Add('$hookExit = $null')
+    [void]$lines.Add('try {')
+    [void]$lines.Add('    & $powerShellExe -NoProfile -File $windowHook')
+    [void]$lines.Add('    $hookExit = $LASTEXITCODE')
+    [void]$lines.Add('} catch {')
+    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY_HOOK_EXIT=unrunnable' + $quote)
+    [void]$lines.Add('    Write-Output (' + $quote + 'CSP_INSTRUMENT=FAIL reason=' + $quote + ' + $_.Exception.Message)')
+    [void]$lines.Add('    Close-FredoCdp -Session $session')
+    [void]$lines.Add('    exit 1')
+    [void]$lines.Add('}')
     [void]$lines.Add('Close-FredoCdp -Session $session')
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_POLICY_HOOK_EXIT=' + $quote + ' + $code)')
-    [void]$lines.Add('exit $code')
+    [void]$lines.Add('Write-Output (' + $quote + 'CSP_POLICY_HOOK_EXIT=' + $quote + ' + $hookExit)')
+    [void]$lines.Add('if ($null -eq $hookExit) { exit 1 }')
+    [void]$lines.Add('exit $hookExit')
 
     $text = ($lines -join "`r`n") + "`r`n"
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -997,12 +1058,17 @@ function Test-LegInstrumentFailed {
     }
 
     $hasTranscript = $false
+    $refusedLine = ''
     foreach ($line in @($Probe.Lines)) {
         $text = ([string]$line).Trim()
         foreach ($marker in @(Get-LegChildTranscriptMarkers)) {
             if ($text.StartsWith($marker, [System.StringComparison]::Ordinal)) { $hasTranscript = $true; break }
         }
-        if ($hasTranscript) { break }
+        # A probe that REFUSES its preconditions (RESULT=REFUSED) or reports
+        # GATE_REFUSED never exercised the device under test, so it observed
+        # nothing either -- round 4 (A5).
+        if ($text -match '^RESULT=REFUSED\b') { $refusedLine = $text }
+        elseif ($text -match '^GATE_REFUSED\b') { $refusedLine = $text }
     }
 
     $stderrText = ''
@@ -1032,6 +1098,13 @@ function Test-LegInstrumentFailed {
         $check.Detail = ($Stage + ': argument-binder-failure stderr=' + $detailLine)
         return $check
     }
+    if (-not [string]::IsNullOrWhiteSpace($refusedLine)) {
+        # A typed refusal (RESULT=REFUSED / GATE_REFUSED) is the instrument
+        # declining its preconditions -- neither the device's pass nor its fail.
+        $check.Failed = $true
+        $check.Detail = ($Stage + ': refused ' + $refusedLine)
+        return $check
+    }
     if (-not $hasTranscript) {
         $childExit = 'unreadable'
         if ($null -ne $Probe.Exit) { $childExit = [string]$Probe.Exit }
@@ -1050,23 +1123,31 @@ function Test-LegInstrumentFailed {
     return $check
 }
 
+function Set-LegInstrumentFailureDetail {
+    param($Control, [string]$Detail)
+
+    if ($null -eq $Control) { return $false }
+    if ([string]::IsNullOrWhiteSpace($Detail)) { $Detail = 'instrument failure' }
+
+    $Control.InstrumentFailed = $true
+    $Control.InstrumentDetail = $Detail
+    # A non-zero exit: the leg did NOT examine the device under test, so the
+    # driver must not treat this as a passing observation either way.
+    $Control.GateExit = 2
+    $Control.Note = 'instrument failed: ' + $Detail
+    $Control.Observed = @('NEGATIVE_INSTRUMENT_FAILURE:' + $Detail)
+    Write-Host 'NEGATIVE_LEG_INSTRUMENT=FAIL'
+    Write-Host ('NEGATIVE_INSTRUMENT_FAILURE:' + $Detail)
+    return $true
+}
+
 function Set-LegInstrumentFailure {
     param($Control, $Probe, [string]$Stage = 'instrument')
 
     if ($null -eq $Control) { return $false }
     $check = Test-LegInstrumentFailed -Probe $Probe -Stage $Stage
     if (-not $check.Failed) { return $false }
-
-    $Control.InstrumentFailed = $true
-    $Control.InstrumentDetail = [string]$check.Detail
-    # A non-zero exit: the leg did NOT examine the device under test, so the
-    # driver must not treat this as a passing observation either way.
-    $Control.GateExit = 2
-    $Control.Note = 'instrument failed: ' + [string]$check.Detail
-    $Control.Observed = @('NEGATIVE_INSTRUMENT_FAILURE:' + [string]$check.Detail)
-    Write-Host 'NEGATIVE_LEG_INSTRUMENT=FAIL'
-    Write-Host ('NEGATIVE_INSTRUMENT_FAILURE:' + [string]$check.Detail)
-    return $true
+    return (Set-LegInstrumentFailureDetail -Control $Control -Detail ([string]$check.Detail))
 }
 
 function Find-LegAppExe {
@@ -1147,11 +1228,18 @@ function Invoke-NegativeLeg {
     $payloadRoot = Get-LegPayloadRoot -Lines $extract.Lines -Fallback $extractRoot
     $appExe = Find-LegAppExe -Root $payloadRoot
     if ($extract.Exit -ne 0 -or [string]::IsNullOrWhiteSpace($appExe)) {
-        $result.GateExit = 2
-        $result.Note = 'extraction refused or produced no fredo.exe'
-        Write-Host ('NEGATIVE_LEG_EXTRACT=FAIL exit=' + $extract.Exit + ' root=' + $payloadRoot)
+        # The extraction instrument neither produced a payload nor (necessarily)
+        # printed RESULT=REFUSED. It still observed nothing about the device, so
+        # round 4 (A5) classifies it as an instrument failure -- never as
+        # NOT_REPRODUCED (a refusal against the device) nor WRONG_ERROR.
+        $extractExit = 'unreadable'
+        if ($null -ne $extract.Exit) { $extractExit = [string]$extract.Exit }
+        $detail = 'extract: refused exit=' + $extractExit
+        if ([string]::IsNullOrWhiteSpace($appExe)) { $detail = $detail + ' (no fredo.exe)' }
+        [void](Set-LegInstrumentFailureDetail -Control $result -Detail $detail)
+        Write-Host ('NEGATIVE_LEG_EXTRACT=FAIL exit=' + $extractExit + ' root=' + $payloadRoot)
         Write-Host ('NEGATIVE_LEG_INNER_EXIT=' + $result.GateExit)
-        Write-Host 'NEGATIVE_LEG_OBSERVED=<none>'
+        Write-Host ('NEGATIVE_LEG_OBSERVED=' + ($result.Observed -join ','))
         return $result
     }
     Write-Host ('NEGATIVE_LEG_EXTRACT=ok exe=' + $appExe)
@@ -1186,14 +1274,23 @@ function Invoke-NegativeLeg {
             foreach ($line in @($probe.Lines)) {
                 if ([string]$line -match 'HAS_EXITED=True') { $exited = $true }
             }
+            # A4: the probe now reports the observed code as `EXIT_CODE=` from the
+            # retained launch handle. Map it to the leg's expected id form when no
+            # other id matched, so a genuine 0xC0000135 reproduces the leg.
+            if ($exited -and $observed.Count -eq 0) {
+                $exitId = Get-NegativeLaunchExitFromLines -Lines $probe.Lines
+                if (-not [string]::IsNullOrWhiteSpace($exitId)) { $observed = @($exitId) }
+            }
             if ($exited -and $observed.Count -gt 0) {
                 $result.GateExit = 1
                 Write-Host 'NEGATIVE_LEG_LOAD=exited'
             } elseif ($exited) {
-                # The app exited inside the window but the probe printed no code.
-                $result.GateExit = 1
-                $result.Note = 'the app exited but no LAUNCH_EXIT code was readable'
-                Write-Host 'NEGATIVE_LEG_LOAD=exited-without-code'
+                # The app exited inside the window but no code was readable. That
+                # observed NOTHING about the load clause, so it is an INSTRUMENT
+                # failure -- never `exited-without-code` folded into WRONG_ERROR.
+                [void](Set-LegInstrumentFailureDetail -Control $result -Detail 'load: exit code unreadable')
+                Write-Host 'NEGATIVE_LEG_LOAD=exit-code-unreadable'
+                break
             } else {
                 $result.GateExit = 0
                 $result.Note = 'the app survived the window with the DLL removed'
@@ -1267,7 +1364,27 @@ function Invoke-NegativeLeg {
                 [System.Environment]::SetEnvironmentVariable('FREDO_PG_CLUSTER_QUARANTINE_FAIL', $previous, 'Process')
             }
             $result.InnerExit = $probe.Exit
+            # A4: the hook must name the EFFECTIVE PG data dir it observed. It
+            # emits `DB_EFFECTIVE_DIR=<fresh|dirty>=<absolute path>`. Emit it for
+            # evidence BEFORE the instrument classification, so even a hook that
+            # refuses (GATE_REFUSED) leaves the dir it saw in the receipt.
+            $effectiveDir = Get-NegativeEffectiveDirFromLines -Lines $probe.Lines
+            if (-not [string]::IsNullOrWhiteSpace($effectiveDir)) {
+                Write-Host ('NEGATIVE_LEG_EFFECTIVE_DIR=' + $effectiveDir)
+            }
             if (Set-LegInstrumentFailure -Control $result -Probe $probe -Stage 'database') { break }
+            # The probe sets FREDO_PG_DATA_DIR=<DataDir>\postgres\cluster, so a dir
+            # that is absent (the clause never ran) or different (the seam did not
+            # take) means the leg observed nothing about the seeded residue.
+            $expectedEffective = [string]$residue.ResidueDir
+            if ([string]::IsNullOrWhiteSpace($effectiveDir)) {
+                [void](Set-LegInstrumentFailureDetail -Control $result -Detail ('database: DB_EFFECTIVE_DIR missing (expected ' + $expectedEffective + ')'))
+                break
+            }
+            if (-not [string]::Equals($effectiveDir.TrimEnd('\', '/'), $expectedEffective.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)) {
+                [void](Set-LegInstrumentFailureDetail -Control $result -Detail ('database: DB_EFFECTIVE_DIR=' + $effectiveDir + ' expected=' + $expectedEffective))
+                break
+            }
             $result.Observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
             if ($null -ne $probe.Exit -and $probe.Exit -ne 0 -and $result.Observed.Count -gt 0) {
                 $result.GateExit = 1
@@ -1512,10 +1629,13 @@ function Invoke-NegativeControlSelfTest {
                 ($null -ne $legResult.PSObject.Properties['Observed']) -and
                 ($null -ne $legResult.PSObject.Properties['GateExit']) -and
                 ($legResult.GateExit -ne 0) -and
-                (@($legResult.Observed).Count -eq 0) -and
+                ($legResult.InstrumentFailed -eq $true) -and
+                ([string]$legResult.InstrumentDetail -match '^extract: refused exit=2') -and
+                (@($legResult.Observed).Count -eq 1) -and
+                ([string]$legResult.Observed[0]).StartsWith('NEGATIVE_INSTRUMENT_FAILURE:') -and
                 (Test-Path -LiteralPath (Join-Path $tempRoot 'invoke-leg\negative-missing-dll'))
             )
-            $invokeDetail = 'exit=' + $legResult.GateExit + ' observed=' + (@($legResult.Observed).Count) + ' note=' + $legResult.Note
+            $invokeDetail = 'exit=' + $legResult.GateExit + ' instrument=' + $legResult.InstrumentDetail + ' observed=' + (@($legResult.Observed) -join '|') + ' note=' + $legResult.Note
         } catch {
             $invokeDetail = 'threw: ' + $_.Exception.Message
         }
@@ -1644,6 +1764,125 @@ function Invoke-NegativeControlSelfTest {
         }
         Write-NegativeControlResult 'classify-instrument-precedence' $precedenceOk $precedenceDetail
         if (-not $precedenceOk) { [void]$failures.Add('classify-instrument-precedence') }
+
+        # 19: CSP-ABS-POWERSHELL (round 4, A5). The generated wrapper must spawn
+        #     the real hook through the ABSOLUTE host: under the sanitised PATH a
+        #     bare `powershell` does not resolve, which used to kill the Csp leg's
+        #     instrument. The absence needle is built by concatenation so this
+        #     assertion's own text is not the needle it searches for.
+        $count = $count + 1
+        $cspAbsDetail = ''
+        $cspAbsOk = $false
+        try {
+            $absHost = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $absHook = New-NegativeCspHook -LegDir (Join-Path $tempRoot 'leg-csp-abs')
+            $absText = [System.IO.File]::ReadAllText($absHook)
+            $bareHookNeedle = '& ' + 'powershell '
+            $bareHookFileNeedle = '& ' + 'powershell -NoProfile -File'
+            $cspAbsOk = (
+                ($absText.Contains($absHost)) -and
+                (-not $absText.Contains($bareHookNeedle)) -and
+                (-not $absText.Contains($bareHookFileNeedle)) -and
+                ($absText.Contains('CSP_POLICY_HOOK_EXIT=')) -and
+                ($absText.Contains('CSP_INSTRUMENT=FAIL reason='))
+            )
+            $cspAbsDetail = 'absolute=' + $absText.Contains($absHost) + ' bare=' + $absText.Contains($bareHookNeedle) + ' host=' + $absHost
+        } catch {
+            $cspAbsDetail = 'threw: ' + $_.Exception.Message
+        }
+        Write-NegativeControlResult 'CSP-ABS-POWERSHELL' $cspAbsOk $cspAbsDetail
+        if (-not $cspAbsOk) { [void]$failures.Add('CSP-ABS-POWERSHELL') }
+
+        # 20: NEGATIVE-EXIT-CODE-MAP (round 4, A4). The probe's observed
+        #     `EXIT_CODE=` must become the MissingDll leg's `LAUNCH_EXIT:<signed>`
+        #     id, and the unsigned dword alias must normalise to the same value.
+        $count = $count + 1
+        $mapSigned = Get-NegativeLaunchExitFromLines -Lines @('HAS_EXITED=True', 'EXIT_CODE=-1073741515')
+        $mapAlias = Get-NegativeLaunchExitFromLines -Lines @('HAS_EXITED=True', 'EXIT_CODE=3221225781')
+        $mapSpaced = Get-NegativeLaunchExitFromLines -Lines @('EXIT_CODE= 42 ')
+        $mapNone = Get-NegativeLaunchExitFromLines -Lines @('HAS_EXITED=False')
+        $mapOutcome = Test-NegativeOutcome -Leg 'MissingDll' -GateExit 1 -Lines @($mapSigned)
+        $mapOk = (
+            ($mapSigned -eq 'LAUNCH_EXIT:-1073741515') -and
+            ($mapAlias -eq 'LAUNCH_EXIT:-1073741515') -and
+            ($mapSpaced -eq 'LAUNCH_EXIT:42') -and
+            ([string]::IsNullOrEmpty($mapNone)) -and
+            ($mapOutcome.Ok -eq $true)
+        )
+        Write-NegativeControlResult 'NEGATIVE-EXIT-CODE-MAP' $mapOk ('signed=' + $mapSigned + ' alias=' + $mapAlias + ' spaced=' + $mapSpaced + ' none=[' + $mapNone + '] reproduced=' + $mapOutcome.Ok)
+        if (-not $mapOk) { [void]$failures.Add('NEGATIVE-EXIT-CODE-MAP') }
+
+        # 21: EXTRACT-REFUSAL-INSTRUMENT (round 4, A5). A refusal in the child's
+        #     transcript is an instrument failure, and the REAL entry route marks
+        #     an extraction refusal as InstrumentFailed with an `extract:` detail.
+        $count = $count + 1
+        $extractOk = $false
+        $extractDetail = ''
+        try {
+            $refusedProbe = [pscustomobject]@{ Exit = 2; Lines = @('ERROR: missing installer', 'RESULT=REFUSED'); StdOut = ''; StdErr = '' }
+            $refusedCheck = Test-LegInstrumentFailed -Probe $refusedProbe -Stage 'extract'
+            $gateRefusedProbe = [pscustomobject]@{ Exit = 2; Lines = @('GATE_REFUSED reason=bad-args'); StdOut = ''; StdErr = '' }
+            $gateRefusedCheck = Test-LegInstrumentFailed -Probe $gateRefusedProbe -Stage 'extract'
+
+            $refuseRoot = Join-Path $tempRoot 'inst-extract-refused'
+            New-NegativeDirectory -Path $refuseRoot
+            $refuseEncoding = New-Object System.Text.UTF8Encoding($false)
+            $refuseVerifier = @(
+                '# selftest stub: extraction refuses its preconditions',
+                "Write-Output 'ERROR: missing installer'",
+                "Write-Output 'RESULT=REFUSED'",
+                'exit 2'
+            ) -join "`r`n"
+            $refuseProbeStub = @(
+                '# selftest stub: never reached',
+                'exit 1'
+            ) -join "`r`n"
+            [System.IO.File]::WriteAllText((Join-Path $refuseRoot 'verify-installer-payload.ps1'), $refuseVerifier, $refuseEncoding)
+            [System.IO.File]::WriteAllText((Join-Path $refuseRoot 'launch-artifact-probe.ps1'), $refuseProbeStub, $refuseEncoding)
+
+            $captured = @(& {
+                Invoke-NegativeLeg -Name 'MissingDll' -Installer (Join-Path $tempRoot 'stub-installer.exe') `
+                    -OutDir (Join-Path $tempRoot 'extract-refuse-leg') `
+                    -CdpPort 9449 -WaitSecs 5 -DbReadySecs 5 -SkipCompanion `
+                    -InstrumentRoot $refuseRoot
+            } 6>&1)
+            $refuseLeg = $captured | Where-Object { $null -ne $_.PSObject.Properties['GateExit'] } | Select-Object -First 1
+            $extractOk = (
+                ($refusedCheck.Failed -eq $true) -and
+                ($refusedCheck.Detail -match 'refused') -and
+                ($gateRefusedCheck.Failed -eq $true) -and
+                ($gateRefusedCheck.Detail -match 'refused') -and
+                ($null -ne $refuseLeg) -and
+                ($refuseLeg.InstrumentFailed -eq $true) -and
+                ([string]$refuseLeg.InstrumentDetail -match '^extract: refused') -and
+                (@($refuseLeg.Observed).Count -eq 1) -and
+                ([string]$refuseLeg.Observed[0]).StartsWith('NEGATIVE_INSTRUMENT_FAILURE:')
+            )
+            $extractDetail = 'direct=' + $refusedCheck.Failed + ' gate=' + $gateRefusedCheck.Failed + ' leg=' + $refuseLeg.InstrumentDetail
+        } catch {
+            $extractDetail = 'threw: ' + $_.Exception.Message
+        }
+        Write-NegativeControlResult 'EXTRACT-REFUSAL-INSTRUMENT' $extractOk $extractDetail
+        if (-not $extractOk) { [void]$failures.Add('EXTRACT-REFUSAL-INSTRUMENT') }
+
+        # 22: DB-EFFECTIVE-DIR-PARSE (round 4, A4). The hook reports the effective
+        #     dir as `DB_EFFECTIVE_DIR=<fresh|dirty>=<path>`; the leg must compare
+        #     the PATH, never the profiled string, or every Database leg would
+        #     instrument-fail on a perfectly isolated profile.
+        $count = $count + 1
+        $dirtyPath = 'C:\run\postgres\cluster'
+        $parsedDirty = Get-NegativeEffectiveDirFromLines -Lines @(('DB_EFFECTIVE_DIR=dirty=' + $dirtyPath), 'DB_ISOLATION=isolated')
+        $parsedFresh = Get-NegativeEffectiveDirFromLines -Lines @('DB_EFFECTIVE_DIR=fresh=C:\run2\postgres\cluster')
+        $parsedBare = Get-NegativeEffectiveDirFromLines -Lines @('DB_EFFECTIVE_DIR=C:\run3\postgres\cluster')
+        $parsedNone = Get-NegativeEffectiveDirFromLines -Lines @('DB_ISOLATION=isolated')
+        $dbParseOk = (
+            ($parsedDirty -eq $dirtyPath) -and
+            ($parsedFresh -eq 'C:\run2\postgres\cluster') -and
+            ($parsedBare -eq 'C:\run3\postgres\cluster') -and
+            ([string]::IsNullOrEmpty($parsedNone))
+        )
+        Write-NegativeControlResult 'DB-EFFECTIVE-DIR-PARSE' $dbParseOk ('dirty=' + $parsedDirty + ' fresh=' + $parsedFresh + ' bare=' + $parsedBare + ' none=[' + $parsedNone + ']')
+        if (-not $dbParseOk) { [void]$failures.Add('DB-EFFECTIVE-DIR-PARSE') }
     } finally {
         if ($ownedTemp) { Remove-NegativeTree -Path $tempRoot }
     }
