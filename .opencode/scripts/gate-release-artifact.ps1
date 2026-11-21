@@ -1958,8 +1958,19 @@ function New-EvidenceBlock {
         }
     }
     if ($Mode -eq 'negative' -and -not [string]::IsNullOrWhiteSpace($Negative)) {
-        $leaf = 'negative-' + (($Negative -replace '([a-z])([A-Z])', '$1-$2').ToLowerInvariant())
-        $evidence['negative'] = $leaf
+        # The receipt pointer MUST equal the `negative-<leg>/` directory the leg
+        # wrote, so reuse the ONE canonical slug helper in
+        # gate-artifact-negative.psm1 -- a local camel-to-kebab -replace mangled
+        # 'MissingDll' into 'm-is-si-ng-dl-l'. A refusal path (module absent, so no
+        # leg ran and no directory exists) carries no pointer.
+        if ($null -eq (Get-Command -Name 'Get-NegativeSlug' -ErrorAction SilentlyContinue)) {
+            if (Test-Path -LiteralPath $script:NegativeModulePath -PathType Leaf) {
+                Import-Module $script:NegativeModulePath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($null -ne (Get-Command -Name 'Get-NegativeSlug' -ErrorAction SilentlyContinue)) {
+            $evidence['negative'] = 'negative-' + (Get-NegativeSlug -Leg $Negative)
+        }
     }
     return $evidence
 }
