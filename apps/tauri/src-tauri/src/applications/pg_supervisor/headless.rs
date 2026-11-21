@@ -203,6 +203,13 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
         None => super::resolve_data_dir(&app_data_dir),
     };
     let install_dir = super::resolve_install_dir(&app_data_dir);
+    // #3180 ST-1: the postmaster log dir is a SIBLING of the cluster dir. An
+    // explicit `--pg-data-dir` keeps the override semantics (`<that>/log`);
+    // otherwise the daemon uses the SAME resolved log dir the GUI uses.
+    let pg_log_dir = match args.pg_data_dir.clone() {
+        Some(dir) => dir.join(super::PG_LOG_SUBDIR),
+        None => super::resolve_log_dir(&app_data_dir),
+    };
     // ST-6 (#3022, R-3.2/R-4/R-5.3): the daemon owns the SAME cluster as the GUI,
     // so it honors the SAME `<app_data_dir>/postgres-supervisor.json` — the pinned
     // port + log verbosity — by building the runtime from the shared config.
@@ -210,7 +217,8 @@ pub async fn run_ingest_daemon(args: IngestDaemonArgs) -> Result<()> {
     // never returns an error, so a config problem can NEVER fail the daemon boot;
     // the CLI>env>default precedence for every other option is unchanged.
     let pg_config = PgSupervisorConfig::load(&app_data_dir);
-    let mut runtime = PgRuntime::with_config(&pg_data_dir, &install_dir, password, &pg_config);
+    let mut runtime =
+        PgRuntime::with_config(&pg_data_dir, &install_dir, &pg_log_dir, password, &pg_config);
 
     runtime
         .setup()
@@ -625,8 +633,13 @@ mod tests {
         // Absent config ⇒ defaults ⇒ ephemeral port; the boot never fails.
         let absent = PgSupervisorConfig::load(&app_data_dir);
         assert_eq!(absent.port, None, "an absent config must load as ephemeral");
-        let ephemeral =
-            PgRuntime::with_config(&pg_data_dir, &install_dir, "pw".to_string(), &absent);
+        let ephemeral = PgRuntime::with_config(
+            &pg_data_dir,
+            &install_dir,
+            &dir.path().join("pglog"),
+            "pw".to_string(),
+            &absent,
+        );
         assert_eq!(
             ephemeral.port(),
             0,
@@ -640,8 +653,13 @@ mod tests {
         };
         PgSupervisorConfig::save(&app_data_dir, &config).expect("save config");
         let loaded = PgSupervisorConfig::load(&app_data_dir);
-        let pinned =
-            PgRuntime::with_config(&pg_data_dir, &install_dir, "pw".to_string(), &loaded);
+        let pinned = PgRuntime::with_config(
+            &pg_data_dir,
+            &install_dir,
+            &dir.path().join("pglog"),
+            "pw".to_string(),
+            &loaded,
+        );
         assert_eq!(
             pinned.port(),
             5544,

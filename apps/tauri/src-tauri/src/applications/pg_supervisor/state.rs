@@ -84,6 +84,10 @@ pub enum PgFailureKind {
     AuthMismatch,
     /// The server could not bind the configured port (`address already in use`).
     PortInUse,
+    /// The cluster directory exists, is non-empty and is not an initialised
+    /// cluster, and it could not be quarantined (Spec #3180 ST-1) — the
+    /// "directory exists but is not empty" class, surfaced with its remedy.
+    DataDirNotEmpty,
     /// Any other failure.
     Unknown,
 }
@@ -101,12 +105,14 @@ pub struct PgStatusView {
     pub pid: Option<u32>,
     /// Structured failure detail, once `Failed`.
     pub error: Option<String>,
-    /// The PostgreSQL data directory (`<app_data_dir>/postgres`, or the FS-1
-    /// `FREDO_PG_DATA_DIR` override when set).
+    /// The cluster directory (`initdb` target): `<app_data_dir>/postgres/cluster`,
+    /// the legacy `<app_data_dir>/postgres` when it holds a cluster, or the FS-1
+    /// `FREDO_PG_DATA_DIR` override verbatim (Spec #3180 ST-1).
     pub data_dir: String,
-    /// Additive (Spec #2978 S4): the postmaster log path
-    /// (`<data_dir>/log/postgres.log`) the read-only `pg_server_log_tail` reads;
-    /// `None` only when no data dir is resolvable.
+    /// Additive (Spec #2978 S4; relocated by Spec #3180 ST-1): the postmaster log
+    /// path (`<log dir>/postgres.log`, where the log dir is a SIBLING of the
+    /// cluster dir) the read-only `pg_server_log_tail` reads; `None` only when no
+    /// log dir is resolvable.
     pub log_path: Option<String>,
     /// Additive (Spec #3022 ST-4): the failure classification, `Some` ONLY while
     /// `state == Failed` (additive — existing consumers ignore the extra field).
@@ -117,18 +123,15 @@ pub struct PgStatusView {
     pub attached: bool,
 }
 
-/// `<data_dir>/log/postgres.log` as a serializable string; `None` when the data
-/// dir is unknown (empty). One rule so the status view and the tail agree.
-fn log_path_for(data_dir: &str) -> Option<String> {
-    let trimmed = data_dir.trim();
-    if trimmed.is_empty() {
+/// `<log dir>/postgres.log` as a serializable string; `None` when the log dir is
+/// unknown (empty/blank). One rule so the status view and the tail agree, derived
+/// from the RELOCATED log dir ([`super::resolve_log_dir`]) — never from the
+/// cluster data dir (Spec #3180 ST-1).
+fn log_path_for(log_dir: &Path) -> Option<String> {
+    if log_dir.as_os_str().is_empty() || log_dir.to_string_lossy().trim().is_empty() {
         None
     } else {
-        Some(
-            super::pg_log_path(Path::new(trimmed))
-                .display()
-                .to_string(),
-        )
+        Some(super::pg_log_path(log_dir).display().to_string())
     }
 }
 
@@ -136,19 +139,24 @@ impl PgStatusView {
     /// A `Failed` view carrying a structured error (never a port/pid). The
     /// failure is classified [`PgFailureKind::Unknown`] unless a caller supplies
     /// a more specific kind via [`Self::failed_with_kind`].
-    pub fn failed(error: String, data_dir: String) -> Self {
-        Self::failed_with_kind(error, data_dir, PgFailureKind::Unknown)
+    pub fn failed(error: String, data_dir: String, log_dir: String) -> Self {
+        Self::failed_with_kind(error, data_dir, log_dir, PgFailureKind::Unknown)
     }
 
     /// A `Failed` view carrying a structured error AND a classified
     /// [`PgFailureKind`] (Spec #3022 ST-4, R-3.3).
-    pub fn failed_with_kind(error: String, data_dir: String, kind: PgFailureKind) -> Self {
+    pub fn failed_with_kind(
+        error: String,
+        data_dir: String,
+        log_dir: String,
+        kind: PgFailureKind,
+    ) -> Self {
         Self {
             state: PgState::Failed,
             port: None,
             pid: None,
             error: Some(error),
-            log_path: log_path_for(&data_dir),
+            log_path: log_path_for(Path::new(&log_dir)),
             data_dir,
             failure_kind: Some(kind),
             attached: false,
@@ -157,14 +165,26 @@ impl PgStatusView {
 }
 
 /// Classify a failed boot/restart outcome into the additive [`PgFailureKind`]
-/// (Spec #3022 ST-4, R-3.3). A credential rejection on the boot/readiness leg
-/// maps to [`PgFailureKind::AuthMismatch`] — detected from the SQLSTATE
-/// (`28P01`/`28000`) via the error chain, which is decode-independent (the server
-/// may emit a non-UTF-8 placeholder message), with the text rule as a fallback. A
-/// `start`-stage bind failure maps to [`PgFailureKind::PortInUse`]; everything
-/// else is [`PgFailureKind::Unknown`]. Pure over the error chain, so the mapping
-/// is unit-testable.
+/// (Spec #3022 ST-4, R-3.3; extended by Spec #3180 ST-1). A cluster-directory
+/// failure (a non-empty, non-cluster directory that could not be quarantined)
+/// maps to [`PgFailureKind::DataDirNotEmpty`] — detected by downcasting the
+/// concrete [`super::cluster_dir::ClusterDirError`] from the error CHAIN (the
+/// same decode-independent walk as the SQLSTATE check). A credential rejection on
+/// the boot/readiness leg maps to [`PgFailureKind::AuthMismatch`] — detected from
+/// the SQLSTATE (`28P01`/`28000`) via the error chain, which is
+/// decode-independent (the server may emit a non-UTF-8 placeholder message), with
+/// the text rule as a fallback. A `start`-stage bind failure maps to
+/// [`PgFailureKind::PortInUse`]; everything else is [`PgFailureKind::Unknown`].
+/// Pure over the error chain, so the mapping is unit-testable.
 pub fn classify_failure(stage: &str, error: &anyhow::Error) -> PgFailureKind {
+    // 0. The typed cluster-directory failure (Spec #3180 ST-1). Most specific:
+    //    it is a workspace problem, never a credential/port one, so it wins.
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<super::cluster_dir::ClusterDirError>().is_some())
+    {
+        return PgFailureKind::DataDirNotEmpty;
+    }
     // 1. Decode-independent SQLSTATE check (the readiness error message may be a
     //    non-UTF-8 placeholder, so the text rule alone would fall to Unknown).
     if let Some(code) = sqlstate_from_error(error) {
@@ -234,8 +254,17 @@ pub struct PgSupervisorState {
 
 impl PgSupervisorState {
     /// Build a `Starting` supervisor holding the acquired lock (runtime added on success).
-    pub fn new(runtime: Option<PgRuntime>, lock: Option<PgDataDirLock>, data_dir: String) -> Self {
-        let log_path = log_path_for(&data_dir);
+    ///
+    /// `data_dir` is the CLUSTER dir and `log_dir` the RELOCATED postmaster log
+    /// dir (Spec #3180 ST-1) — resolved independently so the reported `logPath`
+    /// never has to be re-derived from the cluster dir.
+    pub fn new(
+        runtime: Option<PgRuntime>,
+        lock: Option<PgDataDirLock>,
+        data_dir: String,
+        log_dir: String,
+    ) -> Self {
+        let log_path = log_path_for(Path::new(&log_dir));
         let (status, _rx) = tokio::sync::watch::channel(PgStatusView {
             state: PgState::Starting,
             port: None,
@@ -256,8 +285,9 @@ impl PgSupervisorState {
 
     /// Build a `Failed` supervisor without starting anything (e.g. the data-dir
     /// lock is owned by another instance — the second instance reports `Failed`).
-    pub fn failed_only(error: String, data_dir: String) -> Self {
-        let (status, _rx) = tokio::sync::watch::channel(PgStatusView::failed(error, data_dir));
+    pub fn failed_only(error: String, data_dir: String, log_dir: String) -> Self {
+        let (status, _rx) =
+            tokio::sync::watch::channel(PgStatusView::failed(error, data_dir, log_dir));
         Self {
             runtime: Mutex::new(None),
             status,
@@ -266,17 +296,17 @@ impl PgSupervisorState {
         }
     }
 
-    /// Publish `Ready` with the resolved port/PID.
+    /// Publish `Ready` with the resolved port/PID. The data dir and log path are
+    /// carried forward unchanged (they are resolved once at construction).
     pub fn set_ready(&self, port: u16, pid: u32) {
-        let data_dir = self.status.borrow().data_dir.clone();
-        let log_path = log_path_for(&data_dir);
+        let current = self.status.borrow().clone();
         self.status.send_replace(PgStatusView {
             state: PgState::Ready,
             port: Some(port),
             pid: Some(pid),
             error: None,
-            data_dir,
-            log_path,
+            data_dir: current.data_dir,
+            log_path: current.log_path,
             failure_kind: None,
             attached: false,
         });
@@ -285,17 +315,16 @@ impl PgSupervisorState {
     /// Publish `Attached` (Spec #2992 CU-1): the GUI serves a headless-owned
     /// cluster on `port`; `pid` is the owning headless daemon. The GUI holds no
     /// runtime and no lock, so [`stop_on_exit`] no-ops (it never stops the
-    /// headless postmaster).
+    /// headless postmaster). The data dir and log path are carried forward.
     pub fn set_attached(&self, port: u16, pid: u32) {
-        let data_dir = self.status.borrow().data_dir.clone();
-        let log_path = log_path_for(&data_dir);
+        let current = self.status.borrow().clone();
         self.status.send_replace(PgStatusView {
             state: PgState::Attached,
             port: Some(port),
             pid: Some(pid),
             error: None,
-            data_dir,
-            log_path,
+            data_dir: current.data_dir,
+            log_path: current.log_path,
             failure_kind: None,
             attached: true,
         });
@@ -310,12 +339,17 @@ impl PgSupervisorState {
     /// Transition to `Failed` with a structured error AND an explicit
     /// [`PgFailureKind`] (Spec #3022 ST-4).
     pub fn fail_with_kind(&self, stage: &str, error: &anyhow::Error, kind: PgFailureKind) {
-        let data_dir = self.status.borrow().data_dir.clone();
-        self.status.send_replace(PgStatusView::failed_with_kind(
-            structured_error(stage, error),
-            data_dir,
-            kind,
-        ));
+        let current = self.status.borrow().clone();
+        self.status.send_replace(PgStatusView {
+            state: PgState::Failed,
+            port: None,
+            pid: None,
+            error: Some(structured_error(stage, error)),
+            data_dir: current.data_dir,
+            log_path: current.log_path,
+            failure_kind: Some(kind),
+            attached: false,
+        });
     }
 }
 
@@ -395,6 +429,12 @@ pub fn start_supervisor(app: &AppHandle) {
     // Spec #3005 ST-3: PostgreSQL is UNCONDITIONAL — the engine selector and the
     // legacy `postgres.enabled` opt-out are gone, so the supervisor always sets
     // up. `bootstrap` acquires the lock BEFORE the sweep.
+    //
+    // #3180 ST-1: the postmaster log dir is a resolved SIBLING of the cluster dir;
+    // resolve it once here so every status view reports the relocated path.
+    let pg_log_dir = super::resolve_log_dir(&os_app_data_dir)
+        .display()
+        .to_string();
     match bootstrap(&os_app_data_dir, &store) {
         Bootstrap::Failed(error) => {
             let lock_dir = super::resolve_lock_dir(&os_app_data_dir);
@@ -417,7 +457,12 @@ pub fn start_supervisor(app: &AppHandle) {
                     );
                     // No runtime, no lock: this GUI never starts/stops/sweeps the
                     // headless postmaster, and `stop_on_exit` no-ops.
-                    app.manage(Arc::new(PgSupervisorState::new(None, None, pg_data_dir)));
+                    app.manage(Arc::new(PgSupervisorState::new(
+                        None,
+                        None,
+                        pg_data_dir,
+                        pg_log_dir,
+                    )));
                     let handle = app.clone();
                     // G-273: the attach leg is spawned, never awaited in setup.
                     tauri::async_runtime::spawn(async move {
@@ -435,7 +480,11 @@ pub fn start_supervisor(app: &AppHandle) {
                         error = %error,
                         "embedded PostgreSQL data dir is not available; supervisor reports Failed"
                     );
-                    app.manage(Arc::new(PgSupervisorState::failed_only(error, pg_data_dir)));
+                    app.manage(Arc::new(PgSupervisorState::failed_only(
+                        error,
+                        pg_data_dir,
+                        pg_log_dir,
+                    )));
                 }
             }
         }
@@ -444,6 +493,7 @@ pub fn start_supervisor(app: &AppHandle) {
                 target: "fredo::pg_supervisor",
                 lock = %lock.path().display(),
                 data_dir = %pg_data_dir,
+                log_dir = %pg_log_dir,
                 "embedded PostgreSQL enabled; holding the exclusive data-dir lock"
             );
             // Spec #2978 S1 (AC1): record the compile-time acquisition mode and
@@ -459,7 +509,12 @@ pub fn start_supervisor(app: &AppHandle) {
                 data_dir_delta_bytes = super::acquisition::PG_DATA_DIR_DELTA_BYTES,
                 "embedded PostgreSQL acquisition mode + declared price"
             );
-            app.manage(Arc::new(PgSupervisorState::new(None, Some(lock), pg_data_dir)));
+            app.manage(Arc::new(PgSupervisorState::new(
+                None,
+                Some(lock),
+                pg_data_dir,
+                pg_log_dir,
+            )));
             let handle = app.clone();
             let os_app_data_dir = os_app_data_dir.clone();
             // G-273 / R-2.3: setup NEVER awaits the boot — the whole
@@ -712,13 +767,14 @@ pub struct PgDatabaseResetResult {
     pub port: Option<u16>,
 }
 
-/// Build a runtime honouring the persisted config (Spec #3022 ST-4). The data /
-/// install dirs resolve through the shared FS-1/G-275 rules, so the boot and the
-/// restart legs can never diverge.
+/// Build a runtime honouring the persisted config (Spec #3022 ST-4). The cluster /
+/// install / log dirs resolve through the shared FS-1/G-275 rules (Spec #3180
+/// ST-1 added the log dir), so the boot and the restart legs can never diverge.
 fn build_runtime(app_data_dir: &Path, password: String, config: &PgSupervisorConfig) -> PgRuntime {
     PgRuntime::with_config(
         &super::resolve_data_dir(app_data_dir),
         &super::resolve_install_dir(app_data_dir),
+        &super::resolve_log_dir(app_data_dir),
         password,
         config,
     )
@@ -1435,11 +1491,10 @@ pub fn stop_on_exit(app: &AppHandle) {
     }
 }
 
-/// Resolve the managed-PG data dir for read-only observers (the status view and
-/// the log tail): the live supervisor's already-resolved dir when present, else
-/// the OS app-data dir through the ONE [`super::resolve_data_dir`] rule (FS-1
-/// aware). Mirrors the supervisor so the reported `data_dir` and the log path
-/// can never diverge.
+/// Resolve the managed cluster dir for read-only observers (the status view): the
+/// live supervisor's already-resolved dir when present, else the OS app-data dir
+/// through the ONE [`super::resolve_data_dir`] rule (FS-1 aware). Mirrors the
+/// supervisor so the reported `data_dir` can never diverge.
 fn resolve_status_data_dir(app: &AppHandle) -> String {
     if let Some(state) = app.try_state::<Arc<PgSupervisorState>>() {
         return state.status.borrow().data_dir.clone();
@@ -1450,21 +1505,41 @@ fn resolve_status_data_dir(app: &AppHandle) -> String {
         .unwrap_or_default()
 }
 
+/// Resolve the managed postmaster LOG dir for read-only observers (the status
+/// view's `logPath` and the bounded tail, Spec #3180 ST-1): the live supervisor's
+/// path is already authoritative; otherwise resolve through the ONE
+/// [`super::resolve_log_dir`] rule (FS-1 aware), which is exactly what the
+/// supervisor used. Never derived from the cluster dir.
+fn resolve_status_log_dir(app: &AppHandle) -> String {
+    if let Some(state) = app.try_state::<Arc<PgSupervisorState>>() {
+        if let Some(log_path) = state.status.borrow().log_path.clone() {
+            if let Some(log_dir) = Path::new(&log_path).parent() {
+                return log_dir.display().to_string();
+            }
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .map(|dir| super::resolve_log_dir(&dir).display().to_string())
+        .unwrap_or_default()
+}
+
 /// The ONE observability hook: a read-only status snapshot (no state mutation).
 #[tauri::command]
 pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
     if let Some(state) = app.try_state::<Arc<PgSupervisorState>>() {
         return state.status.borrow().clone();
     }
-    // No managed supervisor ⇒ disabled (the default) — resolve the data dir for
+    // No managed supervisor ⇒ disabled (the default) — resolve the dirs for
     // informational purposes only (honours the FS-1 override like the live path).
     let data_dir = resolve_status_data_dir(&app);
+    let log_dir = resolve_status_log_dir(&app);
     PgStatusView {
         state: PgState::Disabled,
         port: None,
         pid: None,
         error: None,
-        log_path: log_path_for(&data_dir),
+        log_path: log_path_for(Path::new(&log_dir)),
         data_dir,
         failure_kind: None,
         attached: false,
@@ -1486,7 +1561,8 @@ pub const PG_LOG_TAIL_MAX_LINES: usize = 2_000;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PgLogTail {
-    /// The log path that was read (`<data_dir>/log/postgres.log`).
+    /// The log path that was read (`<log dir>/postgres.log`, the relocated log
+    /// dir from Spec #3180 ST-1).
     pub path: String,
     /// The last `lines` lines of the log (empty when the file does not exist yet).
     pub lines: Vec<String>,
@@ -1549,24 +1625,27 @@ fn tail_file(path: &Path, lines: usize) -> PgLogTail {
 }
 
 /// The bounded, read-only postmaster log tail (REQ-3.2). Registered in `lib.rs`.
-/// The `app` handle resolves the SAME data dir the runtime writes to; the
-/// frontend-facing argument is only `lines`.
+/// The `app` handle resolves the SAME RELOCATED log dir the runtime writes to
+/// (Spec #3180 ST-1); the frontend-facing argument is only `lines`.
 #[tauri::command]
 pub async fn pg_server_log_tail(app: AppHandle, lines: usize) -> PgLogTail {
-    let data_dir = resolve_status_data_dir(&app);
-    if data_dir.trim().is_empty() {
+    let log_dir = resolve_status_log_dir(&app);
+    if log_dir.trim().is_empty() {
         return PgLogTail {
             path: String::new(),
             lines: Vec::new(),
             truncated: false,
         };
     }
-    tail_file(&super::pg_log_path(Path::new(&data_dir)), lines)
+    tail_file(&super::pg_log_path(Path::new(&log_dir)), lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::applications::pg_supervisor::cluster_dir::{
+        ClusterDirError, ClusterDirState, PG_CLUSTER_SUBDIR,
+    };
     use crate::applications::pg_supervisor::{
         PG_DATA_SUBDIR, PG_LOCK_FILENAME, PG_POOL_FORCE_FAIL_ENV,
     };
@@ -1619,7 +1698,12 @@ mod tests {
                 assert_eq!(lock.path(), dir.path().join(PG_LOCK_FILENAME).as_path());
                 assert_eq!(
                     data_dir,
-                    dir.path().join(PG_DATA_SUBDIR).display().to_string()
+                    dir.path()
+                        .join(PG_DATA_SUBDIR)
+                        .join(PG_CLUSTER_SUBDIR)
+                        .display()
+                        .to_string(),
+                    "a profile with no legacy cluster resolves the dedicated cluster path"
                 );
             }
             _ => panic!("a bootstrap must acquire the lock"),
@@ -1645,7 +1729,12 @@ mod tests {
 
     #[test]
     fn readiness_failure_transitions_to_failed_with_a_structured_error() {
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         assert_eq!(state.status.borrow().state, PgState::Starting);
 
         state.fail("readiness", &anyhow::anyhow!("connect refused after 62s"));
@@ -1668,7 +1757,7 @@ mod tests {
             pid: Some(1234),
             error: None,
             data_dir: "C:/data/postgres".to_string(),
-            log_path: log_path_for("C:/data/postgres"),
+            log_path: log_path_for(Path::new("C:/data/postgres/log")),
             failure_kind: None,
             attached: false,
         };
@@ -1679,7 +1768,7 @@ mod tests {
         assert_eq!(json["dataDir"], "C:/data/postgres");
         assert_eq!(
             json["logPath"],
-            super::super::pg_log_path(Path::new("C:/data/postgres"))
+            super::super::pg_log_path(Path::new("C:/data/postgres/log"))
                 .display()
                 .to_string()
         );
@@ -1713,7 +1802,12 @@ mod tests {
     /// headless postmaster).
     #[test]
     fn set_attached_publishes_the_headless_cluster_without_owning_it() {
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         assert_eq!(state.status.borrow().state, PgState::Starting);
 
         state.set_attached(54321, 4242);
@@ -1744,7 +1838,12 @@ mod tests {
     /// `Attached` (returns the published port so gated store reads proceed).
     #[test]
     fn readiness_outcome_resolves_every_state_including_attached() {
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         // Starting => keep waiting.
         assert_eq!(
             readiness_outcome(&state.status.borrow().clone()).expect("starting"),
@@ -1844,31 +1943,46 @@ mod tests {
 
     // -- S4 (#2978): postmaster log path + bounded tail ------------------------
 
-    /// S4 / REQ-3.2: the status view carries the additive `logPath` pointing at
-    /// `<data_dir>/log/postgres.log` (camelCase on the wire), and it is `None`
-    /// only when no data dir is resolvable.
+    /// S4 / REQ-3.2 (relocated by #3180 ST-1): the status view carries the
+    /// additive `logPath` pointing at `<log dir>/postgres.log` (camelCase on the
+    /// wire), derived from the RESOLVED LOG dir — never from the cluster dir —
+    /// and it is `None` only when no log dir is resolvable.
     #[test]
-    fn log_path_is_additive_and_resolves_under_the_data_dir() {
-        let view = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+    fn log_path_is_additive_and_resolves_under_the_relocated_log_dir() {
+        let view = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres/cluster".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         let snapshot = view.status.borrow().clone();
         assert_eq!(
             snapshot.log_path,
             Some(
-                super::super::pg_log_path(Path::new("C:/data/postgres"))
+                super::super::pg_log_path(Path::new("C:/data/postgres/log"))
+                    .display()
+                    .to_string()
+            ),
+            "logPath is derived from the sibling log dir, not the cluster dir"
+        );
+        assert_eq!(
+            log_path_for(Path::new("C:/data/postgres/log")),
+            Some(
+                super::super::pg_log_path(Path::new("C:/data/postgres/log"))
                     .display()
                     .to_string()
             )
         );
         assert_eq!(
-            log_path_for("C:/data/postgres"),
-            Some(
-                super::super::pg_log_path(Path::new("C:/data/postgres"))
-                    .display()
-                    .to_string()
-            )
+            log_path_for(Path::new("")),
+            None,
+            "an unknown log dir yields no log path"
         );
-        assert_eq!(log_path_for(""), None, "an unknown data dir yields no log path");
-        assert_eq!(log_path_for("   "), None, "a blank data dir yields no log path");
+        assert_eq!(
+            log_path_for(Path::new("   ")),
+            None,
+            "a blank log dir yields no log path"
+        );
     }
 
     /// S4 / REQ-3.2: the tail returns only the LAST `lines` lines of the log and
@@ -1982,11 +2096,49 @@ mod tests {
         assert_eq!(classify_failure("setup", &other), PgFailureKind::Unknown);
     }
 
+    /// #3180 ST-1: a typed [`ClusterDirError`] anywhere in the error chain maps to
+    /// `DataDirNotEmpty` — at any stage, and even when wrapped with context (the
+    /// same decode-independent chain walk as the SQLSTATE arm).
+    #[test]
+    fn classify_failure_maps_a_cluster_dir_error_to_data_dir_not_empty() {
+        let typed = ClusterDirError {
+            path: PathBuf::from("C:/app/postgres/cluster"),
+            state: ClusterDirState::Residue,
+        };
+
+        let direct = anyhow::Error::new(typed);
+        assert_eq!(
+            classify_failure("setup", &direct),
+            PgFailureKind::DataDirNotEmpty,
+            "the concrete ClusterDirError must classify as dataDirNotEmpty"
+        );
+
+        let wrapped = anyhow::Error::new(ClusterDirError {
+            path: PathBuf::from("C:/app/postgres/cluster"),
+            state: ClusterDirState::Residue,
+        })
+        .context("preparing the PostgreSQL cluster directory");
+        assert_eq!(
+            classify_failure("setup", &wrapped),
+            PgFailureKind::DataDirNotEmpty,
+            "the chain walk must find a wrapped ClusterDirError too"
+        );
+
+        // A non-cluster failure at the same stage stays Unknown (non-vacuity).
+        let other = anyhow::anyhow!("the cluster directory is fine");
+        assert_eq!(classify_failure("setup", &other), PgFailureKind::Unknown);
+    }
+
     /// ST-4 / R-3.3: `PgSupervisorState::fail` publishes the classified kind, and
     /// `failure_kind` is `None` on every non-Failed state.
     #[test]
     fn fail_publishes_the_classified_failure_kind() {
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
 
         state.fail(
             "readiness",
@@ -2019,11 +2171,21 @@ mod tests {
             "portInUse"
         );
         assert_eq!(
+            serde_json::to_value(PgFailureKind::DataDirNotEmpty).expect("serialize"),
+            "dataDirNotEmpty",
+            "#3180 ST-1: the additive typed cause serializes camelCase"
+        );
+        assert_eq!(
             serde_json::to_value(PgFailureKind::Unknown).expect("serialize"),
             "unknown"
         );
 
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         state.set_ready(5432, 100);
         let json = serde_json::to_value(state.status.borrow().clone()).expect("serialize");
         assert!(
@@ -2102,7 +2264,12 @@ mod tests {
     /// ST-4 / R-5.2: the apply/reset refusal fires ONLY on the attached state.
     #[test]
     fn refuse_when_attached_blocks_apply_on_a_headless_cluster() {
-        let state = PgSupervisorState::new(None, None, "C:/data/postgres".to_string());
+        let state = PgSupervisorState::new(
+            None,
+            None,
+            "C:/data/postgres".to_string(),
+            "C:/data/postgres/log".to_string(),
+        );
         assert_eq!(refuse_when_attached(&state), None, "Starting is not attached");
 
         state.set_ready(5432, 1);

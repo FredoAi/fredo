@@ -1428,7 +1428,7 @@ function Assert-NoSharedClusterTarget {
   if ($EnvVars -and $EnvVars.ContainsKey("FREDO_PG_DATA_DIR")) { $effPgDataDir = [string]$EnvVars["FREDO_PG_DATA_DIR"] }
   if (-not $effPgDataDir) { $effPgDataDir = [Environment]::GetEnvironmentVariable("FREDO_PG_DATA_DIR", "Process") }
   if (-not $effPgDataDir) {
-    if ($IsEnvMode) { $effPgDataDir = $PgDataDir } else { $effPgDataDir = (Join-Path $effAppDataDir "postgres") }
+    if ($IsEnvMode) { $effPgDataDir = $PgDataDir } else { $effPgDataDir = (Join-Path (Join-Path $effAppDataDir "postgres") "cluster") }
   }
 
   $verdict = Test-SharedClusterTarget -EffAppDataDir $effAppDataDir -EffPgDataDir $effPgDataDir -SharedAppDataDir $sharedAppDataDir

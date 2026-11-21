@@ -98,6 +98,7 @@ mod tests {
             None,
             None,
             String::from("C:/tmp/fredo-3029-endpoint-test"),
+            String::from("C:/tmp/fredo-3029-endpoint-test/log"),
         ))
     }
 
