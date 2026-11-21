@@ -32,12 +32,24 @@
   Stdout literals (the driver tees them into gate.log and quotes them):
     CHECK <id> PASS|FAIL <detail>        one line per clause, pass or fail
     SURFACE_RECT=launcher-command-bar x=<n> y=<n> w=<n> h=<n> viewport=<WxH> source=getBoundingClientRect
-    BOOT_SETTLE=<ready|blank-document> seconds=<n>
+    URL_AFTER_WAITPRENAV=<href or <none>> the committed document URL read BEFORE any reload
+    PRE_NAV_FRAME=<readyState=... href=... bodyChildren=... internals=...>  the pre-navigation frame detail
+    RELOADED=<True|False>                result of the post-wait reload (styled/screenshot only)
+    BOOT_SETTLE=<ready|blank-document> seconds=<n>   seconds is the pre + post total
     DB_ISOLATION=<isolated|shared|mismatch>
     DB_EFFECTIVE_DIR=<fresh|dirty>=<absolute path>
     DB_STATE=<fresh|dirty>=<state>
     UNSTYLED:<detail> / CSP_VIOLATION:<detail> / DB_NOT_READY:<fresh|dirty>
     COMPANION_NO_REPLY / COMPANION_ENGINE:<code> / CDP_UNAVAILABLE / EVIDENCE_MISSING:screenshot
+
+  Wait-then-reload order (styled/screenshot): the hook first WAITS for the app's
+    first navigation to commit (Wait-DocumentReady; URL_AFTER_WAITPRENAV +
+    PRE_NAV_FRAME), THEN reloads. A reload issued against the still-blank
+    about:blank target restarts the cold-boot navigation and the per-run
+    webview profile never recovers, so the wait is required. A timed-out wait is
+    NOT an error -- it falls through to the reload and the readiness gate, which
+    alone owns the blank-document verdict. ONE budget (GATE_BOOT_SETTLE_SECS)
+    bounds the pre-navigation wait and the post-reload gate together.
 
   Readiness gate (before the clauses): the document must reach
     readyState=complete && href != about:blank && __TAURI_INTERNALS__ &&
@@ -1304,6 +1316,15 @@ Write-GateLine ('CDP_WEBSOCKET=' + $session.WebSocketDebuggerUrl)
 
 $deadline = $script:StartedAt.AddSeconds($windowSecs)
 
+# ONE boot-settle budget governs both waits below: the pre-navigation document
+# wait and the post-reload readiness gate. Hoisted here so a single env seam
+# (GATE_BOOT_SETTLE_SECS, 60) bounds pre + post together -- the caller's 270 s
+# window derivation still holds. No second seam is introduced.
+$bootSettleSecs = Get-EnvPositiveNumber -Name 'GATE_BOOT_SETTLE_SECS' -Default 60.0
+# Default to a zero-second sentinel: with neither styled nor screenshot selected
+# no pre-navigation wait runs, so the post-reload gate keeps the full budget.
+$preNav = [pscustomobject]@{ Ok = $false; Value = $null; Seconds = 0.0 }
+
 try {
     $null = Enable-CdpDomain -Session $session -Domain 'Log'
     $null = Enable-CdpDomain -Session $session -Domain 'Page'
@@ -1316,6 +1337,17 @@ try {
         # instrumented, which is the 0.2.3 discriminator's requirement.
         $identifier = Add-CdpNewDocumentScript -Session $session -Script $script:CspCollectorScript
         $null = Invoke-CdpEvaluate -Session $session -Expression $script:CspCollectorScript -TimeoutMs 5000
+        # WAIT for the FIRST navigation to commit BEFORE reloading (round 5). A
+        # reload issued against the still-blank about:blank target restarts the
+        # in-flight cold-boot navigation; the per-run WEBVIEW2_USER_DATA_FOLDER
+        # then never recovers and the readiness gate expires. A timed-out wait is
+        # NOT an error: it falls through to the reload and the readiness gate,
+        # which alone owns the blank-document verdict.
+        $preNav = Wait-DocumentReady -Session $session -TimeoutSecs $bootSettleSecs -Deadline $deadline
+        $preNavHref = [string](Get-GateProp $preNav.Value 'href' '')
+        $preNavHrefText = if ([string]::IsNullOrWhiteSpace($preNavHref)) { '<none>' } else { $preNavHref }
+        Write-GateLine ('URL_AFTER_WAITPRENAV=' + $preNavHrefText)
+        Write-GateLine ('PRE_NAV_FRAME=' + (Get-DocumentFrameDetail $preNav.Value))
         $reloadBudget = [int][Math]::Max(5000, [Math]::Min(20000, ($deadline - (Get-Date)).TotalMilliseconds))
         $reloaded = Invoke-CdpReload -Session $session -TimeoutMs $reloadBudget
         if ($identifier) {
@@ -1323,17 +1355,20 @@ try {
         } else {
             Write-GateLine 'HOOK_CSP_COLLECTOR=not-registered'
         }
-        Write-GateLine ('HOOK_RELOAD=' + $(if ($reloaded) { 'true' } else { 'false' }))
+        Write-GateLine ('RELOADED=' + $(if ($reloaded) { 'True' } else { 'False' }))
     }
 
     # READINESS GATE (B3): a slow boot must not be mistaken for a DB wedge. The
     # document must be a real, initialised webview (complete + not about:blank +
-    # __TAURI_INTERNALS__ + a body child) within GATE_BOOT_SETTLE_SECS (60).
-    $bootSettleSecs = Get-EnvPositiveNumber -Name 'GATE_BOOT_SETTLE_SECS' -Default 60.0
-    $documentReady = Wait-DocumentReady -Session $session -TimeoutSecs $bootSettleSecs -Deadline $deadline
+    # __TAURI_INTERNALS__ + a body child) within the REMAINING part of
+    # GATE_BOOT_SETTLE_SECS -- the pre-navigation wait above already spent part of
+    # the budget, so pre + post stays inside one 60 s bound.
+    $postNavBudget = [Math]::Max(5.0, $bootSettleSecs - $preNav.Seconds)
+    $documentReady = Wait-DocumentReady -Session $session -TimeoutSecs $postNavBudget -Deadline $deadline
     $bootState = 'ready'
     if (-not $documentReady.Ok) { $bootState = 'blank-document' }
-    Write-GateLine ('BOOT_SETTLE=' + $bootState + ' seconds=' + $documentReady.Seconds)
+    $bootTotalSeconds = [Math]::Round($preNav.Seconds + $documentReady.Seconds, 1)
+    Write-GateLine ('BOOT_SETTLE=' + $bootState + ' seconds=' + $bootTotalSeconds)
     Write-GateLine ('BOOT_FRAME=' + (Get-DocumentFrameDetail $documentReady.Value))
     if (-not $documentReady.Ok) {
         # Existing id, instrument class: the frame never initialised. This is a

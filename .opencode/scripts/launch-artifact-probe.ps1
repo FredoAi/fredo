@@ -590,12 +590,16 @@ function Invoke-ArtifactCli {
     $childPid = Start-DetachedProcess -FilePath $FilePath -ArgumentString $argString -WorkingDirectory $WorkingDirectory -StdOutPath $StdOutPath -StdErrPath $StdErrPath
     $code = Wait-DetachedChild -ProcessId $childPid
     if ($null -eq $code) {
-      Write-Probe "ERROR: child exited without a readable code ${FilePath}"
+      # [Console]::Out.Write* (never Write-Probe/Write-Output): the caller captures
+      # this function's entire output stream as the child's exit code, so a
+      # pipeline write would become an element of THAT value instead of reaching
+      # the probe's stdout. Route human lines to the process console (Stream B).
+      [Console]::Out.WriteLine("ERROR: child exited without a readable code ${FilePath}")
       return $null
     }
     return [int]$code
   } catch {
-    Write-Probe "ERROR: child launch failed ${FilePath}: $($_.Exception.Message)"
+    [Console]::Out.WriteLine("ERROR: child launch failed ${FilePath}: $($_.Exception.Message)")
     return $null
   }
 }
@@ -696,7 +700,7 @@ function Invoke-WindowHook {
       if ($errTask.Wait(5000)) { $stderrText = $errTask.Result } else { $stderrText = ''; $stderrComplete = $false }
     } catch { $stderrText = ''; $stderrComplete = $false }
   } catch {
-    Write-Probe "ERROR: window hook launch failed: $($_.Exception.Message)"
+    [Console]::Out.WriteLine("ERROR: window hook launch failed: $($_.Exception.Message)")
     $timedOut = $true
   } finally {
     $watch.Stop()
@@ -711,15 +715,23 @@ function Invoke-WindowHook {
     try { $exitCode = [int]$proc.ExitCode } catch { $exitCode = $null }
   }
   # Surface the hook's own stdout so a caller sees the token/line it printed.
+  # CRITICAL (Stream B): this function's return value IS the output stream the
+  # live caller captures (`$hookResult = Invoke-WindowHook ...`), so emitting a
+  # hook line through the PowerShell pipeline here would fold it into
+  # `$hookResult` and never reach the probe's stdout file. Emit to the process
+  # console instead, so the documented CHECK / BOOT_SETTLE / DB_EFFECTIVE_DIR /
+  # WINDOW_HOOK_* literals land in run-*/launch-report.log (and the negative
+  # leg's probe.stdout.log), and `$hookResult` is exactly one object.
   foreach ($line in ($stdoutText -split "`r?`n")) {
-    if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Probe $line }
+    if (-not [string]::IsNullOrWhiteSpace($line)) { [Console]::Out.WriteLine($line) }
   }
+  [Console]::Out.Flush()
 
   $exitText = if ($null -ne $exitCode) { [string]$exitCode } else { 'timeout' }
-  Write-Probe "WINDOW_HOOK_EXIT=$exitText"
-  Write-Probe "WINDOW_HOOK_SECONDS=$seconds"
-  if (-not $stdoutComplete) { Write-Probe 'WINDOW_HOOK_STDOUT_INCOMPLETE=true' }
-  if (-not $stderrComplete) { Write-Probe 'WINDOW_HOOK_STDERR_INCOMPLETE=true' }
+  [Console]::Out.WriteLine("WINDOW_HOOK_EXIT=$exitText")
+  [Console]::Out.WriteLine("WINDOW_HOOK_SECONDS=$seconds")
+  if (-not $stdoutComplete) { [Console]::Out.WriteLine('WINDOW_HOOK_STDOUT_INCOMPLETE=true') }
+  if (-not $stderrComplete) { [Console]::Out.WriteLine('WINDOW_HOOK_STDERR_INCOMPLETE=true') }
 
   $failureName = ''
   if ($timedOut) {
@@ -1173,6 +1185,41 @@ exit 1
     } catch {
       Write-Probe ("  [FAIL] detached exit-code control threw: {0}" -f $_.Exception.Message)
       $controlFailures++
+    }
+
+    # ---- CONTROL 9 - HOOK-TRANSCRIPT-SURFACED --------------------------
+    # Stream B regression pin. Invoke-WindowHook's return value IS the output
+    # stream the live caller captures ($hookResult = Invoke-WindowHook ...), so a
+    # pipeline write inside that function folds every hook line into $hookResult
+    # and the driver never sees CHECK / BOOT_SETTLE / DB_EFFECTIVE_DIR /
+    # WINDOW_HOOK_*. This is a SOURCE invariant (the CONTROL 3 pattern): read the
+    # function's own slice and require it to emit to the process console, with
+    # zero pipeline writes. It needs no artifact and launches nothing.
+    Write-Probe 'CONTROL 9 - HOOK-TRANSCRIPT-SURFACED'
+    $hookSource = $selfSource
+    if ([string]::IsNullOrWhiteSpace($hookSource) -and (Test-Path -LiteralPath $selfPath)) {
+      $hookSource = [System.IO.File]::ReadAllText($selfPath)
+    }
+    $hookFnText = ''
+    if (-not [string]::IsNullOrWhiteSpace($hookSource)) {
+      $hookFnMatch = [regex]::Match($hookSource, '(?ms)^function Invoke-WindowHook\b.*?^\}')
+      if ($hookFnMatch.Success) { $hookFnText = $hookFnMatch.Value }
+    }
+    $hookHasConsoleWrite = $hookFnText.Contains('[Console]::Out.WriteLine')
+    $hookHasProbeWrite = $hookFnText.Contains('Write-Probe')
+    $hookHasOutputWrite = $hookFnText.Contains('Write-Output')
+    Write-Probe ("  Invoke-WindowHook slice chars={0}; console-write={1}; pipeline-write={2}/{3}" -f $hookFnText.Length, $hookHasConsoleWrite, $hookHasProbeWrite, $hookHasOutputWrite)
+    if ($hookFnText.Length -eq 0) {
+      Write-Probe '  [FAIL] could not locate the function Invoke-WindowHook slice in the source'
+      $controlFailures++
+    } elseif (-not $hookHasConsoleWrite) {
+      Write-Probe '  [FAIL] Invoke-WindowHook never emits to the process console (its transcript would fold into the return value)'
+      $controlFailures++
+    } elseif ($hookHasProbeWrite -or $hookHasOutputWrite) {
+      Write-Probe '  [FAIL] Invoke-WindowHook still writes through the pipeline (Write-Probe/Write-Output)'
+      $controlFailures++
+    } else {
+      Write-Probe '  [PASS] Invoke-WindowHook emits its transcript to the process console and never through the pipeline'
     }
   } finally {
     if ($detachChildPid -gt 0) {
