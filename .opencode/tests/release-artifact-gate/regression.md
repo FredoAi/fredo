@@ -88,7 +88,11 @@
   - **Expected:** the verifier keeps `CONTROL 1 - PASS-ON-COMPLETE` … `CONTROL 8 - ARTIFACT-IMPORT-GAP`
     under their unchanged names and assertions and gains the new control (9) for the `-SevenZip`
     override ordering / not-found refusal; the stager keeps its 11 controls unchanged; both print
-    `SELFTEST: PASS` with `EXITCODE=0`.
+    `SELFTEST: PASS` with `EXITCODE=0`. **The negative module's own harness is pinned too:**
+    `Import-Module .opencode/scripts/gate-artifact-negative.psm1 -Force; Invoke-NegativeControlSelfTest`
+    prints `NEGATIVE_CONTROLS=23 FAILURES=0` / `NEGATIVE_MODULE_SELFTEST: PASS` with `EXITCODE=0`, and
+    carries `CSP-INDUCTION-NOT-DOCUMENT-WRITE [PASS]` (a hermetic source invariant: the generated Csp
+    hook uses a response header, not a `document.write`).
   - **Edge:** a renamed or dropped pre-existing control ⇒ **FAIL**; a weakened assertion ⇒ **FAIL**;
     the `-SevenZip` route becoming the DEFAULT route (rather than first-among-routes when supplied)
     ⇒ **FAIL**.
@@ -112,8 +116,12 @@
     is **strengthened, not weakened** — the ban now covers every gate-owned child runner, not only
     the app launch.
   - **Expected:** `SELFTEST: PASS` with the three original controls (including the inline-handle
-    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`) **and the
-    retained-handle exit-code control `DETACHED-EXIT-CODE`** (assert it by **NAME**, not a guessed
+    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`), the
+    retained-handle exit-code control `DETACHED-EXIT-CODE`, **and the round-5 transcript control
+    `CONTROL 9 - HOOK-TRANSCRIPT-SURFACED`** (assert it by **NAME**, not an ordinal — the emitted line
+    is `CONTROL 9 - HOOK-TRANSCRIPT-SURFACED` with `[PASS] Invoke-WindowHook emits its transcript to
+    the process console and never through the pipeline`; the probe now emits **9** controls); the
+    retained-handle exit-code control is `DETACHED-EXIT-CODE` (asserted by **NAME**, not a guessed
     ordinal — the round-4 plan literal called it control "6" but the probe **shipped it as control 8**
     after controls 6/7 were added; the emitted line is `CONTROL 8 - DETACHED-EXIT-CODE` with
     `DETACHED_CHILD_EXIT=42` / `DETACHED_CHILD_EXIT_STATUS=observed` and `[PASS]`. **Disclosed

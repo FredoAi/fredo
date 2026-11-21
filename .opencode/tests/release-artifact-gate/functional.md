@@ -189,7 +189,13 @@
     polled ≤ 15 s at 250 ms before capture), and the PNG's IHDR width/height (file bytes 16–23)
     equal `screenshot.viewport` — viewport-only capture: no `clip`, no `captureBeyondViewport`, no
     `Emulation` override;
-    plus the `SURFACE_RECT=` line with `w > 0` and `h > 0`.
+    plus the `SURFACE_RECT=` line with `w > 0` and `h > 0`;
+    plus the hook transcript in `run-fresh/launch-report.log` records the **wait-then-reload** order on
+    a rendered document — `URL_AFTER_WAITPRENAV=http://tauri.localhost/` → `PRE_NAV_FRAME=readyState=complete
+    href=http://tauri.localhost/ bodyChildren>=1 internals=True` → `RELOADED=True` — followed by
+    `BOOT_SETTLE=ready`; there is **no** `HOOK_RELOAD=` literal at this head (round 5 renamed it to
+    `RELOADED=`), and `BOOT_SETTLE seconds=` is the pre-navigation wait **plus** the post-reload
+    readiness total inside the single 60 s `GATE_BOOT_SETTLE_SECS` budget.
   - **Edge:** any failure ⇒ `UNSTYLED:<detail>` (frame failures as
     `UNSTYLED:screenshot-frame S<n>=<observed>`) and/or `CSP_VIOLATION:<detail>`, exit 1;
     `about:blank`/blank webview ⇒ S1 false ⇒ `UNSTYLED:screenshot-frame S1=…`; no target after the
@@ -228,6 +234,9 @@
     delete — `cluster_dir.rs:48-53`); `QUARANTINE_EVIDENCE=` names that sibling; the run records
     `DB_EFFECTIVE_DIR=dirty=<OUTDIR>\run-dirty\postgres\cluster` and
     `WEBVIEW2_USER_DATA_DIR=<OUTDIR>\run-dirty\webview2`; no `DB_NOT_READY:dirty`.
+    The dirty run's `run-dirty/launch-report.log` also records the wait-then-reload receipts on a
+    rendered document — `URL_AFTER_WAITPRENAV=http://tauri.localhost/`, `PRE_NAV_FRAME=… bodyChildren>=1
+    internals=True`, `RELOADED=True`, `BOOT_SETTLE=ready` (no `HOOK_RELOAD=` literal exists at this head).
   - **Edge:** ready but no sibling ⇒ `DB_QUARANTINE_MISSING`; residue deleted instead of renamed ⇒
     `DB_QUARANTINE_MISSING`; ready with no `QUARANTINE_EVIDENCE=` line ⇒ instrument gap (route to
     ST-3), not a product PASS; a **blank frame** (`about:blank`) ⇒ `CDP_UNAVAILABLE:blank-document`
@@ -271,7 +280,9 @@
   - **Expected:** the evidence set lives under the canonical run's **recorded `OUTDIR=`** (not a
     hard-coded path): `gate.log`, `receipt.json`, `installer-payload/`,
     `run-fresh/{stdout.log,stderr.log,launch-report.log,cdp.json,screenshot.png}`,
-    `run-dirty/{…same set}` — **`run-dirty\cdp.json` + its screenshot are required**; each PNG ≥ 8
+    `run-dirty/{…same set}` — **`run-dirty\cdp.json` + its screenshot are required**; each run's
+    `launch-report.log` carries the wait-then-reload receipts (`URL_AFTER_WAITPRENAV=http://tauri.localhost/`
+    → `PRE_NAV_FRAME=… bodyChildren>=1 internals=True` → `RELOADED=True`); each PNG ≥ 8
     bytes with first 8 bytes `89 50 4E 47 0D 0A 1A 0A`; each PNG's `bytes=`/`sha256=`/IHDR recorded
     **as prose** (no upload); no `EVIDENCE_MISSING:`.
   - **Edge:** missing/zero-byte/non-PNG ⇒ `EVIDENCE_MISSING:screenshot` + exit 1; a PNG that is a
@@ -301,18 +312,31 @@
 
 - [ ] **F-15 (REQ-3.2a, Csp — the in-gate detector control; the CI-executable half of AC3).**
   `RC("… -Mode negative -Negative Csp -SkipCompanion -OutDir '.opencode\tmp\release-gate\3181-neg-csp-<stamp>'")`.
-  - **Expected:** the leg induces the 0.2.3 condition in the live document (nonce-bearing `style-src`
-    via `Page.addScriptToEvaluateOnNewDocument` + `Page.reload`); the **generated CSP wrapper invokes
-    the ABSOLUTE `$PSHOME\powershell.exe`** (asserted at write time — no bare `& powershell`, which
-    cannot resolve under the sanitised child `PATH`); the wrapper emits `CSP_POLICY_HOOK_EXIT=<n>`
-    **non-empty and equal to the hook's own exit**; the inner gate emits **both**
-    `CSP_VIOLATION:<detail>` **and** `UNSTYLED:<detail>` with `GATE_EXIT=1`; outer `EXITCODE=0`;
-    `NEGATIVE_OBSERVED` contains both ids; `negative-csp/` evidence exists.
+  - **Expected:** the leg induces the 0.2.3 **nonce** condition by serving the app's Document
+    response with an induced `style-src 'self' 'unsafe-inline' 'nonce-fredo-gate-3181'` header
+    through the CDP `Fetch` domain (`Fetch.enable`/`fulfillRequest`) — **not** a document-start
+    `document.write` (the hermetic control `CSP-INDUCTION-NOT-DOCUMENT-WRITE` pins that no parser
+    write is generated); the wrapper emits
+    `CSP_INDUCTION=response-header policy=style-src 'self' 'unsafe-inline' 'nonce-fredo-gate-3181'`
+    and `CSP_FRAME=ready readyState=complete href=http://tauri.localhost/ bodyChildren>=1
+    internals=True`; the **generated CSP wrapper invokes the ABSOLUTE `$PSHOME\powershell.exe`**
+    (asserted at write time — no bare `& powershell`, which cannot resolve under the sanitised child
+    `PATH`); the wrapper emits `CSP_POLICY_HOOK_EXIT=<n>` **non-empty and equal to the hook's own
+    exit**; the leg prints `NEGATIVE_LEG_CSP_PAIR=both`; the inner gate emits **both**
+    `CSP_VIOLATION:<detail>` **and** `UNSTYLED:<detail>` with `GATE_EXIT=1` — the violated directive
+    is emitted as **`style-src-elem`** (the actual Chromium value for an inline `<style>` element;
+    accept it as the nonce-bearing style directive and record the literal), and the violation detail
+    names `nonce-fredo-gate-3181`; outer `EXITCODE=0`; `NEGATIVE_OBSERVED` contains both ids;
+    `run-csp/cdp.json` carries `assertions="styled,screenshot"`, `styled.emotionRules=0`,
+    `styled.violations>0`, `styled.s1=true`, `screenshot.criteria.S1=true`; `negative-csp/`
+    evidence exists.
   - **Edge:** only `UNSTYLED` observed ⇒ the 0.2.3 mechanism was not reproduced ⇒
     `NEGATIVE_WRONG_ERROR` and the leg **FAILS**; a plain `<style>` with no nonce policy is **not**
     the condition; an **unrunnable** hook (absolute path missing, `CSP_POLICY_HOOK_EXIT=unrunnable`)
     ⇒ `NEGATIVE_INSTRUMENT_FAILURE` (an instrument that never ran proves nothing); the shipped
-    installer must be re-asserted unchanged (digest) after the leg.
+    installer must be re-asserted unchanged (digest) after the leg. A generated hook containing
+    `document.write` ⇒ **FAIL** (the induction is a response header, and that is the round-5 fix —
+    the control `CSP-INDUCTION-NOT-DOCUMENT-WRITE` is red if it ever returns).
   - **Evidence:** POSTED `## Tests Runs` quotes `CSP_POLICY_HOOK_EXIT=`, `NEGATIVE_EXPECTED=`,
     `NEGATIVE_OBSERVED=`, `GATE_EXIT=`, `EXITCODE=` and the inner `CSP_VIOLATION:`/`UNSTYLED:` lines.
 
@@ -357,7 +381,10 @@
     (`cluster_dir.rs:57`, read at `:266-271`); the inner gate reports
     `DB_EFFECTIVE_DIR=dirty=` **equal to that path** (cross-checked as `NEGATIVE_LEG_EFFECTIVE_DIR=`)
     and emits `DB_NOT_READY:dirty` within the bound with `GATE_EXIT=1`; outer `EXITCODE=0`;
-    `NEGATIVE_OBSERVED` contains `DB_NOT_READY:dirty`.
+    `NEGATIVE_OBSERVED` contains `DB_NOT_READY:dirty`. `WINDOW_HOOK_EXIT=1` in this leg is
+    **CORRECT** — the in-window hook legitimately fails `REQ-2.4` on the induced wedge; the leg's
+    contract is its own `GATE_EXIT=1` / `NEGATIVE_OBSERVED=DB_NOT_READY:dirty` / outer `EXITCODE=0`,
+    never the hook's own exit as the leg's verdict.
   - **Edge:** seam not set ⇒ residue quarantined ⇒ gate passes ⇒ `NEGATIVE_NOT_REPRODUCED` (leg
     FAIL); observed `DB_QUARANTINE_MISSING` ⇒ wrong id; a **shared-dir** `DB_EFFECTIVE_DIR=dirty=`
     (the `%APPDATA%\com.fredo.app\postgres\cluster` value) ⇒ `NEGATIVE_INSTRUMENT_FAILURE` (the
@@ -475,7 +502,10 @@
     `CSP_VIOLATION`, `DB_NOT_READY`, `DB_QUARANTINE_MISSING`, `COMPANION_NO_REPLY`,
     `COMPANION_ENGINE`, `MCP_PORT_OPEN`, `MCP_BRIDGE_LOG_LINE`, `EVIDENCE_MISSING`, `CDP_UNAVAILABLE`,
     `WEBVIEW2_MISSING`, `MODEL_SET_MISSING`, `CDP_PORT_IN_USE`, `NEGATIVE_NOT_REPRODUCED`,
-    `NEGATIVE_WRONG_ERROR` — each driving exit 1 with its own id; no `[FAIL]`.
+    `NEGATIVE_WRONG_ERROR` — each driving exit 1 with its own id; no `[FAIL]`. The GATE self-test's
+    control count stays **31** (pinned; F-24's count is unchanged); the probe's separate `-SelfTest`
+    now has **9** controls (`CONTROL 9 - HOOK-TRANSCRIPT-SURFACED`, asserted by NAME in R-6) and the
+    negative module's self-test has **23** `NEGATIVE_CONTROLS` (R-5).
   - **Edge:** `EXITCODE=3` ⇒ a control failed ⇒ instrument **FAIL**; a §B id with no control ⇒
     **FAIL**; a control that passes without emitting its id ⇒ **FAIL** (vacuous).
   - **Evidence:** POSTED `## Tests Runs` quotes `SELFTEST: PASS` + the control lines.
@@ -488,7 +518,9 @@
     document**; boot-settle (`Wait-DocumentReady`) ≤ 60 s; per-profile launch settle
     (`Wait-LaunchSettled`) ≤ 30 s; the derived hook window is
     `HOOK_WINDOW_SECS = BootSettle(60) + DbReadySecs(180) + 30 = 270` (cap 360); companion ≤ 600 s;
-    no clause exceeded its bound silently.
+    no clause exceeded its bound silently. `BOOT_SETTLE seconds=` reports the **pre-navigation wait plus
+    the post-reload readiness** total inside the single 60 s `GATE_BOOT_SETTLE_SECS` budget (round 5
+    hoisted the one budget above both waits); a rendered boot reports `BOOT_SETTLE=ready`.
   - **Edge:** a bound expiring is that clause's named failure (`CDP_UNAVAILABLE:blank-document`,
     `GATE_REFUSED:reason=host-not-settled label=<fresh|dirty>`, `DB_NOT_READY:*`); a run that hangs
     with no `receipt.json` is a harness **FAIL** — quote its last log line.
