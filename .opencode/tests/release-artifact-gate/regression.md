@@ -96,22 +96,39 @@
 ## R-6 — The single GUI launch primitive survives (no second launcher)
 
 - [ ] **R-6.** `RC("powershell -NoProfile -File .opencode/scripts/launch-artifact-probe.ps1 -SelfTest")`;
-  read `.opencode/scripts/launch-artifact-probe.ps1`.
+  read `.opencode/scripts/launch-artifact-probe.ps1` **and** `.opencode/scripts/detach-process.psm1`.
+  - **Reconciliation (round 3 — human directive, guardrail G-450).** This row previously read,
+    verbatim:
+    > the source still carries `Start-DetachedProcess` as the only GUI launch,
+    > `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`
+    with the read target `.opencode/scripts/launch-artifact-probe.ps1`.
+    The three mechanism tokens are no longer in the probe: they were **extracted** into the ONE
+    shared handle-whitelist primitive `.opencode/scripts/detach-process.psm1` (`CreateProcessW` +
+    `EXTENDED_STARTUPINFO_PRESENT` + `STARTF_USESTDHANDLES` + `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`)
+    because the gate's own child runner had re-invented an inheriting spawn. The row is reconciled
+    **old → new**: the three mechanism tokens are read in **`detach-process.psm1`**, while
+    `launch-artifact-probe.ps1` must still (i) `Import-Module` that module, (ii) call
+    `Start-DetachedProcess` at its GUI launch site, and (iii) hold **no second GUI spawn**. The edge
+    is **strengthened, not weakened** — the ban now covers every gate-owned child runner, not only
+    the app launch.
   - **Expected:** `SELFTEST: PASS` with the three original controls (including the inline-handle
-    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`); the
-    source still carries `Start-DetachedProcess` as the only GUI launch,
-    `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`;
-    `-CdpPort`/`-CdpProbe` are **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath`
-    semantics are unchanged; **`-Ports` still accepts the driver's three-port list** and the probe's
-    own self-test covers the port-binding form (`functional.md` F-28) — the round-1 fix must not
-    regress it.
+    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`); the probe
+    still calls `Start-DetachedProcess` as its only GUI launch and `Import-Module`s
+    `detach-process.psm1`; `detach-process.psm1` carries `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
+    `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`; `-CdpPort`/`-CdpProbe` are
+    **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath` semantics are unchanged;
+    **`-Ports` still accepts the driver's three-port list** and the probe's own self-test covers the
+    port-binding form (`functional.md` F-28) — the round-1 fix must not regress it.
   - **Edge:** a second spawn path for the app (a `Start-Process`/`Process::Start` outside the
-    primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); the hand-off of
-    stdin/stdout/stderr no longer whitelisted ⇒ **FAIL**; `-CdpPort` sharing a probed bridge port
-    (`9223`/`16932`/`19631`) ⇒ **FAIL**; the three negative legs' probe invocation
-    (`gate-artifact-negative.psm1:980,1020,1060`) drifting from the driver's port form, or a leg
-    falling back to a single-port invocation → **FAIL** (the other two ports would go unprobed —
-    `functional.md` F-28's edge, F-12's three `PORT_` lines).
+    primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); **any `-NoNewWindow` +
+    redirect combination in a gate-owned runner** (the gate, the negative module, the probe, the
+    wrapper) ⇒ **FAIL** (G-450 — the child inherits the caller's stdout pipe and the caller blocks on
+    EOF with no output); a gate-owned child spawned with default handle inheritance instead of
+    `Start-DetachedProcess` ⇒ **FAIL**; the hand-off of stdin/stdout/stderr no longer whitelisted ⇒
+    **FAIL**; `-CdpPort` sharing a probed bridge port (`9223`/`16932`/`19631`) ⇒ **FAIL**; the three
+    negative legs' probe invocation (`gate-artifact-negative.psm1`) drifting from the driver's port
+    form, or a leg falling back to a single-port invocation → **FAIL** (the other two ports would go
+    unprobed — `functional.md` F-28's edge, F-12's three `PORT_` lines).
 
 ## R-7 — The webview-security-evidence skill's pinned tokens stay green
 

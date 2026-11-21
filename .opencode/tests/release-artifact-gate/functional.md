@@ -522,6 +522,39 @@
   - **Evidence:** POSTED quotes (A)'s control line, (B)'s classification lines + `EXITCODE=`, and the
     canonical child/classification lines from `gate.log`.
 
+- [ ] **F-30 (G-450 — a gate-owned child runner returns to a pipe-capturing caller; the
+  "agent got stuck with no output" class).** Four hermetic legs (no installer, no GUI, no network).
+  - **(a) the harness self-test carries the spawn control:**
+    `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -SelfTest")`
+    ⇒ `SELFTEST: PASS`, a control line
+    `CONTROL 25 CHILD-RUNNER-NO-INHERIT - the child runner returns with the grandchild still alive (no inherited handles)` `[PASS]`,
+    and the stdout facts `RUNNER_RETURN_SECONDS=<s>` with `<s>` ≤ 5, `RUNNER_CHILD_ALIVE=True`, and a
+    non-zero `RUNNER_CHILD_PID=`. The child is **never killed** — a kill would mask a leaked handle.
+  - **(b) the inline, pipe-captured, bounded wrapper leg — the human's exact symptom:**
+    `RC("powershell -NoProfile -File .opencode/scripts/run-exitcode.ps1 -Command \"powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -SelfTest\"")`
+    ⇒ the **full** self-test transcript is printed **and** the wrapper prints `EXITCODE=0`; no
+    `TIMEOUT=`. (This is the leg that used to print nothing and never return.)
+  - **(c) the harness leg carries its own inline 15 s bound:**
+    `RC("powershell -NoProfile -File .opencode/scripts/test-scripts.ps1")` ⇒ `Total == Passed`,
+    `Failed: 0`, `Skipped: 0`; record the total (180 expected — baseline 179 at `ad1426e`).
+  - **(d) no inheriting spawn survives in a gate-owned launch path:**
+    `RC("Select-String -Path '.opencode/scripts/gate-release-artifact.ps1','.opencode/scripts/gate-artifact-negative.psm1','.opencode/scripts/launch-artifact-probe.ps1','.opencode/scripts/run-exitcode.ps1' -Pattern 'NoNewWindow' -SimpleMatch")`
+    ⇒ **zero hits**.
+  - **Expected:** all four legs green: the control present and `[PASS]`, the elapsed/`alive`/`pid`
+    facts recorded, the wrapper returning a full transcript plus `EXITCODE=0` well inside its bound,
+    the harness summary with zero failures, and zero `-NoNewWindow` occurrences in any gate-owned
+    script.
+  - **Edge (fail-closed — the row must be able to go RED):** the **elapsed bound** and the
+    **grandchild-still-alive** assertion are the discriminating elements: a reverted inheriting spawn
+    makes the inline leg stall to the grandchild's 20 s lifetime (elapsed > 15 s) instead of failing
+    fast, and a spawn that kills its grandchild reports `RUNNER_CHILD_ALIVE=False`. Either, or a
+    missing `CHILD-RUNNER-NO-INHERIT` control, or an `-NoNewWindow` + redirect hit ⇒ **FAIL**. A row
+    that reports only "the self-test exits 0" without the elapsed/alive facts ⇒ **FAIL** (not
+    discriminating).
+  - **Evidence:** POSTED quotes the `CONTROL 25 …` line with `[PASS]`, the three `RUNNER_*=` facts,
+    the wrapper's `EXITCODE=` (with the line count / tail of the transcript it returned), the
+    `test-scripts.ps1` summary block, and the zero-hit `Select-String`.
+
 ---
 
 _Evidence convention: pass cases keep `- [x]` and append the quoted literals plus `EXITCODE=`; fail
