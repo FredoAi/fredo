@@ -64,6 +64,16 @@ and exits **0 only** when the inner gate exited non-zero **and** emitted the exp
 otherwise `NEGATIVE_NOT_REPRODUCED` / `NEGATIVE_WRONG_ERROR` and exit 1. A leg that cannot
 reproduce is a leg FAIL, never a silent skip.
 
+**Launch seam.** The probe's `-Ports` is a **specification string** -- one or more decimal
+ports separated by `,`, `;` or whitespace (e.g. `-Ports 9223,16932,19631`) -- not an
+`[int[]]` array. The driver and the three negative legs pass exactly that **comma-joined**
+list across the native `-File` boundary, so the seam must bind the whole list, never a
+single token. If the launch **instrument** itself cannot run (a parameter-bind failure, or
+a child that dies before printing a `RESULT=`/`PID=` transcript), that is a named
+**refusal** -- `NEGATIVE_INSTRUMENT_FAILURE` for a negative leg, `LAUNCH_NOT_RUNNING` for
+a gate run -- **never** an observation (`NEGATIVE_NOT_REPRODUCED` / `NEGATIVE_WRONG_ERROR`)
+and never a pass.
+
 The **bundle-level CSP revert** (REQ-3.2b) is a **testing-round** demonstration, not a
 harness mode: build a second installer from the committed overlay
 `.opencode/scripts/tauri.csp-revert.json`
@@ -100,6 +110,7 @@ receipt `errors[]`. A failure class never reuses another's id.
 | `CDP_PORT_IN_USE` | The DevTools port was already listening before launch (refused, exit 2). |
 | `NEGATIVE_NOT_REPRODUCED` | The induced defect did not fail the gate. |
 | `NEGATIVE_WRONG_ERROR` | The gate failed with a different id than expected. |
+| `NEGATIVE_INSTRUMENT_FAILURE:<detail>` | A negative leg's launch **instrument** could not run (a parameter-bind failure or an empty probe transcript). A named refusal, never an observation and never a pass. |
 
 `-SelfTest` runs one control **per** named error id, so every id above is proven to be
 emitted by its own control.

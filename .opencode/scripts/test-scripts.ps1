@@ -4933,6 +4933,52 @@ Test-Script "gate-release-artifact.ps1: -SelfTest passes all controls" {
   return "gate-release-artifact -SelfTest: SELFTEST: PASS"
 }
 
+# The launch seam that let round 1 escape (G-406/G-435: an EXECUTED control, not a
+# source-token pin). The driver passes the probe's REAL port list as one
+# comma-joined token across a native `-File` boundary; a `[int[]]` parameter cannot
+# bind that token under Windows PowerShell 5.1, so every launch child died before
+# WebView2/CDP/PostgreSQL. This leg spawns the probe with the driver's real list and
+# asserts the typed missing-exe refusal (exit 2, RESULT=REFUSED) -- never a binder
+# error -- with a single-port positive control and a malformed-spec control that
+# proves EVERY token is parsed (a fix that only binds the first port fails it).
+# Hermetic: no installer, GUI, model or network; the exe path is a non-existent temp
+# file so the probe stops at its own refusal.
+Test-Script "gate-release-artifact.ps1: the probe binds the real port list (no binder error)" {
+  $probe = ".opencode/scripts/launch-artifact-probe.ps1"
+  if (-not (Test-Path -LiteralPath $probe)) { throw "launch-artifact-probe.ps1 is missing" }
+  $missingExe = Join-Path $env:TEMP ("fredo-missing-" + [Guid]::NewGuid().ToString("N") + ".exe")
+  if (Test-Path -LiteralPath $missingExe) { Remove-Item -LiteralPath $missingExe -Force -ErrorAction SilentlyContinue }
+
+  # Single-port positive control: the form the probe has always bound.
+  $single = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223' 2>&1
+  $singleCode = $LASTEXITCODE
+  $singleText = if ($single -is [array]) { $single -join "`n" } else { "$single" }
+  if ($singleCode -ne 2) { throw "single-port: expected exit 2, got ${singleCode}: $singleText" }
+  if ($singleText -notmatch 'RESULT=REFUSED') { throw "single-port: missing RESULT=REFUSED: $singleText" }
+
+  # The driver's REAL list across the native -File boundary (three comma-joined ports).
+  $triple = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223,16932,19631' 2>&1
+  $tripleCode = $LASTEXITCODE
+  $tripleText = if ($triple -is [array]) { $triple -join "`n" } else { "$triple" }
+  if ($tripleText -match 'ParameterArgumentTransformationError' -or $tripleText -match 'Cannot convert value') {
+    throw "three-port: hit a -File binder error (the round-1 launch-seam defect): $tripleText"
+  }
+  if ($tripleCode -ne 2) { throw "three-port: expected exit 2, got ${tripleCode}: $tripleText" }
+  if ($tripleText -notmatch 'RESULT=REFUSED') { throw "three-port: missing RESULT=REFUSED: $tripleText" }
+  if ($tripleText -notmatch 'ERROR: missing exe') { throw "three-port: missing 'ERROR: missing exe': $tripleText" }
+
+  # Discrimination: a parser that only binds the FIRST token would ignore the
+  # malformed trailing token and reach the missing-exe refusal instead of refusing it.
+  $bad = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223,x' 2>&1
+  $badCode = $LASTEXITCODE
+  $badText = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+  if ($badCode -ne 2) { throw "malformed-port: expected exit 2, got ${badCode}: $badText" }
+  if ($badText -notmatch 'RESULT=REFUSED') { throw "malformed-port: missing RESULT=REFUSED: $badText" }
+  if ($badText -notmatch 'port is not an integer') { throw "malformed-port: the trailing token was not parsed (a first-port-only fix would pass): $badText" }
+
+  return "probe binds 9223 and 9223,16932,19631 across -File (typed missing-exe refusal, no binder error); malformed trailing token is rejected"
+}
+
 Test-Script "gate-release-artifact.ps1: every named error id is emitted by its own control" {
   if (-not (Test-Path -LiteralPath $releaseGate)) {
     throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
@@ -4961,7 +5007,8 @@ Test-Script "gate-release-artifact.ps1: every named error id is emitted by its o
     "MODEL_SET_MISSING",
     "CDP_PORT_IN_USE",
     "NEGATIVE_NOT_REPRODUCED",
-    "NEGATIVE_WRONG_ERROR"
+    "NEGATIVE_WRONG_ERROR",
+    "NEGATIVE_INSTRUMENT_FAILURE"
   )
   $missing = @($ids | Where-Object { -not $text.Contains($_) })
   if ($missing.Count -gt 0) {
