@@ -34,16 +34,38 @@ Stdout literals (REQ-3.4; one fact per line, mirrored into gate.log by the
 driver):
     NEGATIVE_LEG=<MissingDll|Csp|Database>
     NEGATIVE_PREPARE=ok|failed:<detail>
+    NEGATIVE_LEG_INSTRUMENT=ok|FAIL
+    NEGATIVE_INSTRUMENT_FAILURE:<detail>          (instrument failure only)
     NEGATIVE_EXPECTED=<id[,id]>
     NEGATIVE_OBSERVED=<id[,id]>            (<none> when nothing fired)
     GATE_EXIT=<n>
-    NEGATIVE_CONTROL=REPRODUCED|NOT_REPRODUCED|WRONG_ERROR leg=<leg>
-    NEGATIVE_NOT_REPRODUCED | NEGATIVE_WRONG_ERROR   (on failure)
+    NEGATIVE_CONTROL=REPRODUCED|NOT_REPRODUCED|WRONG_ERROR|INSTRUMENT_FAILURE leg=<leg>
+    NEGATIVE_NOT_REPRODUCED | NEGATIVE_WRONG_ERROR | NEGATIVE_INSTRUMENT_FAILURE
+                                                            (on failure)
+
+INSTRUMENT FAILURE IS ITS OWN CLASS (round-2 fix). A leg decides ONLY on what a
+child actually reported. When the child died before printing a usable transcript,
+left an unreadable exit code, or hit PowerShell 5.1's `-File` argument binder
+(`ParameterArgumentTransformationError` / `Cannot convert value`), the leg
+observed NOTHING about the device under test and reports
+`NEGATIVE_LEG_INSTRUMENT=FAIL` plus the outcome id
+`NEGATIVE_INSTRUMENT_FAILURE:<detail>`. That class TAKES PRECEDENCE over
+`NEGATIVE_NOT_REPRODUCED` and `NEGATIVE_WRONG_ERROR` in both the leg and
+`Test-NegativeOutcome`. Round 1 misread exactly this shape as "the app survived"
+(GateExit 0) and as "the hook failed with the wrong id", so it is now impossible
+for a dead child to be scored as an observation.
+
+PORT CONTRACT (round-2 fix): the probe's `-Ports` parameter accepts ONE
+specification - one or more decimal ports separated by `,`, `;` or whitespace. A
+`[int[]]` parameter cannot be bound from a `-File` invocation with more than one
+value, which is why a comma-joined token used to abort the child in its binder.
+This module passes exactly `9223,16932,19631` and never any other shape.
 
 Exit contract (mirrors the harness, plan section C)
     0  reproduced - the inner gate exited non-zero AND emitted every expected id
-    1  NOT reproduced (the inner gate passed, or refused with exit 2/3) or the
-       wrong id fired (`NEGATIVE_WRONG_ERROR`)
+    1  NOT reproduced (the inner gate passed, or refused with exit 2/3), the
+       wrong id fired (`NEGATIVE_WRONG_ERROR`), or the instrument could not run
+       (`NEGATIVE_INSTRUMENT_FAILURE`)
 
 Driver dispatch contract (gate-release-artifact.ps1 -Mode negative)
   The landed driver imports this module and calls ONE function:
@@ -54,12 +76,17 @@ Driver dispatch contract (gate-release-artifact.ps1 -Mode negative)
                          -SkipCompanion:<bool> [-SevenZip <path>] [-DriverPath <abs>]
 
   and expects an object with `Observed` (string[] of `ID` or `ID:<detail>`) and
-  `GateExit` (int). The DRIVER owns the verdict - it prints NEGATIVE_EXPECTED /
-  NEGATIVE_OBSERVED / GATE_EXIT and classifies NEGATIVE_NOT_REPRODUCED /
-  NEGATIVE_WRONG_ERROR - so this module only performs the leg and reports what
-  the inner clauses emitted. The leg's evidence lands under
-  `<OutDir>/negative-<slug>/` (plan section D): the extraction tree, the mutant
-  payload copy, the probe stdout/stderr per run and the generated wrapper hook.
+  `GateExit` (int). The leg also returns `InstrumentFailed` (bool) and
+  `InstrumentDetail` (string). The landed driver honours BOTH signals and reports
+  `NEGATIVE_INSTRUMENT_FAILURE:<detail>` with PRECEDENCE over
+  NEGATIVE_NOT_REPRODUCED / NEGATIVE_WRONG_ERROR: it reads `InstrumentFailed`
+  directly, and it also accepts a `NEGATIVE_INSTRUMENT_FAILURE` entry in
+  `Observed`, which is why an instrument-failed leg observes exactly that id and
+  nothing else.
+
+  `-InstrumentRoot` is a SELF-TEST seam (the driver never passes it): it lets the
+  hermetic controls drive this real entry route against instruments that cannot
+  bind, which is the round-1 regression.
 
   The driver's gate path exposes no seam for a mutant exe, a wrapper probe or a
   data dir, so a leg drives the SAME instruments the gate drives:
@@ -258,7 +285,8 @@ function Test-NegativeOutcome {
         [string]$Leg,
         [int]$GateExit,
         [string[]]$Lines,
-        [string]$PrepareError = ''
+        [string]$PrepareError = '',
+        [string]$InstrumentDetail = ''
     )
 
     $expectation = Get-NegativeExpectation -Leg $Leg
@@ -286,6 +314,17 @@ function Test-NegativeOutcome {
     }
     $result.Expected = @($expectation.Expected)
 
+    # INSTRUMENT FAILURE IS ITS OWN CLASS, and it takes precedence over every
+    # observation class. A leg whose child never produced a usable transcript (or
+    # whose exit code is unreadable) observed NOTHING about the device under test,
+    # so it must never be scored as NEGATIVE_NOT_REPRODUCED (silently "the gate
+    # still passed") or NEGATIVE_WRONG_ERROR (a half-right observation). Round 1
+    # was misread exactly that way.
+    if (-not [string]::IsNullOrWhiteSpace($InstrumentDetail)) {
+        $result.Code = 'NEGATIVE_INSTRUMENT_FAILURE'
+        $result.Detail = $InstrumentDetail
+        return $result
+    }
     if (-not [string]::IsNullOrWhiteSpace($PrepareError)) {
         $result.Code = 'NEGATIVE_NOT_REPRODUCED'
         $result.Detail = 'mutant-preparation-failed: ' + $PrepareError
@@ -786,18 +825,27 @@ function Complete-NegativeControl {
         Write-Host 'NEGATIVE_EXPECTED=<none>'
         Write-Host 'NEGATIVE_OBSERVED=<none>'
         Write-Host ('GATE_EXIT=' + $GateExit)
+        Write-Host 'NEGATIVE_LEG_INSTRUMENT=<none>'
         Write-Host 'NEGATIVE_NOT_REPRODUCED'
         Write-Host 'NEGATIVE_CONTROL=NOT_REPRODUCED leg=<none>'
         return 1
     }
 
-    $outcome = Test-NegativeOutcome -Leg $Control.Leg -GateExit $GateExit -Lines $GateLines -PrepareError $Control.PrepareError
+    $instrumentDetail = ''
+    if ($null -ne $Control.PSObject.Properties['InstrumentDetail']) { $instrumentDetail = [string]$Control.InstrumentDetail }
+    $outcome = Test-NegativeOutcome -Leg $Control.Leg -GateExit $GateExit -Lines $GateLines `
+        -PrepareError $Control.PrepareError -InstrumentDetail $instrumentDetail
 
     Write-Host ('NEGATIVE_LEG=' + $Control.Leg)
     if ([string]::IsNullOrWhiteSpace($Control.PrepareError)) {
         Write-Host 'NEGATIVE_PREPARE=ok'
     } else {
         Write-Host ('NEGATIVE_PREPARE=failed:' + $Control.PrepareError)
+    }
+    if ([string]::IsNullOrWhiteSpace($instrumentDetail)) {
+        Write-Host 'NEGATIVE_LEG_INSTRUMENT=ok'
+    } else {
+        Write-Host 'NEGATIVE_LEG_INSTRUMENT=FAIL'
     }
     Write-Host ('NEGATIVE_EXPECTED=' + $outcome.ExpectedText)
     Write-Host ('NEGATIVE_OBSERVED=' + $outcome.ObservedText)
@@ -826,6 +874,7 @@ function Complete-NegativeControl {
     Write-Host ($outcome.Code + ' ' + $outcome.Detail)
     $verdict = 'NOT_REPRODUCED'
     if ($outcome.Code -eq 'NEGATIVE_WRONG_ERROR') { $verdict = 'WRONG_ERROR' }
+    if ($outcome.Code -eq 'NEGATIVE_INSTRUMENT_FAILURE') { $verdict = 'INSTRUMENT_FAILURE' }
     Write-Host ('NEGATIVE_CONTROL=' + $verdict + ' leg=' + $Control.Leg)
     return 1
 }
@@ -884,14 +933,126 @@ function Invoke-LegChild {
 function Get-LegPayloadRoot {
     param([string[]]$Lines, [string]$Fallback)
 
-    foreach ($line in @($Lines)) {
-        $text = [string]$line
-        if ($text -match 'EXTRACT_ROOT=(.+)$') {
-            $root = $Matches[1].Trim()
-            if (-not [string]::IsNullOrWhiteSpace($root) -and (Test-Path -LiteralPath $root -PathType Container)) { return $root }
+    # A redirected PowerShell host still wraps a long stdout line at its buffer
+    # width, so `EXTRACT_ROOT=<deep path>` can arrive as `EXTRACT_ROOT=` followed
+    # by the rest of the path on the next line. Reassemble before trusting it,
+    # and only ever return a directory that actually exists (an unusable value
+    # falls through to the caller's fallback).
+    $all = @()
+    foreach ($line in @($Lines)) { $all += [string]$line }
+
+    for ($index = 0; $index -lt $all.Count; $index++) {
+        $text = $all[$index]
+        $marker = $text.IndexOf('EXTRACT_ROOT=')
+        if ($marker -lt 0) { continue }
+        $value = $text.Substring($marker + 13).Trim()
+        $candidates = New-Object System.Collections.ArrayList
+        [void]$candidates.Add($value)
+        if (($index + 1) -lt $all.Count) {
+            $next = $all[$index + 1].Trim()
+            if (-not [string]::IsNullOrWhiteSpace($next)) {
+                [void]$candidates.Add($value + $next)
+                [void]$candidates.Add($value + ' ' + $next)
+            }
+        }
+        foreach ($candidate in $candidates) {
+            $trimmed = ([string]$candidate).Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+            if (Test-Path -LiteralPath $trimmed -PathType Container) { return $trimmed }
         }
     }
     return $Fallback
+}
+
+function Get-LegChildTranscriptMarkers {
+    # Any one of these proves the child reached its own param/body code and told
+    # us something. A child that died in PowerShell's ARGUMENT BINDER prints
+    # none of them: the binder fails before `param` processing completes.
+    return @('RESULT', 'PID', 'HAS_EXITED', 'VERSION_', 'CONTROL_', 'EXTRACT_ROOT', 'CDP_', 'ERROR')
+}
+
+function Test-LegInstrumentFailed {
+    param($Probe, [string]$Stage = 'instrument')
+
+    $check = [pscustomobject]@{ Failed = $false; Detail = '' }
+
+    if ($null -eq $Probe) {
+        $check.Failed = $true
+        $check.Detail = ($Stage + ': no child result')
+        return $check
+    }
+
+    $hasTranscript = $false
+    foreach ($line in @($Probe.Lines)) {
+        $text = ([string]$line).Trim()
+        foreach ($marker in @(Get-LegChildTranscriptMarkers)) {
+            if ($text.StartsWith($marker, [System.StringComparison]::Ordinal)) { $hasTranscript = $true; break }
+        }
+        if ($hasTranscript) { break }
+    }
+
+    $stderrText = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$Probe.StdErr) -and (Test-Path -LiteralPath $Probe.StdErr -PathType Leaf)) {
+        try { $stderrText = [string](Get-Content -LiteralPath $Probe.StdErr -Raw) } catch { $stderrText = '' }
+    }
+    $firstStderrLine = ''
+    $binderStderrLine = ''
+    foreach ($line in @($stderrText -split "`r?`n")) {
+        $text = ([string]$line).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if ([string]::IsNullOrWhiteSpace($firstStderrLine)) { $firstStderrLine = $text }
+        if ([string]::IsNullOrWhiteSpace($binderStderrLine) -and ($text -match 'Cannot convert value|Cannot process argument transformation|ParameterArgumentTransformationError')) {
+            $binderStderrLine = $text
+        }
+    }
+    if ($firstStderrLine.Length -gt 300) { $firstStderrLine = $firstStderrLine.Substring(0, 300) }
+    if ($binderStderrLine.Length -gt 300) { $binderStderrLine = $binderStderrLine.Substring(0, 300) }
+
+    # The 5.1 `-File` binder diagnostic. A leg that hits it observed nothing.
+    $binder = (-not [string]::IsNullOrWhiteSpace($binderStderrLine)) -or ($stderrText -match 'ParameterArgumentTransformationError')
+
+    if ($binder) {
+        $detailLine = $binderStderrLine
+        if ([string]::IsNullOrWhiteSpace($detailLine)) { $detailLine = $firstStderrLine }
+        $check.Failed = $true
+        $check.Detail = ($Stage + ': argument-binder-failure stderr=' + $detailLine)
+        return $check
+    }
+    if (-not $hasTranscript) {
+        $childExit = 'unreadable'
+        if ($null -ne $Probe.Exit) { $childExit = [string]$Probe.Exit }
+        $detail = ($Stage + ': no usable transcript exit=' + $childExit)
+        if (-not [string]::IsNullOrWhiteSpace($firstStderrLine)) { $detail = $detail + ' stderr=' + $firstStderrLine }
+        $check.Failed = $true
+        $check.Detail = $detail
+        return $check
+    }
+    if ($null -eq $Probe.Exit) {
+        # A transcript with an unreadable exit code is still not a verdict input.
+        $check.Failed = $true
+        $check.Detail = ($Stage + ': child exit code unreadable')
+        return $check
+    }
+    return $check
+}
+
+function Set-LegInstrumentFailure {
+    param($Control, $Probe, [string]$Stage = 'instrument')
+
+    if ($null -eq $Control) { return $false }
+    $check = Test-LegInstrumentFailed -Probe $Probe -Stage $Stage
+    if (-not $check.Failed) { return $false }
+
+    $Control.InstrumentFailed = $true
+    $Control.InstrumentDetail = [string]$check.Detail
+    # A non-zero exit: the leg did NOT examine the device under test, so the
+    # driver must not treat this as a passing observation either way.
+    $Control.GateExit = 2
+    $Control.Note = 'instrument failed: ' + [string]$check.Detail
+    $Control.Observed = @('NEGATIVE_INSTRUMENT_FAILURE:' + [string]$check.Detail)
+    Write-Host 'NEGATIVE_LEG_INSTRUMENT=FAIL'
+    Write-Host ('NEGATIVE_INSTRUMENT_FAILURE:' + [string]$check.Detail)
+    return $true
 }
 
 function Find-LegAppExe {
@@ -917,7 +1078,8 @@ function Invoke-NegativeLeg {
         [int]$DbReadySecs = 180,
         [switch]$SkipCompanion,
         [string]$SevenZip = '',
-        [string]$DriverPath = ''
+        [string]$DriverPath = '',
+        [string]$InstrumentRoot = ''
     )
 
     $result = [pscustomobject]@{
@@ -927,6 +1089,8 @@ function Invoke-NegativeLeg {
         Note = ''
         LegDir = ''
         InnerExit = $null
+        InstrumentFailed = $false
+        InstrumentDetail = ''
     }
 
     $slug = Get-NegativeSlug $Name
@@ -939,14 +1103,33 @@ function Invoke-NegativeLeg {
     if (-not [string]::IsNullOrWhiteSpace($DriverPath)) { Write-Host ('NEGATIVE_LEG_DRIVER=' + $DriverPath) }
     if ($SkipCompanion) { Write-Host 'NEGATIVE_LEG_COMPANION=skipped' }
 
-    $payloadPorts = @(9223, 16932, 19631)
+    # The instrument directory defaults to this module's directory. -InstrumentRoot
+    # is a SELF-TEST seam only (the driver never passes it): it lets the hermetic
+    # controls drive the real entry route against instruments that cannot bind,
+    # which is the round-1 regression.
+    $instruments = $PSScriptRoot
+    if (-not [string]::IsNullOrWhiteSpace($InstrumentRoot)) {
+        $instruments = (Resolve-Path -LiteralPath $InstrumentRoot).Path
+    }
+
+    # ONE form for the port list: the comma-joined specification. The probe's
+    # -Ports parameter accepts one or more ports separated by , ; or whitespace
+    # (a `[int[]]` parameter is unreachable from a -File invocation, which is the
+    # round-1 defect); this module must never hand it any other shape.
+    $portSpec = '9223,16932,19631'
 
     # ---- extraction (the gate's own instrument) ------------------------------
     $extractRoot = Join-Path $legDir 'installer-payload'
     $extractArgs = @('-Installer', $Installer, '-WorkDir', $extractRoot)
     if (-not [string]::IsNullOrWhiteSpace($SevenZip)) { $extractArgs += @('-SevenZip', $SevenZip) }
-    $extract = Invoke-LegChild -InstrumentPath (Join-Path $PSScriptRoot 'verify-installer-payload.ps1') `
+    $extract = Invoke-LegChild -InstrumentPath (Join-Path $instruments 'verify-installer-payload.ps1') `
         -Arguments $extractArgs -RunDir $legDir -Leaf 'extract'
+    if (Set-LegInstrumentFailure -Control $result -Probe $extract -Stage 'extract') {
+        $result.InnerExit = $extract.Exit
+        Write-Host ('NEGATIVE_LEG_INNER_EXIT=' + $result.GateExit)
+        Write-Host ('NEGATIVE_LEG_OBSERVED=' + ($result.Observed -join ','))
+        return $result
+    }
     $payloadRoot = Get-LegPayloadRoot -Lines $extract.Lines -Fallback $extractRoot
     $appExe = Find-LegAppExe -Root $payloadRoot
     if ($extract.Exit -ne 0 -or [string]::IsNullOrWhiteSpace($appExe)) {
@@ -959,8 +1142,8 @@ function Invoke-NegativeLeg {
     }
     Write-Host ('NEGATIVE_LEG_EXTRACT=ok exe=' + $appExe)
 
-    $probePath = Join-Path $PSScriptRoot 'launch-artifact-probe.ps1'
-    $windowHook = Join-Path $PSScriptRoot 'gate-artifact-window.ps1'
+    $probePath = Join-Path $instruments 'launch-artifact-probe.ps1'
+    $windowHook = Join-Path $instruments 'gate-artifact-window.ps1'
 
     switch ($Name) {
         'MissingDll' {
@@ -977,12 +1160,13 @@ function Invoke-NegativeLeg {
             $window = [Math]::Max(5, [Math]::Min(60, $WaitSecs))
             $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
                 '-Exe', $mutant.LaunchExe,
-                '-Ports', ($payloadPorts -join ','),
+                '-Ports', $portSpec,
                 '-RequireClosed', '-SanitizePath',
                 '-DataDir', $runDir, '-LogDir', $runDir,
                 '-WaitSecs', [string]$window
             ) -RunDir $runDir -Leaf 'probe'
             $result.InnerExit = $probe.Exit
+            if (Set-LegInstrumentFailure -Control $result -Probe $probe -Stage 'load') { break }
             $observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
             $exited = $false
             foreach ($line in @($probe.Lines)) {
@@ -1017,7 +1201,7 @@ function Invoke-NegativeLeg {
             $env:GATE_ASSERTIONS = [string]$control.Assertions
             $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
                 '-Exe', $appExe,
-                '-Ports', ($payloadPorts -join ','),
+                '-Ports', $portSpec,
                 '-RequireClosed', '-SanitizePath',
                 '-CdpPort', [string]$CdpPort,
                 '-CdpProbe', $control.CdpProbe,
@@ -1025,6 +1209,7 @@ function Invoke-NegativeLeg {
                 '-WaitSecs', [string]$window
             ) -RunDir $runDir -Leaf 'probe'
             $result.InnerExit = $probe.Exit
+            if (Set-LegInstrumentFailure -Control $result -Probe $probe -Stage 'csp') { break }
             $result.Observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
             $pair = 'partial'
             if (($result.Observed -contains 'CSP_VIOLATION') -and ($result.Observed -contains 'UNSTYLED')) { $pair = 'both' }
@@ -1057,7 +1242,7 @@ function Invoke-NegativeLeg {
                 $env:GATE_ASSERTIONS = 'database'
                 $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
                     '-Exe', $appExe,
-                    '-Ports', ($payloadPorts -join ','),
+                    '-Ports', $portSpec,
                     '-RequireClosed', '-SanitizePath',
                     '-CdpPort', [string]$CdpPort,
                     '-CdpProbe', $windowHook,
@@ -1068,6 +1253,7 @@ function Invoke-NegativeLeg {
                 [System.Environment]::SetEnvironmentVariable('FREDO_PG_CLUSTER_QUARANTINE_FAIL', $previous, 'Process')
             }
             $result.InnerExit = $probe.Exit
+            if (Set-LegInstrumentFailure -Control $result -Probe $probe -Stage 'database') { break }
             $result.Observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
             if ($null -ne $probe.Exit -and $probe.Exit -ne 0 -and $result.Observed.Count -gt 0) {
                 $result.GateExit = 1
@@ -1321,6 +1507,129 @@ function Invoke-NegativeControlSelfTest {
         }
         Write-NegativeControlResult 'invoke-leg-refuses-bad-installer' $invokeOk $invokeDetail
         if (-not $invokeOk) { [void]$failures.Add('invoke-leg-refuses-bad-installer') }
+
+        # 17: AN UNRUNNABLE INSTRUMENT IS ITS OWN CLASS (round-2 fix). Two
+        #     discriminating shapes are driven through the REAL entry route with a
+        #     stubbed instrument root, so nothing about the device under test is
+        #     guessed:
+        #       (a) the load child prints NOTHING and exits non-zero  -> the
+        #           round-1 binder death (no usable transcript);
+        #       (b) the load child prints a healthy transcript AND the binder text
+        #           on stderr -> the stderr signal alone must classify it.
+        #     In both, the leg must report NEGATIVE_LEG_INSTRUMENT=FAIL, return
+        #     the NEGATIVE_INSTRUMENT_FAILURE outcome id, and observe NOTHING.
+        $count = $count + 1
+        $instrumentDetail = ''
+        $instrumentOk = $true
+        try {
+            $fixturePayload = Join-Path $tempRoot 'inst-payload'
+            New-NegativeDirectory -Path $fixturePayload
+            $fixtureEncoding2 = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText((Join-Path $fixturePayload 'fredo.exe'), 'MZ gate-selftest fixture', $fixtureEncoding2)
+            [System.IO.File]::WriteAllText((Join-Path $fixturePayload $script:DefaultDllName), 'PE gate-selftest payload dll', $fixtureEncoding2)
+
+            $verifierStub = @(
+                '# selftest stub: extraction succeeds on the fixture tree',
+                "Write-Output ('EXTRACT_ROOT=' + '" + $fixturePayload + "')",
+                "Write-Output 'RESULT=PASS'",
+                'exit 0'
+            ) -join "`r`n"
+
+            $silentProbeStub = @(
+                '# selftest stub: the round-1 shape - the child dies before printing',
+                'exit 1'
+            ) -join "`r`n"
+
+            $binderProbeStub = @(
+                '# selftest stub: a usable transcript AND the binder diagnostic',
+                "Write-Output 'PID=4242'",
+                "Write-Output 'RESULT=PASS'",
+                "Write-Output 'HAS_EXITED=False'",
+                "[Console]::Error.WriteLine('Cannot convert value ""9223,16932,19631"" to type ""System.Int32[]"".')",
+                'exit 0'
+            ) -join "`r`n"
+
+            $variants = @(
+                [pscustomobject]@{ Name = 'silent-exit-1'; Probe = $silentProbeStub },
+                [pscustomobject]@{ Name = 'transcript-plus-binder-stderr'; Probe = $binderProbeStub }
+            )
+
+            foreach ($variant in $variants) {
+                $instrumentRoot = Join-Path $tempRoot ('inst-' + $variant.Name)
+                New-NegativeDirectory -Path $instrumentRoot
+                [System.IO.File]::WriteAllText((Join-Path $instrumentRoot 'verify-installer-payload.ps1'), $verifierStub, $fixtureEncoding2)
+                [System.IO.File]::WriteAllText((Join-Path $instrumentRoot 'launch-artifact-probe.ps1'), $variant.Probe, $fixtureEncoding2)
+
+                $captured = @(& {
+                    Invoke-NegativeLeg -Name 'MissingDll' -Installer (Join-Path $tempRoot 'stub-installer.exe') `
+                        -OutDir (Join-Path $tempRoot ('inst-leg-' + $variant.Name)) `
+                        -CdpPort 9449 -WaitSecs 5 -DbReadySecs 5 -SkipCompanion `
+                        -InstrumentRoot $instrumentRoot
+                } 6>&1)
+                $legResult = $captured | Where-Object { $null -ne $_.PSObject.Properties['GateExit'] } | Select-Object -First 1
+                $logText = (@($captured) | ForEach-Object { [string]$_ }) -join "`n"
+
+                $observed = @()
+                if ($null -ne $legResult) { $observed = @($legResult.Observed) }
+                $observedIsInstrumentId = ($observed.Count -eq 1) -and ([string]$observed[0]).StartsWith('NEGATIVE_INSTRUMENT_FAILURE:')
+                $noObservationIds = -not (
+                    ($observed -contains 'LAUNCH_EXIT:-1073741515') -or
+                    ($observed -contains 'CSP_VIOLATION') -or
+                    ($observed -contains 'UNSTYLED') -or
+                    ($observed -contains 'DB_NOT_READY:dirty')
+                )
+                $variantOk = (
+                    ($null -ne $legResult) -and
+                    ($legResult.InstrumentFailed -eq $true) -and
+                    (-not [string]::IsNullOrWhiteSpace([string]$legResult.InstrumentDetail)) -and
+                    ($legResult.GateExit -ne 0) -and
+                    $observedIsInstrumentId -and
+                    $noObservationIds -and
+                    ($logText.Contains('NEGATIVE_LEG_INSTRUMENT=FAIL')) -and
+                    ($logText.Contains('NEGATIVE_INSTRUMENT_FAILURE:')) -and
+                    (-not $logText.Contains('NEGATIVE_LEG_LOAD='))
+                )
+                $instrumentDetail = $instrumentDetail + ('[' + $variant.Name + ' failed=' + $legResult.InstrumentFailed + ' exit=' + $legResult.GateExit + ' observed=' + ($observed -join '|') + ' literal=' + $logText.Contains('NEGATIVE_LEG_INSTRUMENT=FAIL') + '] ')
+                if (-not $variantOk) { $instrumentOk = $false }
+            }
+        } catch {
+            $instrumentOk = $false
+            $instrumentDetail = $instrumentDetail + 'threw: ' + $_.Exception.Message
+        }
+        Write-NegativeControlResult 'leg-instrument-failure' $instrumentOk $instrumentDetail
+        if (-not $instrumentOk) { [void]$failures.Add('leg-instrument-failure') }
+
+        # 18: NON-VACUITY + PRECEDENCE. The same canonical observation sets that
+        #     reproduce each leg (control 8/9/10) must still reproduce when no
+        #     instrument detail is present, and the SAME sets must be reclassified
+        #     as NEGATIVE_INSTRUMENT_FAILURE (never NOT_REPRODUCED / WRONG_ERROR)
+        #     the moment an instrument detail is supplied - at GateExit 0 and 1.
+        $count = $count + 1
+        $precedenceOk = $true
+        $precedenceDetail = ''
+        $canonical = @(
+            @{ Leg = 'MissingDll'; Exit = 1; Lines = @('LAUNCH_EXIT:-1073741515') },
+            @{ Leg = 'Csp'; Exit = 1; Lines = @('UNSTYLED: injected style produced 0 rules', 'CSP_VIOLATION: 113 recorded') },
+            @{ Leg = 'Database'; Exit = 1; Lines = @('DB_NOT_READY:dirty') }
+        )
+        foreach ($case in $canonical) {
+            $reproduced = Test-NegativeOutcome -Leg $case.Leg -GateExit $case.Exit -Lines $case.Lines
+            foreach ($exitValue in @(0, 1)) {
+                $failed = Test-NegativeOutcome -Leg $case.Leg -GateExit $exitValue -Lines $case.Lines -InstrumentDetail 'load: no usable transcript exit=1'
+                $ok = (
+                    ($reproduced.Ok -eq $true) -and
+                    ($reproduced.Code -eq '') -and
+                    ($failed.Ok -eq $false) -and
+                    ($failed.Code -eq 'NEGATIVE_INSTRUMENT_FAILURE') -and
+                    ($failed.Code -ne 'NEGATIVE_NOT_REPRODUCED') -and
+                    ($failed.Code -ne 'NEGATIVE_WRONG_ERROR')
+                )
+            }
+            if (-not $ok) { $precedenceOk = $false }
+            $precedenceDetail = $precedenceDetail + ('[' + $case.Leg + ' reproduced=' + $reproduced.Ok + ' instrument=' + $failed.Code + '] ')
+        }
+        Write-NegativeControlResult 'classify-instrument-precedence' $precedenceOk $precedenceDetail
+        if (-not $precedenceOk) { [void]$failures.Add('classify-instrument-precedence') }
     } finally {
         if ($ownedTemp) { Remove-NegativeTree -Path $tempRoot }
     }
@@ -1340,6 +1649,7 @@ Export-ModuleMember -Function @(
     'Get-NegativeExpectation',
     'Get-NegativeObservedErrorIds',
     'Test-NegativeOutcome',
+    'Test-LegInstrumentFailed',
     'New-NegativeMissingDllTree',
     'Get-NegativeCspPolicyScript',
     'New-NegativeCspHook',
