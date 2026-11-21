@@ -46,31 +46,32 @@ Exit contract (mirrors the harness, plan section C)
        wrong id fired (`NEGATIVE_WRONG_ERROR`)
 
 Driver dispatch contract (gate-release-artifact.ps1 -Mode negative)
-  This module owns the LEG MECHANICS only; the driver keeps every process
-  orchestration (extraction, launch, receipt). One leg is two calls:
+  The landed driver imports this module and calls ONE function:
 
-      Import-Module (Join-Path $PSScriptRoot 'gate-artifact-negative.psm1') -Force
+      Invoke-NegativeLeg -Name <MissingDll|Csp|Database> `
+                         -Installer <abs setup.exe> -OutDir <abs evidence root> `
+                         -CdpPort <n> -WaitSecs <n> -DbReadySecs <n> `
+                         -SkipCompanion:<bool> [-SevenZip <path>] [-DriverPath <abs>]
 
-      $control = New-NegativeControl -Leg $Negative `
-                    -LegDir (Join-Path $OutDir ('negative-' + (Get-NegativeSlug $Negative))) `
-                    -ExtractedRoot $extractedPayloadRoot `
-                    -CdpPort $CdpPort `
-                    -DataDir $negativeDataDir `
-                    -WindowHookPath (Join-Path $PSScriptRoot 'gate-artifact-window.ps1')
+  and expects an object with `Observed` (string[] of `ID` or `ID:<detail>`) and
+  `GateExit` (int). The DRIVER owns the verdict - it prints NEGATIVE_EXPECTED /
+  NEGATIVE_OBSERVED / GATE_EXIT and classifies NEGATIVE_NOT_REPRODUCED /
+  NEGATIVE_WRONG_ERROR - so this module only performs the leg and reports what
+  the inner clauses emitted. The leg's evidence lands under
+  `<OutDir>/negative-<slug>/` (plan section D): the extraction tree, the mutant
+  payload copy, the probe stdout/stderr per run and the generated wrapper hook.
 
-      # Apply $control.Env to the child environment when it is non-empty, e.g.
-      #   foreach ($name in @($control.Env.Keys)) { Set-Item -Path "Env:$name" -Value ([string]$control.Env[$name]) }
-      # Then run the NORMAL gate with the control's overrides:
-      #   - $control.LaunchExe  -> launch THIS exe instead of the extracted one
-      #                            (MissingDll)
-      #   - $control.CdpProbe   -> pass as the probe's -CdpProbe hook (Csp)
-      #   - $control.Assertions -> pass as the probe's -Assertions value (Csp: styled)
-      #   - $control.DataDir    -> pass as the probe's -DataDir (Database)
-      # Capture the inner gate's stdout lines and exit code.
-      exit (Complete-NegativeControl -Control $control -GateExit $code -GateLines $lines)
+  The driver's gate path exposes no seam for a mutant exe, a wrapper probe or a
+  data dir, so a leg drives the SAME instruments the gate drives:
+  verify-installer-payload.ps1 (extraction), launch-artifact-probe.ps1 (the only
+  GUI launch primitive) and gate-artifact-window.ps1 (the clauses), with the
+  induced condition applied. Ids and exit semantics are the plan's, unchanged.
+
+  `Complete-NegativeControl` remains the standalone receipt helper (self-test
+  controls + a manual drive); it is NOT on the driver's path.
 
   New-NegativeControl NEVER mutates the tree it is handed: MissingDll copies
-  first, and every leg writes only under -LegDir.
+  first, and every leg writes only under -OutDir.
 
 ================================================================================
 REQ-3.2b - the bundle-level CSP revert (REQUIRED, runs LAST in the round)
@@ -829,6 +830,265 @@ function Complete-NegativeControl {
     return 1
 }
 
+# ---- the harness entry point (the landed driver calls THIS) -----------------
+# gate-release-artifact.ps1 -Mode negative imports this module and calls
+#   Invoke-NegativeLeg -Name <leg> -Installer <abs> -OutDir <abs> -CdpPort <n>
+#                      -WaitSecs <n> -DbReadySecs <n> -SkipCompanion:<bool>
+#                      -SevenZip <path> -DriverPath <abs>
+# expecting { Observed = <string[]>; GateExit = <int> }. The DRIVER owns the
+# verdict (NEGATIVE_EXPECTED / NEGATIVE_OBSERVED / GATE_EXIT and the
+# NEGATIVE_NOT_REPRODUCED / NEGATIVE_WRONG_ERROR classification), so this module
+# only performs the leg and reports the ids the inner clauses emitted.
+#
+# There is no driver seam for a mutant exe, a wrapper probe or a data dir on its
+# gate path, so a leg drives the SAME instruments the gate drives -
+# verify-installer-payload.ps1 (extraction), launch-artifact-probe.ps1 (the only
+# GUI launch primitive) and gate-artifact-window.ps1 (the clauses) - with the
+# induced condition applied. The ids are the plan's section B ids, unchanged.
+
+function Invoke-LegChild {
+    param(
+        [string]$InstrumentPath,
+        [string[]]$Arguments,
+        [string]$RunDir,
+        [string]$Leaf
+    )
+
+    New-NegativeDirectory -Path $RunDir
+    $outFile = Join-Path $RunDir ($Leaf + '.stdout.log')
+    $errFile = Join-Path $RunDir ($Leaf + '.stderr.log')
+    $quoted = New-Object System.Collections.ArrayList
+    [void]$quoted.Add('-NoProfile')
+    [void]$quoted.Add('-File')
+    [void]$quoted.Add('"' + $InstrumentPath + '"')
+    foreach ($argument in @($Arguments)) {
+        $text = [string]$argument
+        if ($text -match '\s') { $text = '"' + $text + '"' }
+        [void]$quoted.Add($text)
+    }
+    Write-Host ('LEG_EXEC=' + (Split-Path -Leaf $InstrumentPath) + ' ' + (@($Arguments) -join ' '))
+
+    $exit = $null
+    $process = Start-Process -FilePath 'powershell' -ArgumentList @($quoted) -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    if ($null -ne $process) { $exit = [int]$process.ExitCode }
+
+    $lines = @()
+    if (Test-Path -LiteralPath $outFile -PathType Leaf) {
+        $lines = @(Get-Content -LiteralPath $outFile | ForEach-Object { [string]$_ })
+    }
+    foreach ($line in $lines) { Write-Host ('LEG| ' + $line) }
+    return [pscustomobject]@{ Exit = $exit; Lines = $lines; StdOut = $outFile; StdErr = $errFile }
+}
+
+function Get-LegPayloadRoot {
+    param([string[]]$Lines, [string]$Fallback)
+
+    foreach ($line in @($Lines)) {
+        $text = [string]$line
+        if ($text -match 'EXTRACT_ROOT=(.+)$') {
+            $root = $Matches[1].Trim()
+            if (-not [string]::IsNullOrWhiteSpace($root) -and (Test-Path -LiteralPath $root -PathType Container)) { return $root }
+        }
+    }
+    return $Fallback
+}
+
+function Find-LegAppExe {
+    param([string]$Root)
+
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) { return '' }
+    $hit = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter 'fredo.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $hit) { return $hit.FullName }
+    return ''
+}
+
+function Invoke-NegativeLeg {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('MissingDll', 'Csp', 'Database')]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$Installer,
+        [Parameter(Mandatory = $true)]
+        [string]$OutDir,
+        [int]$CdpPort = 9333,
+        [int]$WaitSecs = 90,
+        [int]$DbReadySecs = 180,
+        [switch]$SkipCompanion,
+        [string]$SevenZip = '',
+        [string]$DriverPath = ''
+    )
+
+    $result = [pscustomobject]@{
+        Leg = $Name
+        Observed = @()
+        GateExit = 0
+        Note = ''
+        LegDir = ''
+        InnerExit = $null
+    }
+
+    $slug = Get-NegativeSlug $Name
+    $outRoot = [System.IO.Path]::GetFullPath($OutDir)
+    $legDir = Join-Path $outRoot ('negative-' + $slug)
+    New-NegativeDirectory -Path $legDir
+    $result.LegDir = $legDir
+    Write-Host ('NEGATIVE_LEG=' + $Name)
+    Write-Host ('NEGATIVE_LEG_DIR=' + $legDir)
+    if (-not [string]::IsNullOrWhiteSpace($DriverPath)) { Write-Host ('NEGATIVE_LEG_DRIVER=' + $DriverPath) }
+    if ($SkipCompanion) { Write-Host 'NEGATIVE_LEG_COMPANION=skipped' }
+
+    $payloadPorts = @(9223, 16932, 19631)
+
+    # ---- extraction (the gate's own instrument) ------------------------------
+    $extractRoot = Join-Path $legDir 'installer-payload'
+    $extractArgs = @('-Installer', $Installer, '-WorkDir', $extractRoot)
+    if (-not [string]::IsNullOrWhiteSpace($SevenZip)) { $extractArgs += @('-SevenZip', $SevenZip) }
+    $extract = Invoke-LegChild -InstrumentPath (Join-Path $PSScriptRoot 'verify-installer-payload.ps1') `
+        -Arguments $extractArgs -RunDir $legDir -Leaf 'extract'
+    $payloadRoot = Get-LegPayloadRoot -Lines $extract.Lines -Fallback $extractRoot
+    $appExe = Find-LegAppExe -Root $payloadRoot
+    if ($extract.Exit -ne 0 -or [string]::IsNullOrWhiteSpace($appExe)) {
+        $result.GateExit = 2
+        $result.Note = 'extraction refused or produced no fredo.exe'
+        Write-Host ('NEGATIVE_LEG_EXTRACT=FAIL exit=' + $extract.Exit + ' root=' + $payloadRoot)
+        Write-Host ('NEGATIVE_LEG_INNER_EXIT=' + $result.GateExit)
+        Write-Host 'NEGATIVE_LEG_OBSERVED=<none>'
+        return $result
+    }
+    Write-Host ('NEGATIVE_LEG_EXTRACT=ok exe=' + $appExe)
+
+    $probePath = Join-Path $PSScriptRoot 'launch-artifact-probe.ps1'
+    $windowHook = Join-Path $PSScriptRoot 'gate-artifact-window.ps1'
+
+    switch ($Name) {
+        'MissingDll' {
+            $mutant = New-NegativeMissingDllTree -ExtractedRoot $payloadRoot -ExtractedExe $appExe -LegDir $legDir
+            if (-not $mutant.Ok) {
+                $result.GateExit = 1
+                $result.Note = 'mutant preparation failed: ' + $mutant.Error
+                Write-Host ('NEGATIVE_LEG_MUTANT=FAIL reason=' + $mutant.Error)
+                break
+            }
+            Write-Host ('NEGATIVE_LEG_MUTANT=ok copy=' + $mutant.CopyRoot + ' deleted=' + $mutant.CopyDll + ' sourceSha=' + $mutant.SourceDllSha256After)
+            Write-Host ('NEGATIVE_LEG_SOURCE_UNTOUCHED=' + ($mutant.SourceDllSha256Before -eq $mutant.SourceDllSha256After))
+            $runDir = Join-Path $legDir 'run-load'
+            $window = [Math]::Max(5, [Math]::Min(60, $WaitSecs))
+            $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
+                '-Exe', $mutant.LaunchExe,
+                '-Ports', ($payloadPorts -join ','),
+                '-RequireClosed', '-SanitizePath',
+                '-DataDir', $runDir, '-LogDir', $runDir,
+                '-WaitSecs', [string]$window
+            ) -RunDir $runDir -Leaf 'probe'
+            $result.InnerExit = $probe.Exit
+            $observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
+            $exited = $false
+            foreach ($line in @($probe.Lines)) {
+                if ([string]$line -match 'HAS_EXITED=True') { $exited = $true }
+            }
+            if ($exited -and $observed.Count -gt 0) {
+                $result.GateExit = 1
+                Write-Host 'NEGATIVE_LEG_LOAD=exited'
+            } elseif ($exited) {
+                # The app exited inside the window but the probe printed no code.
+                $result.GateExit = 1
+                $result.Note = 'the app exited but no LAUNCH_EXIT code was readable'
+                Write-Host 'NEGATIVE_LEG_LOAD=exited-without-code'
+            } else {
+                $result.GateExit = 0
+                $result.Note = 'the app survived the window with the DLL removed'
+                Write-Host 'NEGATIVE_LEG_LOAD=survived'
+            }
+            $result.Observed = @($observed)
+        }
+        'Csp' {
+            $control = New-NegativeControl -Leg 'Csp' -LegDir $legDir -WindowHookPath $windowHook
+            if (-not [string]::IsNullOrWhiteSpace($control.PrepareError)) {
+                $result.GateExit = 1
+                $result.Note = 'mutant preparation failed: ' + $control.PrepareError
+                Write-Host ('NEGATIVE_LEG_MUTANT=FAIL reason=' + $control.PrepareError)
+                break
+            }
+            Write-Host ('NEGATIVE_LEG_CDP_PROBE=' + $control.CdpProbe)
+            $runDir = Join-Path $legDir 'run-csp'
+            $window = [Math]::Max(30, [Math]::Min(300, $WaitSecs))
+            $env:GATE_ASSERTIONS = [string]$control.Assertions
+            $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
+                '-Exe', $appExe,
+                '-Ports', ($payloadPorts -join ','),
+                '-RequireClosed', '-SanitizePath',
+                '-CdpPort', [string]$CdpPort,
+                '-CdpProbe', $control.CdpProbe,
+                '-DataDir', $runDir, '-LogDir', $runDir,
+                '-WaitSecs', [string]$window
+            ) -RunDir $runDir -Leaf 'probe'
+            $result.InnerExit = $probe.Exit
+            $result.Observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
+            $pair = 'partial'
+            if (($result.Observed -contains 'CSP_VIOLATION') -and ($result.Observed -contains 'UNSTYLED')) { $pair = 'both' }
+            Write-Host ('NEGATIVE_LEG_CSP_PAIR=' + $pair)
+            if ($null -ne $probe.Exit -and $probe.Exit -ne 0 -and $result.Observed.Count -gt 0) {
+                $result.GateExit = 1
+            } elseif ($null -ne $probe.Exit -and $probe.Exit -ne 0) {
+                $result.GateExit = [int]$probe.Exit
+                $result.Note = 'the in-window hook failed without the expected id'
+            } else {
+                $result.GateExit = 0
+                $result.Note = 'the in-window hook passed under the induced policy'
+            }
+        }
+        'Database' {
+            $dataDir = Join-Path $legDir 'run-dirty'
+            $residue = New-NegativeDatabaseResidue -DataDir $dataDir
+            if (-not $residue.Ok) {
+                $result.GateExit = 1
+                $result.Note = 'mutant preparation failed: ' + $residue.Error
+                Write-Host ('NEGATIVE_LEG_MUTANT=FAIL reason=' + $residue.Error)
+                break
+            }
+            Write-Host ('NEGATIVE_LEG_RESIDUE=' + $residue.ResidueFile)
+            Write-Host ('NEGATIVE_LEG_SEAM=' + [string]$residue.Env['FREDO_PG_CLUSTER_QUARANTINE_FAIL'])
+            $previous = [System.Environment]::GetEnvironmentVariable('FREDO_PG_CLUSTER_QUARANTINE_FAIL', 'Process')
+            [System.Environment]::SetEnvironmentVariable('FREDO_PG_CLUSTER_QUARANTINE_FAIL', '1', 'Process')
+            try {
+                $window = [Math]::Max(60, [Math]::Min(300, $DbReadySecs + 30))
+                $env:GATE_ASSERTIONS = 'database'
+                $probe = Invoke-LegChild -InstrumentPath $probePath -Arguments @(
+                    '-Exe', $appExe,
+                    '-Ports', ($payloadPorts -join ','),
+                    '-RequireClosed', '-SanitizePath',
+                    '-CdpPort', [string]$CdpPort,
+                    '-CdpProbe', $windowHook,
+                    '-DataDir', $residue.DataDir, '-LogDir', $residue.DataDir,
+                    '-WaitSecs', [string]$window
+                ) -RunDir $residue.DataDir -Leaf 'probe'
+            } finally {
+                [System.Environment]::SetEnvironmentVariable('FREDO_PG_CLUSTER_QUARANTINE_FAIL', $previous, 'Process')
+            }
+            $result.InnerExit = $probe.Exit
+            $result.Observed = @(Get-NegativeObservedErrorIds -Lines $probe.Lines)
+            if ($null -ne $probe.Exit -and $probe.Exit -ne 0 -and $result.Observed.Count -gt 0) {
+                $result.GateExit = 1
+            } elseif ($null -ne $probe.Exit -and $probe.Exit -ne 0) {
+                $result.GateExit = [int]$probe.Exit
+                $result.Note = 'the in-window hook failed without DB_NOT_READY:dirty'
+            } else {
+                $result.GateExit = 0
+                $result.Note = 'the profile still reached ready with the residue wedged'
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($result.Note)) { Write-Host ('NEGATIVE_LEG_NOTE=' + $result.Note) }
+    Write-Host ('NEGATIVE_LEG_INNER_EXIT=' + $result.GateExit)
+    $observedText = '<none>'
+    if ($result.Observed.Count -gt 0) { $observedText = ($result.Observed -join ',') }
+    Write-Host ('NEGATIVE_LEG_OBSERVED=' + $observedText)
+    return $result
+}
+
 # ---- hermetic self-test -----------------------------------------------------
 
 function Invoke-NegativeControlSelfTest {
@@ -1036,6 +1296,31 @@ function Invoke-NegativeControlSelfTest {
         }
         Write-NegativeControlResult 'overlay-equivalence' $overlayOk $overlayDetail
         if (-not $overlayOk) { [void]$failures.Add('overlay-equivalence') }
+
+        # 16: the HARNESS entry point refuses a bad installer instead of throwing
+        #     or passing. The driver calls exactly this signature, so the leg's
+        #     fail-closed path is proven on the entry route (not only on helpers).
+        $count = $count + 1
+        $invokeOk = $false
+        $invokeDetail = ''
+        try {
+            $missingInstaller = Join-Path $tempRoot 'no-such-installer.exe'
+            $legResult = Invoke-NegativeLeg -Name 'MissingDll' -Installer $missingInstaller `
+                -OutDir (Join-Path $tempRoot 'invoke-leg') -CdpPort 9449 -WaitSecs 5 -DbReadySecs 5 -SkipCompanion
+            $invokeOk = (
+                ($null -ne $legResult) -and
+                ($null -ne $legResult.PSObject.Properties['Observed']) -and
+                ($null -ne $legResult.PSObject.Properties['GateExit']) -and
+                ($legResult.GateExit -ne 0) -and
+                (@($legResult.Observed).Count -eq 0) -and
+                (Test-Path -LiteralPath (Join-Path $tempRoot 'invoke-leg\negative-missing-dll'))
+            )
+            $invokeDetail = 'exit=' + $legResult.GateExit + ' observed=' + (@($legResult.Observed).Count) + ' note=' + $legResult.Note
+        } catch {
+            $invokeDetail = 'threw: ' + $_.Exception.Message
+        }
+        Write-NegativeControlResult 'invoke-leg-refuses-bad-installer' $invokeOk $invokeDetail
+        if (-not $invokeOk) { [void]$failures.Add('invoke-leg-refuses-bad-installer') }
     } finally {
         if ($ownedTemp) { Remove-NegativeTree -Path $tempRoot }
     }
@@ -1050,6 +1335,7 @@ function Invoke-NegativeControlSelfTest {
 }
 
 Export-ModuleMember -Function @(
+    'Invoke-NegativeLeg',
     'Get-NegativeSlug',
     'Get-NegativeExpectation',
     'Get-NegativeObservedErrorIds',
