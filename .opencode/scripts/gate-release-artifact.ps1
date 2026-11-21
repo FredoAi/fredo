@@ -36,6 +36,19 @@
                                          (bad args, a stale listener on a probed
                                          port, or the negative leg module absent).
 
+  INSTRUMENT FAILURE IS ITS OWN CLASS (never an observation).
+    LAUNCH_NOT_RUNNING child-exit=<n> transcript=empty stderr=<first line>
+        The launch child died before printing a probe transcript: a parameter-
+        binder error, a parse error, a missing script. An empty transcript must
+        never be read as "the app was observed": the run FAILS (exit 1) with this
+        named cause, REQ-2.6 abstains instead of passing vacuously, and the receipt
+        carries `instrument: { failed: true, detail: <first stderr line> }`.
+    NEGATIVE_INSTRUMENT_FAILURE:<detail>
+        A negative leg's instrument could not run, so nothing was induced and
+        nothing was observed. This id OUTRANKS NEGATIVE_NOT_REPRODUCED and
+        NEGATIVE_WRONG_ERROR: those two mean the device under test behaved a
+        certain way, and an unrunnable instrument says nothing about the device.
+
   EXIT-CODE CONTRACT (mirrors the plan's section C, and the sibling instruments):
     0  PASS -- every selected clause green (gate/negative: the control reproduced)
     1  FAIL -- at least one assertion failed with a named error
@@ -225,6 +238,8 @@ $script:CdpJsonFresh = $null
 $script:NegativeObserved = @()
 $script:NegativeExpected = @()
 $script:NegativeGateExit = $null
+$script:LaunchInstrumentFailed = $false
+$script:LaunchInstrumentDetail = ''
 
 function Reset-RunState {
     $script:Checks = New-Object System.Collections.ArrayList
@@ -242,6 +257,8 @@ function Reset-RunState {
     $script:NegativeObserved = @()
     $script:NegativeExpected = @()
     $script:NegativeGateExit = $null
+    $script:LaunchInstrumentFailed = $false
+    $script:LaunchInstrumentDetail = ''
     $script:StartedAt = Get-Date
 }
 
@@ -690,8 +707,13 @@ function Publish-VerifierVerdict {
     return $ok
 }
 
+# Classify a launch child's result. THE UNRUNNABLE CASE IS ITS OWN CLASS: a child
+# that dies before printing a transcript (a parameter-binder error, a parse error,
+# a missing script) must never be read as "the app was observed". `InstrumentFailed`
+# is that state, and it is what makes every downstream clause abstain instead of
+# reporting a vacuous window or a vacuous closed-port pass.
 function Get-ProbeVerdict {
-    param([int]$ExitCode, [string[]]$Lines, [int[]]$Ports)
+    param([int]$ExitCode, [string[]]$Lines, [int[]]$Ports, [string]$StdErrText = '')
 
     $verdict = [pscustomobject]@{
         ExitCode = $ExitCode
@@ -707,6 +729,9 @@ function Get-ProbeVerdict {
         StaleListenerPort = ''
         HookFailure = ''
         RefusedOther = ''
+        HasTranscript = $false
+        InstrumentFailed = $false
+        InstrumentDetail = ''
     }
 
     foreach ($line in $Lines) {
@@ -717,6 +742,27 @@ function Get-ProbeVerdict {
         if ($line -match '^ERROR: port (\d+) is already open') { $verdict.StaleListenerPort = $Matches[1] }
         if ($line -match '^ERROR: (launch failed.*)$') { $verdict.LaunchError = $Matches[1] }
         if ($line -match '^FAILURE=(window-hook.*)$') { $verdict.HookFailure = $Matches[1] }
+    }
+
+    # A probe transcript always carries PID= or RESULT=. Neither means the child
+    # never reached the probe's own body.
+    $verdict.HasTranscript = ((-not [string]::IsNullOrWhiteSpace($verdict.Pid)) -or (-not [string]::IsNullOrWhiteSpace($verdict.Result)))
+
+    if (-not $verdict.HasTranscript -and (($ExitCode -ne 0) -or (-not [string]::IsNullOrWhiteSpace($StdErrText)))) {
+        $verdict.InstrumentFailed = $true
+        $detail = ''
+        foreach ($line in @($StdErrText -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                $detail = ([string]$line).Trim()
+                break
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($detail)) {
+            $detail = ([string](Get-LineValue $Lines 'SELFTEST_EXCEPTION=')).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'no stdout and no stderr' }
+        if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) }
+        $verdict.InstrumentDetail = $detail
     }
 
     if ([string]::IsNullOrWhiteSpace($verdict.Pid) -and [string]::IsNullOrWhiteSpace($verdict.LaunchError) -and $verdict.Result -eq 'REFUSED') {
@@ -733,7 +779,14 @@ function Publish-ProbeVerdict {
     if ($Verdict.BridgeHits -gt 0) { Add-NamedError 'MCP_BRIDGE_LOG_LINE' '' }
     foreach ($port in $Verdict.PortsOpen) { Add-NamedError 'MCP_PORT_OPEN' ([string]$port) }
 
-    if ($Verdict.CdpPortInUse) {
+    # The instrument failure comes FIRST, before every transcript-driven refusal
+    # branch: an empty transcript satisfies none of them, which is exactly how the
+    # round-1 run produced a silent, unnamed launch failure.
+    if ($Verdict.InstrumentFailed) {
+        Add-NamedError 'LAUNCH_NOT_RUNNING' ('child-exit=' + $Verdict.ExitCode + ' transcript=empty stderr=' + $Verdict.InstrumentDetail)
+        $script:LaunchInstrumentFailed = $true
+        $script:LaunchInstrumentDetail = $Verdict.InstrumentDetail
+    } elseif ($Verdict.CdpPortInUse) {
         Add-NamedError 'CDP_PORT_IN_USE' ''
     } elseif (-not [string]::IsNullOrWhiteSpace($Verdict.StaleListenerPort)) {
         Add-NamedError 'GATE_REFUSED' ('reason=stale-listener port=' + $Verdict.StaleListenerPort)
@@ -750,7 +803,13 @@ function Publish-ProbeVerdict {
     }
 
     $survived = ((-not $Verdict.HasExited) -and ($Verdict.Result -eq 'PASS'))
-    $detail = ('result={0} hasExited={1} window={2} orphans={3}' -f $Verdict.Result, $Verdict.HasExited, $WindowSecs, $Verdict.Orphans)
+    if ($Verdict.InstrumentFailed) {
+        # No reading exists, so do not print one: `hasExited=False` here would be
+        # the exact vacuous window this clause refuses to claim.
+        $detail = ('result=instrument-failed hasExited=n/a window={0} orphans={1}' -f $WindowSecs, $Verdict.Orphans)
+    } else {
+        $detail = ('result={0} hasExited={1} window={2} orphans={3}' -f $Verdict.Result, $Verdict.HasExited, $WindowSecs, $Verdict.Orphans)
+    }
     Add-Check 'REQ-2.2' $survived $detail
     return $survived
 }
@@ -1127,6 +1186,52 @@ function Get-NegativeVerdict {
     return $verdict
 }
 
+# NEGATIVE_INSTRUMENT_FAILURE is a CLASS OF ITS OWN, and it outranks both negative
+# verdicts: when the leg's instrument could not run, nothing was induced and
+# nothing was observed, so reporting NOT_REPRODUCED (the device "survived") or
+# WRONG_ERROR (the device "failed differently") would attribute a host/instrument
+# fault to the artifact. Recognised two ways because the module may report it as
+# the `InstrumentFailed` flag or as an observed id.
+function Get-NegativeInstrumentFailure {
+    param($LegResult, [string[]]$Observed)
+
+    $failed = $false
+    $detail = ''
+
+    if ($null -ne $LegResult -and $null -ne $LegResult.PSObject.Properties['InstrumentFailed']) {
+        if ([bool]$LegResult.InstrumentFailed) { $failed = $true }
+    }
+    foreach ($entry in $Observed) {
+        if ($entry -eq 'NEGATIVE_INSTRUMENT_FAILURE') { $failed = $true }
+        elseif ($entry.StartsWith('NEGATIVE_INSTRUMENT_FAILURE:')) {
+            $failed = $true
+            if ([string]::IsNullOrWhiteSpace($detail)) { $detail = $entry.Substring('NEGATIVE_INSTRUMENT_FAILURE:'.Length).Trim() }
+        }
+    }
+    if (-not $failed) { return $null }
+
+    if ([string]::IsNullOrWhiteSpace($detail) -and $null -ne $LegResult -and $null -ne $LegResult.PSObject.Properties['Note']) {
+        $detail = ([string]$LegResult.Note).Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($detail) -and $null -ne $LegResult -and $null -ne $LegResult.PSObject.Properties['InstrumentDetail']) {
+        $detail = ([string]$LegResult.InstrumentDetail).Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'instrument could not run (no detail reported)' }
+    if ($detail.Length -gt 300) { $detail = $detail.Substring(0, 300) }
+
+    return [pscustomobject]@{ Reproduced = $false; Id = 'NEGATIVE_INSTRUMENT_FAILURE'; Detail = $detail }
+}
+
+# The leg result -> verdict, in one place so a self-test control drives exactly
+# what the entry path drives.
+function Get-NegativeLegVerdict {
+    param($LegResult, [string[]]$Expected, [string[]]$Observed, [int]$GateExit)
+
+    $instrument = Get-NegativeInstrumentFailure -LegResult $LegResult -Observed $Observed
+    if ($null -ne $instrument) { return $instrument }
+    return (Get-NegativeVerdict -Expected $Expected -Observed $Observed -GateExit $GateExit)
+}
+
 function Publish-NegativeVerdict {
     param($Verdict)
 
@@ -1247,7 +1352,7 @@ function Invoke-LaunchProfile {
 
     $probeCode = 2
     if ($null -ne $child.ExitCode) { $probeCode = [int]$child.ExitCode }
-    $probeVerdict = Get-ProbeVerdict -ExitCode $probeCode -Lines $lines -Ports $script:ProbePorts
+    $probeVerdict = Get-ProbeVerdict -ExitCode $probeCode -Lines $lines -Ports $script:ProbePorts -StdErrText $child.StdErr
     Publish-ProbeVerdict -Verdict $probeVerdict -Profile $Profile -WindowSecs $WindowSecs | Out-Null
 
     $cdpPath = Join-Path $RunDir 'cdp.json'
@@ -1264,9 +1369,37 @@ function Invoke-LaunchProfile {
     }
 }
 
+# REQ-2.6: the bridge ports stay CLOSED *while the app runs*. "No PORT_<n>=open
+# line" is only evidence when a launch actually happened, so the clause requires a
+# bound-process fact from the probe (PID=) before it may assert anything. Without
+# one it is an instrument failure - never a pass.
+function Publish-PortClosure {
+    param($Probe)
+
+    $launchReal = ((-not $Probe.InstrumentFailed) -and (-not [string]::IsNullOrWhiteSpace([string]$Probe.Pid)))
+    if (-not $launchReal) {
+        $reason = 'no-probe-transcript'
+        if ($Probe.InstrumentFailed) { $reason = 'launch-instrument-failed' }
+        Add-Check 'REQ-2.6' $false $reason
+        return $false
+    }
+
+    $portParts = New-Object System.Collections.ArrayList
+    $portsOk = $true
+    foreach ($port in $script:ProbePorts) {
+        if ($Probe.PortsOpen -contains $port) {
+            $portsOk = $false
+            [void]$portParts.Add(('port_{0}=open' -f $port))
+        } else {
+            [void]$portParts.Add(('port_{0}=closed' -f $port))
+        }
+    }
+    Add-Check 'REQ-2.6' $portsOk ($portParts -join ' ')
+    return $portsOk
+}
+
 function Invoke-GateMode {
     param([string]$OutRoot)
-
     Reset-RunState
 
     if ([string]::IsNullOrWhiteSpace($OutRoot)) {
@@ -1391,24 +1524,18 @@ function Invoke-GateMode {
             Add-Check 'REQ-2.8' $false 'launcher-command-bar not measured (no getBoundingClientRect reading)'
         }
     } else {
-        Add-Check 'REQ-2.3' $false 'cdp.json unavailable for profile=fresh'
-        Add-Check 'REQ-2.3-screenshot' $false 'cdp.json unavailable for profile=fresh'
-        Add-Check 'REQ-2.8' $false 'cdp.json unavailable for profile=fresh'
-        if (-not $SkipCompanion) { Add-Check 'REQ-2.5' $false 'cdp.json unavailable for profile=fresh' }
+        # The launch layer failed, not the CDP layer: name the cause in the detail
+        # so a reader is not sent hunting in the wrong subsystem.
+        $instrumentSuffix = ''
+        if ($fresh.Probe.InstrumentFailed) { $instrumentSuffix = ' (launch instrument failed: LAUNCH_NOT_RUNNING)' }
+        Add-Check 'REQ-2.3' $false ('cdp.json unavailable for profile=fresh' + $instrumentSuffix)
+        Add-Check 'REQ-2.3-screenshot' $false ('cdp.json unavailable for profile=fresh' + $instrumentSuffix)
+        Add-Check 'REQ-2.8' $false ('cdp.json unavailable for profile=fresh' + $instrumentSuffix)
+        if (-not $SkipCompanion) { Add-Check 'REQ-2.5' $false ('cdp.json unavailable for profile=fresh' + $instrumentSuffix) }
     }
 
     # ---- REQ-2.6: the app ports stay closed (probe -RequireClosed) -----------
-    $portParts = New-Object System.Collections.ArrayList
-    $portsOk = $true
-    foreach ($port in $script:ProbePorts) {
-        if ($fresh.Probe.PortsOpen -contains $port) {
-            $portsOk = $false
-            [void]$portParts.Add(('port_{0}=open' -f $port))
-        } else {
-            [void]$portParts.Add(('port_{0}=closed' -f $port))
-        }
-    }
-    Add-Check 'REQ-2.6' $portsOk ($portParts -join ' ')
+    Publish-PortClosure -Probe $fresh.Probe | Out-Null
 
     # ---- dirty profile ------------------------------------------------------
     $script:DirtyDir = Join-Path $OutRoot 'run-dirty'
@@ -1536,7 +1663,7 @@ function Invoke-NegativeMode {
     $script:NegativeGateExit = 0
     if ($null -ne $legResult.PSObject.Properties['GateExit']) { $script:NegativeGateExit = [int]$legResult.GateExit }
 
-    $negativeVerdict = Get-NegativeVerdict -Expected $script:NegativeExpected -Observed $observed -GateExit $script:NegativeGateExit
+    $negativeVerdict = Get-NegativeLegVerdict -LegResult $legResult -Expected $script:NegativeExpected -Observed $observed -GateExit $script:NegativeGateExit
     Publish-NegativeVerdict -Verdict $negativeVerdict | Out-Null
 
     return (Complete-Run -OutRoot $OutRoot -Installers $installerFull -ChecksExpected $false)
@@ -1642,6 +1769,14 @@ function Complete-Run {
     $receipt['exitCode'] = $code
     $receipt['checks'] = $checks
     if ($errors.Count -gt 0) { $receipt['errors'] = $errors }
+    # Unset optional: ABSENT on a run whose instruments ran (never `null`), so a
+    # green receipt keeps the section-E key set exactly.
+    if ($script:LaunchInstrumentFailed) {
+        $receipt['instrument'] = [ordered]@{
+            failed = $true
+            detail = $script:LaunchInstrumentDetail
+        }
+    }
     $receipt['cdp'] = (New-CdpBlock)
     $receipt['evidence'] = (New-EvidenceBlock -OutRoot $OutRoot)
 
@@ -2102,6 +2237,103 @@ function Invoke-SelfTest {
         }
         $ok = ($run.Code -eq 0) -and ($run.Ids.Count -eq 0) -and (Test-ContainsLine $run.Lines 'CHECK REQ-2.3 PASS') -and (Test-ContainsLine $run.Lines 'SURFACE_RECT=launcher-command-bar')
         New-ControlLine 'CLEAN-PASS' 'a clean reading produces no named error (exit 0)' $ok ("exit=$($run.Code) ids=$($run.Ids -join ',')")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 22. LAUNCH_INSTRUMENT_FAILURE (round 2) ----------------
+        # A launch child that dies before printing a transcript (binder error,
+        # parse error, missing script) must FAIL, named, and must NOT be read as a
+        # window or as a closed-port pass. Driven with a stub probe that exits 7 and
+        # prints nothing, through the REAL Invoke-LaunchProfile + Publish-PortClosure.
+        $stubProbe = Join-Path $rootTemp 'stub-probe-exit7.ps1'
+        [System.IO.File]::WriteAllText($stubProbe, "exit 7`r`n", $script:GateLogEncoding)
+        $savedLaunchProbe = $script:LaunchProbe
+        $script:LaunchProbe = $stubProbe
+        $stubRunDir = Join-Path $rootTemp 'run-instrument-stub'
+        $run = Invoke-Captured {
+            $profile = Invoke-LaunchProfile -Profile 'selftest' -ExePath 'C:\nonexistent\fredo.exe' -RunDir $stubRunDir -WindowSecs 1
+            Publish-PortClosure -Probe $profile.Probe | Out-Null
+            Get-FinalExitCode
+        }
+        $script:LaunchProbe = $savedLaunchProbe
+        $ok = ($run.Code -eq 1) -and
+              ($run.Ids -contains 'LAUNCH_NOT_RUNNING') -and
+              (Test-ContainsLine $run.Lines 'LAUNCH_NOT_RUNNING:child-exit=7 transcript=empty') -and
+              (Test-ContainsLine $run.Lines 'CHECK REQ-2.2 FAIL   result=instrument-failed') -and
+              (Test-ContainsLine $run.Lines 'CHECK REQ-2.6 FAIL   launch-instrument-failed') -and
+              (-not (Test-ContainsLine $run.Lines 'CHECK REQ-2.6 PASS')) -and
+              (-not (Test-ContainsLine $run.Lines 'port_9223=closed'))
+        New-ControlLine 'LAUNCH_INSTRUMENT_FAILURE' 'a transcript-less launch child fails, named, and REQ-2.6 abstains (exit 1)' $ok ("exit=$($run.Code) ids=$($run.Ids -join ',')")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 23. NEGATIVE_INSTRUMENT_FAILURE (round 2) --------------
+        # An unrunnable leg instrument is its own class and OUTRANKS both negative
+        # verdicts: a leg that induced nothing must never read as NOT_REPRODUCED
+        # (device survived) or WRONG_ERROR (device failed differently).
+        $cspSet = @(Get-ExpectedNegativeId -Name 'Csp')
+        $flagResult = [pscustomobject]@{ InstrumentFailed = $true; GateExit = 2; Observed = @(); Note = 'instrument failed: parameter binder' }
+        $runFlag = Invoke-Captured {
+            $script:NegativeExpected = $cspSet
+            $script:NegativeObserved = @()
+            $script:NegativeGateExit = 2
+            $v = Get-NegativeLegVerdict -LegResult $flagResult -Expected $cspSet -Observed @() -GateExit 2
+            Publish-NegativeVerdict -Verdict $v | Out-Null
+            Get-FinalExitCode
+        }
+        $idResult = [pscustomobject]@{ GateExit = 2; Observed = @('NEGATIVE_INSTRUMENT_FAILURE:probe exited 1 before any output') }
+        $runId = Invoke-Captured {
+            $script:NegativeExpected = $cspSet
+            $script:NegativeObserved = @('NEGATIVE_INSTRUMENT_FAILURE:probe exited 1 before any output')
+            $script:NegativeGateExit = 2
+            $v = Get-NegativeLegVerdict -LegResult $idResult -Expected $cspSet -Observed @('NEGATIVE_INSTRUMENT_FAILURE:probe exited 1 before any output') -GateExit 2
+            Publish-NegativeVerdict -Verdict $v | Out-Null
+            Get-FinalExitCode
+        }
+        $ok = ($runFlag.Code -eq 1) -and
+              ($runFlag.Ids -contains 'NEGATIVE_INSTRUMENT_FAILURE') -and
+              (-not ($runFlag.Ids -contains 'NEGATIVE_NOT_REPRODUCED')) -and
+              (-not ($runFlag.Ids -contains 'NEGATIVE_WRONG_ERROR')) -and
+              (Test-ContainsLine $runFlag.Lines 'NEGATIVE_INSTRUMENT_FAILURE:instrument failed: parameter binder') -and
+              (Test-ContainsLine $runFlag.Lines 'NEGATIVE_EXPECTED=') -and
+              (Test-ContainsLine $runFlag.Lines 'GATE_EXIT=2') -and
+              ($runId.Code -eq 1) -and
+              ($runId.Ids -contains 'NEGATIVE_INSTRUMENT_FAILURE') -and
+              (Test-ContainsLine $runId.Lines 'NEGATIVE_INSTRUMENT_FAILURE:probe exited 1 before any output')
+        New-ControlLine 'NEGATIVE_INSTRUMENT_FAILURE' 'an unrunnable leg instrument outranks both negative verdicts (exit 1)' $ok ("flag-exit=$($runFlag.Code) flag-ids=$($runFlag.Ids -join ',') id-exit=$($runId.Code)")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 24. PROBE_PORTS_BIND (round 2) -------------------------
+        # The regression pin on the REAL seam: take New-ProbeArgumentList's OWN
+        # output (the real three-port list) and spawn the probe exactly as
+        # Invoke-LaunchProfile does, with a non-existent exe. The probe must reach
+        # its OWN typed refusal (exit 2, RESULT=REFUSED, ERROR: missing exe). A
+        # binder error (exit 1 / ParameterArgumentTransformationError) means the
+        # port specification does not bind and THIS CONTROL FAILS.
+        $bindDir = Join-Path $rootTemp 'probe-bind'
+        New-Item -ItemType Directory -Path $bindDir -Force | Out-Null
+        $bindArgs = New-ProbeArgumentList -ExePath 'C:\nonexistent\fredo.exe' -RunDir $bindDir -WindowSecs 5
+        $portsToken = ''
+        for ($index = 0; $index -lt ($bindArgs.Count - 1); $index++) {
+            if ($bindArgs[$index] -eq '-Ports') { $portsToken = [string]$bindArgs[$index + 1] }
+        }
+        $bindChild = Invoke-ChildScript -ScriptPath $script:LaunchProbe -ArgumentList $bindArgs -StdOutPath (Join-Path $bindDir 'probe-bind.stdout.log') -StdErrPath (Join-Path $bindDir 'probe-bind.stderr.log')
+        $bindText = ([string]$bindChild.StdOut) + "`n" + ([string]$bindChild.StdErr)
+        $bindRefused = $bindText.Contains('RESULT=REFUSED') -and $bindText.Contains('ERROR: missing exe')
+        $bindBinderError = $bindText.Contains('ParameterArgumentTransformationError') -or $bindText.Contains('Cannot convert value')
+        # Name the offending parameter declaration in the transcript: the failure
+        # IS an interface gap in the probe, and the reader needs to see which side
+        # owns it (the driver's token is already correct - see `ports=` below).
+        $bindPortsParam = 'unknown'
+        $probeSource = ''
+        try { $probeSource = [System.IO.File]::ReadAllText($script:LaunchProbe) } catch { $probeSource = '' }
+        if ($probeSource -match '(?m)^\s*(\[[A-Za-z0-9\[\]]+\]\s*\$Ports[^\r\n,]*)') { $bindPortsParam = $Matches[1].Trim() }
+        $bindFirstErr = ''
+        foreach ($line in @(([string]$bindChild.StdErr) -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) { $bindFirstErr = ([string]$line).Trim(); break }
+        }
+        if ($bindFirstErr.Length -gt 160) { $bindFirstErr = $bindFirstErr.Substring(0, 160) }
+        $ok = ($portsToken -eq '9223,16932,19631') -and ($bindChild.ExitCode -eq 2) -and $bindRefused -and (-not $bindBinderError)
+        $bindDetail = "exit=$($bindChild.ExitCode) ports=$portsToken refused=$bindRefused binder-error=$bindBinderError probe-ports-param=[$bindPortsParam] stderr=$bindFirstErr"
+        New-ControlLine 'PROBE_PORTS_BIND' 'the driver port list binds the probe and reaches its typed refusal (exit 2)' $ok $bindDetail
         if (-not $ok) { $failures++ }
     } catch {
         Emit ('SELFTEST_EXCEPTION=' + $_.Exception.Message)
