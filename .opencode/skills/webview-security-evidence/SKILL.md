@@ -50,9 +50,15 @@ probe or a CSP parser — use these.
    ```
    - `-Exe` is the app executable, **not** the NSIS installer. A path containing `\debug\` is
      refused (exit `2`) — a production/negative AC must use the release artifact.
-   - `-Ports` is a comma list. `-McpPort` (default: the first `-Ports` value) is exported as
-     `FREDO_MCP_BASE_PORT`, so a release build that wrongly registered the bridge would
-     target a probed port.
+   - `-Ports` is a **specification**, not an int array: one or more decimal ports separated by
+     `,`, `;` or whitespace (e.g. `9223,16932,19631`), duplicates deduped and order preserved.
+     Under the native `powershell -File` boundary a comma-joined list arrives as **one token**,
+     so the probe takes it as a `[string]` and splits it itself — an `[int[]]` parameter cannot
+     bind that token (which is exactly the round-1 launch defect). PowerShell callers may still
+     pass an int array; it binds as a space-joined string and parses the same. A token that is
+     not an integer is refused (`ERROR: port is not an integer: <t>`, exit `2`). `-McpPort`
+     (default: the first `-Ports` value) is exported as `FREDO_MCP_BASE_PORT`, so a release
+     build that wrongly registered the bridge would target a probed port.
    - The observation window is `-WaitSecs` (default `40`, clamped to `1..900`). The upper bound
      is `900` (not `300`) so a long in-window hook fits: the companion turn's bound is `600 s`,
      so a caller running it inside the window passes `-WaitSecs = <companion bound> + settle`

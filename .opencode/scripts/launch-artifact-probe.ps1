@@ -124,6 +124,14 @@
       5 - CDP-HOOK-FAIL    a hermetic hook exits 1; the runner folds it into
                            `FAILURE=window-hook:1` (the named failure the live
                            path reports).
+      6 - WAITSECS-RANGE   the real entry path accepts `-WaitSecs 900` and
+                           rejects `901` (the upper clamp for a long hook).
+      7 - PORTS-BIND       the COMMA-JOINED three-port form the release gate
+                           passes (`-Ports 9223,16932,19631`) BINDS: it reaches
+                           the typed missing-exe refusal (exit 2) instead of a
+                           parameter-binder error. Also pins the single-port
+                           form, the `;` and whitespace separators, and a
+                           non-integer token refusal.
      `SELFTEST: PASS` + exit 0 when every control passes.
 
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
@@ -140,8 +148,13 @@
   installer. A `\debug\` path is refused. Not required by -SelfTest.
 
 .PARAMETER Ports
-  Comma-separated TCP ports to probe, e.g. `16932,9223`. Required unless
-  -ProbeOnly (which launches nothing) is given.
+  TCP ports to probe, given as a specification: one or more decimal ports
+  separated by `,`, `;` or whitespace (e.g. `9223,16932,19631`). Duplicates are
+  deduped and order is preserved. It is a STRING, not an int array: under the
+  native `powershell -File` boundary a comma-joined list arrives as one token,
+  which an [int[]] parameter cannot bind. A PowerShell caller may still pass an
+  int array -- PowerShell binds it as a space-joined string and the parser
+  accepts it. Required unless -ProbeOnly (which launches nothing) is given.
 
 .PARAMETER McpPort
   The port exported as FREDO_MCP_BASE_PORT. Default: the first -Ports value, so a
@@ -219,6 +232,12 @@
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe apps\tauri\src-tauri\target\release\fredo.exe -Ports 16932,9223 -RequireClosed
 
 .EXAMPLE
+  # -Ports is one or more decimal ports separated by , ; or whitespace. This is
+  # the form the release gate passes; the native -File boundary delivers it as a
+  # single comma-joined token, which the parser splits.
+  powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe C:\install\fredo.exe -Ports 9223,16932,19631 -RequireClosed
+
+.EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe .\fredo.exe -Ports 16932 -McpPort 16932 -WaitSecs 20 -DataDir .opencode\tmp\probe-data
 
 .EXAMPLE
@@ -233,7 +252,7 @@
 #>
 param(
   [string]$Exe = '',
-  [int[]]$Ports = @(),
+  [string]$Ports = '',
   [int]$McpPort = 0,
   [switch]$RequireClosed,
   [int]$WaitSecs = 40,
@@ -291,18 +310,30 @@ if (-not $SelfTest) {
     exit 2
   }
 
-  if ($null -ne $Ports) {
-    $seen = @{}
-    foreach ($port in $Ports) {
-      if ($port -lt 1 -or $port -gt 65535) {
-        Write-Probe "ERROR: port out of range: $port"
-        Write-Probe 'RESULT=REFUSED'
-        exit 2
-      }
-      if (-not $seen.ContainsKey($port)) {
-        $seen[$port] = $true
-        $probePorts += [int]$port
-      }
+  # -Ports is a SPECIFICATION, not an [int[]]. Under the native
+  # `powershell -File` boundary a comma-joined list (9223,16932,19631) arrives
+  # as ONE string token; an [int[]] parameter cannot bind it and the child dies
+  # in the parameter binder before any probe line is printed (the round-1
+  # defect). Accept one or more decimal ports separated by ',', ';' or
+  # whitespace; dedupe and preserve order. A PowerShell caller that still passes
+  # an int[] is bound to a space-joined string by PowerShell and parses here.
+  $probeSeen = @{}
+  foreach ($token in @($Ports -split '[,;\s]+')) {
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    $value = 0
+    if (-not [int]::TryParse($token, [ref]$value)) {
+      Write-Probe "ERROR: port is not an integer: $token"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if ($value -lt 1 -or $value -gt 65535) {
+      Write-Probe "ERROR: port out of range: $value"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if (-not $probeSeen.ContainsKey($value)) {
+      $probeSeen[$value] = $true
+      $probePorts += [int]$value
     }
   }
 
@@ -1214,6 +1245,64 @@ exit 1
       }
     } catch {
       Write-Probe ("  [FAIL] WaitSecs range control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 7 - PORTS-BIND -----------------------------------------
+    # The release gate passes the port list as ONE comma-joined token over the
+    # native `powershell -File` boundary. An [int[]] parameter cannot bind that
+    # token (the round-1 defect: the child died in the parameter binder before
+    # printing any probe line). The string spec + parser must instead reach the
+    # typed missing-exe refusal. Every leg drives the REAL entry path as a child
+    # with a non-existent exe, so nothing is launched; the single-port leg is
+    # the one-variable discriminator, and the non-int leg proves the parser is
+    # real (not a pass-through).
+    Write-Probe 'CONTROL 7 - PORTS-BIND'
+    try {
+      $portMissingExe = Join-Path $selfTmp 'no-such-dir\fredo.exe'
+
+      $outComma = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223,16932,19631') 2>&1
+      $codeComma = $LASTEXITCODE
+      $textComma = if ($outComma -is [array]) { $outComma -join "`n" } else { "$outComma" }
+      $commaBinds = ($codeComma -eq 2) -and
+                    $textComma.Contains('ERROR: missing exe') -and
+                    $textComma.Contains('RESULT=REFUSED') -and
+                    (-not $textComma.Contains('Cannot convert value')) -and
+                    (-not $textComma.Contains('ParameterArgumentTransformationError')) -and
+                    (-not $textComma.Contains('must name at least one TCP port'))
+
+      $outSingle = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223') 2>&1
+      $codeSingle = $LASTEXITCODE
+      $textSingle = if ($outSingle -is [array]) { $outSingle -join "`n" } else { "$outSingle" }
+      $singleBinds = ($codeSingle -eq 2) -and $textSingle.Contains('ERROR: missing exe')
+
+      $outSemi = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223;16932') 2>&1
+      $codeSemi = $LASTEXITCODE
+      $textSemi = if ($outSemi -is [array]) { $outSemi -join "`n" } else { "$outSemi" }
+      $semiBinds = ($codeSemi -eq 2) -and $textSemi.Contains('ERROR: missing exe')
+
+      $outSpace = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223 16932') 2>&1
+      $codeSpace = $LASTEXITCODE
+      $textSpace = if ($outSpace -is [array]) { $outSpace -join "`n" } else { "$outSpace" }
+      $spaceBinds = ($codeSpace -eq 2) -and $textSpace.Contains('ERROR: missing exe')
+
+      $outBad = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223,x') 2>&1
+      $codeBad = $LASTEXITCODE
+      $textBad = if ($outBad -is [array]) { $outBad -join "`n" } else { "$outBad" }
+      $badRejected = ($codeBad -eq 2) -and
+                     $textBad.Contains('ERROR: port is not an integer: x') -and
+                     $textBad.Contains('RESULT=REFUSED')
+
+      if ($commaBinds -and $singleBinds -and $semiBinds -and $spaceBinds -and $badRejected) {
+        Write-Probe '  [PASS] -Ports 9223,16932,19631 binds (single-port control + ; and whitespace separators + non-int refusal)'
+      } else {
+        Write-Probe ("  [FAIL] comma={0} single={1} semicolon={2} space={3} badToken={4}" -f $commaBinds, $singleBinds, $semiBinds, $spaceBinds, $badRejected)
+        Write-Probe ("    comma exit={0} text={1}" -f $codeComma, $textComma)
+        Write-Probe ("    bad exit={0} text={1}" -f $codeBad, $textBad)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] ports-bind control threw: {0}" -f $_.Exception.Message)
       $controlFailures++
     }
   } finally {
