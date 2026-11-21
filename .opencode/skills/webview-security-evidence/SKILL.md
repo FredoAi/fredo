@@ -53,8 +53,11 @@ probe or a CSP parser — use these.
    - `-Ports` is a comma list. `-McpPort` (default: the first `-Ports` value) is exported as
      `FREDO_MCP_BASE_PORT`, so a release build that wrongly registered the bridge would
      target a probed port.
-   - The observation window is `-WaitSecs` (default `40`). Each port is probed with
-     `TcpClient.BeginConnect` + **600 ms** — never `Test-NetConnection`.
+   - The observation window is `-WaitSecs` (default `40`, clamped to `1..900`). The upper bound
+     is `900` (not `300`) so a long in-window hook fits: the companion turn's bound is `600 s`,
+     so a caller running it inside the window passes `-WaitSecs = <companion bound> + settle`
+     and the hook's `GATE_WINDOW_SECS` inherits it. A launch-only pass still uses `<= 300`.
+     Each port is probed with `TcpClient.BeginConnect` + **600 ms** — never `Test-NetConnection`.
    - It scans stdout/stderr for `WebSocket server listening` and tears down the app, its
      descendant tree, and only the embedded `postgres` that appeared during this launch.
 3. **Read the receipt.** A PASS needs `RESULT=PASS`, `HAS_EXITED=false`, every
@@ -125,12 +128,14 @@ launch primitive.
   `FAILURE=window-hook-timeout:<s>`. The hook's stdout/stderr are kept as
   `window-hook-stdout.log` / `window-hook-stderr.log` beside the run logs. `-CdpProbe` is
   refused together with `-ProbeOnly` (nothing is launched to run the hook inside), and a hook
-  path that does not exist is refused (exit `2`).
+  path that does not exist is refused (exit `2`). A long hook (the companion turn) needs a
+  wider window: pass `-WaitSecs` up to `900`, and the hook's `GATE_WINDOW_SECS` inherits it.
 
 The hermetic `-SelfTest` proves the mechanism without a GUI: controls 4 (`CDP-HOOK`) and 5
 (`CDP-HOOK-FAIL`) run hermetic hooks through the same runner — control 4 asserts
 `GATE_CDP_PORT` reached the hook and it exited `0`; control 5 asserts a hook exiting `1`
-folds into `FAILURE=window-hook:1`.
+folds into `FAILURE=window-hook:1`; control 6 (`WAITSECS-RANGE`) drives the real entry path to
+assert `-WaitSecs` accepts `900` and rejects `901`.
 
 ## Examples
 

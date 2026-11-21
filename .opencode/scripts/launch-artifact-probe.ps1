@@ -66,7 +66,7 @@
   DURATION AND PHASES (Spec #3172 ST-5):
     A normal run is TWO INDEPENDENT phases, each announced by a `PHASE=` marker
     carrying SINCE_START_SECONDS:
-      PHASE=launch-window  the bounded GUI observation (-WaitSecs, default 40 s)
+      PHASE=launch-window  the bounded GUI observation (-WaitSecs, default 40 s, 1..900)
                            plus the port/bridge assertions and teardown -- SECONDS.
       PHASE=cli-legs       `<exe> --version`, then, when asked,
                            PHASE=companion-probe and PHASE=dll-control.
@@ -98,6 +98,9 @@
       `WINDOW_HOOK_EXIT=<n>` and `WINDOW_HOOK_SECONDS=<s>`. A non-zero hook exit
       folds into `FAILURE=window-hook:<n>`; a hook that outlives the bounded
       window is killed and folds into `FAILURE=window-hook-timeout:<s>`.
+      A long hook -- the companion turn, bound 600 s -- needs a wider window:
+      pass -WaitSecs = <companion bound> + settle time (up to 900); the hook's
+      GATE_WINDOW_SECS inherits that bound.
 
   SELF-TEST (`-SelfTest`, hermetic -- no GUI artifact, no model, no ports):
       1 - DETACHED-LAUNCH  a deliberately long-lived child (`powershell.exe
@@ -149,7 +152,13 @@
   This is the mode for the release webview-security AC.
 
 .PARAMETER WaitSecs
-  Bounded observation window, seconds. Default 40. Clamped to 1..300.
+  Bounded observation window, seconds. Default 40. Clamped to 1..900.
+
+  The upper bound is 900 (raised from 300) so a LONG in-window hook can run
+  inside the window: when -CdpProbe drives the companion turn (bound 600 s), the
+  caller passes -WaitSecs = <companion bound> + settle time and the hook's
+  GATE_WINDOW_SECS inherits it. The launch-survival observation is still bounded
+  by the caller -- a launch-only pass uses <= 300 s.
 
 .PARAMETER DataDir
   Optional FREDO_DATA_DIR for the launched process. Isolates its PostgreSQL
@@ -303,8 +312,8 @@ if (-not $SelfTest) {
     exit 2
   }
 
-  if ($WaitSecs -lt 1 -or $WaitSecs -gt 300) {
-    Write-Probe "ERROR: -WaitSecs must be 1..300 (got $WaitSecs)."
+  if ($WaitSecs -lt 1 -or $WaitSecs -gt 900) {
+    Write-Probe "ERROR: -WaitSecs must be 1..900 (got $WaitSecs)."
     Write-Probe 'RESULT=REFUSED'
     exit 2
   }
@@ -1171,6 +1180,40 @@ exit 1
       }
     } catch {
       Write-Probe ("  [FAIL] CDP hook-fail control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 6 - WAITSECS-RANGE -------------------------------------
+    # The upper clamp is 900 (not 300) so a long in-window hook (the companion
+    # turn, bound 600 s) fits. Both legs drive the REAL entry path as a child:
+    #   * 900 is ACCEPTED -- with a missing exe the refusal is "missing exe",
+    #     which can only happen if the -WaitSecs guard let 900 through;
+    #   * 901 is REJECTED by the upper clamp.
+    Write-Probe 'CONTROL 6 - WAITSECS-RANGE'
+    try {
+      $missingExe = Join-Path $selfTmp 'no-such-dir\fredo.exe'
+      $out900 = & powershell -NoProfile -File $selfPath @('-Exe', $missingExe, '-Ports', '16932', '-WaitSecs', '900') 2>&1
+      $code900 = $LASTEXITCODE
+      $text900 = if ($out900 -is [array]) { $out900 -join "`n" } else { "$out900" }
+      $accepted900 = ($code900 -eq 2) -and
+                     $text900.Contains('missing exe') -and
+                     (-not $text900.Contains('-WaitSecs must be'))
+
+      $out901 = & powershell -NoProfile -File $selfPath @('-Exe', $missingExe, '-Ports', '16932', '-WaitSecs', '901') 2>&1
+      $code901 = $LASTEXITCODE
+      $text901 = if ($out901 -is [array]) { $out901 -join "`n" } else { "$out901" }
+      $rejected901 = ($code901 -eq 2) -and
+                     $text901.Contains('-WaitSecs must be 1..900') -and
+                     $text901.Contains('RESULT=REFUSED')
+
+      if ($accepted900 -and $rejected901) {
+        Write-Probe '  [PASS] -WaitSecs accepts 900 and rejects 901'
+      } else {
+        Write-Probe ("  [FAIL] accepted900={0} rejected901={1} out900={2} out901={3}" -f $accepted900, $rejected901, $text900, $text901)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] WaitSecs range control threw: {0}" -f $_.Exception.Message)
       $controlFailures++
     }
   } finally {
