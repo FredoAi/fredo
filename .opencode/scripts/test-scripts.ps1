@@ -4733,7 +4733,9 @@ $scripts = @(
   "launch-artifact-probe.ps1",
   "inspect-webview-config.ps1",
   "check-navigation-prose-retired.ps1",
-  "verify-installer-payload.ps1"
+  "verify-installer-payload.ps1",
+  "gate-release-artifact.ps1",
+  "gate-artifact-window.ps1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4902,6 +4904,203 @@ Test-Script "stager: -SelfTest passes all eleven controls" {
   if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
   if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
   return "eleven controls pass (stager's import/delay-import scan and swap proven)"
+}
+
+# --- Release-artifact gate harness + release.yml wiring (Spec #3181 ST-5/ST-6/ST-7) ---
+# "A committed guard with no runner is not a guard." These legs prove the gate's
+# instrument (its -SelfTest controls, including one per named error id), its
+# negative-mode contract, the structural STEP ORDER in release.yml, the evidence
+# upload shape, and the gate skill. The harness stays fully offline: the gate legs
+# use only -SelfTest (hermetic) and source/structural reads - never a real
+# installer, GUI, model or network. The release.yml legs assert step-offset ORDER
+# (Select-String line numbers), never prose matching (G-406).
+Write-Host "Release-artifact gate (Spec #3181):" -ForegroundColor Cyan
+$releaseGate = ".opencode/scripts/gate-release-artifact.ps1"
+$releaseWorkflow = ".github/workflows/release.yml"
+
+Test-Script "gate-release-artifact.ps1: -SelfTest passes all controls" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  return "gate-release-artifact -SelfTest: SELFTEST: PASS"
+}
+
+Test-Script "gate-release-artifact.ps1: every named error id is emitted by its own control" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  # Every named error id (the plan's binding error table) needs its own control.
+  $ids = @(
+    "EXTRACT_FAILED",
+    "PAYLOAD_MISSING",
+    "LAUNCH_EXIT",
+    "LAUNCH_NOT_RUNNING",
+    "UNSTYLED",
+    "CSP_VIOLATION",
+    "DB_NOT_READY",
+    "DB_QUARANTINE_MISSING",
+    "COMPANION_NO_REPLY",
+    "COMPANION_ENGINE",
+    "MCP_PORT_OPEN",
+    "MCP_BRIDGE_LOG_LINE",
+    "EVIDENCE_MISSING",
+    "CDP_UNAVAILABLE",
+    "WEBVIEW2_MISSING",
+    "MODEL_SET_MISSING",
+    "CDP_PORT_IN_USE",
+    "NEGATIVE_NOT_REPRODUCED",
+    "NEGATIVE_WRONG_ERROR"
+  )
+  $missing = @($ids | Where-Object { -not $text.Contains($_) })
+  if ($missing.Count -gt 0) {
+    throw ("self-test transcript does not emit: " + ($missing -join ", "))
+  }
+  return ("all " + $ids.Count + " named error ids emitted by -SelfTest controls")
+}
+
+Test-Script "gate-release-artifact.ps1: -Mode negative exits 0 only when the expected id fires" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  $src = Get-Content -LiteralPath $releaseGate -Raw
+  foreach ($tok in @(
+    "NEGATIVE_EXPECTED=",
+    "NEGATIVE_OBSERVED=",
+    "GATE_EXIT=",
+    "NEGATIVE_NOT_REPRODUCED",
+    "NEGATIVE_WRONG_ERROR"
+  )) {
+    if (-not $src.Contains($tok)) { throw "gate-release-artifact.ps1 missing negative-mode literal: $tok" }
+  }
+  # The two exit-1 refusal paths must be driven by -SelfTest controls too.
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($id in @("NEGATIVE_NOT_REPRODUCED", "NEGATIVE_WRONG_ERROR")) {
+    if (-not $text.Contains($id)) { throw "self-test carries no control for $id" }
+  }
+  return "negative mode: NEGATIVE_EXPECTED/NEGATIVE_OBSERVED/GATE_EXIT + both refusal ids proven"
+}
+
+Test-Script "release.yml: the gate step sits after payload verify and before gh release create --draft" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  function Find-Line([string]$pattern) {
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { return $i } }
+    return -1
+  }
+  $payload = Find-Line 'name:\s*Verify installer payload'
+  $gateId = Find-Line 'id:\s*artifact-gate'
+  $gateName = Find-Line 'name:\s*Gate the produced installer'
+  $draftName = Find-Line 'name:\s*Create draft release'
+  if ($payload -lt 0) { throw "release.yml has no 'Verify installer payload' step" }
+  if ($gateId -lt 0 -or $gateName -lt 0) {
+    throw "release.yml has no artifact-gate step yet (the ST-5 owner must land it)"
+  }
+  if ($draftName -lt 0) { throw "release.yml has no 'Create draft release' step" }
+  if (-not ($payload -lt $gateId -and $gateId -lt $draftName)) {
+    throw "step order wrong: payload=$payload gate=$gateId draft=$draftName"
+  }
+  # The gate step's own block must receive the produced installer and fail the job.
+  $gateBlock = ($lines[$gateId..([Math]::Min($gateId + 45, $lines.Count - 1))] -join "`n")
+  foreach ($tok in @("shell: pwsh", "steps.locate.outputs.installer", "RELEASE_GATE_FAILED")) {
+    if (-not $gateBlock.Contains($tok)) { throw "the artifact-gate step is missing '$tok'" }
+  }
+  # Exactly ONE gh release create in the whole workflows dir, and it is --draft.
+  $workflowFiles = @(Get-ChildItem -LiteralPath ".github/workflows" -File | Where-Object { $_.Extension -eq ".yml" -or $_.Extension -eq ".yaml" })
+  $creates = @(Select-String -Path $workflowFiles.FullName -Pattern "gh release create")
+  if ($creates.Count -ne 1) { throw "expected exactly one 'gh release create' in workflows, found $($creates.Count)" }
+  if ($creates[0].Line -notmatch '--draft') { throw "the single gh release create is not --draft" }
+  # The draft step still skips on any earlier failure (the fail-closed property).
+  $draftBlock = ($lines[$draftName..([Math]::Min($draftName + 12, $lines.Count - 1))] -join "`n")
+  if ($draftBlock -notmatch 'if:\s*success\(\)') { throw "the draft step no longer keeps if: success()" }
+  return "payload($payload) < artifact-gate($gateId) < draft($draftName); one --draft publish"
+}
+
+Test-Script "release.yml: the negative-control legs run before gh release create --draft" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  function Find-Line([string]$pattern) {
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { return $i } }
+    return -1
+  }
+  $gate = Find-Line 'id:\s*artifact-gate'
+  $neg = Find-Line 'id:\s*negative-controls'
+  $draft = Find-Line 'name:\s*Create draft release'
+  if ($gate -lt 0) { throw "release.yml has no artifact-gate step yet (the ST-5 owner must land it)" }
+  if ($neg -lt 0) { throw "release.yml has no negative-controls step yet (the ST-5 owner must land it)" }
+  if ($draft -lt 0) { throw "release.yml has no 'Create draft release' step" }
+  if (-not ($gate -lt $neg -and $neg -lt $draft)) {
+    throw "negative-controls order wrong: gate=$gate negatives=$neg draft=$draft"
+  }
+  $negBlock = ($lines[$neg..([Math]::Min($neg + 60, $lines.Count - 1))] -join "`n")
+  foreach ($leg in @("MissingDll", "Csp", "Database")) {
+    if ($negBlock -notmatch ("-Negative\s+" + [regex]::Escape($leg))) {
+      throw "the negative-controls step is missing the $leg leg"
+    }
+  }
+  $invocations = @(Select-String -Path $releaseWorkflow -Pattern '-Mode\s+negative')
+  if ($invocations.Count -lt 3) { throw "expected at least three -Mode negative invocations, found $($invocations.Count)" }
+  foreach ($inv in $invocations) {
+    if ($inv.Line -notmatch '-SkipCompanion') { throw "a negative leg omits -SkipCompanion: $($inv.Line.Trim())" }
+    if ($inv.Line -notmatch 'OUT_DIR') { throw "a negative leg omits the shared OUT_DIR: $($inv.Line.Trim())" }
+  }
+  if (-not $negBlock.Contains("NEGATIVE_CONTROL_FAILED")) {
+    throw "the negative-controls step is missing ::error::NEGATIVE_CONTROL_FAILED"
+  }
+  return "artifact-gate($gate) < negative-controls($neg) < draft($draft); three -SkipCompanion legs"
+}
+
+Test-Script "release.yml: the evidence upload is if: always() and SHA-pinned" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  $upload = -1
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match 'name:\s*Upload release-gate evidence') { $upload = $i; break }
+  }
+  if ($upload -lt 0) {
+    throw "release.yml has no 'Upload release-gate evidence' step yet (the ST-5 owner must land it)"
+  }
+  # Bound the step block at the next step header so a later step cannot satisfy a token.
+  $end = $lines.Count - 1
+  for ($i = $upload + 1; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match '^\s*-\s+name:') { $end = $i - 1; break }
+  }
+  $block = ($lines[$upload..$end] -join "`n")
+  if ($block -notmatch 'if:\s*always\(\)') { throw "the evidence upload is not if: always()" }
+  if ($block -notmatch 'actions/upload-artifact@[0-9a-f]{40}') {
+    throw "the evidence upload is not SHA-pinned (resolved 40-hex), never @v4"
+  }
+  if (-not $block.Contains("release-gate-evidence")) { throw "the evidence upload has no artifact name release-gate-evidence" }
+  if (-not $block.Contains(".opencode/tmp/release-gate")) { throw "the evidence upload path does not cover .opencode/tmp/release-gate" }
+  return "evidence upload: if: always(), SHA-pinned, release-gate-evidence"
+}
+
+Test-Script "release-gate skill documents the harness, both entries and the named errors" {
+  $skill = ".opencode/skills/release-artifact-gate/SKILL.md"
+  if (-not (Test-Path -LiteralPath $skill)) { throw "release-artifact-gate skill is missing" }
+  $src = Get-Content -LiteralPath $skill -Raw
+  foreach ($tok in @(
+    "gate-release-artifact.ps1",
+    "release.yml",
+    "-Mode gate -Manual",
+    "SURFACE_RECT=",
+    "MODEL_SET_MISSING",
+    "NEGATIVE_WRONG_ERROR",
+    "viewport-only capture of the app's resting first paint",
+    "-SevenZip"
+  )) {
+    if (-not $src.Contains($tok)) { throw "release-artifact-gate skill missing token: $tok" }
+  }
+  return "skill: harness + both entries + the named errors documented"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
