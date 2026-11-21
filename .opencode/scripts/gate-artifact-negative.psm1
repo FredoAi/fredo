@@ -15,14 +15,19 @@ The three legs (REQ-3.1, REQ-3.2a, REQ-3.3)
               (LAUNCH_EXIT:-1073741515). The ORIGINAL tree is never mutated:
               its DLL digest is recorded before and after the copy and asserted
               unchanged.
-  Csp         The 0.2.3 condition is induced in the LIVE document: a
-              nonce-bearing `style-src` policy is installed with
-              Page.addScriptToEvaluateOnNewDocument and the page reloaded. A
-              nonce in style-src voids 'unsafe-inline', so Chakra/emotion's
-              runtime <style> elements are refused and a normal injected <style>
-              yields 0 rules. The inner gate must report BOTH
-              `CSP_VIOLATION:<detail>` AND `UNSTYLED:<detail>`; UNSTYLED alone
-              means the detector did not reproduce the 0.2.3 mechanism.
+  Csp         The 0.2.3 condition is induced as a real DOCUMENT RESPONSE HEADER
+              through the CDP Fetch domain: every Document response is fulfilled
+              with `Content-Security-Policy: style-src 'self' 'unsafe-inline'
+              'nonce-fredo-gate-3181'`, so the page loads normally with the
+              policy enforced from byte 0. A nonce in style-src voids
+              'unsafe-inline', so Chakra/emotion's runtime <style> elements are
+              refused and a normal injected <style> yields 0 rules. A no-write
+              new-document seed pre-creates the hook's `__fredoGate.csp` array
+              (the collector then short-circuits) and tags every style-src record
+              with the induced policy, so the emitted detail names the nonce. The
+              inner gate must report BOTH `CSP_VIOLATION:<detail>` AND
+              `UNSTYLED:<detail>`; UNSTYLED alone means the detector did not
+              reproduce the 0.2.3 mechanism.
   Database    `<DataDir>/postgres/cluster/start.log` is seeded (non-empty, no
               `postgresql.conf`, i.e. residue) and the product's own seam
               `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1` is set, so the residue cannot
@@ -45,6 +50,12 @@ driver):
                                                             (on failure)
     CSP_POLICY_HOOK_EXIT=<n|unrunnable>    (generated Csp wrapper)
     CSP_INSTRUMENT=FAIL reason=<r>         (generated Csp wrapper: host cannot start)
+    CSP_INDUCTION=response-header policy=<policy>|unsupported
+                                           (generated Csp wrapper: the header
+                                            mechanism, or Fetch.enable refused)
+    CSP_FRAME=ready|not-ready readyState=<r> href=<h> bodyChildren=<n> internals=<b>
+                                           (generated Csp wrapper: the document
+                                            the policy is proven live in)
 
 INSTRUMENT FAILURE IS ITS OWN CLASS (round-2 fix). A leg decides ONLY on what a
 child actually reported. When the child died before printing a usable transcript,
@@ -150,6 +161,11 @@ $script:OverlayRelativePath = '.opencode/scripts/tauri.csp-revert.json'
 # leg child never inherits the caller's stdout/stderr pipe.
 Import-Module (Join-Path $PSScriptRoot 'detach-process.psm1') -ErrorAction Stop
 
+# The shared CDP client. The generated Csp wrapper imports it for itself; this
+# module imports it too so the hermetic control can assert the response-header
+# helpers (Add-CdpResponseHeader / Get-CdpFulfillBody) directly.
+Import-Module (Join-Path $PSScriptRoot 'fredo-cdp.psm1') -ErrorAction Stop
+
 # ---- small helpers -----------------------------------------------------------
 
 function Get-NegativeSlug {
@@ -218,8 +234,11 @@ function Get-NegativeExpectation {
                 Slug = 'csp'
                 Expected = @('CSP_VIOLATION', 'UNSTYLED')
                 RequireAll = $true
-                Assertions = 'styled'
-                Notes = @('induce a nonce-bearing style-src policy on new documents; both ids MUST fire (UNSTYLED alone is NEGATIVE_WRONG_ERROR)')
+                # The styled clause alone owns the pair, but the screenshot
+                # clause is selected too so cdp.json carries screenshot.criteria.S1
+                # (the rendered-frame receipt the 0.2.3 discriminator rests on).
+                Assertions = 'styled,screenshot'
+                Notes = @('induce a nonce-bearing style-src policy as a Document response header; both ids MUST fire (UNSTYLED alone is NEGATIVE_WRONG_ERROR)')
             }
         }
         'Database' {
@@ -533,36 +552,46 @@ function New-NegativeMissingDllTree {
 
 # ---- leg 2: Csp -------------------------------------------------------------
 
-function Get-NegativeCspPolicyScript {
-    # The induced 0.2.3 condition. A nonce in style-src voids 'unsafe-inline',
-    # so emotion's runtime <style> elements (and a normally injected <style>)
-    # are refused. Only style-src is constrained: the rest of the document keeps
-    # its shipped policy, so the leg demonstrates the styling mechanism alone.
+function Get-NegativeCspPolicy {
+    # The induced 0.2.3 condition, delivered as a DOCUMENT RESPONSE HEADER (see
+    # New-NegativeCspHook). A nonce in style-src voids 'unsafe-inline' - the spec
+    # says a nonce/hash source makes 'unsafe-inline' ignored - so emotion's
+    # runtime <style> elements AND a normally injected <style> are refused.
+    # Only style-src is constrained; 'self' keeps the app's own bundled sheets
+    # loading, so the document still renders (it is UNSTYLED, not blank).
+    return "style-src 'self' 'unsafe-inline' 'nonce-fredo-gate-3181'"
+}
+
+function Get-NegativeCspSeedScript {
+    # The new-document seed. NO WRITE TO THE PARSER STREAM: at document-start a
+    # new document has no root element (document.head and document.documentElement
+    # are both null), and writing into a navigation document that is not yet
+    # actively parsing is an implicit open() that replaces the parser stream and
+    # strands the frame at readyState=loading. This seed touches only `window` and
+    # `document`, both of which exist at document-start.
+    #
+    # It pre-creates __fredoGate.csp so the hook's own collector short-circuits
+    # (never a second listener), and it tags every style-src record with the
+    # induced policy so the emitted CSP_VIOLATION detail names the nonce.
     return @'
 (function () {
   try {
-    if (window.__fredoGateCspInduced) { return true; }
-    window.__fredoGateCspInduced = true;
-    var policy = "style-src 'nonce-fredo-gate-3181'";
-    function install() {
+    var policy = "style-src 'self' 'unsafe-inline' 'nonce-fredo-gate-3181'";
+    var gate = window.__fredoGate = window.__fredoGate || {};
+    if (!Array.isArray(gate.csp)) { gate.csp = []; }
+    gate.cspInstalled = true;
+    if (gate.__fredoPolicyTag === policy) { return true; }
+    gate.__fredoPolicyTag = policy;
+    document.addEventListener('securitypolicyviolation', function (event) {
       try {
-        var root = document.head || document.documentElement;
-        if (!root) { return false; }
-        if (document.querySelector('meta[data-fredo-gate-csp="1"]')) { return true; }
-        var meta = document.createElement('meta');
-        meta.setAttribute('http-equiv', 'Content-Security-Policy');
-        meta.setAttribute('data-fredo-gate-csp', '1');
-        meta.setAttribute('content', policy);
-        root.appendChild(meta);
-        return true;
-      } catch (error) { return false; }
-    }
-    if (install()) { return true; }
-    try {
-      document.write('<meta http-equiv="Content-Security-Policy" data-fredo-gate-csp="1" content="style-src \'nonce-fredo-gate-3181\'">');
-      return true;
-    } catch (error) { }
-    return false;
+        gate.csp.push({
+          directive: String(event.violatedDirective || ''),
+          blocked: 'policy=' + policy,
+          sample: String(event.sample || '').slice(0, 120)
+        });
+      } catch (inner) { }
+    }, true);
+    return true;
   } catch (error) { return false; }
 })()
 '@
@@ -600,128 +629,301 @@ function New-NegativeCspHook {
 
     $hookPath = (Resolve-Path -LiteralPath $WindowHookPath).Path
     $modulePath = (Resolve-Path -LiteralPath $CdpModulePath).Path
+    $detachPath = Join-Path $PSScriptRoot 'detach-process.psm1'
+    if (-not (Test-Path -LiteralPath $detachPath -PathType Leaf)) {
+        throw ('detach-process.psm1 was not found: ' + $detachPath)
+    }
+    $detachPath = (Resolve-Path -LiteralPath $detachPath).Path
     New-NegativeDirectory -Path $LegDir
 
-    $policy = Get-NegativeCspPolicyScript
-    $quote = [char]39
-    $lines = New-Object System.Collections.ArrayList
-    [void]$lines.Add('# csp-wrapper-hook.ps1 - GENERATED by gate-artifact-negative.psm1 (Spec #3181 ST-4).')
-    [void]$lines.Add('# The Csp negative leg. It installs a nonce-bearing style-src policy on every')
-    [void]$lines.Add('# new document, keeps this DevTools session open, and only then runs the real')
-    [void]$lines.Add('# in-window hook, so the hook measures a document the 0.2.3 condition governs.')
-    [void]$lines.Add('# Do not edit: regenerate with New-NegativeCspHook.')
-    [void]$lines.Add('$ErrorActionPreference = ' + $quote + 'Continue' + $quote)
-    [void]$lines.Add('$cdpModule = ' + $quote + $modulePath + $quote)
-    [void]$lines.Add('$windowHook = ' + $quote + $hookPath + $quote)
-    [void]$lines.Add('$powerShellExe = ' + $quote + $powerShellExe + $quote)
-    [void]$lines.Add('Import-Module -Name $cdpModule -Force')
-    [void]$lines.Add('')
-    [void]$lines.Add('$port = 0')
-    [void]$lines.Add('$portText = [string]$env:GATE_CDP_PORT')
-    [void]$lines.Add('if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {')
-    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY=failed' + $quote)
-    [void]$lines.Add('    Write-Output ' + $quote + 'ERROR=GATE_CDP_PORT missing or invalid' + $quote)
-    [void]$lines.Add('    exit 1')
-    [void]$lines.Add('}')
-    [void]$lines.Add('')
-    [void]$lines.Add('$session = $null')
-    [void]$lines.Add('try {')
-    [void]$lines.Add('    $session = Connect-FredoCdp -Port $port -TimeoutSecs 15')
-    [void]$lines.Add('} catch {')
-    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY=failed' + $quote)
-    [void]$lines.Add('    Write-Output (' + $quote + 'CDP_UNAVAILABLE:' + $quote + ' + $_.Exception.Message)')
-    [void]$lines.Add('    exit 1')
-    [void]$lines.Add('}')
-    [void]$lines.Add('')
-    [void]$lines.Add('# The Page/Runtime/Log domains MUST be enabled before a new-document script')
-    [void]$lines.Add('# is registered: without them the script is accepted but never replayed into')
-    [void]$lines.Add('# the reloaded document (measured: induced=False after Page.reload). The')
-    [void]$lines.Add('# window hook enables them for itself; this wrapper registers first, so it')
-    [void]$lines.Add('# owes the same enable.')
-    [void]$lines.Add('$null = Enable-CdpDomain -Session $session -Domain ' + $quote + 'Page' + $quote)
-    [void]$lines.Add('$null = Enable-CdpDomain -Session $session -Domain ' + $quote + 'Runtime' + $quote)
-    [void]$lines.Add('$null = Enable-CdpDomain -Session $session -Domain ' + $quote + 'Log' + $quote)
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_TARGET=' + $quote + ' + [string]$session.Target.url)')
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_TARGETS=' + $quote + ' + [string]$session.Targets)')
-    [void]$lines.Add('')
-    [void]$lines.Add('$policyScript = @' + $quote)
-    foreach ($policyLine in ($policy -split "`r?`n")) {
-        [void]$lines.Add($policyLine)
-    }
-    [void]$lines.Add($quote + '@')
-    [void]$lines.Add('')
-    [void]$lines.Add('$identifier = Add-CdpNewDocumentScript -Session $session -Script $policyScript')
-    [void]$lines.Add('if ([string]::IsNullOrWhiteSpace([string]$identifier)) {')
-    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY=failed' + $quote)
-    [void]$lines.Add('    Write-Output ' + $quote + 'ERROR=Page.addScriptToEvaluateOnNewDocument refused' + $quote)
-    [void]$lines.Add('    Close-FredoCdp -Session $session')
-    [void]$lines.Add('    exit 1')
-    [void]$lines.Add('}')
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_POLICY_ID=' + $quote + ' + [string]$identifier)')
-    [void]$lines.Add('')
-    [void]$lines.Add('$applyScript = @' + $quote)
-    [void]$lines.Add('(function () {')
-    [void]$lines.Add('  return {')
-    [void]$lines.Add('    token: (typeof window.__fredoGateDocToken === ''undefined'') ? '''' : String(window.__fredoGateDocToken),')
-    [void]$lines.Add('    meta: document.querySelector(''meta[data-fredo-gate-csp]'') ? true : false')
-    [void]$lines.Add('  };')
-    [void]$lines.Add('})()')
-    [void]$lines.Add($quote + '@')
-    [void]$lines.Add('')
-    [void]$lines.Add('# Deterministic reload: Invoke-CdpReload can return as soon as the OLD document')
-    [void]$lines.Add('# still looks ready, so a document TOKEN is the proof a new document exists. The')
-    [void]$lines.Add('# induced policy is then confirmed to be live in THAT document, which is the')
-    [void]$lines.Add('# document the hook measures.')
-    [void]$lines.Add('$token = ' + $quote + 'gate-' + $quote + ' + [Guid]::NewGuid().ToString(' + $quote + 'N' + $quote + ')')
-    [void]$lines.Add('$null = Invoke-CdpEvaluate -Session $session -Expression ("window.__fredoGateDocToken = ' + $quote + '" + $token + "' + $quote + '; true") -TimeoutMs 5000')
-    [void]$lines.Add('$null = Send-CdpCommand -Session $session -Method ' + $quote + 'Page.reload' + $quote + ' -Params @{ ignoreCache = $false } -TimeoutMs 10000')
-    [void]$lines.Add('')
-    [void]$lines.Add('$applied = $false')
-    [void]$lines.Add('$lastState = ' + $quote + '<none>' + $quote)
-    [void]$lines.Add('$watch = [System.Diagnostics.Stopwatch]::StartNew()')
-    [void]$lines.Add('while ($watch.ElapsedMilliseconds -lt 20000) {')
-    [void]$lines.Add('    $state = Invoke-CdpEvaluate -Session $session -Expression $applyScript -TimeoutMs 5000')
-    [void]$lines.Add('    if ($state.Ok -and $null -ne $state.Value) {')
-    [void]$lines.Add('        $lastState = ' + $quote + 'token=[' + $quote + ' + [string]$state.Value.token + ' + $quote + '] meta=' + $quote + ' + [string]$state.Value.meta')
-    [void]$lines.Add('        if ([string]::IsNullOrEmpty([string]$state.Value.token) -and $state.Value.meta -eq $true) {')
-    [void]$lines.Add('            $applied = $true')
-    [void]$lines.Add('            break')
-    [void]$lines.Add('        }')
-    [void]$lines.Add('    } else {')
-    [void]$lines.Add('        $lastState = ' + $quote + 'evalError=' + $quote + ' + [string]$state.Exception')
-    [void]$lines.Add('    }')
-    [void]$lines.Add('    Start-Sleep -Milliseconds 200')
-    [void]$lines.Add('}')
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_POLICY_APPLIED=' + $quote + ' + $applied + ' + $quote + ' waitedMs=' + $quote + ' + $watch.ElapsedMilliseconds + ' + $quote + ' last=' + $quote + ' + $lastState)')
-    [void]$lines.Add('if (-not $applied) {')
-    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY=not-applied' + $quote)
-    [void]$lines.Add('    Write-Output ' + $quote + 'ERROR=the induced style-src policy did not reach the reloaded document' + $quote)
-    [void]$lines.Add('    Close-FredoCdp -Session $session')
-    [void]$lines.Add('    exit 1')
-    [void]$lines.Add('}')
-    [void]$lines.Add('Write-Output ' + $quote + 'CSP_POLICY=nonce-style-src' + $quote)
-    [void]$lines.Add('')
-    [void]$lines.Add('# This session STAYS OPEN while the hook runs, so the registered policy also')
-    [void]$lines.Add('# replays into every new document the hook creates.')
-    [void]$lines.Add('# ABSOLUTE host (A5): the probe sanitises PATH, where a bare `powershell`')
-    [void]$lines.Add('# does not resolve. An unrunnable host is an INSTRUMENT failure, never a CSP')
-    [void]$lines.Add('# finding.')
-    [void]$lines.Add('$hookExit = $null')
-    [void]$lines.Add('try {')
-    [void]$lines.Add('    & $powerShellExe -NoProfile -File $windowHook')
-    [void]$lines.Add('    $hookExit = $LASTEXITCODE')
-    [void]$lines.Add('} catch {')
-    [void]$lines.Add('    Write-Output ' + $quote + 'CSP_POLICY_HOOK_EXIT=unrunnable' + $quote)
-    [void]$lines.Add('    Write-Output (' + $quote + 'CSP_INSTRUMENT=FAIL reason=' + $quote + ' + $_.Exception.Message)')
-    [void]$lines.Add('    Close-FredoCdp -Session $session')
-    [void]$lines.Add('    exit 1')
-    [void]$lines.Add('}')
-    [void]$lines.Add('Close-FredoCdp -Session $session')
-    [void]$lines.Add('Write-Output (' + $quote + 'CSP_POLICY_HOOK_EXIT=' + $quote + ' + $hookExit)')
-    [void]$lines.Add('if ($null -eq $hookExit) { exit 1 }')
-    [void]$lines.Add('exit $hookExit')
+    $policy = Get-NegativeCspPolicy
+    $seed = Get-NegativeCspSeedScript
 
-    $text = ($lines -join "`r`n") + "`r`n"
+    # The generated wrapper. It is a plain script (no string-array assembly): the
+    # placeholders are replaced with resolved absolute paths / the policy / the
+    # seed so the emitted text is exactly what the gate runs.
+    $template = @'
+# csp-wrapper-hook.ps1 - GENERATED by gate-artifact-negative.psm1 (Spec #3181 ST-4).
+# The Csp negative leg. It induces a nonce-bearing style-src policy as a real
+# DOCUMENT RESPONSE HEADER through the CDP Fetch domain, so the page loads
+# normally with the policy enforced from byte 0 - never as a post-hoc <meta> and
+# never as a write into the parser stream. It keeps this DevTools session open and
+# services EVERY paused Document response while the real in-window hook runs, so
+# the hook's own reload carries the same header.
+# Do not edit: regenerate with New-NegativeCspHook.
+$ErrorActionPreference = 'Continue'
+
+$cdpModule = @'
+@@CDP_MODULE@@
+@@HQ@@
+$detachModule = @'
+@@DETACH_MODULE@@
+@@HQ@@
+$windowHook = @'
+@@WINDOW_HOOK@@
+@@HQ@@
+$powerShellExe = @'
+@@HOST_EXE@@
+@@HQ@@
+$policy = @'
+@@POLICY@@
+@@HQ@@
+$seedScript = @'
+@@SEED@@
+@@HQ@@
+
+Import-Module -Name $cdpModule -Force
+Import-Module -Name $detachModule -Force
+
+$port = 0
+$portText = [string]$env:GATE_CDP_PORT
+if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+    Write-Output 'CSP_POLICY=failed'
+    Write-Output 'ERROR=GATE_CDP_PORT missing or invalid'
+    exit 1
+}
+
+$bootSettleSecs = 60.0
+$bootText = [string]$env:GATE_BOOT_SETTLE_SECS
+$parsedBoot = 0.0
+if ([double]::TryParse($bootText, [ref]$parsedBoot) -and $parsedBoot -ge 5.0) { $bootSettleSecs = $parsedBoot }
+
+$session = $null
+try {
+    $session = Connect-FredoCdp -Port $port -TimeoutSecs 15
+} catch {
+    Write-Output 'CSP_POLICY=failed'
+    Write-Output ('CDP_UNAVAILABLE:' + $_.Exception.Message)
+    exit 1
+}
+
+$null = Enable-CdpDomain -Session $session -Domain 'Page'
+$null = Enable-CdpDomain -Session $session -Domain 'Runtime'
+$null = Enable-CdpDomain -Session $session -Domain 'Log'
+Write-Output ('CSP_TARGET=' + [string]$session.Target.url)
+Write-Output ('CSP_TARGETS=' + [string]$session.Targets)
+
+# A SECOND session carries the Fetch interception. It is the only session whose
+# socket the serve loop polls, and polling must never collide with a command's own
+# receive, so the two concerns get two connections. Fetch interception is scoped
+# to the enabling session, which is why the hook's own reload (a THIRD session)
+# is still paused here.
+$fetchSession = $null
+try {
+    $fetchSession = Connect-FredoCdp -Port $port -TimeoutSecs 15
+} catch {
+    Write-Output 'CSP_POLICY=failed'
+    Write-Output ('CDP_UNAVAILABLE:' + $_.Exception.Message)
+    Close-FredoCdp -Session $session
+    exit 1
+}
+$null = Enable-CdpDomain -Session $fetchSession -Domain 'Page'
+
+$probeScript = @'
+@@READY_SCRIPT@@
+@@HQ@@
+
+function Get-CspFrameDetail {
+    param($State)
+    $readyState = '<none>'
+    $href = '<none>'
+    $bodyChildren = '<none>'
+    $internals = '<none>'
+    if ($null -ne $State -and $State.Ok -and $null -ne $State.Value) {
+        $readyState = [string]$State.Value.readyState
+        $href = [string]$State.Value.href
+        $bodyChildren = [string]$State.Value.bodyChildren
+        $internals = [string]$State.Value.internals
+    }
+    return ('readyState=' + $readyState + ' href=' + $href + ' bodyChildren=' + $bodyChildren + ' internals=' + $internals)
+}
+
+# 1. Wait for the FIRST navigation to commit BEFORE enabling Fetch. A reload
+#    issued against the still-blank about:blank target restarts the in-flight
+#    cold-boot navigation (round 5), so the induction must come after the app's
+#    own document exists.
+$preNavOk = $false
+$preNavState = $null
+$preWatch = [System.Diagnostics.Stopwatch]::StartNew()
+while ($preWatch.ElapsedMilliseconds -lt [int]($bootSettleSecs * 1000)) {
+    $preNavState = Invoke-CdpEvaluate -Session $session -Expression $probeScript -TimeoutMs 8000
+    if ($preNavState.Ok -and $null -ne $preNavState.Value -and $preNavState.Value.ready -eq $true) { $preNavOk = $true; break }
+    Start-Sleep -Milliseconds 250
+}
+if (-not $preNavOk) {
+    Write-Output ('CSP_FRAME=not-ready ' + (Get-CspFrameDetail $preNavState))
+    Write-Output 'CSP_POLICY=not-applied'
+    Write-Output 'ERROR=the app document never reached ready before the induction'
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+
+# 2. Enable Fetch at the RESPONSE stage for Document requests only (on the
+#    Fetch-serving session).
+$fetchEnable = Send-CdpCommand -Session $fetchSession -Method 'Fetch.enable' -Params @{
+    patterns = @(@{ urlPattern = '*'; resourceType = 'Document'; requestStage = 'Response' })
+}
+if (-not $fetchEnable.Ok) {
+    Write-Output 'CSP_INDUCTION=unsupported'
+    Write-Output ('ERROR=Fetch.enable refused: ' + [string]$fetchEnable.Error)
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+Write-Output ('CSP_INDUCTION=response-header policy=' + $policy)
+
+# 3. Register the no-write new-document seed. It pre-creates __fredoGate.csp (the
+#    hook's collector then short-circuits) and tags style-src records with the
+#    induced policy so the emitted violation detail names the nonce.
+$identifier = Add-CdpNewDocumentScript -Session $fetchSession -Script $seedScript
+if ([string]::IsNullOrWhiteSpace([string]$identifier)) {
+    Write-Output 'CSP_POLICY=failed'
+    Write-Output 'ERROR=Page.addScriptToEvaluateOnNewDocument refused'
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+Write-Output ('CSP_POLICY_ID=' + [string]$identifier)
+
+# 4. Reload into a document instrumented from byte 0 and service the paused
+#    Document response: the header is added THERE, before the parser sees a byte.
+$token = 'gate-' + [Guid]::NewGuid().ToString('N')
+$null = Invoke-CdpEvaluate -Session $session -Expression ("window.__fredoGateDocToken = '" + $token + "'; true") -TimeoutMs 5000
+$null = Send-CdpCommand -Session $session -Method 'Page.reload' -Params @{ ignoreCache = $false } -TimeoutMs 10000
+try {
+    $first = Invoke-CdpFetchServe -Session $fetchSession -HeaderValue $policy -TimeoutMs 30000 -MinServed 1 -DocumentOnly
+} catch {
+    Write-Output ('CSP_INSTRUMENT=FAIL reason=serve ' + $_.Exception.Message)
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+if (-not $first.Ok) {
+    Write-Output 'CSP_POLICY=not-applied'
+    Write-Output ('ERROR=the induced response header could not be fulfilled: ' + [string]$first.LastError)
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+if ($first.Served -lt 1) {
+    Write-Output 'CSP_POLICY=not-applied'
+    Write-Output 'ERROR=no Document response was paused for the induced policy'
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+Write-Output ('CSP_INDUCTION_SERVED=' + [string]$first.Served)
+
+# 5. Frame proof: a NEW document (the token is gone), seeded, complete, with the
+#    Tauri internals and a body child. The policy is live in exactly that document.
+$applied = $false
+$frameState = $null
+$frameWatch = [System.Diagnostics.Stopwatch]::StartNew()
+while ($frameWatch.ElapsedMilliseconds -lt 30000) {
+    $frameState = Invoke-CdpEvaluate -Session $session -Expression $probeScript -TimeoutMs 8000
+    if ($frameState.Ok -and $null -ne $frameState.Value) {
+        if ($frameState.Value.ready -eq $true -and [string]::IsNullOrEmpty([string]$frameState.Value.token) -and $frameState.Value.seeded -eq $true) {
+            $applied = $true
+            break
+        }
+    }
+    Start-Sleep -Milliseconds 250
+}
+if ($applied) {
+    Write-Output ('CSP_FRAME=ready ' + (Get-CspFrameDetail $frameState))
+} else {
+    Write-Output ('CSP_FRAME=not-ready ' + (Get-CspFrameDetail $frameState))
+}
+if (-not $applied) {
+    Write-Output 'CSP_POLICY=not-applied'
+    Write-Output 'ERROR=the induced style-src policy did not reach a ready reloaded document'
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+Write-Output 'CSP_POLICY=nonce-style-src'
+
+# 6. Spawn the REAL in-window hook through the handle-whitelist helper (explicit
+#    stdio, no inherited stdout) and service EVERY Document pause until it exits,
+#    then echo its transcript. The hook reloads for the styled clause; that reload
+#    must carry the same header, so the session stays open for the whole child run.
+$runDir = Split-Path -Parent $PSCommandPath
+$hookOut = Join-Path $runDir 'csp-hook-child.stdout.log'
+$hookErr = Join-Path $runDir 'csp-hook-child.stderr.log'
+$hookExit = $null
+$childPid = 0
+try {
+    $childPid = Start-DetachedProcess -FilePath $powerShellExe -ArgumentString ('-NoProfile -File "' + $windowHook + '"') -StdOutPath $hookOut -StdErrPath $hookErr
+} catch {
+    Write-Output 'CSP_POLICY_HOOK_EXIT=unrunnable'
+    Write-Output ('CSP_INSTRUMENT=FAIL reason=' + $_.Exception.Message)
+    Close-FredoCdp -Session $fetchSession
+    Close-FredoCdp -Session $session
+    exit 1
+}
+try {
+    while ($true) {
+        $status = Get-DetachedChildExitCode -ProcessId $childPid
+        if ($status.Status -eq 'observed') { $hookExit = [int]$status.Code; break }
+        if ($status.Status -eq 'unreadable') { $hookExit = $null; break }
+        $serve = Invoke-CdpFetchServe -Session $fetchSession -HeaderValue $policy -TimeoutMs 700 -MinServed 0 -DocumentOnly
+        if (-not $serve.Ok) {
+            Write-Output ('CSP_INSTRUMENT=FAIL reason=' + [string]$serve.LastError)
+            break
+        }
+    }
+} finally {
+    Close-DetachedChild -ProcessId $childPid
+}
+Close-FredoCdp -Session $fetchSession
+Close-FredoCdp -Session $session
+
+if (Test-Path -LiteralPath $hookOut -PathType Leaf) {
+    foreach ($line in @(Get-Content -LiteralPath $hookOut)) { Write-Output ([string]$line) }
+}
+if ($null -eq $hookExit) {
+    Write-Output 'CSP_POLICY_HOOK_EXIT=unrunnable'
+    exit 1
+}
+Write-Output ('CSP_POLICY_HOOK_EXIT=' + $hookExit)
+exit $hookExit
+'@
+
+    # A single-quoted here-string REPLACED by value: paths never contain
+    # placeholders, and the seed/policy are emitted verbatim (quotes included).
+    $hostExe = $powerShellExe
+    $readyScript = @'
+(function () {
+  var gate = window.__fredoGate || null;
+  var hasInternals = (typeof window.__TAURI_INTERNALS__ !== 'undefined' && window.__TAURI_INTERNALS__ !== null);
+  var bodyChildren = document.body ? document.body.childElementCount : -1;
+  var href = String(location.href);
+  return {
+    token: (typeof window.__fredoGateDocToken === 'undefined') ? '' : String(window.__fredoGateDocToken),
+    ready: (document.readyState === 'complete' && href !== 'about:blank' && bodyChildren >= 1 && hasInternals),
+    readyState: String(document.readyState),
+    href: href,
+    bodyChildren: bodyChildren,
+    internals: hasInternals,
+    seeded: !!(gate && Array.isArray(gate.csp) && gate.cspInstalled === true)
+  };
+})()
+'@
+
+    $text = $template
+    # Inner here-string terminators are carried as a sentinel so the template
+    # itself can be a single-quoted here-string (a literal terminator line would
+    # end it early). Restore them before the value substitutions.
+    $text = $text.Replace('@@HQ@@', "'@")
+    $text = $text.Replace('@@CDP_MODULE@@', $modulePath)
+    $text = $text.Replace('@@DETACH_MODULE@@', $detachPath)
+    $text = $text.Replace('@@WINDOW_HOOK@@', $hookPath)
+    $text = $text.Replace('@@HOST_EXE@@', $hostExe)
+    $text = $text.Replace('@@POLICY@@', $policy)
+    $text = $text.Replace('@@SEED@@', $seed)
+    $text = $text.Replace('@@READY_SCRIPT@@', $readyScript.TrimEnd("`r", "`n"))
+
     $encoding = New-Object System.Text.UTF8Encoding($false)
     $outPath = Join-Path $LegDir 'csp-wrapper-hook.ps1'
     [System.IO.File]::WriteAllText($outPath, $text, $encoding)
@@ -1577,7 +1779,7 @@ function Invoke-NegativeControlSelfTest {
         $ok = (
             ($parseErrors -eq 0) -and
             ($nonAscii -eq 0) -and
-            ($hookText.Contains("style-src 'nonce-fredo-gate-3181'")) -and
+            ($hookText.Contains('style-src ''self'' ''unsafe-inline'' ''nonce-fredo-gate-3181''')) -and
             ($hookText.Contains('Add-CdpNewDocumentScript')) -and
             ($hookText.Contains('gate-artifact-window.ps1')) -and
             # Measured facts: without the Page domain enabled the script is
@@ -1585,7 +1787,8 @@ function Invoke-NegativeControlSelfTest {
             # proof a reload produced a NEW document.
             ($hookText.Contains('Enable-CdpDomain -Session $session -Domain ''Page''')) -and
             ($hookText.Contains("typeof window.__fredoGateDocToken === 'undefined'")) -and
-            ($hookText.Contains('CSP_POLICY_APPLIED=')) -and
+            ($hookText.Contains('CSP_INDUCTION=response-header')) -and
+            ($hookText.Contains('CSP_FRAME=')) -and
             ($hookText.Contains('CSP_POLICY=not-applied'))
         )
         Write-NegativeControlResult 'csp-hook' $ok ('parseErrors=' + $parseErrors + ' nonAscii=' + $nonAscii + ' path=' + $cspHook)
@@ -1883,6 +2086,65 @@ function Invoke-NegativeControlSelfTest {
         )
         Write-NegativeControlResult 'DB-EFFECTIVE-DIR-PARSE' $dbParseOk ('dirty=' + $parsedDirty + ' fresh=' + $parsedFresh + ' bare=' + $parsedBare + ' none=[' + $parsedNone + ']')
         if (-not $dbParseOk) { [void]$failures.Add('DB-EFFECTIVE-DIR-PARSE') }
+
+        # 23: CSP-INDUCTION-NOT-DOCUMENT-WRITE (round 5). The induction must be a
+        #     RESPONSE HEADER through the Fetch domain, never a start-of-document
+        #     write into the parser stream. The absence needle is built by
+        #     concatenation so this control's own source is not the needle it
+        #     searches for. The pure helpers are asserted on fixtures: entity
+        #     headers dropped, the requested header replaced (never doubled),
+        #     everything else preserved, and a TEXT body base64-encoded.
+        $count = $count + 1
+        $inductionOk = $false
+        $inductionDetail = ''
+        try {
+            $inductionHook = New-NegativeCspHook -LegDir (Join-Path $tempRoot 'leg-csp-induction')
+            $inductionText = [System.IO.File]::ReadAllText($inductionHook)
+            $parserWriteNeedle = 'document' + '.write'
+            $policyText = Get-NegativeCspPolicy
+            $seedText = Get-NegativeCspSeedScript
+
+            $fixtureHeaders = @(
+                [pscustomobject]@{ name = 'Content-Type'; value = 'text/html; charset=utf-8' },
+                [pscustomobject]@{ name = 'Content-Encoding'; value = 'gzip' },
+                [pscustomobject]@{ name = 'Content-Length'; value = '1234' },
+                [pscustomobject]@{ name = 'Transfer-Encoding'; value = 'chunked' },
+                [pscustomobject]@{ name = 'Content-Security-Policy'; value = "style-src 'unsafe-inline'" }
+            )
+            $built = @(Add-CdpResponseHeader -ResponseHeaders $fixtureHeaders -Name 'Content-Security-Policy' -Value $policyText)
+            $policyHeaders = @($built | Where-Object { ([string]$_.name).ToLowerInvariant() -eq 'content-security-policy' })
+            $entityGone = $true
+            foreach ($entry in @($built)) {
+                $lower = ([string]$entry.name).ToLowerInvariant()
+                if ($lower -eq 'content-encoding' -or $lower -eq 'content-length' -or $lower -eq 'transfer-encoding') { $entityGone = $false }
+            }
+            $typeKept = @($built | Where-Object { ([string]$_.name).ToLowerInvariant() -eq 'content-type' }).Count -eq 1
+            $singlePolicy = (($policyHeaders.Count -eq 1) -and ([string]$policyHeaders[0].value -eq $policyText))
+
+            $expectedBody = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('<html></html>'))
+            $textBody = Get-CdpFulfillBody -BodyResult ([pscustomobject]@{ body = '<html></html>'; base64Encoded = $false })
+            $rawBody = Get-CdpFulfillBody -BodyResult ([pscustomobject]@{ body = 'PGh0bWw+'; base64Encoded = $true })
+            $noBody = Get-CdpFulfillBody -BodyResult ([pscustomobject]@{ base64Encoded = $false })
+
+            $inductionOk = (
+                (-not $inductionText.Contains($parserWriteNeedle)) -and
+                (-not $seedText.Contains($parserWriteNeedle)) -and
+                ($inductionText.Contains('Fetch.enable')) -and
+                ($inductionText.Contains('Invoke-CdpFetchServe')) -and
+                ($inductionText.Contains('CSP_INDUCTION=response-header')) -and
+                ($inductionText.Contains($policyText)) -and
+                ($seedText.Contains('__fredoGate')) -and
+                $entityGone -and $typeKept -and $singlePolicy -and
+                ($textBody -eq $expectedBody) -and
+                ($rawBody -eq 'PGh0bWw+') -and
+                ($null -eq $noBody)
+            )
+            $inductionDetail = 'parserWrite=' + $inductionText.Contains($parserWriteNeedle) + ' fetchEnable=' + $inductionText.Contains('Fetch.enable') + ' serve=' + $inductionText.Contains('Invoke-CdpFetchServe') + ' policyHeaders=' + $policyHeaders.Count + ' entityGone=' + $entityGone + ' typeKept=' + $typeKept + ' textBody=' + ($textBody -eq $expectedBody)
+        } catch {
+            $inductionDetail = 'threw: ' + $_.Exception.Message
+        }
+        Write-NegativeControlResult 'CSP-INDUCTION-NOT-DOCUMENT-WRITE' $inductionOk $inductionDetail
+        if (-not $inductionOk) { [void]$failures.Add('CSP-INDUCTION-NOT-DOCUMENT-WRITE') }
     } finally {
         if ($ownedTemp) { Remove-NegativeTree -Path $tempRoot }
     }
@@ -1904,7 +2166,8 @@ Export-ModuleMember -Function @(
     'Test-NegativeOutcome',
     'Test-LegInstrumentFailed',
     'New-NegativeMissingDllTree',
-    'Get-NegativeCspPolicyScript',
+    'Get-NegativeCspPolicy',
+    'Get-NegativeCspSeedScript',
     'New-NegativeCspHook',
     'New-NegativeDatabaseResidue',
     'New-NegativeControl',

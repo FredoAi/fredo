@@ -26,6 +26,24 @@ Port policy (Spec #3181 section G)
   (CDP_PORT_IN_USE, exit 2) belongs to the caller/probe and can be implemented
   with Test-CdpPortOpen; after launch, no target is CDP_UNAVAILABLE.
 
+Response-header induction (Spec #3181 round 5)
+  Fetch.enable {patterns:[{urlPattern:'*', resourceType:'Document',
+  requestStage:'Response'}]} pauses every Document response. Invoke-CdpFetchServe
+  reads the ORIGINAL response status/headers from the paused event, takes the
+  body with Fetch.getResponseBody, and answers the pause with
+  Fetch.fulfillRequest carrying one extra header. That is how a Content-Security-
+  Policy is induced as a real RESPONSE header (enforced from byte 0) rather than
+  as a post-hoc <meta>, which loses the ordering race with the app bundle. A body
+  failure answers Fetch.failRequest and returns a typed error - it NEVER falls
+  back to a silent Fetch.continueRequest, because that would hand the caller a
+  policy-less document and call it an induction.
+
+  Entity headers (content-encoding / content-length / transfer-encoding) are
+  DROPPED: Fetch.getResponseBody yields DECODED bytes, so a retained
+  content-encoding would make the renderer decode them twice, and content-length
+  / transfer-encoding no longer describe the fulfilled body. Exactly ONE header
+  of the requested name is emitted (an existing one is replaced, never doubled).
+
 Public functions
   Test-CdpPortOpen            TCP connect probe (bounded).
   Get-CdpTargets              GET /json -> target array.
@@ -39,6 +57,13 @@ Public functions
   Enable-CdpDomain            enable a CDP domain (Log/Page/Runtime).
   Add-CdpNewDocumentScript    Page.addScriptToEvaluateOnNewDocument.
   Invoke-CdpReload            Page.reload + bounded wait for a painted document.
+  Invoke-CdpFetchServe        serve Fetch.requestPaused Document responses,
+                              fulfilling each with an extra response header.
+  Get-CdpFetchPausedRequest   take the next Fetch.requestPaused params object
+                              (buffered event first, then the socket).
+  Add-CdpResponseHeader       pure: drop entity headers, replace the named one,
+                              append exactly one (name, value) pair.
+  Get-CdpFulfillBody          pure: the base64 body for Fetch.fulfillRequest.
   Get-CdpLogEntries           filtered Log.entryAdded entries.
   Save-CdpScreenshot          Page.captureScreenshot {format png, fromSurface},
                               PNG signature + IHDR verification, file write.
@@ -120,6 +145,80 @@ function Receive-CdpFrame {
     } finally {
         $stream.Dispose()
     }
+
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    try {
+        return ($text | ConvertFrom-Json)
+    } catch {
+        throw ("CDP_UNAVAILABLE: unparseable DevTools frame: " + $_.Exception.Message)
+    }
+}
+
+# A bounded receive for the Fetch serve loop. Two properties make it different from
+# Receive-CdpFrame:
+#   * A TIMEOUT is not a session error. It returns $null and the session stays
+#     usable, because silence is the normal case while no request is paused.
+#   * The receive is NEVER cancelled. Cancelling a pending ClientWebSocket receive
+#     transitions the socket to 'Aborted' (measured: the next receive faults with
+#     "The WebSocket is in an invalid state ('Aborted')"), which would kill the
+#     Fetch session on the first quiet poll. Instead a receive that has not
+#     completed is KEPT on the session and resumed by the next call, so the serve
+#     loop can poll for silence without ever tearing the socket down.
+# Real failures (closed peer, bad frame, oversize, unparseable) still throw.
+function Receive-CdpFramePending {
+    param($Session, [int]$TimeoutMs = 500)
+
+    if ($null -eq $Session) { throw 'CDP_UNAVAILABLE: no DevTools session' }
+    if ($Session.Closed) { throw 'CDP_UNAVAILABLE: the DevTools session is closed' }
+
+    if ($null -eq $Session.PendingReceiveTask) {
+        if ($null -eq $Session.PendingReceiveBuffer) { $Session.PendingReceiveBuffer = New-Object byte[] 65536 }
+        if ($null -eq $Session.PendingReceiveStream) { $Session.PendingReceiveStream = New-Object System.IO.MemoryStream }
+        $segment = [System.ArraySegment[byte]]::new($Session.PendingReceiveBuffer)
+        try {
+            $Session.PendingReceiveTask = $Session.Socket.ReceiveAsync($segment, [System.Threading.CancellationToken]::None)
+        } catch {
+            $Session.Closed = $true
+            throw ("CDP_UNAVAILABLE: DevTools receive failed: " + $_.Exception.Message)
+        }
+    }
+
+    $task = $Session.PendingReceiveTask
+    $completed = $false
+    try {
+        $completed = $task.Wait([int][Math]::Max(1, $TimeoutMs))
+    } catch {
+        $Session.Closed = $true
+        try { $Session.Socket.Abort() } catch { }
+        throw ("CDP_UNAVAILABLE: DevTools receive failed: " + $_.Exception.Message)
+    }
+    if (-not $completed) { return $null }   # the pending receive is resumed next call
+
+    # The task is complete: consume it BEFORE the socket is touched again.
+    $Session.PendingReceiveTask = $null
+    $result = $null
+    try { $result = $task.Result } catch {
+        $Session.Closed = $true
+        throw ("CDP_UNAVAILABLE: DevTools receive failed: " + $_.Exception.Message)
+    }
+    if ($null -eq $result) { throw 'CDP_UNAVAILABLE: empty DevTools frame' }
+    if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+        $Session.Closed = $true
+        throw 'CDP_UNAVAILABLE: the DevTools websocket was closed by the peer'
+    }
+
+    $stream = $Session.PendingReceiveStream
+    if ($result.Count -gt 0) { $stream.Write($Session.PendingReceiveBuffer, 0, $result.Count) }
+    if ($stream.Length -gt $script:CdpMaxMessageBytes) {
+        $Session.Closed = $true
+        throw 'CDP_UNAVAILABLE: a DevTools message exceeded the size bound'
+    }
+    if (-not $result.EndOfMessage) { return $null }   # partial; the next call resumes
+
+    $text = [System.Text.Encoding]::UTF8.GetString($stream.ToArray())
+    try { $stream.Dispose() } catch { }
+    $Session.PendingReceiveStream = $null
+    $Session.PendingReceiveBuffer = $null
 
     if ([string]::IsNullOrWhiteSpace($text)) { return $null }
     try {
@@ -264,6 +363,13 @@ function Connect-FredoCdp {
         Target = $selected
         Targets = $targets.Count
         Closed = $false
+        # The resumed pending receive used ONLY by the Fetch serve loop (see
+        # Receive-CdpFramePending). Its presence means a receive is in flight and
+        # a command must not start its own until it completes - which the serve
+        # loop guarantees because it serves a pause BEFORE issuing a command.
+        PendingReceiveTask = $null
+        PendingReceiveBuffer = $null
+        PendingReceiveStream = $null
     }
 }
 
@@ -463,6 +569,173 @@ function Invoke-CdpReload {
     return $false
 }
 
+# ---- fetch / response-header induction ---------------------------------------
+
+# Take the next Fetch.requestPaused event's params object. Buffered events are
+# drained first (Send-CdpCommand stashes unsolicited events while a command is in
+# flight), then the socket is polled to the bound. Returns $null on silence; other
+# unsolicited events are stashed back on the session so no event is lost.
+function Get-CdpFetchPausedRequest {
+    param($Session, [int]$TimeoutMs = 1000)
+
+    if ($null -eq $Session) { return $null }
+
+    for ($index = 0; $index -lt $Session.Events.Count; $index++) {
+        $event = $Session.Events[$index]
+        if ($null -eq $event) { continue }
+        if ([string]$event.method -eq 'Fetch.requestPaused') {
+            $Session.Events.RemoveAt($index)
+            return (Get-CdpProp -Object $event -Name 'params')
+        }
+    }
+
+    $deadline = (Get-Date).AddMilliseconds([Math]::Max(1, $TimeoutMs))
+    while ((Get-Date) -lt $deadline) {
+        $remaining = [int][Math]::Max(1, ($deadline - (Get-Date)).TotalMilliseconds)
+        $message = Receive-CdpFramePending -Session $Session -TimeoutMs $remaining
+        if ($null -eq $message) { return $null }
+
+        $eventMethod = Get-CdpProp -Object $message -Name 'method'
+        if ($null -eq $eventMethod) { continue }   # a stray command response; no command is outstanding here
+        if ([string]$eventMethod -eq 'Fetch.requestPaused') {
+            return (Get-CdpProp -Object $message -Name 'params')
+        }
+        if ($Session.Events.Count -ge $script:CdpMaxEventBuffer) { $Session.Events.RemoveAt(0) }
+        [void]$Session.Events.Add([pscustomobject]@{
+            method = [string]$eventMethod
+            params = (Get-CdpProp -Object $message -Name 'params')
+        })
+    }
+    return $null
+}
+
+# Fulfil ONE paused Document response with an extra response header. Returns an
+# object { Ok, Error, Url, Code, Headers }. On ANY body failure the paused request
+# is answered with Fetch.failRequest and Ok=$false is returned - never a silent
+# Fetch.continueRequest (a policy-less document is not an induction).
+function Invoke-CdpFetchFulfill {
+    param(
+        $Session,
+        $Paused,
+        [string]$HeaderName,
+        [string]$HeaderValue,
+        [int]$TimeoutMs = 15000
+    )
+
+    $result = [pscustomobject]@{ Ok = $false; Error = ''; Url = ''; Code = 0; Headers = 0 }
+    if ($null -eq $Paused) { $result.Error = 'no paused request'; return $result }
+
+    $requestId = [string](Get-CdpProp -Object $Paused -Name 'requestId')
+    if ([string]::IsNullOrWhiteSpace($requestId)) { $result.Error = 'paused request has no requestId'; return $result }
+    $request = Get-CdpProp -Object $Paused -Name 'request'
+    $result.Url = [string](Get-CdpProp -Object $request -Name 'url')
+
+    $bodyResponse = Send-CdpCommand -Session $Session -Method 'Fetch.getResponseBody' -Params @{ requestId = $requestId } -TimeoutMs $TimeoutMs
+    if (-not $bodyResponse.Ok) {
+        $null = Send-CdpCommand -Session $Session -Method 'Fetch.failRequest' -Params @{ requestId = $requestId; errorReason = 'Failed' } -TimeoutMs 5000
+        $result.Error = 'getResponseBody failed: ' + [string]$bodyResponse.Error
+        return $result
+    }
+
+    $base64 = Get-CdpFulfillBody -BodyResult $bodyResponse.Result
+    if ($null -eq $base64) {
+        $null = Send-CdpCommand -Session $Session -Method 'Fetch.failRequest' -Params @{ requestId = $requestId; errorReason = 'Failed' } -TimeoutMs 5000
+        $result.Error = 'getResponseBody returned no body'
+        return $result
+    }
+
+    $originalHeaders = Get-CdpProp -Object $Paused -Name 'responseHeaders'
+    $headers = @(Add-CdpResponseHeader -ResponseHeaders $originalHeaders -Name $HeaderName -Value $HeaderValue)
+    $code = [int](Get-CdpProp -Object $Paused -Name 'responseStatusCode' 200)
+    if ($code -le 0) { $code = 200 }
+
+    $fulfill = Send-CdpCommand -Session $Session -Method 'Fetch.fulfillRequest' -Params @{
+        requestId = $requestId
+        responseCode = $code
+        responseHeaders = @($headers)
+        body = $base64
+    } -TimeoutMs $TimeoutMs
+    if (-not $fulfill.Ok) {
+        $null = Send-CdpCommand -Session $Session -Method 'Fetch.failRequest' -Params @{ requestId = $requestId; errorReason = 'Failed' } -TimeoutMs 5000
+        $result.Error = 'fulfillRequest failed: ' + [string]$fulfill.Error
+        return $result
+    }
+
+    $result.Ok = $true
+    $result.Code = $code
+    $result.Headers = @($headers).Count
+    return $result
+}
+
+# Serve paused Document responses for up to TimeoutMs, fulfilling each with
+# HeaderName=HeaderValue. Returns { Ok, Served, Failed, LastError, Urls }.
+#   -MinServed > 0 : return once that many documents have been served AND no new
+#                    pause arrives within IdleMs (the one-shot "first reload"
+#                    mode; a redirect chain is fully drained).
+#   -MinServed = 0 : run the whole TimeoutMs (the continuous mode used while the
+#                    hook child reloads the page for the styled clause).
+# A body/fulfill failure marks Ok=$false with the typed LastError; the caller MUST
+# treat that as an induction failure, not as a served document.
+function Invoke-CdpFetchServe {
+    param(
+        $Session,
+        [Parameter(Mandatory = $true)][string]$HeaderValue,
+        [string]$HeaderName = 'Content-Security-Policy',
+        [int]$TimeoutMs = 15000,
+        [int]$MinServed = 1,
+        [int]$IdleMs = 750,
+        [switch]$DocumentOnly
+    )
+
+    $result = [pscustomobject]@{
+        Ok = $true
+        Served = 0
+        Failed = 0
+        LastError = ''
+        Urls = @()
+    }
+    if ($null -eq $Session) { $result.Ok = $false; $result.LastError = 'no CDP session'; return $result }
+
+    $urls = New-Object System.Collections.ArrayList
+    $deadline = (Get-Date).AddMilliseconds([Math]::Max(1, $TimeoutMs))
+    $lastServed = Get-Date
+
+    while ((Get-Date) -lt $deadline) {
+        if ($MinServed -gt 0 -and $result.Served -ge $MinServed) {
+            if (((Get-Date) - $lastServed).TotalMilliseconds -ge $IdleMs) { break }
+        }
+        $remaining = [int][Math]::Max(1, ($deadline - (Get-Date)).TotalMilliseconds)
+        $wait = [int][Math]::Min(400, $remaining)
+        $paused = Get-CdpFetchPausedRequest -Session $Session -TimeoutMs $wait
+        if ($null -eq $paused) { continue }
+
+        if ($DocumentOnly) {
+            $resourceType = [string](Get-CdpProp -Object $paused -Name 'resourceType')
+            if (-not [string]::IsNullOrWhiteSpace($resourceType) -and $resourceType -ne 'Document') {
+                $skipId = [string](Get-CdpProp -Object $paused -Name 'requestId')
+                if (-not [string]::IsNullOrWhiteSpace($skipId)) {
+                    $null = Send-CdpCommand -Session $Session -Method 'Fetch.continueRequest' -Params @{ requestId = $skipId } -TimeoutMs 5000
+                }
+                continue
+            }
+        }
+
+        $served = Invoke-CdpFetchFulfill -Session $Session -Paused $paused -HeaderName $HeaderName -HeaderValue $HeaderValue
+        if (-not $served.Ok) {
+            $result.Failed = $result.Failed + 1
+            $result.Ok = $false
+            $result.LastError = [string]$served.Error
+            continue
+        }
+        $result.Served = $result.Served + 1
+        if (-not [string]::IsNullOrWhiteSpace([string]$served.Url)) { [void]$urls.Add([string]$served.Url) }
+        $lastServed = Get-Date
+    }
+
+    $result.Urls = @($urls)
+    return $result
+}
+
 function Get-CdpLogEntries {
     param($Session, [string]$Pattern = '')
 
@@ -651,6 +924,60 @@ function Send-CdpMouseClick {
 
 # ---- pure helpers ------------------------------------------------------------
 
+# Build the responseHeaders list for Fetch.fulfillRequest: preserve every original
+# header except the entity headers (the body is DECODED, so content-encoding would
+# double-decode it and content-length / transfer-encoding no longer describe it)
+# and except any existing header of the requested name, then append EXACTLY ONE
+# (Name, Value). Input entries are the CDP shape {name, value} (PSCustomObject
+# from ConvertFrom-Json, or a dictionary). Pure: no session, no I/O.
+function Add-CdpResponseHeader {
+    param(
+        $ResponseHeaders,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    $entityHeaders = @('content-encoding', 'content-length', 'transfer-encoding')
+    $targetName = $Name.Trim()
+    $targetLower = $targetName.ToLowerInvariant()
+    $output = New-Object System.Collections.ArrayList
+
+    foreach ($header in @($ResponseHeaders)) {
+        if ($null -eq $header) { continue }
+        $headerName = ''
+        $headerValue = ''
+        if ($header -is [System.Collections.IDictionary]) {
+            if ($header.Contains('name')) { $headerName = [string]$header['name'] }
+            if ($header.Contains('value')) { $headerValue = [string]$header['value'] }
+        } else {
+            $headerName = [string](Get-CdpProp -Object $header -Name 'name')
+            $headerValue = [string](Get-CdpProp -Object $header -Name 'value')
+        }
+        if ([string]::IsNullOrWhiteSpace($headerName)) { continue }
+        $lower = $headerName.Trim().ToLowerInvariant()
+        if ($entityHeaders -contains $lower) { continue }
+        if ($lower -eq $targetLower) { continue }
+        [void]$output.Add([pscustomobject]@{ name = $headerName.Trim(); value = $headerValue })
+    }
+    [void]$output.Add([pscustomobject]@{ name = $targetName; value = $Value })
+    return @($output)
+}
+
+# The base64 body Fetch.fulfillRequest expects. getResponseBody returns
+# { body, base64Encoded }: pass a base64 body through, base64 the TEXT body when
+# base64Encoded is false. Returns $null when the result carries no body, so the
+# caller can fail the request instead of fulfilling an empty document.
+function Get-CdpFulfillBody {
+    param($BodyResult)
+
+    if ($null -eq $BodyResult) { return $null }
+    $body = Get-CdpProp -Object $BodyResult -Name 'body'
+    if ($null -eq $body) { return $null }
+    $encoded = Get-CdpProp -Object $BodyResult -Name 'base64Encoded' $false
+    if ([bool]$encoded) { return [string]$body }
+    return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([string]$body))
+}
+
 function Test-PngSignature {
     param([byte[]]$Bytes)
 
@@ -718,12 +1045,16 @@ Export-ModuleMember -Function @(
     'Enable-CdpDomain',
     'Add-CdpNewDocumentScript',
     'Invoke-CdpReload',
+    'Invoke-CdpFetchServe',
+    'Get-CdpFetchPausedRequest',
     'Get-CdpLogEntries',
     'Save-CdpScreenshot',
     'Send-CdpInsertText',
     'Send-CdpKeyEvent',
     'Send-CdpEnter',
     'Send-CdpMouseClick',
+    'Add-CdpResponseHeader',
+    'Get-CdpFulfillBody',
     'Test-PngSignature',
     'Get-PngDimensions',
     'Get-BytesSha256',
