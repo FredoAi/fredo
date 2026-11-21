@@ -144,14 +144,14 @@ function Test-Script-Syntax {
     return
   }
   try {
-    # A `.ps1` is a script and MUST be parsed: `Get-Command` only resolves the
-    # file as a command and never parses its body, so it stayed green on a
-    # dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified variable
-    # reference in a double-quoted string). Parse every script with the PowerShell
-    # AST parser and fail on any error. Non-script callers (e.g. the SKILL.md
-    # presence check) keep the command-resolution check — markdown is not
+    # A `.ps1`/`.psm1` is a script/module and MUST be parsed: `Get-Command` only
+    # resolves the file as a command and never parses its body, so it stayed green
+    # on a dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified
+    # variable reference in a double-quoted string). Parse every script/module with
+    # the PowerShell AST parser and fail on any error. Non-script callers (e.g. the
+    # SKILL.md presence check) keep the command-resolution check — markdown is not
     # PowerShell and must not be AST-parsed.
-    if ([System.IO.Path]::GetExtension($FilePath) -eq ".ps1") {
+    if (@(".ps1", ".psm1") -contains [System.IO.Path]::GetExtension($FilePath)) {
       $tokens = $null
       $parseErrors = $null
       [System.Management.Automation.Language.Parser]::ParseFile($FilePath, [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -4733,7 +4733,12 @@ $scripts = @(
   "launch-artifact-probe.ps1",
   "inspect-webview-config.ps1",
   "check-navigation-prose-retired.ps1",
-  "verify-installer-payload.ps1"
+  "verify-installer-payload.ps1",
+  "gate-release-artifact.ps1",
+  "gate-artifact-window.ps1",
+  "fredo-cdp.psm1",
+  "gate-artifact-negative.psm1",
+  "detach-process.psm1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4902,6 +4907,323 @@ Test-Script "stager: -SelfTest passes all eleven controls" {
   if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
   if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
   return "eleven controls pass (stager's import/delay-import scan and swap proven)"
+}
+
+# --- Release-artifact gate harness + release.yml wiring (Spec #3181 ST-5/ST-6/ST-7) ---
+# "A committed guard with no runner is not a guard." These legs prove the gate's
+# instrument (its -SelfTest controls, including one per named error id), its
+# negative-mode contract, the structural STEP ORDER in release.yml, the evidence
+# upload shape, and the gate skill. The harness stays fully offline: the gate legs
+# use only -SelfTest (hermetic) and source/structural reads - never a real
+# installer, GUI, model or network. The release.yml legs assert step-offset ORDER
+# (Select-String line numbers), never prose matching (G-406).
+Write-Host "Release-artifact gate (Spec #3181):" -ForegroundColor Cyan
+$releaseGate = ".opencode/scripts/gate-release-artifact.ps1"
+$releaseWorkflow = ".github/workflows/release.yml"
+
+Test-Script "gate-release-artifact.ps1: -SelfTest passes all controls" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  # INLINE prompt-return proof (G-450). The gate's control 25 starts a 20 s
+  # default-inheriting grandchild through the REAL child runner. If that runner
+  # ever reverts to an inheriting Start-Process, the grandchild inherits THIS
+  # call's stdout pipe and the `& powershell ... 2>&1` below blocks until the
+  # grandchild exits (~20 s). The elapsed bound is below that lifetime, so the
+  # leg FAILS by elapsed instead of stalling the harness.
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $watch.Stop()
+  $elapsed = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
+  if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
+  if (-not $text.Contains("CONTROL CHILD-RUNNER-NO-INHERIT -")) { throw "self-test is missing control 25 (the child-runner no-inherit pin)" }
+  if ($elapsed -gt 15) { throw "the inline self-test took ${elapsed}s (expected < 15s; a reverted inheriting spawn blocks on the grandchild's 20 s lifetime)" }
+  return "gate-release-artifact -SelfTest: SELFTEST: PASS (25 controls, inline in ${elapsed}s)"
+}
+
+# The launch seam that let round 1 escape (G-406/G-435: an EXECUTED control, not a
+# source-token pin). The driver passes the probe's REAL port list as one
+# comma-joined token across a native `-File` boundary; a `[int[]]` parameter cannot
+# bind that token under Windows PowerShell 5.1, so every launch child died before
+# WebView2/CDP/PostgreSQL. This leg spawns the probe with the driver's real list and
+# asserts the typed missing-exe refusal (exit 2, RESULT=REFUSED) -- never a binder
+# error -- with a single-port positive control and a malformed-spec control that
+# proves EVERY token is parsed (a fix that only binds the first port fails it).
+# Hermetic: no installer, GUI, model or network; the exe path is a non-existent temp
+# file so the probe stops at its own refusal.
+Test-Script "gate-release-artifact.ps1: the probe binds the real port list (no binder error)" {
+  $probe = ".opencode/scripts/launch-artifact-probe.ps1"
+  if (-not (Test-Path -LiteralPath $probe)) { throw "launch-artifact-probe.ps1 is missing" }
+  $missingExe = Join-Path $env:TEMP ("fredo-missing-" + [Guid]::NewGuid().ToString("N") + ".exe")
+  if (Test-Path -LiteralPath $missingExe) { Remove-Item -LiteralPath $missingExe -Force -ErrorAction SilentlyContinue }
+
+  # Single-port positive control: the form the probe has always bound.
+  $single = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223' 2>&1
+  $singleCode = $LASTEXITCODE
+  $singleText = if ($single -is [array]) { $single -join "`n" } else { "$single" }
+  if ($singleCode -ne 2) { throw "single-port: expected exit 2, got ${singleCode}: $singleText" }
+  if ($singleText -notmatch 'RESULT=REFUSED') { throw "single-port: missing RESULT=REFUSED: $singleText" }
+
+  # The driver's REAL list across the native -File boundary (three comma-joined ports).
+  $triple = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223,16932,19631' 2>&1
+  $tripleCode = $LASTEXITCODE
+  $tripleText = if ($triple -is [array]) { $triple -join "`n" } else { "$triple" }
+  if ($tripleText -match 'ParameterArgumentTransformationError' -or $tripleText -match 'Cannot convert value') {
+    throw "three-port: hit a -File binder error (the round-1 launch-seam defect): $tripleText"
+  }
+  if ($tripleCode -ne 2) { throw "three-port: expected exit 2, got ${tripleCode}: $tripleText" }
+  if ($tripleText -notmatch 'RESULT=REFUSED') { throw "three-port: missing RESULT=REFUSED: $tripleText" }
+  if ($tripleText -notmatch 'ERROR: missing exe') { throw "three-port: missing 'ERROR: missing exe': $tripleText" }
+
+  # Discrimination: a parser that only binds the FIRST token would ignore the
+  # malformed trailing token and reach the missing-exe refusal instead of refusing it.
+  $bad = & powershell -NoProfile -File $probe -Exe $missingExe -Ports '9223,x' 2>&1
+  $badCode = $LASTEXITCODE
+  $badText = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+  if ($badCode -ne 2) { throw "malformed-port: expected exit 2, got ${badCode}: $badText" }
+  if ($badText -notmatch 'RESULT=REFUSED') { throw "malformed-port: missing RESULT=REFUSED: $badText" }
+  if ($badText -notmatch 'port is not an integer') { throw "malformed-port: the trailing token was not parsed (a first-port-only fix would pass): $badText" }
+
+  # Each probe child above exits 2 by design (the typed missing-exe / invalid-port
+  # refusal). Test-Script reads the leg's $LASTEXITCODE to decide PASS/FAIL, so the
+  # leaked child code from the LAST invocation must be reset to 0 before returning --
+  # otherwise this green leg reports "expected exit 0, got 2" (same reset the
+  # inspect-webview-config leg uses).
+  $global:LASTEXITCODE = 0
+
+  return "probe binds 9223 and 9223,16932,19631 across -File (typed missing-exe refusal, no binder error); malformed trailing token is rejected"
+}
+
+Test-Script "gate-release-artifact.ps1: every named error id is emitted by its own control" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  # Every named error id (the plan's binding error table) needs its own control.
+  $ids = @(
+    "EXTRACT_FAILED",
+    "PAYLOAD_MISSING",
+    "LAUNCH_EXIT",
+    "LAUNCH_NOT_RUNNING",
+    "UNSTYLED",
+    "CSP_VIOLATION",
+    "DB_NOT_READY",
+    "DB_QUARANTINE_MISSING",
+    "COMPANION_NO_REPLY",
+    "COMPANION_ENGINE",
+    "MCP_PORT_OPEN",
+    "MCP_BRIDGE_LOG_LINE",
+    "EVIDENCE_MISSING",
+    "CDP_UNAVAILABLE",
+    "WEBVIEW2_MISSING",
+    "MODEL_SET_MISSING",
+    "CDP_PORT_IN_USE",
+    "NEGATIVE_NOT_REPRODUCED",
+    "NEGATIVE_WRONG_ERROR",
+    "NEGATIVE_INSTRUMENT_FAILURE"
+  )
+  $missing = @($ids | Where-Object { -not $text.Contains($_) })
+  if ($missing.Count -gt 0) {
+    throw ("self-test transcript does not emit: " + ($missing -join ", "))
+  }
+  return ("all " + $ids.Count + " named error ids emitted by -SelfTest controls")
+}
+
+Test-Script "gate-release-artifact.ps1: -Mode negative exits 0 only when the expected id fires" {
+  if (-not (Test-Path -LiteralPath $releaseGate)) {
+    throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
+  }
+  $src = Get-Content -LiteralPath $releaseGate -Raw
+  foreach ($tok in @(
+    "NEGATIVE_EXPECTED=",
+    "NEGATIVE_OBSERVED=",
+    "GATE_EXIT=",
+    "NEGATIVE_NOT_REPRODUCED",
+    "NEGATIVE_WRONG_ERROR"
+  )) {
+    if (-not $src.Contains($tok)) { throw "gate-release-artifact.ps1 missing negative-mode literal: $tok" }
+  }
+  # The two exit-1 refusal paths must be driven by -SelfTest controls too.
+  $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
+  foreach ($id in @("NEGATIVE_NOT_REPRODUCED", "NEGATIVE_WRONG_ERROR")) {
+    if (-not $text.Contains($id)) { throw "self-test carries no control for $id" }
+  }
+  return "negative mode: NEGATIVE_EXPECTED/NEGATIVE_OBSERVED/GATE_EXIT + both refusal ids proven"
+}
+
+Test-Script "release.yml: the gate step sits after payload verify and before gh release create --draft" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  function Find-Line([string]$pattern) {
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { return $i } }
+    return -1
+  }
+  $payload = Find-Line 'name:\s*Verify installer payload'
+  $gateId = Find-Line 'id:\s*artifact-gate'
+  $gateName = Find-Line 'name:\s*Gate the produced installer'
+  $draftName = Find-Line 'name:\s*Create draft release'
+  if ($payload -lt 0) { throw "release.yml has no 'Verify installer payload' step" }
+  if ($gateId -lt 0 -or $gateName -lt 0) {
+    throw "release.yml has no artifact-gate step yet (the ST-5 owner must land it)"
+  }
+  if ($draftName -lt 0) { throw "release.yml has no 'Create draft release' step" }
+  if (-not ($payload -lt $gateId -and $gateId -lt $draftName)) {
+    throw "step order wrong: payload=$payload gate=$gateId draft=$draftName"
+  }
+  # The gate step's own block must receive the produced installer and fail the job.
+  $gateBlock = ($lines[$gateId..([Math]::Min($gateId + 45, $lines.Count - 1))] -join "`n")
+  foreach ($tok in @("shell: pwsh", "steps.locate.outputs.installer", "RELEASE_GATE_FAILED")) {
+    if (-not $gateBlock.Contains($tok)) { throw "the artifact-gate step is missing '$tok'" }
+  }
+  # Exactly ONE gh release create in the whole workflows dir, and it is --draft.
+  $workflowFiles = @(Get-ChildItem -LiteralPath ".github/workflows" -File | Where-Object { $_.Extension -eq ".yml" -or $_.Extension -eq ".yaml" })
+  $creates = @(Select-String -Path $workflowFiles.FullName -Pattern "gh release create")
+  if ($creates.Count -ne 1) { throw "expected exactly one 'gh release create' in workflows, found $($creates.Count)" }
+  if ($creates[0].Line -notmatch '--draft') { throw "the single gh release create is not --draft" }
+  # The draft step still skips on any earlier failure (the fail-closed property).
+  $draftBlock = ($lines[$draftName..([Math]::Min($draftName + 12, $lines.Count - 1))] -join "`n")
+  if ($draftBlock -notmatch 'if:\s*success\(\)') { throw "the draft step no longer keeps if: success()" }
+  return "payload($payload) < artifact-gate($gateId) < draft($draftName); one --draft publish"
+}
+
+Test-Script "release.yml: the negative-control legs run before gh release create --draft" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  function Find-Line([string]$pattern) {
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { return $i } }
+    return -1
+  }
+  $gate = Find-Line 'id:\s*artifact-gate'
+  $neg = Find-Line 'id:\s*negative-controls'
+  $draft = Find-Line 'name:\s*Create draft release'
+  if ($gate -lt 0) { throw "release.yml has no artifact-gate step yet (the ST-5 owner must land it)" }
+  if ($neg -lt 0) { throw "release.yml has no negative-controls step yet (the ST-5 owner must land it)" }
+  if ($draft -lt 0) { throw "release.yml has no 'Create draft release' step" }
+  if (-not ($gate -lt $neg -and $neg -lt $draft)) {
+    throw "negative-controls order wrong: gate=$gate negatives=$neg draft=$draft"
+  }
+  $negBlock = ($lines[$neg..([Math]::Min($neg + 60, $lines.Count - 1))] -join "`n")
+  foreach ($leg in @("MissingDll", "Csp", "Database")) {
+    if ($negBlock -notmatch ("-Negative\s+" + [regex]::Escape($leg))) {
+      throw "the negative-controls step is missing the $leg leg"
+    }
+  }
+  $invocations = @(Select-String -Path $releaseWorkflow -Pattern '-Mode\s+negative')
+  if ($invocations.Count -lt 3) { throw "expected at least three -Mode negative invocations, found $($invocations.Count)" }
+  foreach ($inv in $invocations) {
+    if ($inv.Line -notmatch '-SkipCompanion') { throw "a negative leg omits -SkipCompanion: $($inv.Line.Trim())" }
+    if ($inv.Line -notmatch 'OUT_DIR') { throw "a negative leg omits the shared OUT_DIR: $($inv.Line.Trim())" }
+  }
+  if (-not $negBlock.Contains("NEGATIVE_CONTROL_FAILED")) {
+    throw "the negative-controls step is missing ::error::NEGATIVE_CONTROL_FAILED"
+  }
+  return "artifact-gate($gate) < negative-controls($neg) < draft($draft); three -SkipCompanion legs"
+}
+
+Test-Script "release.yml: the evidence upload is if: always() and SHA-pinned" {
+  $lines = @(Get-Content -LiteralPath $releaseWorkflow)
+  $upload = -1
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match 'name:\s*Upload release-gate evidence') { $upload = $i; break }
+  }
+  if ($upload -lt 0) {
+    throw "release.yml has no 'Upload release-gate evidence' step yet (the ST-5 owner must land it)"
+  }
+  # Bound the step block at the next step header so a later step cannot satisfy a token.
+  $end = $lines.Count - 1
+  for ($i = $upload + 1; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match '^\s*-\s+name:') { $end = $i - 1; break }
+  }
+  $block = ($lines[$upload..$end] -join "`n")
+  if ($block -notmatch 'if:\s*always\(\)') { throw "the evidence upload is not if: always()" }
+  if ($block -notmatch 'actions/upload-artifact@[0-9a-f]{40}') {
+    throw "the evidence upload is not SHA-pinned (resolved 40-hex), never @v4"
+  }
+  if (-not $block.Contains("release-gate-evidence")) { throw "the evidence upload has no artifact name release-gate-evidence" }
+  if (-not $block.Contains(".opencode/tmp/release-gate")) { throw "the evidence upload path does not cover .opencode/tmp/release-gate" }
+  return "evidence upload: if: always(), SHA-pinned, release-gate-evidence"
+}
+
+Test-Script "release-gate skill documents the harness, both entries and the named errors" {
+  $skill = ".opencode/skills/release-artifact-gate/SKILL.md"
+  if (-not (Test-Path -LiteralPath $skill)) { throw "release-artifact-gate skill is missing" }
+  $src = Get-Content -LiteralPath $skill -Raw
+  foreach ($tok in @(
+    "gate-release-artifact.ps1",
+    "release.yml",
+    "-Mode gate -Manual",
+    "SURFACE_RECT=",
+    "MODEL_SET_MISSING",
+    "NEGATIVE_WRONG_ERROR",
+    "viewport-only capture of the app's resting first paint",
+    "-SevenZip"
+  )) {
+    if (-not $src.Contains($tok)) { throw "release-artifact-gate skill missing token: $tok" }
+  }
+  return "skill: harness + both entries + the named errors documented"
+}
+
+# The two release-gate modules are imported at RUN time by the driver / the
+# negative harness, so a parse break in either would only surface on a live gate
+# run. Parse both here with the AST parser (0 errors) and assert the exported
+# surface the driver depends on. Hermetic: the modules are parsed, never imported.
+Test-Script "modules: fredo-cdp.psm1 and gate-artifact-negative.psm1 parse cleanly" {
+  $modules = @(
+    @{ Path = ".opencode/scripts/fredo-cdp.psm1"; Requires = @() },
+    @{ Path = ".opencode/scripts/gate-artifact-negative.psm1"; Requires = @("Invoke-NegativeLeg") }
+  )
+  foreach ($m in $modules) {
+    $path = $m.Path
+    if (-not (Test-Path -LiteralPath $path)) { throw "module not found: $path" }
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $path).Path, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+      throw "parse errors in ${path}: $($parseErrors[0].Message)"
+    }
+    # Collect the names an explicit `Export-ModuleMember -Function @(...)` publishes.
+    $exported = New-Object System.Collections.ArrayList
+    $exportCalls = @($ast.FindAll({
+      param($node)
+      $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq "Export-ModuleMember"
+    }, $true))
+    foreach ($call in $exportCalls) {
+      $elements = @($call.CommandElements)
+      for ($i = 1; $i -lt $elements.Count; $i++) {
+        $el = $elements[$i]
+        if (-not ($el -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+        if ($el.ParameterName -ne "Function") { continue }
+        if (($i + 1) -ge $elements.Count) { continue }
+        $arg = $elements[$i + 1]
+        if ($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+          [void]$exported.Add([string]$arg.Value)
+        } else {
+          # `@(...)` parses as an ArrayExpressionAst; a bare comma list is an
+          # ArrayLiteralAst. Both hold the exported names as string-constant
+          # descendants, so collect every string-constant beneath the argument.
+          foreach ($item in @($arg.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.StringConstantExpressionAst]
+          }, $true))) {
+            [void]$exported.Add([string]$item.Value)
+          }
+        }
+      }
+    }
+    if ($exported.Count -lt 1) { throw "$path exports no function via Export-ModuleMember -Function" }
+    foreach ($required in @($m.Requires)) {
+      if (-not ($exported -contains $required)) { throw "$path does not export $required" }
+    }
+  }
+  return "both release-gate modules parse cleanly (0 errors); fredo-cdp exports >=1 function, gate-artifact-negative exports Invoke-NegativeLeg"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).

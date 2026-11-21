@@ -66,7 +66,7 @@
   DURATION AND PHASES (Spec #3172 ST-5):
     A normal run is TWO INDEPENDENT phases, each announced by a `PHASE=` marker
     carrying SINCE_START_SECONDS:
-      PHASE=launch-window  the bounded GUI observation (-WaitSecs, default 40 s)
+      PHASE=launch-window  the bounded GUI observation (-WaitSecs, default 40 s, 1..900)
                            plus the port/bridge assertions and teardown -- SECONDS.
       PHASE=cli-legs       `<exe> --version`, then, when asked,
                            PHASE=companion-probe and PHASE=dll-control.
@@ -80,6 +80,27 @@
     combined invocation the durable suite prescribes
     (`-SanitizePath -CompanionProbe -RemoveDll llama-common.dll`) is unchanged
     and is still the AC4 invocation.
+
+  CDP AND IN-WINDOW HOOK (Spec #3181 ST-2; additive, the base contract above is
+  unchanged):
+    * -CdpPort <n> (default 0/off) exports
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n> for the
+      launched child. The detachment helper passes lpEnvironment = NULL, so the
+      child inherits this process's environment and needs no new Win32 call. It
+      prints `CDP_PORT=<n>` and REFUSES (RESULT=REFUSED, exit 2,
+      ERROR=CDP_PORT_IN_USE) when the port is already listening, so a lingering
+      webview can never be attributed to this launch. The CDP port is never part
+      of -Ports.
+    * -CdpProbe <path> runs that hook script INSIDE the same bounded launch
+      window (the app process is still running; there is NO second launch
+      primitive) with the GATE_* environment: GATE_EXE, GATE_CDP_PORT,
+      GATE_DATA_DIR, GATE_LOG_DIR, GATE_WINDOW_SECS, GATE_ASSERTIONS. It prints
+      `WINDOW_HOOK_EXIT=<n>` and `WINDOW_HOOK_SECONDS=<s>`. A non-zero hook exit
+      folds into `FAILURE=window-hook:<n>`; a hook that outlives the bounded
+      window is killed and folds into `FAILURE=window-hook-timeout:<s>`.
+      A long hook -- the companion turn, bound 600 s -- needs a wider window:
+      pass -WaitSecs = <companion bound> + settle time (up to 900); the hook's
+      GATE_WINDOW_SECS inherits that bound.
 
   SELF-TEST (`-SelfTest`, hermetic -- no GUI artifact, no model, no ports):
       1 - DETACHED-LAUNCH  a deliberately long-lived child (`powershell.exe
@@ -97,7 +118,25 @@
                            helper (and the source still spells the handle-list
                            mechanism), so a future edit cannot silently revert to
                            plain `Start-Process`.
-    `SELFTEST: PASS` + exit 0 when every control passes.
+      4 - CDP-HOOK         a hermetic hook prints a token, exits 0 and asserts
+                           GATE_CDP_PORT was passed; the runner reports
+                           `WINDOW_HOOK_EXIT=0` and `WINDOW_HOOK_SECONDS=`.
+      5 - CDP-HOOK-FAIL    a hermetic hook exits 1; the runner folds it into
+                           `FAILURE=window-hook:1` (the named failure the live
+                           path reports).
+      6 - WAITSECS-RANGE   the real entry path accepts `-WaitSecs 900` and
+                           rejects `901` (the upper clamp for a long hook).
+      7 - PORTS-BIND       the COMMA-JOINED three-port form the release gate
+                           passes (`-Ports 9223,16932,19631`) BINDS: it reaches
+                           the typed missing-exe refusal (exit 2) instead of a
+                           parameter-binder error. Also pins the single-port
+                           form, the `;` and whitespace separators, and a
+                           non-integer token refusal.
+     8 - DETACHED-EXIT-CODE (`cmd /c exit 42` through Start-DetachedProcess) the
+                           retained process handle makes
+                           `Get-DetachedChildExitCode` return the SIGNED exit
+                           code 42 -- the ONE exit-code seam.
+     `SELFTEST: PASS` + exit 0 when every control passes.
 
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
 
@@ -113,8 +152,13 @@
   installer. A `\debug\` path is refused. Not required by -SelfTest.
 
 .PARAMETER Ports
-  Comma-separated TCP ports to probe, e.g. `16932,9223`. Required unless
-  -ProbeOnly (which launches nothing) is given.
+  TCP ports to probe, given as a specification: one or more decimal ports
+  separated by `,`, `;` or whitespace (e.g. `9223,16932,19631`). Duplicates are
+  deduped and order is preserved. It is a STRING, not an int array: under the
+  native `powershell -File` boundary a comma-joined list arrives as one token,
+  which an [int[]] parameter cannot bind. A PowerShell caller may still pass an
+  int array -- PowerShell binds it as a space-joined string and the parser
+  accepts it. Required unless -ProbeOnly (which launches nothing) is given.
 
 .PARAMETER McpPort
   The port exported as FREDO_MCP_BASE_PORT. Default: the first -Ports value, so a
@@ -125,7 +169,13 @@
   This is the mode for the release webview-security AC.
 
 .PARAMETER WaitSecs
-  Bounded observation window, seconds. Default 40. Clamped to 1..300.
+  Bounded observation window, seconds. Default 40. Clamped to 1..900.
+
+  The upper bound is 900 (raised from 300) so a LONG in-window hook can run
+  inside the window: when -CdpProbe drives the companion turn (bound 600 s), the
+  caller passes -WaitSecs = <companion bound> + settle time and the hook's
+  GATE_WINDOW_SECS inherits it. The launch-survival observation is still bounded
+  by the caller -- a launch-only pass uses <= 300 s.
 
 .PARAMETER DataDir
   Optional FREDO_DATA_DIR for the launched process. Isolates its PostgreSQL
@@ -162,13 +212,42 @@
   assert without a launch. Additive: without it the script behaves exactly as
   before.
 
+.PARAMETER CdpPort
+  Optional WebView2 DevTools port. Default 0 (off). When set, the launched child
+  receives WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n>, and
+  the probe prints `CDP_PORT=<n>`. A port that is already listening is refused
+  (exit 2, ERROR=CDP_PORT_IN_USE). The CDP port is not a -Ports value.
+
+.PARAMETER CdpProbe
+  Optional path to a hook script run INSIDE the bounded launch window, while the
+  app is still running, with the GATE_* environment (GATE_EXE, GATE_CDP_PORT,
+  GATE_DATA_DIR, GATE_LOG_DIR, GATE_WINDOW_SECS, GATE_ASSERTIONS). Prints
+  `WINDOW_HOOK_EXIT=` and `WINDOW_HOOK_SECONDS=`; a non-zero exit becomes
+  `FAILURE=window-hook:<n>` and a timeout becomes
+  `FAILURE=window-hook-timeout:<s>`. Refused with -ProbeOnly (nothing is
+  launched to run the hook inside).
+
 .PARAMETER SelfTest
   Hermetic self-test of the detachment helper and the refusals (see the
   DESCRIPTION). Needs no artifact, no ports and no model. Exits 0 when every
   control passes, 3 on a control failure.
 
+.PARAMETER DbReadySecs
+  Database-ready bound handed to the -CdpProbe hook as GATE_DB_READY_SECS.
+  Default 180.
+
+.PARAMETER BootSettleSecs
+  Boot-settle bound handed to the -CdpProbe hook as GATE_BOOT_SETTLE_SECS.
+  Default 60.
+
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe apps\tauri\src-tauri\target\release\fredo.exe -Ports 16932,9223 -RequireClosed
+
+.EXAMPLE
+  # -Ports is one or more decimal ports separated by , ; or whitespace. This is
+  # the form the release gate passes; the native -File boundary delivers it as a
+  # single comma-joined token, which the parser splits.
+  powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe C:\install\fredo.exe -Ports 9223,16932,19631 -RequireClosed
 
 .EXAMPLE
   powershell -File .opencode/scripts/launch-artifact-probe.ps1 -Exe .\fredo.exe -Ports 16932 -McpPort 16932 -WaitSecs 20 -DataDir .opencode\tmp\probe-data
@@ -185,7 +264,7 @@
 #>
 param(
   [string]$Exe = '',
-  [int[]]$Ports = @(),
+  [string]$Ports = '',
   [int]$McpPort = 0,
   [switch]$RequireClosed,
   [int]$WaitSecs = 40,
@@ -195,7 +274,11 @@ param(
   [switch]$CompanionProbe,
   [string]$RemoveDll = '',
   [switch]$ProbeOnly,
-  [switch]$SelfTest
+  [switch]$SelfTest,
+  [int]$CdpPort = 0,
+  [string]$CdpProbe = '',
+  [int]$DbReadySecs = 180,
+  [int]$BootSettleSecs = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -224,6 +307,14 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $probePorts = @()
 $exePath = ''
 
+# Assertion selection forwarded to the -CdpProbe hook via GATE_ASSERTIONS. A
+# caller (the release-artifact gate) may narrow it; the default is the full set
+# the hook understands.
+$gateAssertions = $env:GATE_ASSERTIONS
+if ([string]::IsNullOrWhiteSpace($gateAssertions)) {
+  $gateAssertions = 'styled,database,companion,screenshot'
+}
+
 # -SelfTest is hermetic: it needs no artifact, no ports and no model, so none of
 # the artifact preconditions below apply to it.
 if (-not $SelfTest) {
@@ -233,18 +324,30 @@ if (-not $SelfTest) {
     exit 2
   }
 
-  if ($null -ne $Ports) {
-    $seen = @{}
-    foreach ($port in $Ports) {
-      if ($port -lt 1 -or $port -gt 65535) {
-        Write-Probe "ERROR: port out of range: $port"
-        Write-Probe 'RESULT=REFUSED'
-        exit 2
-      }
-      if (-not $seen.ContainsKey($port)) {
-        $seen[$port] = $true
-        $probePorts += [int]$port
-      }
+  # -Ports is a SPECIFICATION, not an [int[]]. Under the native
+  # `powershell -File` boundary a comma-joined list (9223,16932,19631) arrives
+  # as ONE string token; an [int[]] parameter cannot bind it and the child dies
+  # in the parameter binder before any probe line is printed (the round-1
+  # defect). Accept one or more decimal ports separated by ',', ';' or
+  # whitespace; dedupe and preserve order. A PowerShell caller that still passes
+  # an int[] is bound to a space-joined string by PowerShell and parses here.
+  $probeSeen = @{}
+  foreach ($token in @($Ports -split '[,;\s]+')) {
+    if ([string]::IsNullOrWhiteSpace($token)) { continue }
+    $value = 0
+    if (-not [int]::TryParse($token, [ref]$value)) {
+      Write-Probe "ERROR: port is not an integer: $token"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if ($value -lt 1 -or $value -gt 65535) {
+      Write-Probe "ERROR: port out of range: $value"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if (-not $probeSeen.ContainsKey($value)) {
+      $probeSeen[$value] = $true
+      $probePorts += [int]$value
     }
   }
 
@@ -254,8 +357,20 @@ if (-not $SelfTest) {
     exit 2
   }
 
-  if ($WaitSecs -lt 1 -or $WaitSecs -gt 300) {
-    Write-Probe "ERROR: -WaitSecs must be 1..300 (got $WaitSecs)."
+  if ($WaitSecs -lt 1 -or $WaitSecs -gt 900) {
+    Write-Probe "ERROR: -WaitSecs must be 1..900 (got $WaitSecs)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if ($DbReadySecs -lt 1 -or $DbReadySecs -gt 3600) {
+    Write-Probe "ERROR: -DbReadySecs must be 1..3600 (got $DbReadySecs)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if ($BootSettleSecs -lt 1 -or $BootSettleSecs -gt 3600) {
+    Write-Probe "ERROR: -BootSettleSecs must be 1..3600 (got $BootSettleSecs)."
     Write-Probe 'RESULT=REFUSED'
     exit 2
   }
@@ -296,6 +411,26 @@ if (-not $SelfTest) {
       exit 2
     }
   }
+
+  if ($CdpPort -ne 0 -and ($CdpPort -lt 1 -or $CdpPort -gt 65535)) {
+    Write-Probe "ERROR: -CdpPort out of range (got $CdpPort)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($CdpProbe)) {
+    if ($ProbeOnly) {
+      Write-Probe 'ERROR: -CdpProbe runs inside the bounded launch window, but -ProbeOnly launches nothing. Drop one of them.'
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if (-not (Test-Path -LiteralPath $CdpProbe -PathType Leaf)) {
+      Write-Probe "ERROR: -CdpProbe hook script not found: $CdpProbe"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    $CdpProbe = (Resolve-Path -LiteralPath $CdpProbe).Path
+  }
 }
 
 # ---- Log directory ------------------------------------------------------------
@@ -330,6 +465,26 @@ function Test-TcpPortOpen {
   } finally {
     try { $client.Close() } catch {}
   }
+}
+
+# Ask the OS for an ephemeral loopback port by binding 127.0.0.1:0, then release
+# it. Retries a bounded number of times; returns 0 when no port could be bound.
+# The release gate uses this to hand the launched profile deterministic, free
+# OTLP ingest ports so two runs (or a live dev instance) never collide.
+function Get-FreeTcpPort {
+  param([int]$Attempts = 5)
+  for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+    try {
+      $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+      $listener.Start()
+      $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+      $listener.Stop()
+      return [int]$port
+    } catch {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  return 0
 }
 
 function Get-AllProcesses {
@@ -396,277 +551,26 @@ function Read-LogHits {
 }
 
 # ---------------------------------------------------------------------------
-# Detachment helper (Spec #3172 ST-5).
+# Detachment helper (Spec #3172 ST-5; extracted to detach-process.psm1 in Spec
+# #3181 round 3 so the gate, the negative module and the exit-code wrapper all
+# share the ONE whitelist spawn).
 #
-# WHY: PowerShell 5.1's `Start-Process -RedirectStandardOutput/-RedirectStandardError`
-# calls Win32 CreateProcess with handle inheritance ON and NO handle whitelist,
-# so the child inherits EVERY inheritable handle of this process -- including the
-# stdout/stderr PIPE handles of whoever invoked this script. The GUI app's
-# WebView2 tree then keeps those pipes open, and an INLINE caller (`$(...)`, a
-# tool call, `Tee-Object`, `& powershell ... | ...`) blocks on the pipe long
-# after this script printed RESULT=PASS and exited.
-#
-# HOW: CreateProcess from P/Invoke with
-#   * EXTENDED_STARTUPINFO_PRESENT -- makes Windows honour the attribute list;
-#   * STARTF_USESTDHANDLES with exactly stdin=NUL, stdout=<StdOutPath>,
-#     stderr=<StdErrPath>, each opened with SECURITY_ATTRIBUTES.bInheritHandle =
-#     TRUE (a handle must be marked inheritable to be inherited at all);
-#   * PROC_THREAD_ATTRIBUTE_HANDLE_LIST whitelisting ONLY those three handles.
-# The whitelist is the GUARANTEE: no OTHER handle of this process (above all its
-# own stdout/stderr pipe) is inherited, so the launched app can never hold the
-# caller's console open. The helper returns the PID; the caller keeps using
-# Get-Process -Id for HasExited / ExitCode / teardown, unchanged.
+# WHY / HOW: see the module header in detach-process.psm1. The module
+# CreateProcess's with EXTENDED_STARTUPINFO_PRESENT + STARTF_USESTDHANDLES +
+# PROC_THREAD_ATTRIBUTE_HANDLE_LIST (exactly stdin=NUL, stdout=<log>,
+# stderr=<log>), so no caller pipe handle crosses the process boundary. The GUI
+# launch calls Start-DetachedProcess; every bounded child runner calls
+# Start-DetachedProcess + Wait-DetachedChild. There is no second spawn path
+# (G-450).
 # ---------------------------------------------------------------------------
-$script:DetachTypeSource = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
+Import-Module (Join-Path $PSScriptRoot 'detach-process.psm1') -ErrorAction Stop
 
-public static class FredoDetach
-{
-    private const int STARTF_USESTDHANDLES = 0x00000100;
-    private const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
-    private const uint GENERIC_READ = 0x80000000;
-    private const uint GENERIC_WRITE = 0x40000000;
-    private const uint FILE_SHARE_READ = 0x00000001;
-    private const uint FILE_SHARE_WRITE = 0x00000002;
-    private const uint OPEN_EXISTING = 3;
-    private const uint CREATE_ALWAYS = 2;
-    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
-    private static readonly IntPtr InvalidHandle = new IntPtr(-1);
-
-    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST: the whitelist of handles the child may
-    // inherit. With this attribute set (and bInheritHandles = TRUE) nothing else
-    // of the parent's handle table crosses the process boundary.
-    private static readonly IntPtr ProcThreadAttributeHandleList = new IntPtr(0x00020002);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SECURITY_ATTRIBUTES
-    {
-        public int nLength;
-        public IntPtr lpSecurityDescriptor;
-        public int bInheritHandle;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct STARTUPINFO
-    {
-        public int cb;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpReserved;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpDesktop;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpTitle;
-        public int dwX;
-        public int dwY;
-        public int dwXSize;
-        public int dwYSize;
-        public int dwXCountChars;
-        public int dwYCountChars;
-        public int dwFillAttribute;
-        public int dwFlags;
-        public short wShowWindow;
-        public short cbReserved2;
-        public IntPtr lpReserved2;
-        public IntPtr hStdInput;
-        public IntPtr hStdOutput;
-        public IntPtr hStdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct STARTUPINFOEX
-    {
-        public STARTUPINFO StartupInfo;
-        public IntPtr lpAttributeList;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PROCESS_INFORMATION
-    {
-        public IntPtr hProcess;
-        public IntPtr hThread;
-        public int dwProcessId;
-        public int dwThreadId;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
-        ref SECURITY_ATTRIBUTES lpSecurityAttributes, uint dwCreationDisposition,
-        uint dwFlagsAndAttributes, IntPtr hTemplateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount,
-        int dwFlags, ref IntPtr lpSize);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, IntPtr attribute,
-        IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
-
-    [DllImport("kernel32.dll")]
-    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CreateProcessW(string lpApplicationName, StringBuilder lpCommandLine,
-        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, int dwCreationFlags,
-        IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFOEX lpStartupInfo,
-        out PROCESS_INFORMATION lpProcessInformation);
-
-    private static void CloseQuietly(IntPtr handle)
-    {
-        if (handle != IntPtr.Zero && handle != InvalidHandle) { CloseHandle(handle); }
-    }
-
-    private static IntPtr OpenStandardHandle(string path, ref SECURITY_ATTRIBUTES sa)
-    {
-        IntPtr handle;
-        if (string.IsNullOrEmpty(path))
-        {
-            handle = CreateFileW("NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
-        }
-        else
-        {
-            handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, ref sa, CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
-        }
-        if (handle == InvalidHandle)
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error(),
-                "CreateFileW(" + (string.IsNullOrEmpty(path) ? "NUL" : path) + ")");
-        }
-        return handle;
-    }
-
-    public static int Launch(string applicationName, string commandLine, string workingDirectory,
-        string stdoutPath, string stderrPath)
-    {
-        IntPtr stdIn = IntPtr.Zero;
-        IntPtr stdOut = IntPtr.Zero;
-        IntPtr stdErr = IntPtr.Zero;
-        IntPtr attributeList = IntPtr.Zero;
-        IntPtr handleBuffer = IntPtr.Zero;
-        bool attributeListReady = false;
-        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-
-        // PowerShell marshals $null to "" for a string parameter, and CreateProcess
-        // treats an EMPTY lpCurrentDirectory as an invalid name (error 123) rather
-        // than "inherit the caller's directory". Normalise back to NULL.
-        if (string.IsNullOrEmpty(workingDirectory)) { workingDirectory = null; }
-
-        try
-        {
-            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
-            sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
-            sa.lpSecurityDescriptor = IntPtr.Zero;
-            sa.bInheritHandle = 1;
-
-            stdIn = OpenStandardHandle("NUL", ref sa);
-            stdOut = OpenStandardHandle(stdoutPath, ref sa);
-            stdErr = OpenStandardHandle(stderrPath, ref sa);
-
-            IntPtr size = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-            int sizeError = Marshal.GetLastWin32Error();
-            if (size == IntPtr.Zero)
-            {
-                throw new Win32Exception(sizeError, "InitializeProcThreadAttributeList (size probe)");
-            }
-
-            attributeList = Marshal.AllocHGlobal(size);
-            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref size))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList");
-            }
-            attributeListReady = true;
-
-            handleBuffer = Marshal.AllocHGlobal(IntPtr.Size * 3);
-            Marshal.WriteIntPtr(handleBuffer, 0, stdIn);
-            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size, stdOut);
-            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size * 2, stdErr);
-            if (!UpdateProcThreadAttribute(attributeList, 0, ProcThreadAttributeHandleList, handleBuffer,
-                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(),
-                    "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)");
-            }
-
-            STARTUPINFOEX startup = new STARTUPINFOEX();
-            startup.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
-            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-            startup.StartupInfo.hStdInput = stdIn;
-            startup.StartupInfo.hStdOutput = stdOut;
-            startup.StartupInfo.hStdError = stdErr;
-            startup.lpAttributeList = attributeList;
-
-            StringBuilder line = new StringBuilder(commandLine);
-            bool created = CreateProcessW(applicationName, line, IntPtr.Zero, IntPtr.Zero, true,
-                EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, workingDirectory, ref startup, out pi);
-            if (!created)
-            {
-                int launchError = Marshal.GetLastWin32Error();
-                throw new Win32Exception(launchError, "CreateProcessW error=" + launchError.ToString()
-                    + " app=[" + applicationName + "] cmd=[" + commandLine + "]");
-            }
-            return pi.dwProcessId;
-        }
-        finally
-        {
-            if (pi.hThread != IntPtr.Zero) { CloseHandle(pi.hThread); }
-            if (pi.hProcess != IntPtr.Zero) { CloseHandle(pi.hProcess); }
-            if (attributeList != IntPtr.Zero)
-            {
-                if (attributeListReady) { DeleteProcThreadAttributeList(attributeList); }
-                Marshal.FreeHGlobal(attributeList);
-            }
-            if (handleBuffer != IntPtr.Zero) { Marshal.FreeHGlobal(handleBuffer); }
-            CloseQuietly(stdIn);
-            CloseQuietly(stdOut);
-            CloseQuietly(stdErr);
-        }
-    }
-}
-'@
-
-$script:DetachTypeLoaded = $false
-function Initialize-DetachType {
-  if ($script:DetachTypeLoaded) { return }
-  Add-Type -TypeDefinition $script:DetachTypeSource -Language CSharp -ErrorAction Stop | Out-Null
-  $script:DetachTypeLoaded = $true
-}
-
-# The ONE launch primitive for the GUI app (and the -SelfTest control child).
-# Empty StdOutPath/StdErrPath route that stream to the NUL device.
-function Start-DetachedProcess {
-  param(
-    [Parameter(Mandatory = $true)][string]$FilePath,
-    [string]$ArgumentString = '',
-    [string]$WorkingDirectory = '',
-    [string]$StdOutPath = '',
-    [string]$StdErrPath = ''
-  )
-  Initialize-DetachType
-  $application = (Resolve-Path -LiteralPath $FilePath).Path
-  $commandLine = '"' + $application + '"'
-  if (-not [string]::IsNullOrWhiteSpace($ArgumentString)) { $commandLine += ' ' + $ArgumentString }
-  $working = $null
-  if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
-    $working = [System.IO.Path]::GetFullPath($WorkingDirectory)
-  }
-  return [int][FredoDetach]::Launch($application, $commandLine, $working, $StdOutPath, $StdErrPath)
-}
-
-# Run a CLI child to completion with redirected stdio and return its exit code
-# (null when the launch itself failed). Start-Process is used because a release
-# build is a windows-subsystem binary: its stdout is only reachable through
-# redirected handles, never through the console. These legs are `-Wait`, so their
-# inheritance window closes when the child exits; the GUI launch above is the one
-# that outlives this script and therefore must not inherit (see the helper).
+# Run a CLI child to completion with explicit stdio and return its exit code
+# (null when the launch itself failed). A release build is a windows-subsystem
+# binary: its stdout is only reachable through redirected handles, never through
+# the console. The child is spawned through the shared handle-whitelist helper
+# (G-450), so even a CLI child that starts a grandchild can never hold the
+# caller's pipe; Wait-DetachedChild waits for THIS direct child only.
 function Invoke-ArtifactCli {
   param(
     [string]$FilePath,
@@ -676,10 +580,26 @@ function Invoke-ArtifactCli {
     [string]$StdErrPath
   )
   try {
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -PassThru -Wait -NoNewWindow -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
-    return [int]$proc.ExitCode
+    $argString = ''
+    foreach ($argument in @($ArgumentList)) {
+      $text = [string]$argument
+      if ($text -match '[\s"]') { $text = '"' + $text.Replace('"', '\"') + '"' }
+      if ($argString.Length -gt 0) { $argString += ' ' }
+      $argString += $text
+    }
+    $childPid = Start-DetachedProcess -FilePath $FilePath -ArgumentString $argString -WorkingDirectory $WorkingDirectory -StdOutPath $StdOutPath -StdErrPath $StdErrPath
+    $code = Wait-DetachedChild -ProcessId $childPid
+    if ($null -eq $code) {
+      # [Console]::Out.Write* (never Write-Probe/Write-Output): the caller captures
+      # this function's entire output stream as the child's exit code, so a
+      # pipeline write would become an element of THAT value instead of reaching
+      # the probe's stdout. Route human lines to the process console (Stream B).
+      [Console]::Out.WriteLine("ERROR: child exited without a readable code ${FilePath}")
+      return $null
+    }
+    return [int]$code
   } catch {
-    Write-Probe "ERROR: child launch failed ${FilePath}: $($_.Exception.Message)"
+    [Console]::Out.WriteLine("ERROR: child launch failed ${FilePath}: $($_.Exception.Message)")
     return $null
   }
 }
@@ -694,6 +614,141 @@ function Get-FirstOutputLine {
   }
   if ($lines.Count -eq 0) { return '' }
   return ([string]$lines[0]).Trim()
+}
+
+# Run the -CdpProbe hook INSIDE the bounded launch window, while the app process
+# is still running. The hook is a child PowerShell process so a hung hook can be
+# KILLED at the window bound -- a child launched through Start-DetachedProcess
+# would outlive the bound and defeat the "bounded window" contract. This is NOT a
+# GUI launch: the ONE GUI primitive remains Start-DetachedProcess above.
+function Invoke-WindowHook {
+  param(
+    [string]$HookPath,
+    [string]$ExePath,
+    [int]$CdpPort,
+    [string]$DataDir,
+    [string]$ProbeLogDir,
+    [int]$WindowSecs,
+    [string]$Assertions,
+    [string]$PgDataDir = '',
+    [int]$DbReadySecs = 180,
+    [int]$BootSettleSecs = 60
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Assertions)) {
+    $Assertions = 'styled,database,companion,screenshot'
+  }
+
+  # Binding hook environment (Spec #3181, section A; round 4 adds the profile
+  # seams). The child inherits these.
+  $env:GATE_EXE = $ExePath
+  $env:GATE_CDP_PORT = [string]$CdpPort
+  $env:GATE_DATA_DIR = $DataDir
+  $env:GATE_LOG_DIR = $ProbeLogDir
+  $env:GATE_WINDOW_SECS = [string]$WindowSecs
+  $env:GATE_ASSERTIONS = $Assertions
+  $env:GATE_PG_DATA_DIR = $PgDataDir
+  $env:GATE_DB_READY_SECS = [string]$DbReadySecs
+  $env:GATE_BOOT_SETTLE_SECS = [string]$BootSettleSecs
+
+  $hookOut = Join-Path $ProbeLogDir 'window-hook-stdout.log'
+  $hookErr = Join-Path $ProbeLogDir 'window-hook-stderr.log'
+  $hookExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+  $exitCode = $null
+  $timedOut = $false
+  $seconds = 0.0
+  $stdoutText = ''
+  $stderrText = ''
+  $stdoutComplete = $true
+  $stderrComplete = $true
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $proc = $null
+  try {
+    # System.Diagnostics.Process (not Start-Process -PassThru): the latter closes
+    # the child handle when -Wait is absent, leaving ExitCode unreadable -- which
+    # would silently turn a failing hook into a pass. This keeps the handle, so
+    # the exit code IS the hook's own under the bounded wait.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $hookExe
+    $psi.Arguments = '-NoProfile -File "' + $HookPath + '"'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    $boundMs = $WindowSecs * 1000
+    if (-not $proc.WaitForExit($boundMs)) {
+      $timedOut = $true
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit(5000) | Out-Null } catch {}
+    }
+    # The int overload does not flush the redirected streams; the no-arg one does.
+    try { $proc.WaitForExit() } catch {}
+    # BOUNDED read (G-450): ReadToEndAsync completes on EOF. A grandchild the hook
+    # started can hold the hook's stdout pipe past the hook's own exit, so .Result
+    # would block indefinitely. Wait(5000) bounds the read; on expiry keep what we
+    # have ('') and surface the incompleteness rather than hanging the caller.
+    try {
+      if ($outTask.Wait(5000)) { $stdoutText = $outTask.Result } else { $stdoutText = ''; $stdoutComplete = $false }
+    } catch { $stdoutText = ''; $stdoutComplete = $false }
+    try {
+      if ($errTask.Wait(5000)) { $stderrText = $errTask.Result } else { $stderrText = ''; $stderrComplete = $false }
+    } catch { $stderrText = ''; $stderrComplete = $false }
+  } catch {
+    [Console]::Out.WriteLine("ERROR: window hook launch failed: $($_.Exception.Message)")
+    $timedOut = $true
+  } finally {
+    $watch.Stop()
+    $seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+  }
+
+  # Persist the hook transcript as evidence, beside the run logs.
+  try { [System.IO.File]::WriteAllText($hookOut, $stdoutText) } catch {}
+  try { [System.IO.File]::WriteAllText($hookErr, $stderrText) } catch {}
+
+  if (-not $timedOut -and $null -ne $proc -and $proc.HasExited) {
+    try { $exitCode = [int]$proc.ExitCode } catch { $exitCode = $null }
+  }
+  # Surface the hook's own stdout so a caller sees the token/line it printed.
+  # CRITICAL (Stream B): this function's return value IS the output stream the
+  # live caller captures (`$hookResult = Invoke-WindowHook ...`), so emitting a
+  # hook line through the PowerShell pipeline here would fold it into
+  # `$hookResult` and never reach the probe's stdout file. Emit to the process
+  # console instead, so the documented CHECK / BOOT_SETTLE / DB_EFFECTIVE_DIR /
+  # WINDOW_HOOK_* literals land in run-*/launch-report.log (and the negative
+  # leg's probe.stdout.log), and `$hookResult` is exactly one object.
+  foreach ($line in ($stdoutText -split "`r?`n")) {
+    if (-not [string]::IsNullOrWhiteSpace($line)) { [Console]::Out.WriteLine($line) }
+  }
+  [Console]::Out.Flush()
+
+  $exitText = if ($null -ne $exitCode) { [string]$exitCode } else { 'timeout' }
+  [Console]::Out.WriteLine("WINDOW_HOOK_EXIT=$exitText")
+  [Console]::Out.WriteLine("WINDOW_HOOK_SECONDS=$seconds")
+  if (-not $stdoutComplete) { [Console]::Out.WriteLine('WINDOW_HOOK_STDOUT_INCOMPLETE=true') }
+  if (-not $stderrComplete) { [Console]::Out.WriteLine('WINDOW_HOOK_STDERR_INCOMPLETE=true') }
+
+  $failureName = ''
+  if ($timedOut) {
+    $failureName = "window-hook-timeout:$seconds"
+  } elseif ($null -eq $exitCode) {
+    $failureName = 'window-hook:error'
+  } elseif ($exitCode -ne 0) {
+    $failureName = "window-hook:$exitCode"
+  }
+
+  return [pscustomobject]@{
+    Exit = $exitCode
+    Seconds = $seconds
+    TimedOut = $timedOut
+    StdOut = $stdoutText
+    FailureName = $failureName
+  }
 }
 
 # ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
@@ -911,34 +966,260 @@ if ($SelfTest) {
     }
 
     # ---- CONTROL 3 - SELF-REFERENCE -------------------------------------
-    # The GUI launch site must call the detachment helper, and the source must
-    # still spell the whitelist mechanism, so a future edit cannot silently
-    # revert to plain Start-Process.
+    # The GUI launch site must call the detachment helper, the WHITELIST MECHANISM
+    # must still be spelled in the shared module (it moved there in Spec #3181
+    # round 3, so a future edit cannot silently revert to plain Start-Process),
+    # and this script must import the module.
     Write-Probe 'CONTROL 3 - SELF-REFERENCE'
     $selfSource = ''
     if (-not [string]::IsNullOrWhiteSpace($selfPath) -and (Test-Path -LiteralPath $selfPath)) {
       $selfSource = [System.IO.File]::ReadAllText($selfPath)
     }
+    $modulePath = Join-Path $PSScriptRoot 'detach-process.psm1'
+    $moduleSource = ''
+    if (Test-Path -LiteralPath $modulePath) {
+      $moduleSource = [System.IO.File]::ReadAllText($modulePath)
+    }
     $launchUsesHelper = ($selfSource -match '(?m)^\s*\$launchPid\s*=\s*Start-DetachedProcess\b')
+    $importsModule = $selfSource.Contains("detach-process.psm1")
     # Built by concatenation so this assertion's own text is not the needle it
     # searches for (a literal here would match itself and never regress).
     $plainLaunchNeedle = 'Start-Process -FilePath ' + '$exePath'
     $plainLaunchOfExe = $selfSource.Contains($plainLaunchNeedle)
-    $hasHandleList = $selfSource.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST')
-    $hasExtendedStartup = $selfSource.Contains('EXTENDED_STARTUPINFO_PRESENT')
-    $hasStdHandlesFlag = $selfSource.Contains('STARTF_USESTDHANDLES')
-    Write-Probe ("  launch site uses the helper: {0}; plain Start-Process of the exe: {1}; whitelist mechanism present: {2}/{3}/{4}" -f $launchUsesHelper, $plainLaunchOfExe, $hasHandleList, $hasExtendedStartup, $hasStdHandlesFlag)
+    $hasHandleList = $moduleSource.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST')
+    $hasExtendedStartup = $moduleSource.Contains('EXTENDED_STARTUPINFO_PRESENT')
+    $hasStdHandlesFlag = $moduleSource.Contains('STARTF_USESTDHANDLES')
+    Write-Probe ("  launch site uses the helper: {0}; imports module: {1}; plain Start-Process of the exe: {2}; whitelist mechanism present in module: {3}/{4}/{5}" -f $launchUsesHelper, $importsModule, $plainLaunchOfExe, $hasHandleList, $hasExtendedStartup, $hasStdHandlesFlag)
     if (-not $launchUsesHelper) {
       Write-Probe '  [FAIL] the GUI launch site does not call Start-DetachedProcess'
+      $controlFailures++
+    } elseif (-not $importsModule) {
+      Write-Probe '  [FAIL] the script does not import detach-process.psm1'
       $controlFailures++
     } elseif ($plainLaunchOfExe) {
       Write-Probe '  [FAIL] the source still launches $exePath through a plain Start-Process'
       $controlFailures++
     } elseif (-not ($hasHandleList -and $hasExtendedStartup -and $hasStdHandlesFlag)) {
-      Write-Probe '  [FAIL] the handle-whitelist mechanism is gone from the source'
+      Write-Probe '  [FAIL] the handle-whitelist mechanism is gone from detach-process.psm1'
       $controlFailures++
     } else {
-      Write-Probe '  [PASS] the GUI launch site calls the detachment helper and the whitelist mechanism is intact'
+      Write-Probe '  [PASS] the GUI launch site calls the detachment helper, imports the module, and the whitelist mechanism is intact'
+    }
+
+    # ---- CONTROL 4 - CDP-HOOK -------------------------------------------
+    # The hook runs through the SAME runner the live path uses and receives the
+    # binding GATE_* environment. The hermetic hook asserts GATE_CDP_PORT and
+    # prints a token; a missing/mispassed value is a control failure.
+    Write-Probe 'CONTROL 4 - CDP-HOOK'
+    try {
+      $hookDir = Join-Path $selfTmp 'cdp-hook-ok'
+      New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
+      $hookOkPath = Join-Path $hookDir 'hook-ok.ps1'
+      $hookOkSource = @'
+param()
+if ($env:GATE_CDP_PORT -ne '9411') { Write-Output ("GATE_CDP_PORT_MISMATCH=" + $env:GATE_CDP_PORT); exit 4 }
+Write-Output 'CDP_HOOK_TOKEN=OK'
+Write-Output ("GATE_CDP_PORT_SEEN=" + $env:GATE_CDP_PORT)
+exit 0
+'@
+      [System.IO.File]::WriteAllText($hookOkPath, $hookOkSource, [System.Text.UTF8Encoding]::new($false))
+      $hookOk = Invoke-WindowHook -HookPath $hookOkPath -ExePath $childExe -CdpPort 9411 -DataDir $hookDir -ProbeLogDir $hookDir -WindowSecs 30 -Assertions 'styled'
+      $okToken = $hookOk.StdOut.Contains('CDP_HOOK_TOKEN=OK')
+      $okPort = $hookOk.StdOut.Contains('GATE_CDP_PORT_SEEN=9411')
+      if (($hookOk.Exit -eq 0) -and $okToken -and $okPort -and [string]::IsNullOrWhiteSpace($hookOk.FailureName)) {
+        Write-Probe '  [PASS] the hook ran with GATE_CDP_PORT=9411 and exited 0'
+      } else {
+        Write-Probe ("  [FAIL] exit={0} token={1} port={2} stdout={3}" -f $hookOk.Exit, $okToken, $okPort, $hookOk.StdOut)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] CDP hook control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 5 - CDP-HOOK-FAIL --------------------------------------
+    # A non-zero hook exit must fold into the named FAILURE=window-hook:<n>.
+    Write-Probe 'CONTROL 5 - CDP-HOOK-FAIL'
+    try {
+      $hookDirFail = Join-Path $selfTmp 'cdp-hook-fail'
+      New-Item -ItemType Directory -Path $hookDirFail -Force | Out-Null
+      $hookFailPath = Join-Path $hookDirFail 'hook-fail.ps1'
+      $hookFailSource = @'
+param()
+Write-Output 'CDP_HOOK_TOKEN=FAIL'
+exit 1
+'@
+      [System.IO.File]::WriteAllText($hookFailPath, $hookFailSource, [System.Text.UTF8Encoding]::new($false))
+      $hookFail = Invoke-WindowHook -HookPath $hookFailPath -ExePath $childExe -CdpPort 9411 -DataDir $hookDirFail -ProbeLogDir $hookDirFail -WindowSecs 30 -Assertions 'styled'
+      if (($hookFail.Exit -eq 1) -and ($hookFail.FailureName -eq 'window-hook:1')) {
+        Write-Probe '  [PASS] a hook exiting 1 folds into FAILURE=window-hook:1'
+      } else {
+        Write-Probe ("  [FAIL] exit={0} failure={1} stdout={2}" -f $hookFail.Exit, $hookFail.FailureName, $hookFail.StdOut)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] CDP hook-fail control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 6 - WAITSECS-RANGE -------------------------------------
+    # The upper clamp is 900 (not 300) so a long in-window hook (the companion
+    # turn, bound 600 s) fits. Both legs drive the REAL entry path as a child:
+    #   * 900 is ACCEPTED -- with a missing exe the refusal is "missing exe",
+    #     which can only happen if the -WaitSecs guard let 900 through;
+    #   * 901 is REJECTED by the upper clamp.
+    Write-Probe 'CONTROL 6 - WAITSECS-RANGE'
+    try {
+      $missingExe = Join-Path $selfTmp 'no-such-dir\fredo.exe'
+      $out900 = & powershell -NoProfile -File $selfPath @('-Exe', $missingExe, '-Ports', '16932', '-WaitSecs', '900') 2>&1
+      $code900 = $LASTEXITCODE
+      $text900 = if ($out900 -is [array]) { $out900 -join "`n" } else { "$out900" }
+      $accepted900 = ($code900 -eq 2) -and
+                     $text900.Contains('missing exe') -and
+                     (-not $text900.Contains('-WaitSecs must be'))
+
+      $out901 = & powershell -NoProfile -File $selfPath @('-Exe', $missingExe, '-Ports', '16932', '-WaitSecs', '901') 2>&1
+      $code901 = $LASTEXITCODE
+      $text901 = if ($out901 -is [array]) { $out901 -join "`n" } else { "$out901" }
+      $rejected901 = ($code901 -eq 2) -and
+                     $text901.Contains('-WaitSecs must be 1..900') -and
+                     $text901.Contains('RESULT=REFUSED')
+
+      if ($accepted900 -and $rejected901) {
+        Write-Probe '  [PASS] -WaitSecs accepts 900 and rejects 901'
+      } else {
+        Write-Probe ("  [FAIL] accepted900={0} rejected901={1} out900={2} out901={3}" -f $accepted900, $rejected901, $text900, $text901)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] WaitSecs range control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 7 - PORTS-BIND -----------------------------------------
+    # The release gate passes the port list as ONE comma-joined token over the
+    # native `powershell -File` boundary. An [int[]] parameter cannot bind that
+    # token (the round-1 defect: the child died in the parameter binder before
+    # printing any probe line). The string spec + parser must instead reach the
+    # typed missing-exe refusal. Every leg drives the REAL entry path as a child
+    # with a non-existent exe, so nothing is launched; the single-port leg is
+    # the one-variable discriminator, and the non-int leg proves the parser is
+    # real (not a pass-through).
+    Write-Probe 'CONTROL 7 - PORTS-BIND'
+    try {
+      $portMissingExe = Join-Path $selfTmp 'no-such-dir\fredo.exe'
+
+      $outComma = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223,16932,19631') 2>&1
+      $codeComma = $LASTEXITCODE
+      $textComma = if ($outComma -is [array]) { $outComma -join "`n" } else { "$outComma" }
+      $commaBinds = ($codeComma -eq 2) -and
+                    $textComma.Contains('ERROR: missing exe') -and
+                    $textComma.Contains('RESULT=REFUSED') -and
+                    (-not $textComma.Contains('Cannot convert value')) -and
+                    (-not $textComma.Contains('ParameterArgumentTransformationError')) -and
+                    (-not $textComma.Contains('must name at least one TCP port'))
+
+      $outSingle = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223') 2>&1
+      $codeSingle = $LASTEXITCODE
+      $textSingle = if ($outSingle -is [array]) { $outSingle -join "`n" } else { "$outSingle" }
+      $singleBinds = ($codeSingle -eq 2) -and $textSingle.Contains('ERROR: missing exe')
+
+      $outSemi = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223;16932') 2>&1
+      $codeSemi = $LASTEXITCODE
+      $textSemi = if ($outSemi -is [array]) { $outSemi -join "`n" } else { "$outSemi" }
+      $semiBinds = ($codeSemi -eq 2) -and $textSemi.Contains('ERROR: missing exe')
+
+      $outSpace = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223 16932') 2>&1
+      $codeSpace = $LASTEXITCODE
+      $textSpace = if ($outSpace -is [array]) { $outSpace -join "`n" } else { "$outSpace" }
+      $spaceBinds = ($codeSpace -eq 2) -and $textSpace.Contains('ERROR: missing exe')
+
+      $outBad = & powershell -NoProfile -File $selfPath @('-Exe', $portMissingExe, '-Ports', '9223,x') 2>&1
+      $codeBad = $LASTEXITCODE
+      $textBad = if ($outBad -is [array]) { $outBad -join "`n" } else { "$outBad" }
+      $badRejected = ($codeBad -eq 2) -and
+                     $textBad.Contains('ERROR: port is not an integer: x') -and
+                     $textBad.Contains('RESULT=REFUSED')
+
+      if ($commaBinds -and $singleBinds -and $semiBinds -and $spaceBinds -and $badRejected) {
+        Write-Probe '  [PASS] -Ports 9223,16932,19631 binds (single-port control + ; and whitespace separators + non-int refusal)'
+      } else {
+        Write-Probe ("  [FAIL] comma={0} single={1} semicolon={2} space={3} badToken={4}" -f $commaBinds, $singleBinds, $semiBinds, $spaceBinds, $badRejected)
+        Write-Probe ("    comma exit={0} text={1}" -f $codeComma, $textComma)
+        Write-Probe ("    bad exit={0} text={1}" -f $codeBad, $textBad)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] ports-bind control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 8 - DETACHED-EXIT-CODE --------------------------------
+    # The ONE exit-code seam (A1): a child is launched through the SAME primitive
+    # the GUI uses, `cmd /c exit 42` exits, and the non-blocking handle read must
+    # return the SIGNED exit code -- never a Process object re-opened by PID.
+    Write-Probe 'CONTROL 8 - DETACHED-EXIT-CODE'
+    try {
+      $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+      $exitChildPid = 0
+      $detachedExit = $null
+      $detachedStatus = 'unreadable'
+      $exitChildPid = Start-DetachedProcess -FilePath $cmdExe -ArgumentString '/c exit 42' -WorkingDirectory '' -StdOutPath '' -StdErrPath ''
+      $exitDeadline = (Get-Date).AddSeconds(15)
+      while ((Get-Date) -lt $exitDeadline) {
+        $exitProbe = Get-DetachedChildExitCode -ProcessId $exitChildPid
+        $detachedStatus = $exitProbe.Status
+        if ($exitProbe.Status -eq 'observed') { $detachedExit = $exitProbe.Code; break }
+        if ($exitProbe.Status -eq 'unreadable') { break }
+        Start-Sleep -Milliseconds 100
+      }
+      Write-Probe "DETACHED_CHILD_EXIT=$detachedExit"
+      Write-Probe "DETACHED_CHILD_EXIT_STATUS=$detachedStatus"
+      if ($detachedStatus -eq 'observed' -and $detachedExit -eq 42) {
+        Write-Probe '  [PASS] the retained handle returns the signed exit code 42'
+      } else {
+        Write-Probe ("  [FAIL] status={0} exit={1} (expected observed 42)" -f $detachedStatus, $detachedExit)
+        $controlFailures++
+      }
+      if ($exitChildPid -gt 0) { Close-DetachedChild -ProcessId $exitChildPid }
+    } catch {
+      Write-Probe ("  [FAIL] detached exit-code control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 9 - HOOK-TRANSCRIPT-SURFACED --------------------------
+    # Stream B regression pin. Invoke-WindowHook's return value IS the output
+    # stream the live caller captures ($hookResult = Invoke-WindowHook ...), so a
+    # pipeline write inside that function folds every hook line into $hookResult
+    # and the driver never sees CHECK / BOOT_SETTLE / DB_EFFECTIVE_DIR /
+    # WINDOW_HOOK_*. This is a SOURCE invariant (the CONTROL 3 pattern): read the
+    # function's own slice and require it to emit to the process console, with
+    # zero pipeline writes. It needs no artifact and launches nothing.
+    Write-Probe 'CONTROL 9 - HOOK-TRANSCRIPT-SURFACED'
+    $hookSource = $selfSource
+    if ([string]::IsNullOrWhiteSpace($hookSource) -and (Test-Path -LiteralPath $selfPath)) {
+      $hookSource = [System.IO.File]::ReadAllText($selfPath)
+    }
+    $hookFnText = ''
+    if (-not [string]::IsNullOrWhiteSpace($hookSource)) {
+      $hookFnMatch = [regex]::Match($hookSource, '(?ms)^function Invoke-WindowHook\b.*?^\}')
+      if ($hookFnMatch.Success) { $hookFnText = $hookFnMatch.Value }
+    }
+    $hookHasConsoleWrite = $hookFnText.Contains('[Console]::Out.WriteLine')
+    $hookHasProbeWrite = $hookFnText.Contains('Write-Probe')
+    $hookHasOutputWrite = $hookFnText.Contains('Write-Output')
+    Write-Probe ("  Invoke-WindowHook slice chars={0}; console-write={1}; pipeline-write={2}/{3}" -f $hookFnText.Length, $hookHasConsoleWrite, $hookHasProbeWrite, $hookHasOutputWrite)
+    if ($hookFnText.Length -eq 0) {
+      Write-Probe '  [FAIL] could not locate the function Invoke-WindowHook slice in the source'
+      $controlFailures++
+    } elseif (-not $hookHasConsoleWrite) {
+      Write-Probe '  [FAIL] Invoke-WindowHook never emits to the process console (its transcript would fold into the return value)'
+      $controlFailures++
+    } elseif ($hookHasProbeWrite -or $hookHasOutputWrite) {
+      Write-Probe '  [FAIL] Invoke-WindowHook still writes through the pipeline (Write-Probe/Write-Output)'
+      $controlFailures++
+    } else {
+      Write-Probe '  [PASS] Invoke-WindowHook emits its transcript to the process console and never through the pipeline'
     }
   } finally {
     if ($detachChildPid -gt 0) {
@@ -990,10 +1271,28 @@ if ($ProbeOnly) {
       exit 2
     }
   }
+
+  # The DevTools port must be free BEFORE the launch, so a lingering webview from
+  # a previous run can never be read as this artifact's CDP endpoint.
+  if ($CdpPort -ne 0) {
+    $cdpOpen = Test-TcpPortOpen -Port $CdpPort
+    Write-Probe ("PRECHECK_CDP_PORT_{0}={1}" -f $CdpPort, $(if ($cdpOpen) { 'open' } else { 'closed' }))
+    if ($cdpOpen) {
+      Write-Probe "ERROR=CDP_PORT_IN_USE port=$CdpPort"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+  }
 }
 
 # ---- Environment --------------------------------------------------------------
 if (-not $ProbeOnly) { $env:FREDO_MCP_BASE_PORT = "$McpPort" }
+if ($CdpPort -ne 0) {
+  # The detachment helper passes lpEnvironment = NULL, so the launched child
+  # inherits this variable and WebView2 opens its DevTools endpoint on the port.
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort"
+  Write-Probe "CDP_PORT=$CdpPort"
+}
 if ($SanitizePath) {
   # Applied BEFORE the launch so the child inherits it; the child CLI legs below
   # inherit it too.
@@ -1018,7 +1317,61 @@ if (-not [string]::IsNullOrWhiteSpace($env:FREDO_DATA_DIR)) {
 } else {
   $appDataDir = ''
 }
+
+# ---- Profile seams (DB / WebView2 / OTLP) ------------------------------------
+# The gate drives a RELEASE profile. Point the product's own override knobs at
+# the run's -DataDir so the cluster, its lock and the WebView2 user data are all
+# inside the profile teardown owns (and the dirty seed at
+# <DataDir>\postgres\cluster\start.log is exactly <FREDO_PG_DATA_DIR>\start.log).
+# The seams apply only when a data dir is supplied; without one the caller is
+# using the real profile and this probe must not create anything in it.
+$pgDataDir = ''
+$pgLockDir = ''
+$webview2Dir = ''
+if (-not [string]::IsNullOrWhiteSpace($env:FREDO_DATA_DIR)) {
+  $profileBase = $env:FREDO_DATA_DIR
+  $pgDataDir = Join-Path (Join-Path $profileBase 'postgres') 'cluster'
+  $pgLockDir = Join-Path $profileBase 'pg-lock'
+  $webview2Dir = Join-Path $profileBase 'webview2'
+  try {
+    New-Item -ItemType Directory -Path $pgDataDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $pgLockDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $webview2Dir -Force | Out-Null
+  } catch {
+    Write-Probe "ERROR: cannot create the profile dirs under ${profileBase}: $($_.Exception.Message)"
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+  $env:FREDO_PG_DATA_DIR = $pgDataDir
+  $env:FREDO_PG_LOCK_DIR = $pgLockDir
+  $env:WEBVIEW2_USER_DATA_FOLDER = $webview2Dir
+}
+
+# Deterministic, FREE OTLP ingest ports, so the launched profile owns them for
+# this run and can never collide with a live dev instance or a prior run.
+$otlpGrpcPort = 0
+$otlpHttpPort = 0
+$otlpOk = $false
+for ($attempt = 0; $attempt -lt 8; $attempt++) {
+  $otlpGrpcPort = Get-FreeTcpPort
+  $otlpHttpPort = Get-FreeTcpPort
+  if ($otlpGrpcPort -gt 0 -and $otlpHttpPort -gt 0 -and $otlpGrpcPort -ne $otlpHttpPort) {
+    $otlpOk = $true
+    break
+  }
+}
+if (-not $otlpOk) {
+  Write-Probe 'ERROR=OTLP_PORTS_UNAVAILABLE'
+  Write-Probe 'RESULT=REFUSED'
+  exit 2
+}
+$env:FREDO_INGEST_GRPC_PORT = "$otlpGrpcPort"
+$env:FREDO_INGEST_HTTP_PORT = "$otlpHttpPort"
+
 Write-Probe "APP_DATA_DIR=$appDataDir"
+Write-Probe "PG_DATA_DIR=$pgDataDir"
+Write-Probe "WEBVIEW2_USER_DATA_DIR=$webview2Dir"
+Write-Probe "OTLP_PORTS=$otlpGrpcPort,$otlpHttpPort"
 
 # ---- -ProbeOnly: the CLI legs alone, no bounded window -----------------------
 # Same leg implementation as the combined run, minus the launch/port/bridge/
@@ -1048,9 +1401,11 @@ $beforePg = Get-PostgresPids
 
 # ---- Launch + bounded observation --------------------------------------------
 $p = $null
+$launchPid = 0
 $launchError = $null
 $appExited = $false
 $appExitCode = $null
+$exitCodeStatus = 'not-exited'
 $elapsedSeconds = 0.0
 $portState = @{}
 $bridgeHits = 0
@@ -1059,6 +1414,7 @@ $descendants = @()
 $targetPg = @()
 $descendantsKilled = 0
 $postgresKilled = 0
+$windowHookFailure = ''
 
 try {
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1075,6 +1431,16 @@ try {
   }
   Write-Probe "PID=$($p.Id)"
 
+  # -CdpProbe: run the hook INSIDE the launch window, while the app is still
+  # running. A non-zero exit or a timeout becomes a FAILURE= line in the report.
+  if (-not [string]::IsNullOrWhiteSpace($CdpProbe)) {
+    Write-Phase 'window-hook'
+    $hookResult = Invoke-WindowHook -HookPath $CdpProbe -ExePath $exePath -CdpPort $CdpPort -DataDir $appDataDir -ProbeLogDir $LogDir -WindowSecs $WaitSecs -Assertions $gateAssertions -PgDataDir $pgDataDir -DbReadySecs $DbReadySecs -BootSettleSecs $BootSettleSecs
+    if (-not [string]::IsNullOrWhiteSpace($hookResult.FailureName)) {
+      $windowHookFailure = $hookResult.FailureName
+    }
+  }
+
   $deadline = (Get-Date).AddSeconds($WaitSecs)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
@@ -1084,7 +1450,17 @@ try {
     }
   }
   $elapsedSeconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
-  if ($appExited) { $appExitCode = $p.ExitCode }
+  if ($appExited) {
+    # The ONE exit-code read: the retained launch handle (A1). A re-opened
+    # Process object cannot read ExitCode after the detached child exits here.
+    $exitProbe = Get-DetachedChildExitCode -ProcessId $launchPid
+    if ($exitProbe.Status -eq 'observed') {
+      $appExitCode = [int]$exitProbe.Code
+      $exitCodeStatus = 'observed'
+    } else {
+      $exitCodeStatus = 'unreadable'
+    }
+  }
 
   foreach ($port in $probePorts) {
     $portState[$port] = Test-TcpPortOpen -Port $port
@@ -1150,6 +1526,12 @@ try {
     while (-not $p.HasExited -and (Get-Date) -lt $exitDeadline) {
       Start-Sleep -Milliseconds 200
     }
+
+    # 4) Release the retained launch handle (A1). Done LAST so the exit-code read
+    #    during the window used the handle, not a re-opened Process object.
+    if ($launchPid -gt 0) {
+      try { Close-DetachedChild -ProcessId $launchPid } catch {}
+    }
   }
 }
 
@@ -1189,6 +1571,7 @@ if ($appAlive) { $orphans++ }
 $failures = New-Object System.Collections.ArrayList
 if ($null -ne $launchError) { [void]$failures.Add("probe-error: $launchError") }
 if ($appExited) { [void]$failures.Add('app-exited') }
+if (-not [string]::IsNullOrWhiteSpace($windowHookFailure)) { [void]$failures.Add($windowHookFailure) }
 
 # ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
 # ONE implementation (Invoke-CliLegs), shared with -ProbeOnly, so the VERSION_* /
@@ -1209,6 +1592,7 @@ if ($RequireClosed) {
 Write-Phase 'report'
 Write-Probe "ELAPSED_SECONDS=$elapsedSeconds"
 Write-Probe "HAS_EXITED=$appExited"
+Write-Probe "EXIT_CODE_STATUS=$exitCodeStatus"
 if ($null -ne $appExitCode) { Write-Probe "EXIT_CODE=$appExitCode" }
 foreach ($port in $probePorts) {
   Write-Probe ("PORT_{0}={1}" -f $port, $(if ($portState[$port]) { 'open' } else { 'closed' }))

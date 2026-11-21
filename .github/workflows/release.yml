@@ -6,15 +6,25 @@
 # Every `uses:` action is SHA-pinned (NFR-2 / repo convention).
 #
 # ORDER (Spec #3158 ST-4, AC5 - the artifact gate must fail closed BEFORE a draft
-# can exist):
+# can exist; Spec #3181 ST-5/ST-8 extends it with the live artifact gate):
 #   0. read the version from tauri.conf.json
 #   1. BUILD ONLY - tauri-apps/tauri-action carries no release input, so it makes
 #      no release API call and publishes nothing
 #   2. LOCATE the produced NSIS installer from the action's artifactPaths
 #   3. GATE - verify-installer-payload.ps1 asserts the engine payload is INSIDE
 #      the produced installer (a build log is never a substitute)
-#   4. PUBLISH - the workflow's ONLY publish step: `gh release create --draft`,
-#      gated `if: success()` AFTER the payload gate
+#   3d. STAGE the companion model trio (Spec #3181 ST-8) - cached on MODEL_REVISION
+#      and the three manifest file names, downloaded on a miss from the pinned
+#      HuggingFace URLs. The models are NEVER shipped in the installer; the
+#      artifact gate's companion clause needs them on the runner.
+#   3e. GATE THE ARTIFACT (Spec #3181 ST-5) - the live release-artifact gate runs
+#      against the PRODUCED installer (`steps.locate.outputs.installer`): launch,
+#      styling/CSP, database, companion turn, MCP-port closure, evidence.
+#   3f. NEGATIVE CONTROLS (Spec #3181 ST-5) - the three fail-closed negative legs
+#      (MissingDll, Csp, Database) prove the gate's controls FIRE.
+#   3g. EVIDENCE (if: always()) - upload the release-gate tree, red runs included.
+#   4. PUBLISH - the workflow's ONLY publish step, gated `if: success()` AFTER
+#      every gate above (no other step in this file publishes anything)
 #   5. CLEANUP - if the draft step itself failed, delete a leftover draft for the
 #      tag so a half-published release cannot linger
 name: Release
@@ -271,6 +281,289 @@ jobs:
             exit 1
           }
           Write-Host 'PAYLOAD_GATE=PASS'
+
+      # 3d. COMPANION MODEL SET (Spec #3181 ST-8). The live artifact gate's
+      #     companion clause (REQ-2.5) drives one turn through the produced app,
+      #     so the pinned model trio must exist on the RUNNER. It is never added
+      #     to the installer/payload (bundle.resources stays engine-payload only),
+      #     and CI never drives the artifact's own downloader (that would test the
+      #     downloader, not the artifact).
+      #
+      #     The cache key is derived from the SINGLE source of truth in
+      #     apps/tauri/src-tauri/src/infrastructure/companion/models.rs:
+      #     MODEL_REVISION (`:43`) plus the three manifest file names (`:124-162`).
+      #     A revision OR name-set change therefore always misses the cache.
+      - name: Derive companion model cache key
+        id: model-key
+        shell: pwsh
+        env:
+          MODELS_RS: apps/tauri/src-tauri/src/infrastructure/companion/models.rs
+          MODEL_SET_JSON: .opencode/tmp/release-gate/ci/model-set.json
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path -LiteralPath $env:MODELS_RS -PathType Leaf)) {
+            Write-Host "::error::MODEL_CACHE_KEY_DERIVE_FAILED reason=models-rs-missing path=$($env:MODELS_RS)"
+            exit 1
+          }
+          $text = Get-Content -LiteralPath $env:MODELS_RS -Raw
+
+          $revisionMatch = [regex]::Match($text, 'MODEL_REVISION:\s*&str\s*=\s*"([^"]+)"')
+          $subdirMatch = [regex]::Match($text, 'MODEL_SUBDIR:\s*&str\s*=\s*"([^"]+)"')
+          $paths = @([regex]::Matches($text, 'path:\s*"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+          $bytes = @([regex]::Matches($text, 'expected_bytes:\s*([0-9_]+)') | ForEach-Object { $_.Groups[1].Value })
+          $urls = @([regex]::Matches($text, 'https://[^"\s]+') | ForEach-Object { $_.Value })
+          if (-not $revisionMatch.Success -or -not $subdirMatch.Success) {
+            Write-Host '::error::MODEL_CACHE_KEY_DERIVE_FAILED reason=revision-or-subdir-not-found'
+            exit 1
+          }
+          if ($paths.Count -ne 3 -or $bytes.Count -ne 3 -or $urls.Count -ne 3) {
+            Write-Host "::error::MODEL_CACHE_KEY_DERIVE_FAILED reason=expected-3-entries paths=$($paths.Count) bytes=$($bytes.Count) urls=$($urls.Count)"
+            exit 1
+          }
+          $revision = $revisionMatch.Groups[1].Value
+          $subdir = $subdirMatch.Groups[1].Value
+          $resolvedUrls = @($urls | ForEach-Object { $_.Replace('{MODEL_REVISION}', $revision) })
+          $entryBytes = @($bytes | ForEach-Object { [int64]($_ -replace '_', '') })
+
+          $files = New-Object System.Collections.ArrayList
+          for ($index = 0; $index -lt 3; $index++) {
+            $relativePath = $paths[$index].Replace('/', [System.IO.Path]::DirectorySeparatorChar.ToString())
+            [void]$files.Add([ordered]@{
+              id = @('model', 'vision', 'mtp')[$index]
+              name = [System.IO.Path]::GetFileName($paths[$index])
+              path = $relativePath
+              url = $resolvedUrls[$index]
+              bytes = [int64]$entryBytes[$index]
+            })
+          }
+
+          # Cache key: revision + a digest of the three manifest file NAMES.
+          $names = @($files | ForEach-Object { $_.name })
+          $namesText = ($names -join "`n")
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          try {
+            $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($namesText))
+          } finally {
+            $sha.Dispose()
+          }
+          $builder = New-Object System.Text.StringBuilder
+          foreach ($byte in $hash) { [void]$builder.Append($byte.ToString('x2')) }
+          $namesHash = $builder.ToString()
+
+          $modelsRoot = Join-Path ([string]$env:USERPROFILE) 'fredo-models'
+          $modelDir = Join-Path $modelsRoot $subdir
+          $jsonDir = Split-Path -Parent $env:MODEL_SET_JSON
+          if (-not [string]::IsNullOrWhiteSpace($jsonDir) -and -not (Test-Path -LiteralPath $jsonDir)) {
+            New-Item -ItemType Directory -Path $jsonDir -Force | Out-Null
+          }
+          $payload = [ordered]@{
+            schemaVersion = 1
+            revision = $revision
+            subdir = $subdir
+            modelsRoot = $modelsRoot
+            modelDir = $modelDir
+            namesSha256 = $namesHash
+            files = @($files)
+          }
+          $encoding = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($env:MODEL_SET_JSON, ($payload | ConvertTo-Json -Depth 6), $encoding)
+
+          Write-Host "MODEL_REVISION=$revision"
+          Write-Host "MODEL_NAMES_SHA256=$namesHash"
+          Write-Host "MODEL_DIR=$modelDir"
+          foreach ($file in $files) {
+            Write-Host "MODEL_SET_ENTRY id=$($file.id) name=$($file.name) bytes=$($file.bytes) url=$($file.url)"
+          }
+          "revision=$revision" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "names_sha256=$namesHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "model_dir=$modelDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Restore companion models (cache)
+        id: model-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/fredo-models
+          key: fredo-models-${{ steps.model-key.outputs.revision }}-${{ steps.model-key.outputs.names_sha256 }}
+
+      - name: Provision companion models (download on miss)
+        id: model-provision
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          MODEL_SET_JSON: .opencode/tmp/release-gate/ci/model-set.json
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Invoke-WebRequest's progress rendering costs minutes on a 2.6 GB file.
+          $ProgressPreference = 'SilentlyContinue'
+          $set = Get-Content -LiteralPath $env:MODEL_SET_JSON -Raw | ConvertFrom-Json
+          $failed = @()
+          foreach ($file in @($set.files)) {
+            $target = Join-Path ([string]$set.modelDir) ([string]$file.path)
+            if ((Test-Path -LiteralPath $target -PathType Leaf) -and (Get-Item -LiteralPath $target).Length -gt 0) {
+              Write-Host "MODEL_ALREADY_PRESENT file=$($file.name)"
+              continue
+            }
+            $parent = Split-Path -Parent $target
+            if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+              New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+            $partial = $target + '.partial'
+            $ok = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              Write-Host "MODEL_DOWNLOAD file=$($file.name) attempt=$attempt url=$($file.url)"
+              try {
+                Invoke-WebRequest -UseBasicParsing -Uri ([string]$file.url) -OutFile $partial -TimeoutSec 1800 -ErrorAction Stop
+                if ((Test-Path -LiteralPath $partial -PathType Leaf) -and (Get-Item -LiteralPath $partial).Length -gt 0) {
+                  Move-Item -LiteralPath $partial -Destination $target -Force
+                  $ok = $true
+                  break
+                }
+                Write-Host "MODEL_DOWNLOAD_EMPTY file=$($file.name) attempt=$attempt"
+              } catch {
+                Write-Host "MODEL_DOWNLOAD_ERROR file=$($file.name) attempt=$attempt detail=$($_.Exception.Message)"
+              }
+              if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+            if (-not $ok) { $failed += [string]$file.name }
+          }
+          if ($failed.Count -gt 0) {
+            foreach ($name in $failed) {
+              Write-Host "::error::MODEL_PROVISION_FAILED file=$name"
+            }
+            exit 1
+          }
+          Write-Host 'MODEL_PROVISION=PASS'
+
+      - name: Verify companion model set
+        id: model-verify
+        shell: pwsh
+        env:
+          MODEL_SET_JSON: .opencode/tmp/release-gate/ci/model-set.json
+          MODEL_CACHE_HIT: ${{ steps.model-cache.outputs.cache-hit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $set = Get-Content -LiteralPath $env:MODEL_SET_JSON -Raw | ConvertFrom-Json
+          $total = [int64]0
+          $missing = ''
+          foreach ($file in @($set.files)) {
+            $target = Join-Path ([string]$set.modelDir) ([string]$file.path)
+            if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { $missing = [string]$file.name; break }
+            $length = (Get-Item -LiteralPath $target).Length
+            if ($length -le 0) { $missing = [string]$file.name; break }
+            $total = $total + $length
+            Write-Host "MODEL_FILE name=$($file.name) path=$target bytes=$length expected=$($file.bytes)"
+          }
+          if (-not [string]::IsNullOrWhiteSpace($missing)) {
+            Write-Host "::error::MODEL_PROVISION_VERIFY_FAILED file=$missing"
+            exit 1
+          }
+          $cacheState = 'miss'
+          if ([string]$env:MODEL_CACHE_HIT -eq 'true') { $cacheState = 'hit' }
+          Write-Host "::notice::MODEL_CACHE=$cacheState bytes=$total"
+          Write-Host "MODEL_SET=PASS files=$(@($set.files).Count) bytes=$total"
+
+      # 3e. GATE THE PRODUCED INSTALLER (Spec #3181 ST-5, AC1/AC2/AC5). This is
+      #     the artifact gate itself: it launches the produced installer's app and
+      #     asserts styling/CSP, the PostgreSQL profile, one companion turn, MCP
+      #     port closure and the evidence set. A non-zero exit fails the job, so
+      #     the draft step below (if: success()) is skipped and NO draft release
+      #     and NO uploaded asset can exist (REQ-1.3).
+      - name: Gate the produced installer (live assertions)
+        id: artifact-gate
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.locate.outputs.installer }}
+          OUT_DIR: .opencode/tmp/release-gate/ci
+          CDP_PORT: '9333'
+          WAIT_SECS: '300'
+          DB_READY_SECS: '180'
+          COMPANION_SECS: '600'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:INSTALLER)) {
+            Write-Host '::error::RELEASE_GATE_FAILED exit=1'
+            exit 1
+          }
+          Write-Host "GATE_INSTALLER=$env:INSTALLER OUT_DIR=$env:OUT_DIR CDP_PORT=$env:CDP_PORT"
+          $cdpPort = [int]$env:CDP_PORT
+          $waitSecs = [int]$env:WAIT_SECS
+          $dbReadySecs = [int]$env:DB_READY_SECS
+          $companionSecs = [int]$env:COMPANION_SECS
+          & powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 `
+              -Installer $env:INSTALLER -Mode gate -OutDir $env:OUT_DIR `
+              -CdpPort $cdpPort -WaitSecs $waitSecs `
+              -DbReadySecs $dbReadySecs -CompanionSecs $companionSecs
+          $code = $LASTEXITCODE
+          if ($code -eq 0) {
+            Write-Host 'RELEASE_GATE=PASS'
+            exit 0
+          }
+          Write-Host "::error::RELEASE_GATE_FAILED exit=$code"
+          exit $code
+
+      # 3f. NEGATIVE CONTROLS (Spec #3181 ST-5, AC3/REQ-3.5). AC3 promises the
+      #     gate's controls FIRE, so the release job EXECUTES all three fail-closed
+      #     demonstrations on the runner. Each leg is `-SkipCompanion` (they never
+      #     need the model set, so a cache miss cannot make them vacuous). They run
+      #     BEFORE the draft step; any non-reproduction fails the job.
+      - name: Negative-control legs (fail-closed demonstrations)
+        id: negative-controls
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.locate.outputs.installer }}
+          OUT_DIR: .opencode/tmp/release-gate/ci
+          CDP_PORT: '9333'
+          WAIT_SECS: '300'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # The three legs share the canonical OUT_DIR, so preserve the gate's own
+          # receipt before a leg can rewrite the root receipt.json - the uploaded
+          # evidence must still carry the canonical verdict.
+          $canonical = Join-Path $env:OUT_DIR 'receipt.json'
+          if (Test-Path -LiteralPath $canonical -PathType Leaf) {
+            Copy-Item -LiteralPath $canonical -Destination (Join-Path $env:OUT_DIR 'receipt-gate.json') -Force
+          }
+          $failed = 0
+          $cdpPort = [int]$env:CDP_PORT
+          $waitSecs = [int]$env:WAIT_SECS
+
+          & powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer $env:INSTALLER -Mode negative -Negative MissingDll -SkipCompanion -OutDir $env:OUT_DIR -CdpPort $cdpPort -WaitSecs $waitSecs
+          $missingDllExit = $LASTEXITCODE
+          if ($missingDllExit -ne 0) {
+            Write-Host "::error::NEGATIVE_CONTROL_FAILED leg=MissingDll exit=$missingDllExit"
+            $failed = 1
+          }
+
+          & powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer $env:INSTALLER -Mode negative -Negative Csp -SkipCompanion -OutDir $env:OUT_DIR -CdpPort $cdpPort -WaitSecs $waitSecs
+          $cspExit = $LASTEXITCODE
+          if ($cspExit -ne 0) {
+            Write-Host "::error::NEGATIVE_CONTROL_FAILED leg=Csp exit=$cspExit"
+            $failed = 1
+          }
+
+          & powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -Installer $env:INSTALLER -Mode negative -Negative Database -SkipCompanion -OutDir $env:OUT_DIR -CdpPort $cdpPort -WaitSecs $waitSecs
+          $databaseExit = $LASTEXITCODE
+          if ($databaseExit -ne 0) {
+            Write-Host "::error::NEGATIVE_CONTROL_FAILED leg=Database exit=$databaseExit"
+            $failed = 1
+          }
+
+          if ($failed -ne 0) { exit 1 }
+          Write-Host 'NEGATIVE_CONTROLS=PASS'
+
+      # 3g. EVIDENCE (Spec #3181 REQ-1.4). `if: always()` so a RED run still ships
+      #     gate.log, receipt.json, the extraction tree, the per-run CDP readings,
+      #     the screenshots and the negative-leg evidence. SHA-pinned like every
+      #     other `uses:` in this file.
+      - name: Upload release-gate evidence
+        id: evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-gate-evidence
+          path: .opencode/tmp/release-gate
+          if-no-files-found: warn
 
       # 4. PUBLISH - the workflow's ONLY publish step, AFTER the gate passed. It
       #    creates a DRAFT (never public: no --auto, no publish) so the owner

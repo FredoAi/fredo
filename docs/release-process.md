@@ -66,7 +66,10 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   (LunarG Vulkan SDK, **`cache: false` + `install_runtime: true`**) → `pnpm install
   --frozen-lockfile` → read `version` from `tauri.conf.json` → `tauri-apps/tauri-action@v1`
   (**build only**) → locate the produced `*-setup.exe` → `verify-installer-payload.ps1`
-  (**payload gate**) → `gh release create … --draft` (the only publish step) → draft cleanup.
+  (**payload gate**) → companion-model restore/provision/verify → `gate-release-artifact.ps1`
+  (**artifact gate**, live assertions against the produced installer) → negative-control legs
+  (MissingDll / Csp / Database) → upload release-gate evidence (`if: always()`) →
+  `gh release create … --draft` (the only publish step) → draft cleanup.
   `cache: false` is load-bearing: the action's SDK cache holds the SDK tree only, so on a cache
   hit it skips the install path entirely and `install_runtime` never runs — leaving no
   `vulkan-1.dll` for the staged payload.
@@ -96,6 +99,24 @@ performing the owner-manual steps — if any differ, stop and reconcile rather t
   A gate failure leaves **no draft and no uploaded asset**. Nothing is public until the owner
   publishes the draft; do **not** remove `--draft` (that would auto-publish and bypass owner
   review).
+- **The release-artifact gate decides whether a draft may exist.** After the payload gate, the job
+  restores the companion-model set (cached on `MODEL_REVISION`; a cold cache downloads the three
+  pinned files with bounded retry, and a verify step fails closed with
+  `::error::MODEL_PROVISION_FAILED` / `::error::MODEL_PROVISION_VERIFY_FAILED` **before** the gate
+  runs), then runs `.opencode/scripts/gate-release-artifact.ps1` against the installer the job just
+  produced (`steps.locate.outputs.installer`), followed by the three fail-closed negative legs
+  (`-Mode negative -Negative MissingDll|Csp|Database -SkipCompanion`). The gate asserts extraction
+  without elevation, launch survival, a styled UI with zero CSP violations, first-run DB readiness
+  on a **fresh** and a **pre-dirtied** profile, one companion turn answered through the app, a
+  closed MCP bridge, and a complete evidence set — emitting **one** verdict and **one**
+  `receipt.json`. Its evidence PNG is a **viewport-only capture of the app's resting first paint
+  (the launcher shell)**, not a desktop screenshot. Any non-zero gate exit prints
+  `::error::RELEASE_GATE_FAILED exit=<n>` and fails the job; because the draft step is
+  `if: success()`, **a gate failure leaves no draft release and no uploaded asset**. The evidence
+  directory is uploaded with `if: always()`, so a red run still ships its logs, receipt and
+  screenshot. The model trio is a **provisioned CI input only** — it is never added to the installer
+  payload. A missing model set is a named refusal (`MODEL_SET_MISSING:<file>`, exit 2), never a
+  silent skip of the companion clause.
 - **Every `uses:` action is SHA-pinned** (e.g. `actions/checkout@11bd71... # v4.2.2`,
   `tauri-apps/tauri-action@1deb37... # v1`) per the repo convention (NFR-2). `pnpm install
   --frozen-lockfile` + the committed `Cargo.lock` make the build reproducible from the branch tip.
@@ -284,9 +305,12 @@ or publishes.**
    requires a PR, there is no direct-merge path; the merge itself is the PR merge.)
 5. **`release.yml` fires on the merge push.** The push to `release/stable` triggers `Release`, which
    runs the Windows-only matrix, builds the Windows installer, locates the produced `*-setup.exe`,
-   and runs `verify-installer-payload.ps1` on it. Only after that gate passes does the draft step
+   runs `verify-installer-payload.ps1` on it, restores/provisions the companion-model set, then runs
+   `gate-release-artifact.ps1` against that installer (plus the three negative-control legs). Only
+   after the payload gate **and** the release-artifact gate pass does the draft step
    `gh release create app-v0.2.2 Fredo_0.2.2_x64-setup.exe --draft` upload it to a **DRAFT** GitHub
-   Release at the branch tip.
+   Release at the branch tip — a failure at either gate fails the job and leaves **no draft and no
+   asset**.
 6. **The owner reviews the DRAFT and publishes it.** Open the draft under `Releases`, confirm the
    artifact (the Windows NSIS `.exe` installer), then **Publish**. Users only download
    deliberately-reviewed artifacts because nothing is public before this step.
