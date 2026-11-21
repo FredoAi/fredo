@@ -17,6 +17,15 @@
 > (R-4 payload-gate ordering, R-8 control counts), `release-pipeline/regression.md` (R-3/R-4
 > trigger + draft contract), `webview-security-boundary/functional.md` F-5 (release bridge closed),
 > `ci-pipeline/regression.md` (the `validate` merge gate).
+>
+> **Round-1 dependency (binding).** The three negative legs
+> (`.opencode/scripts/gate-artifact-negative.psm1:980,1020,1060`) invoke the probe with the
+> driver's port list, so the **port-array contract (`functional.md` F-28) is a precondition for
+> `F-14`/`F-15`/`F-16`**: if `-Ports 9223,16932,19631` does not bind, every negative leg fails at
+> child start (round 1: `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`) and the AC3 rows are
+> untestable. Any change to `-Ports`' accepted form must keep R-6 green **and** re-run F-28; a
+> negative leg that cannot run its instrument must classify as `NEGATIVE_INSTRUMENT_FAILURE`
+> (`functional.md` F-29), never as a wrong/absent observation.
 
 ## R-1 — The payload gate is untouched and still runs FIRST
 
@@ -93,11 +102,16 @@
     source still carries `Start-DetachedProcess` as the only GUI launch,
     `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`;
     `-CdpPort`/`-CdpProbe` are **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath`
-    semantics are unchanged.
+    semantics are unchanged; **`-Ports` still accepts the driver's three-port list** and the probe's
+    own self-test covers the port-binding form (`functional.md` F-28) — the round-1 fix must not
+    regress it.
   - **Edge:** a second spawn path for the app (a `Start-Process`/`Process::Start` outside the
     primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); the hand-off of
     stdin/stdout/stderr no longer whitelisted ⇒ **FAIL**; `-CdpPort` sharing a probed bridge port
-    (`9223`/`16932`/`19631`) ⇒ **FAIL**.
+    (`9223`/`16932`/`19631`) ⇒ **FAIL**; the three negative legs' probe invocation
+    (`gate-artifact-negative.psm1:980,1020,1060`) drifting from the driver's port form, or a leg
+    falling back to a single-port invocation → **FAIL** (the other two ports would go unprobed —
+    `functional.md` F-28's edge, F-12's three `PORT_` lines).
 
 ## R-7 — The webview-security-evidence skill's pinned tokens stay green
 

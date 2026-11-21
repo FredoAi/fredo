@@ -37,6 +37,15 @@
 >
 > **Serving state:** the spec branch tip at the round's tested head SHA. Record `git rev-parse HEAD`
 > with the evidence.
+>
+> **Round-1 coverage rows.** `F-28` (launch-seam port contract) and `F-29` (negative-leg instrument
+> classification) were added from the round-1 tester verdict (`## Tests Runs`, round 1): the driver
+> passed the probe ports as **one comma-joined string** to `[int[]]$Ports`
+> (`launch-artifact-probe.ps1:236`), so every launch child exited 1 before the app ran, and the three
+> negative legs misclassified that as `NEGATIVE_NOT_REPRODUCED` / `NEGATIVE_WRONG_ERROR`. They bind
+> the Architect's round-1 fix plan and **add** coverage — no existing row, literal or binding name
+> changes. `F-27` is likewise re-scoped below to **content** mutation (the round-1 red was a stat-only
+> build touch of `apps/tauri/src-tauri/Cargo.toml`, `git diff` empty, identical blob).
 
 ## Constants (re-derived from the shipped tree — do not substitute)
 
@@ -438,13 +447,80 @@
     ⇒ **FAIL** (the harness must be offline-capable).
   - **Evidence:** POSTED `## Tests Runs` quotes the zero-hit search + the file list.
 
-- [ ] **F-27 (NF-repo hygiene: nothing mutated outside `-OutDir`).**
-  `RC("git status --porcelain")` before and after the runs.
-  - **Expected:** empty both times — all run artifacts live under the gitignored
-    `.opencode/tmp/release-gate/`.
-  - **Edge:** any modified tracked file (especially under `apps/` or `.github/`) ⇒ **FAIL**; an
-    untracked non-gitignored file ⇒ **FAIL** (record the path).
-  - **Evidence:** POSTED `## Tests Runs` quotes both empty `git status --porcelain` results.
+- [ ] **F-27 (NF-repo hygiene: the harness must not mutate repo CONTENT).**
+  Before and after **each** harness invocation (canonical, manual, the three negative legs, the red
+  run, the CSP-revert gate): `RC("git diff --exit-code")` and `RC("git diff --cached --exit-code")`;
+  plus `RC("git status --porcelain=v2")` recorded verbatim.
+  - **Expected:** both `git diff` calls print `EXITCODE=0` before and after every run — no tracked
+    file's **content** changes, staged or unstaged; the `--porcelain=v2` listing contains no entry
+    whose `hH` (HEAD/index) and `hI` (worktree) blob hashes differ; every untracked path sits under
+    the gitignored `.opencode/tmp/`; the harness's artifacts all live under `-OutDir`.
+  - **Edge (disclose — do NOT FAIL):** the release **build** stat-touches
+    `apps/tauri/src-tauri/Cargo.toml`, so `--porcelain=v2` may show ` M` while `git diff --exit-code`
+    is `0` and `hH == hI` (round 1 observed `1d98bdb5…` on both sides). Record
+    `STAT_ONLY_TOUCH=apps/tauri/src-tauri/Cargo.toml hH=hI=<sha>` and keep the row **PASS** — that is a
+    build-filesystem artifact, not harness mutation. **FAIL** if the blob hash changes or
+    `git diff --exit-code` is non-zero (content rewritten), on any tracked file whose content changes,
+    or on an untracked non-gitignored path (record it). A row that reds on a stat-only touch is the
+    plan defect this re-scope fixes.
+  - **Evidence:** POSTED `## Tests Runs` quotes both before/after `EXITCODE=0` diff results, the
+    `--porcelain=v2` listing, and the `STAT_ONLY_TOUCH=` disclosure when present.
+
+- [ ] **F-28 (launch seam — the driver's port list must BIND on `-Ports`; the round-1 defect).**
+  Three legs; (a)/(b) need **no installer, no GUI, no build** — run them first.
+  - **(a) positive control, single int:**
+    `RC("powershell -NoProfile -File .opencode/scripts/launch-artifact-probe.ps1 -Exe 'C:\nonexistent\fredo.exe' -Ports 9223")`
+    ⇒ `RESULT=REFUSED` and `EXITCODE=2` (the missing-exe typed refusal).
+  - **(b) the driver's real list form, same exe:**
+    `RC("powershell -NoProfile -File .opencode/scripts/launch-artifact-probe.ps1 -Exe 'C:\nonexistent\fredo.exe' -Ports 9223,16932,19631")`
+    ⇒ the **same** typed refusal: `RESULT=REFUSED`, `EXITCODE=2`.
+  - **(c) the driver path:** on the canonical `-Mode gate` run (F-1), `gate.log` carries **no**
+    `ParameterArgumentTransformationError`, **no** `Cannot convert value`, **no**
+    `Cannot convert value … System.Int32[]`; every `CHILD launch-*` line is followed by probe output
+    (`HAS_EXITED=` / `PORT_9223=`), and the three negative legs' children likewise.
+  - **Expected:** (a) and (b) both bind and refuse with exit 2 — a binder-class failure
+    (`EXITCODE=1`, `ParameterArgumentTransformationError`, `Cannot convert value "9223,16932,19631"
+    to type "System.Int32[]"`, no probe output) is a **FAIL** of this row; (c) no binder error
+    anywhere and probe output present for the fresh, dirty and negative children.
+  - **Edge:** a "fix" that drops the list and passes `-Ports 9223` only ⇒ **FAIL** of **F-12** (the
+    other two ports are never probed) — record which form the driver passes. A wider parameter type
+    (`[string]`/`[string[]]` split by the probe) is acceptable **iff** all three ints are still probed
+    and F-12's three `PORT_` lines appear. Running (b) through `run-exitcode.ps1` is the required
+    form: the defect is exactly the native `-File` argument boundary, so a test that only binds the
+    array in-process does not cover it.
+  - **Why:** 23 `-SelfTest` controls and 178 `test-scripts.ps1` legs were green while this seam was
+    broken, because none invoked the probe with the driver's port list (round-1 verdict).
+
+- [ ] **F-29 (negative-leg instrument classification — an unrunnable instrument is a NAMED
+  INSTRUMENT FAILURE, never `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`).**
+  A negative leg proves a **gate** property only if its instrument ran. Three legs:
+  - **(A) hermetic control:** `RC("powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1 -SelfTest")`
+    ⇒ a control drives a child that cannot start (binder/child-failure class) and asserts
+    `NEGATIVE_INSTRUMENT_FAILURE:<detail>` (the fix plan's binding id; `GATE_REFUSED` is the accepted
+    synonym — record the literal the harness emits) with **no**
+    `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR` in that control's transcript.
+  - **(B) live induction (no GUI):** write a 16-byte non-PE file
+    `.opencode/tmp/release-gate/not-an-installer.exe` from a tmp script, then
+    `RC("… -Mode negative -Negative Database -SkipCompanion -Installer '.opencode\tmp\release-gate\not-an-installer.exe' -OutDir '.opencode\tmp\release-gate\3181-neg-instrument'")`
+    ⇒ non-zero exit with the instrument-failure class (`NEGATIVE_INSTRUMENT_FAILURE:<detail>` /
+    `GATE_REFUSED`), **never** `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`.
+  - **(C) round-1 regression:** the canonical `gate.log` must not classify a child that never ran as
+    an observation — a `CHILD … EXIT=1` carrying a binder/stderr diagnostic must not be followed by
+    `NEGATIVE_LEG_LOAD=survived` (the round-1 misread) or by `NEGATIVE_OBSERVED=none` treated as
+    `NEGATIVE_WRONG_ERROR`.
+  - **Expected:** (A) control `[PASS]` with the id; (B) instrument-failure class + non-zero exit;
+    (C) no misclassification on a child that could not run.
+  - **Edge:** `NEGATIVE_OBSERVED=none` **with** a non-zero `GATE_EXIT` and **no** inner named error is
+    an **instrument failure**, never `NEGATIVE_WRONG_ERROR` (round 1 misclassified exactly this). A
+    leg that silently skips the instrument ⇒ **FAIL** (G-435). A leg that ignores the `-Installer` it
+    was handed and re-derives its artifact from a previous run's OutDir ⇒ **FAIL** (it must not
+    substitute a different artifact); record which artifact it used.
+  - **Owner (G-409):** the round-1 fix plan's item touching
+    `.opencode/scripts/gate-artifact-negative.psm1` — the classification funnel **and** the (A)
+    self-test control are that item's deliverable; the row cannot pass on a harness with no control
+    for the class.
+  - **Evidence:** POSTED quotes (A)'s control line, (B)'s classification lines + `EXITCODE=`, and the
+    canonical child/classification lines from `gate.log`.
 
 ---
 
@@ -457,7 +533,13 @@ it is REQUIRED, so a skip is a FAIL** (G-435)._
 
 ## Ordering (binding)
 
-`build → self-test → canonical → manual → negatives → red → CSP-revert bundle build + gate (LAST)`
+`F-28(a)(b) → build → self-test → canonical → manual → negatives → F-29 → red → CSP-revert bundle build + gate (LAST)`
+
+`F-28(a)/(b)` are probe-only (no installer, no GUI) and run **before** the build so a broken launch
+seam is caught in seconds instead of after a 20-minute bundle. `F-29(B)` is independent (no GUI);
+`F-29(A)` reads `-SelfTest`, `F-29(C)` reads the canonical `gate.log` — so F-29 runs after the
+canonical run and the three negative legs. `F-27`'s `git diff --exit-code` pair brackets **every**
+invocation in the sequence.
 
 The CSP-revert bundle re-bundles over the shared bundle path (G-446): every artifact-identity row
 (F-1…F-22) completes first, the installer of record is copied to
