@@ -4737,7 +4737,8 @@ $scripts = @(
   "gate-release-artifact.ps1",
   "gate-artifact-window.ps1",
   "fredo-cdp.psm1",
-  "gate-artifact-negative.psm1"
+  "gate-artifact-negative.psm1",
+  "detach-process.psm1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -4924,13 +4925,24 @@ Test-Script "gate-release-artifact.ps1: -SelfTest passes all controls" {
   if (-not (Test-Path -LiteralPath $releaseGate)) {
     throw "gate-release-artifact.ps1 is not on this branch yet (the ST-3 owner must land it)"
   }
+  # INLINE prompt-return proof (G-450). The gate's control 25 starts a 20 s
+  # default-inheriting grandchild through the REAL child runner. If that runner
+  # ever reverts to an inheriting Start-Process, the grandchild inherits THIS
+  # call's stdout pipe and the `& powershell ... 2>&1` below blocks until the
+  # grandchild exits (~20 s). The elapsed bound is below that lifetime, so the
+  # leg FAILS by elapsed instead of stalling the harness.
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $out = & powershell -NoProfile -File $releaseGate -SelfTest 2>&1
   $code = $LASTEXITCODE
+  $watch.Stop()
+  $elapsed = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
   $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($code -ne 0) { throw "self-test failed with exit ${code}: $text" }
   if ($text.Contains("[FAIL]")) { throw "self-test transcript carries a [FAIL]: $text" }
   if (-not $text.Contains("SELFTEST: PASS")) { throw "self-test did not report SELFTEST: PASS" }
-  return "gate-release-artifact -SelfTest: SELFTEST: PASS"
+  if (-not $text.Contains("CONTROL CHILD-RUNNER-NO-INHERIT -")) { throw "self-test is missing control 25 (the child-runner no-inherit pin)" }
+  if ($elapsed -gt 15) { throw "the inline self-test took ${elapsed}s (expected < 15s; a reverted inheriting spawn blocks on the grandchild's 20 s lifetime)" }
+  return "gate-release-artifact -SelfTest: SELFTEST: PASS (25 controls, inline in ${elapsed}s)"
 }
 
 # The launch seam that let round 1 escape (G-406/G-435: an EXECUTED control, not a

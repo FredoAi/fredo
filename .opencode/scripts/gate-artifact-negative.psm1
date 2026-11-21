@@ -142,6 +142,11 @@ $script:MissingDllAlias = 3221225781   # the same code read as an unsigned dword
 $script:DefaultDllName = 'llama-common.dll'
 $script:OverlayRelativePath = '.opencode/scripts/tauri.csp-revert.json'
 
+# The ONE handle-whitelist spawn (G-450). Each leg drives the SAME gate/probe
+# instruments the driver uses; they are spawned through the shared helper so a
+# leg child never inherits the caller's stdout/stderr pipe.
+Import-Module (Join-Path $PSScriptRoot 'detach-process.psm1') -ErrorAction Stop
+
 # ---- small helpers -----------------------------------------------------------
 
 function Get-NegativeSlug {
@@ -917,10 +922,19 @@ function Invoke-LegChild {
     }
     Write-Host ('LEG_EXEC=' + (Split-Path -Leaf $InstrumentPath) + ' ' + (@($Arguments) -join ' '))
 
+    # Spawn the instrument through the shared handle-whitelist helper (G-450) and
+    # wait for THIS direct child only, so a grandchild cannot hold the caller's
+    # pipe or keep the leg waiting. A non-zero exit is an EXPECTED, handled
+    # outcome (the leg reads it), so it is captured, never thrown.
     $exit = $null
-    $process = Start-Process -FilePath 'powershell' -ArgumentList @($quoted) -NoNewWindow -Wait -PassThru `
-        -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-    if ($null -ne $process) { $exit = [int]$process.ExitCode }
+    $hostExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    try {
+        $childPid = Start-DetachedProcess -FilePath $hostExe -ArgumentString (@($quoted) -join ' ') -StdOutPath $outFile -StdErrPath $errFile
+        $code = Wait-DetachedChild -ProcessId $childPid
+        if ($null -ne $code) { $exit = [int]$code }
+    } catch {
+        $exit = $null
+    }
 
     $lines = @()
     if (Test-Path -LiteralPath $outFile -PathType Leaf) {

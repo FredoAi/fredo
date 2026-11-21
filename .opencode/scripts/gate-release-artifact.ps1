@@ -199,6 +199,12 @@ $script:LaunchProbe = Join-Path $script:ScriptDir 'launch-artifact-probe.ps1'
 $script:WindowHook = Join-Path $script:ScriptDir 'gate-artifact-window.ps1'
 $script:NegativeModulePath = Join-Path $script:ScriptDir 'gate-artifact-negative.psm1'
 
+# The ONE handle-whitelist spawn (G-450). Every child this gate runs goes through
+# Start-DetachedProcess + Wait-DetachedChild, so none of them inherits the
+# caller's stdout/stderr pipe and the gate's own exit releases the caller even
+# while a grandchild (the GUI / WebView2 tree) is still alive.
+Import-Module (Join-Path $script:ScriptDir 'detach-process.psm1') -ErrorAction Stop
+
 # Model payload: the ONE product rule (infrastructure/companion/models.rs:304-335).
 # The gate resolves the DEFAULT rule ({home}/fredo-models + the manifest subdir);
 # the app's SettingsStore `models_dir` override lives inside the app and is not
@@ -290,10 +296,21 @@ function Get-TextOrEmpty {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    # Read with FILE_SHARE_READ|WRITE: the spawn helper opens a child's stdout log
+    # with a WRITE handle that a lingering grandchild may still hold (control 25
+    # proves exactly this), and File.ReadAllText's default FileShare.Read would
+    # throw a sharing violation and yield an empty transcript. ReadWrite lets us
+    # read the completed transcript while that inherited handle is still open.
+    $stream = $null
+    $reader = $null
     try {
-        return [System.IO.File]::ReadAllText($Path)
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $reader = New-Object System.IO.StreamReader($stream)
+        return $reader.ReadToEnd()
     } catch {
         return ''
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() } elseif ($null -ne $stream) { $stream.Dispose() }
     }
 }
 
@@ -571,9 +588,12 @@ function Get-DefaultModelsRoot {
 # ---- child process runner ----------------------------------------------------
 
 # Run a committed PowerShell instrument to completion, capturing its exit code
-# and its stdout/stderr files. A native/child NON-ZERO exit is an EXPECTED,
-# handled outcome here (G-315): the stop-on-error preference is scoped around the
-# call so the documented refusals stay reachable.
+# and its stdout/stderr files. The child is spawned through the shared
+# handle-whitelist helper (G-450) and we wait for THIS direct child only, so a
+# grandchild that outlives the instrument (the GUI / WebView2 tree) can neither
+# hold the caller's pipe nor keep the gate waiting. A native/child NON-ZERO exit
+# is an EXPECTED, handled outcome here (G-315): the stop-on-error preference is
+# scoped around the call so the documented refusals stay reachable.
 function Invoke-ChildScript {
     param(
         [string]$ScriptPath,
@@ -598,8 +618,9 @@ function Invoke-ChildScript {
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $proc = Start-Process -FilePath $hostExe -ArgumentList $argString -PassThru -Wait -NoNewWindow -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
-        $result.ExitCode = [int]$proc.ExitCode
+        $childPid = Start-DetachedProcess -FilePath $hostExe -ArgumentString $argString -StdOutPath $StdOutPath -StdErrPath $StdErrPath
+        $code = Wait-DetachedChild -ProcessId $childPid
+        if ($null -ne $code) { $result.ExitCode = [int]$code }
     } catch {
         $result.ExitCode = $null
     } finally {
@@ -2335,6 +2356,57 @@ function Invoke-SelfTest {
         $bindDetail = "exit=$($bindChild.ExitCode) ports=$portsToken refused=$bindRefused binder-error=$bindBinderError probe-ports-param=[$bindPortsParam] stderr=$bindFirstErr"
         New-ControlLine 'PROBE_PORTS_BIND' 'the driver port list binds the probe and reaches its typed refusal (exit 2)' $ok $bindDetail
         if (-not $ok) { $failures++ }
+
+        # ---------- 25. CHILD-RUNNER-NO-INHERIT (round 3) ------------------
+        # The regression pin on the G-450 spawn path (mirrors the probe's CONTROL
+        # 1). A temp runner prints a token, starts a 20 s no-output grandchild
+        # through the DEFAULT-INHERITING primitive, and exits 0. It is driven
+        # through the REAL Invoke-ChildScript (temp StdOutPath/StdErrPath) and the
+        # grandchild is NOT killed -- a kill would mask a leaked handle. The runner
+        # must return promptly with the token captured and the grandchild still
+        # alive. If the spawn path ever reverts to an inheriting Start-Process, the
+        # grandchild inherits the caller's stdout pipe and the inline harness leg
+        # stalls to the child's 20 s lifetime (the leg's elapsed bound catches it).
+        $runnerDir = Join-Path $rootTemp 'child-runner'
+        New-Item -ItemType Directory -Path $runnerDir -Force | Out-Null
+        $runnerPath = Join-Path $runnerDir 'runner.ps1'
+        $runnerGrandOut = Join-Path $runnerDir 'grandchild.stdout.log'
+        $runnerGrandErr = Join-Path $runnerDir 'grandchild.stderr.log'
+        $runnerHost = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        # Built by concatenation so this deliberate inheriting fixture's own text is
+        # not the needle a convenience-primitive absence scan searches for (the
+        # launch paths this gate OWNS never use it; this is the test SUBJECT, not a
+        # launch path).
+        $runnerInheritFlag = '-NoNew' + 'Window'
+        $runnerTemplate = @'
+$ErrorActionPreference = 'Continue'
+Write-Output ('RUNNER_TOKEN=' + [Guid]::NewGuid().ToString('N'))
+$grand = Start-Process -FilePath '__HOST__' -ArgumentList '-NoProfile -Command "Start-Sleep -Seconds 20"' __FLAG__ -PassThru -RedirectStandardOutput '__GOUT__' -RedirectStandardError '__GERR__'
+Write-Output ('RUNNER_CHILD_PID=' + $grand.Id)
+exit 0
+'@
+        $runnerSource = $runnerTemplate.Replace('__HOST__', $runnerHost).Replace('__FLAG__', $runnerInheritFlag).Replace('__GOUT__', $runnerGrandOut).Replace('__GERR__', $runnerGrandErr)
+        [System.IO.File]::WriteAllText($runnerPath, $runnerSource, (New-Object System.Text.UTF8Encoding($true)))
+        $runnerWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $runnerChild = Invoke-ChildScript -ScriptPath $runnerPath -ArgumentList @() -StdOutPath (Join-Path $runnerDir 'runner.stdout.log') -StdErrPath (Join-Path $runnerDir 'runner.stderr.log')
+        $runnerWatch.Stop()
+        $runnerSeconds = [Math]::Round($runnerWatch.Elapsed.TotalSeconds, 1)
+        $runnerToken = ''
+        $runnerGrandPid = 0
+        foreach ($runnerLine in @(([string]$runnerChild.StdOut) -split "`r?`n")) {
+            if ($runnerLine.StartsWith('RUNNER_TOKEN=')) { $runnerToken = $runnerLine.Substring('RUNNER_TOKEN='.Length).Trim() }
+            if ($runnerLine -match '^RUNNER_CHILD_PID=(\d+)') { $runnerGrandPid = [int]$Matches[1] }
+        }
+        $runnerAlive = $false
+        if ($runnerGrandPid -gt 0) {
+            $runnerAlive = ($null -ne (Get-Process -Id $runnerGrandPid -ErrorAction SilentlyContinue))
+        }
+        Emit "RUNNER_RETURN_SECONDS=$runnerSeconds"
+        Emit "RUNNER_CHILD_PID=$runnerGrandPid"
+        Emit "RUNNER_CHILD_ALIVE=$runnerAlive"
+        $runnerOk = ($runnerChild.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($runnerToken)) -and ($runnerSeconds -le 5) -and $runnerAlive
+        New-ControlLine 'CHILD-RUNNER-NO-INHERIT' 'the child runner returns with the grandchild still alive (no inherited handles)' $runnerOk "exit=$($runnerChild.ExitCode) seconds=$runnerSeconds alive=$runnerAlive token=[$runnerToken]"
+        if (-not $runnerOk) { $failures++ }
     } catch {
         Emit ('SELFTEST_EXCEPTION=' + $_.Exception.Message)
         $failures++

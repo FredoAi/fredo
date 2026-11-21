@@ -505,277 +505,26 @@ function Read-LogHits {
 }
 
 # ---------------------------------------------------------------------------
-# Detachment helper (Spec #3172 ST-5).
+# Detachment helper (Spec #3172 ST-5; extracted to detach-process.psm1 in Spec
+# #3181 round 3 so the gate, the negative module and the exit-code wrapper all
+# share the ONE whitelist spawn).
 #
-# WHY: PowerShell 5.1's `Start-Process -RedirectStandardOutput/-RedirectStandardError`
-# calls Win32 CreateProcess with handle inheritance ON and NO handle whitelist,
-# so the child inherits EVERY inheritable handle of this process -- including the
-# stdout/stderr PIPE handles of whoever invoked this script. The GUI app's
-# WebView2 tree then keeps those pipes open, and an INLINE caller (`$(...)`, a
-# tool call, `Tee-Object`, `& powershell ... | ...`) blocks on the pipe long
-# after this script printed RESULT=PASS and exited.
-#
-# HOW: CreateProcess from P/Invoke with
-#   * EXTENDED_STARTUPINFO_PRESENT -- makes Windows honour the attribute list;
-#   * STARTF_USESTDHANDLES with exactly stdin=NUL, stdout=<StdOutPath>,
-#     stderr=<StdErrPath>, each opened with SECURITY_ATTRIBUTES.bInheritHandle =
-#     TRUE (a handle must be marked inheritable to be inherited at all);
-#   * PROC_THREAD_ATTRIBUTE_HANDLE_LIST whitelisting ONLY those three handles.
-# The whitelist is the GUARANTEE: no OTHER handle of this process (above all its
-# own stdout/stderr pipe) is inherited, so the launched app can never hold the
-# caller's console open. The helper returns the PID; the caller keeps using
-# Get-Process -Id for HasExited / ExitCode / teardown, unchanged.
+# WHY / HOW: see the module header in detach-process.psm1. The module
+# CreateProcess's with EXTENDED_STARTUPINFO_PRESENT + STARTF_USESTDHANDLES +
+# PROC_THREAD_ATTRIBUTE_HANDLE_LIST (exactly stdin=NUL, stdout=<log>,
+# stderr=<log>), so no caller pipe handle crosses the process boundary. The GUI
+# launch calls Start-DetachedProcess; every bounded child runner calls
+# Start-DetachedProcess + Wait-DetachedChild. There is no second spawn path
+# (G-450).
 # ---------------------------------------------------------------------------
-$script:DetachTypeSource = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
+Import-Module (Join-Path $PSScriptRoot 'detach-process.psm1') -ErrorAction Stop
 
-public static class FredoDetach
-{
-    private const int STARTF_USESTDHANDLES = 0x00000100;
-    private const int EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
-    private const uint GENERIC_READ = 0x80000000;
-    private const uint GENERIC_WRITE = 0x40000000;
-    private const uint FILE_SHARE_READ = 0x00000001;
-    private const uint FILE_SHARE_WRITE = 0x00000002;
-    private const uint OPEN_EXISTING = 3;
-    private const uint CREATE_ALWAYS = 2;
-    private const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
-    private static readonly IntPtr InvalidHandle = new IntPtr(-1);
-
-    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST: the whitelist of handles the child may
-    // inherit. With this attribute set (and bInheritHandles = TRUE) nothing else
-    // of the parent's handle table crosses the process boundary.
-    private static readonly IntPtr ProcThreadAttributeHandleList = new IntPtr(0x00020002);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SECURITY_ATTRIBUTES
-    {
-        public int nLength;
-        public IntPtr lpSecurityDescriptor;
-        public int bInheritHandle;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct STARTUPINFO
-    {
-        public int cb;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpReserved;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpDesktop;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpTitle;
-        public int dwX;
-        public int dwY;
-        public int dwXSize;
-        public int dwYSize;
-        public int dwXCountChars;
-        public int dwYCountChars;
-        public int dwFillAttribute;
-        public int dwFlags;
-        public short wShowWindow;
-        public short cbReserved2;
-        public IntPtr lpReserved2;
-        public IntPtr hStdInput;
-        public IntPtr hStdOutput;
-        public IntPtr hStdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct STARTUPINFOEX
-    {
-        public STARTUPINFO StartupInfo;
-        public IntPtr lpAttributeList;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PROCESS_INFORMATION
-    {
-        public IntPtr hProcess;
-        public IntPtr hThread;
-        public int dwProcessId;
-        public int dwThreadId;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
-        ref SECURITY_ATTRIBUTES lpSecurityAttributes, uint dwCreationDisposition,
-        uint dwFlagsAndAttributes, IntPtr hTemplateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr hObject);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount,
-        int dwFlags, ref IntPtr lpSize);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, IntPtr attribute,
-        IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
-
-    [DllImport("kernel32.dll")]
-    private static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CreateProcessW(string lpApplicationName, StringBuilder lpCommandLine,
-        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, int dwCreationFlags,
-        IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFOEX lpStartupInfo,
-        out PROCESS_INFORMATION lpProcessInformation);
-
-    private static void CloseQuietly(IntPtr handle)
-    {
-        if (handle != IntPtr.Zero && handle != InvalidHandle) { CloseHandle(handle); }
-    }
-
-    private static IntPtr OpenStandardHandle(string path, ref SECURITY_ATTRIBUTES sa)
-    {
-        IntPtr handle;
-        if (string.IsNullOrEmpty(path))
-        {
-            handle = CreateFileW("NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ref sa, OPEN_EXISTING, 0, IntPtr.Zero);
-        }
-        else
-        {
-            handle = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, ref sa, CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
-        }
-        if (handle == InvalidHandle)
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error(),
-                "CreateFileW(" + (string.IsNullOrEmpty(path) ? "NUL" : path) + ")");
-        }
-        return handle;
-    }
-
-    public static int Launch(string applicationName, string commandLine, string workingDirectory,
-        string stdoutPath, string stderrPath)
-    {
-        IntPtr stdIn = IntPtr.Zero;
-        IntPtr stdOut = IntPtr.Zero;
-        IntPtr stdErr = IntPtr.Zero;
-        IntPtr attributeList = IntPtr.Zero;
-        IntPtr handleBuffer = IntPtr.Zero;
-        bool attributeListReady = false;
-        PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-
-        // PowerShell marshals $null to "" for a string parameter, and CreateProcess
-        // treats an EMPTY lpCurrentDirectory as an invalid name (error 123) rather
-        // than "inherit the caller's directory". Normalise back to NULL.
-        if (string.IsNullOrEmpty(workingDirectory)) { workingDirectory = null; }
-
-        try
-        {
-            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
-            sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
-            sa.lpSecurityDescriptor = IntPtr.Zero;
-            sa.bInheritHandle = 1;
-
-            stdIn = OpenStandardHandle("NUL", ref sa);
-            stdOut = OpenStandardHandle(stdoutPath, ref sa);
-            stdErr = OpenStandardHandle(stderrPath, ref sa);
-
-            IntPtr size = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-            int sizeError = Marshal.GetLastWin32Error();
-            if (size == IntPtr.Zero)
-            {
-                throw new Win32Exception(sizeError, "InitializeProcThreadAttributeList (size probe)");
-            }
-
-            attributeList = Marshal.AllocHGlobal(size);
-            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref size))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList");
-            }
-            attributeListReady = true;
-
-            handleBuffer = Marshal.AllocHGlobal(IntPtr.Size * 3);
-            Marshal.WriteIntPtr(handleBuffer, 0, stdIn);
-            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size, stdOut);
-            Marshal.WriteIntPtr(handleBuffer, IntPtr.Size * 2, stdErr);
-            if (!UpdateProcThreadAttribute(attributeList, 0, ProcThreadAttributeHandleList, handleBuffer,
-                new IntPtr(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(),
-                    "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_HANDLE_LIST)");
-            }
-
-            STARTUPINFOEX startup = new STARTUPINFOEX();
-            startup.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
-            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-            startup.StartupInfo.hStdInput = stdIn;
-            startup.StartupInfo.hStdOutput = stdOut;
-            startup.StartupInfo.hStdError = stdErr;
-            startup.lpAttributeList = attributeList;
-
-            StringBuilder line = new StringBuilder(commandLine);
-            bool created = CreateProcessW(applicationName, line, IntPtr.Zero, IntPtr.Zero, true,
-                EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, workingDirectory, ref startup, out pi);
-            if (!created)
-            {
-                int launchError = Marshal.GetLastWin32Error();
-                throw new Win32Exception(launchError, "CreateProcessW error=" + launchError.ToString()
-                    + " app=[" + applicationName + "] cmd=[" + commandLine + "]");
-            }
-            return pi.dwProcessId;
-        }
-        finally
-        {
-            if (pi.hThread != IntPtr.Zero) { CloseHandle(pi.hThread); }
-            if (pi.hProcess != IntPtr.Zero) { CloseHandle(pi.hProcess); }
-            if (attributeList != IntPtr.Zero)
-            {
-                if (attributeListReady) { DeleteProcThreadAttributeList(attributeList); }
-                Marshal.FreeHGlobal(attributeList);
-            }
-            if (handleBuffer != IntPtr.Zero) { Marshal.FreeHGlobal(handleBuffer); }
-            CloseQuietly(stdIn);
-            CloseQuietly(stdOut);
-            CloseQuietly(stdErr);
-        }
-    }
-}
-'@
-
-$script:DetachTypeLoaded = $false
-function Initialize-DetachType {
-  if ($script:DetachTypeLoaded) { return }
-  Add-Type -TypeDefinition $script:DetachTypeSource -Language CSharp -ErrorAction Stop | Out-Null
-  $script:DetachTypeLoaded = $true
-}
-
-# The ONE launch primitive for the GUI app (and the -SelfTest control child).
-# Empty StdOutPath/StdErrPath route that stream to the NUL device.
-function Start-DetachedProcess {
-  param(
-    [Parameter(Mandatory = $true)][string]$FilePath,
-    [string]$ArgumentString = '',
-    [string]$WorkingDirectory = '',
-    [string]$StdOutPath = '',
-    [string]$StdErrPath = ''
-  )
-  Initialize-DetachType
-  $application = (Resolve-Path -LiteralPath $FilePath).Path
-  $commandLine = '"' + $application + '"'
-  if (-not [string]::IsNullOrWhiteSpace($ArgumentString)) { $commandLine += ' ' + $ArgumentString }
-  $working = $null
-  if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
-    $working = [System.IO.Path]::GetFullPath($WorkingDirectory)
-  }
-  return [int][FredoDetach]::Launch($application, $commandLine, $working, $StdOutPath, $StdErrPath)
-}
-
-# Run a CLI child to completion with redirected stdio and return its exit code
-# (null when the launch itself failed). Start-Process is used because a release
-# build is a windows-subsystem binary: its stdout is only reachable through
-# redirected handles, never through the console. These legs are `-Wait`, so their
-# inheritance window closes when the child exits; the GUI launch above is the one
-# that outlives this script and therefore must not inherit (see the helper).
+# Run a CLI child to completion with explicit stdio and return its exit code
+# (null when the launch itself failed). A release build is a windows-subsystem
+# binary: its stdout is only reachable through redirected handles, never through
+# the console. The child is spawned through the shared handle-whitelist helper
+# (G-450), so even a CLI child that starts a grandchild can never hold the
+# caller's pipe; Wait-DetachedChild waits for THIS direct child only.
 function Invoke-ArtifactCli {
   param(
     [string]$FilePath,
@@ -785,8 +534,20 @@ function Invoke-ArtifactCli {
     [string]$StdErrPath
   )
   try {
-    $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -PassThru -Wait -NoNewWindow -RedirectStandardOutput $StdOutPath -RedirectStandardError $StdErrPath
-    return [int]$proc.ExitCode
+    $argString = ''
+    foreach ($argument in @($ArgumentList)) {
+      $text = [string]$argument
+      if ($text -match '[\s"]') { $text = '"' + $text.Replace('"', '\"') + '"' }
+      if ($argString.Length -gt 0) { $argString += ' ' }
+      $argString += $text
+    }
+    $childPid = Start-DetachedProcess -FilePath $FilePath -ArgumentString $argString -WorkingDirectory $WorkingDirectory -StdOutPath $StdOutPath -StdErrPath $StdErrPath
+    $code = Wait-DetachedChild -ProcessId $childPid
+    if ($null -eq $code) {
+      Write-Probe "ERROR: child exited without a readable code ${FilePath}"
+      return $null
+    }
+    return [int]$code
   } catch {
     Write-Probe "ERROR: child launch failed ${FilePath}: $($_.Exception.Message)"
     return $null
@@ -842,6 +603,8 @@ function Invoke-WindowHook {
   $seconds = 0.0
   $stdoutText = ''
   $stderrText = ''
+  $stdoutComplete = $true
+  $stderrComplete = $true
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $proc = $null
   try {
@@ -869,8 +632,16 @@ function Invoke-WindowHook {
     }
     # The int overload does not flush the redirected streams; the no-arg one does.
     try { $proc.WaitForExit() } catch {}
-    try { $stdoutText = $outTask.Result } catch { $stdoutText = '' }
-    try { $stderrText = $errTask.Result } catch { $stderrText = '' }
+    # BOUNDED read (G-450): ReadToEndAsync completes on EOF. A grandchild the hook
+    # started can hold the hook's stdout pipe past the hook's own exit, so .Result
+    # would block indefinitely. Wait(5000) bounds the read; on expiry keep what we
+    # have ('') and surface the incompleteness rather than hanging the caller.
+    try {
+      if ($outTask.Wait(5000)) { $stdoutText = $outTask.Result } else { $stdoutText = ''; $stdoutComplete = $false }
+    } catch { $stdoutText = ''; $stdoutComplete = $false }
+    try {
+      if ($errTask.Wait(5000)) { $stderrText = $errTask.Result } else { $stderrText = ''; $stderrComplete = $false }
+    } catch { $stderrText = ''; $stderrComplete = $false }
   } catch {
     Write-Probe "ERROR: window hook launch failed: $($_.Exception.Message)"
     $timedOut = $true
@@ -894,6 +665,8 @@ function Invoke-WindowHook {
   $exitText = if ($null -ne $exitCode) { [string]$exitCode } else { 'timeout' }
   Write-Probe "WINDOW_HOOK_EXIT=$exitText"
   Write-Probe "WINDOW_HOOK_SECONDS=$seconds"
+  if (-not $stdoutComplete) { Write-Probe 'WINDOW_HOOK_STDOUT_INCOMPLETE=true' }
+  if (-not $stderrComplete) { Write-Probe 'WINDOW_HOOK_STDERR_INCOMPLETE=true' }
 
   $failureName = ''
   if ($timedOut) {
@@ -1128,34 +901,44 @@ if ($SelfTest) {
     }
 
     # ---- CONTROL 3 - SELF-REFERENCE -------------------------------------
-    # The GUI launch site must call the detachment helper, and the source must
-    # still spell the whitelist mechanism, so a future edit cannot silently
-    # revert to plain Start-Process.
+    # The GUI launch site must call the detachment helper, the WHITELIST MECHANISM
+    # must still be spelled in the shared module (it moved there in Spec #3181
+    # round 3, so a future edit cannot silently revert to plain Start-Process),
+    # and this script must import the module.
     Write-Probe 'CONTROL 3 - SELF-REFERENCE'
     $selfSource = ''
     if (-not [string]::IsNullOrWhiteSpace($selfPath) -and (Test-Path -LiteralPath $selfPath)) {
       $selfSource = [System.IO.File]::ReadAllText($selfPath)
     }
+    $modulePath = Join-Path $PSScriptRoot 'detach-process.psm1'
+    $moduleSource = ''
+    if (Test-Path -LiteralPath $modulePath) {
+      $moduleSource = [System.IO.File]::ReadAllText($modulePath)
+    }
     $launchUsesHelper = ($selfSource -match '(?m)^\s*\$launchPid\s*=\s*Start-DetachedProcess\b')
+    $importsModule = $selfSource.Contains("detach-process.psm1")
     # Built by concatenation so this assertion's own text is not the needle it
     # searches for (a literal here would match itself and never regress).
     $plainLaunchNeedle = 'Start-Process -FilePath ' + '$exePath'
     $plainLaunchOfExe = $selfSource.Contains($plainLaunchNeedle)
-    $hasHandleList = $selfSource.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST')
-    $hasExtendedStartup = $selfSource.Contains('EXTENDED_STARTUPINFO_PRESENT')
-    $hasStdHandlesFlag = $selfSource.Contains('STARTF_USESTDHANDLES')
-    Write-Probe ("  launch site uses the helper: {0}; plain Start-Process of the exe: {1}; whitelist mechanism present: {2}/{3}/{4}" -f $launchUsesHelper, $plainLaunchOfExe, $hasHandleList, $hasExtendedStartup, $hasStdHandlesFlag)
+    $hasHandleList = $moduleSource.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST')
+    $hasExtendedStartup = $moduleSource.Contains('EXTENDED_STARTUPINFO_PRESENT')
+    $hasStdHandlesFlag = $moduleSource.Contains('STARTF_USESTDHANDLES')
+    Write-Probe ("  launch site uses the helper: {0}; imports module: {1}; plain Start-Process of the exe: {2}; whitelist mechanism present in module: {3}/{4}/{5}" -f $launchUsesHelper, $importsModule, $plainLaunchOfExe, $hasHandleList, $hasExtendedStartup, $hasStdHandlesFlag)
     if (-not $launchUsesHelper) {
       Write-Probe '  [FAIL] the GUI launch site does not call Start-DetachedProcess'
+      $controlFailures++
+    } elseif (-not $importsModule) {
+      Write-Probe '  [FAIL] the script does not import detach-process.psm1'
       $controlFailures++
     } elseif ($plainLaunchOfExe) {
       Write-Probe '  [FAIL] the source still launches $exePath through a plain Start-Process'
       $controlFailures++
     } elseif (-not ($hasHandleList -and $hasExtendedStartup -and $hasStdHandlesFlag)) {
-      Write-Probe '  [FAIL] the handle-whitelist mechanism is gone from the source'
+      Write-Probe '  [FAIL] the handle-whitelist mechanism is gone from detach-process.psm1'
       $controlFailures++
     } else {
-      Write-Probe '  [PASS] the GUI launch site calls the detachment helper and the whitelist mechanism is intact'
+      Write-Probe '  [PASS] the GUI launch site calls the detachment helper, imports the module, and the whitelist mechanism is intact'
     }
 
     # ---- CONTROL 4 - CDP-HOOK -------------------------------------------
