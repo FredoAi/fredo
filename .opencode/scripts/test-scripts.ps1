@@ -144,14 +144,14 @@ function Test-Script-Syntax {
     return
   }
   try {
-    # A `.ps1` is a script and MUST be parsed: `Get-Command` only resolves the
-    # file as a command and never parses its body, so it stayed green on a
-    # dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified variable
-    # reference in a double-quoted string). Parse every script with the PowerShell
-    # AST parser and fail on any error. Non-script callers (e.g. the SKILL.md
-    # presence check) keep the command-resolution check — markdown is not
+    # A `.ps1`/`.psm1` is a script/module and MUST be parsed: `Get-Command` only
+    # resolves the file as a command and never parses its body, so it stayed green
+    # on a dev-env.ps1 carrying `$procId:` (an invalid scope/drive-qualified
+    # variable reference in a double-quoted string). Parse every script/module with
+    # the PowerShell AST parser and fail on any error. Non-script callers (e.g. the
+    # SKILL.md presence check) keep the command-resolution check — markdown is not
     # PowerShell and must not be AST-parsed.
-    if ([System.IO.Path]::GetExtension($FilePath) -eq ".ps1") {
+    if (@(".ps1", ".psm1") -contains [System.IO.Path]::GetExtension($FilePath)) {
       $tokens = $null
       $parseErrors = $null
       [System.Management.Automation.Language.Parser]::ParseFile($FilePath, [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -4735,7 +4735,9 @@ $scripts = @(
   "check-navigation-prose-retired.ps1",
   "verify-installer-payload.ps1",
   "gate-release-artifact.ps1",
-  "gate-artifact-window.ps1"
+  "gate-artifact-window.ps1",
+  "fredo-cdp.psm1",
+  "gate-artifact-negative.psm1"
 )
 # ST-7 (R-1.3/R-2.3): include the continuous isolation checker only when it
 # landed — the pin stays green whether or not CU-C has shipped it yet.
@@ -5101,6 +5103,61 @@ Test-Script "release-gate skill documents the harness, both entries and the name
     if (-not $src.Contains($tok)) { throw "release-artifact-gate skill missing token: $tok" }
   }
   return "skill: harness + both entries + the named errors documented"
+}
+
+# The two release-gate modules are imported at RUN time by the driver / the
+# negative harness, so a parse break in either would only surface on a live gate
+# run. Parse both here with the AST parser (0 errors) and assert the exported
+# surface the driver depends on. Hermetic: the modules are parsed, never imported.
+Test-Script "modules: fredo-cdp.psm1 and gate-artifact-negative.psm1 parse cleanly" {
+  $modules = @(
+    @{ Path = ".opencode/scripts/fredo-cdp.psm1"; Requires = @() },
+    @{ Path = ".opencode/scripts/gate-artifact-negative.psm1"; Requires = @("Invoke-NegativeLeg") }
+  )
+  foreach ($m in $modules) {
+    $path = $m.Path
+    if (-not (Test-Path -LiteralPath $path)) { throw "module not found: $path" }
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $path).Path, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+      throw "parse errors in ${path}: $($parseErrors[0].Message)"
+    }
+    # Collect the names an explicit `Export-ModuleMember -Function @(...)` publishes.
+    $exported = New-Object System.Collections.ArrayList
+    $exportCalls = @($ast.FindAll({
+      param($node)
+      $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq "Export-ModuleMember"
+    }, $true))
+    foreach ($call in $exportCalls) {
+      $elements = @($call.CommandElements)
+      for ($i = 1; $i -lt $elements.Count; $i++) {
+        $el = $elements[$i]
+        if (-not ($el -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+        if ($el.ParameterName -ne "Function") { continue }
+        if (($i + 1) -ge $elements.Count) { continue }
+        $arg = $elements[$i + 1]
+        if ($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+          [void]$exported.Add([string]$arg.Value)
+        } else {
+          # `@(...)` parses as an ArrayExpressionAst; a bare comma list is an
+          # ArrayLiteralAst. Both hold the exported names as string-constant
+          # descendants, so collect every string-constant beneath the argument.
+          foreach ($item in @($arg.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.StringConstantExpressionAst]
+          }, $true))) {
+            [void]$exported.Add([string]$item.Value)
+          }
+        }
+      }
+    }
+    if ($exported.Count -lt 1) { throw "$path exports no function via Export-ModuleMember -Function" }
+    foreach ($required in @($m.Requires)) {
+      if (-not ($exported -contains $required)) { throw "$path does not export $required" }
+    }
+  }
+  return "both release-gate modules parse cleanly (0 errors); fredo-cdp exports >=1 function, gate-artifact-negative exports Invoke-NegativeLeg"
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
