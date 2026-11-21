@@ -342,7 +342,11 @@
                     "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
                     "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow",
                     "powershell -File .opencode/scripts/run-exitcode.ps1*": "allow",
-                    "powershell -File .opencode/scripts/check-navigation-prose-retired.ps1*": "allow"
+                    "powershell -File .opencode/scripts/check-navigation-prose-retired.ps1*": "allow",
+                    "powershell -File .opencode/scripts/gate-release-artifact.ps1*": "allow",
+                    "powershell -File .opencode/scripts/gate-artifact-window.ps1*": "allow",
+                    "powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1*": "allow",
+                    "powershell -NoProfile -File .opencode/scripts/gate-artifact-window.ps1*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",
@@ -454,7 +458,12 @@
                     "git worktree add*": "allow",
                     "git worktree remove*": "allow",
                     "powershell -File .opencode/scripts/launch-artifact-probe.ps1*": "allow",
-                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow"
+                    "powershell -File .opencode/scripts/inspect-webview-config.ps1*": "allow",
+                    "powershell -File .opencode/scripts/gate-release-artifact.ps1*": "allow",
+                    "powershell -File .opencode/scripts/gate-artifact-window.ps1*": "allow",
+                    "powershell -NoProfile -File .opencode/scripts/gate-release-artifact.ps1*": "allow",
+                    "powershell -NoProfile -File .opencode/scripts/gate-artifact-window.ps1*": "allow",
+                    "gh release download*": "allow"
                 },
                 "external_directory": {
                 "~/.local/share/opencode/**": "deny",

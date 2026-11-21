@@ -29,6 +29,12 @@
     installer; only the artifact does.
 
   EXTRACTION (probed in this order, the answering route is recorded)
+    0. -SevenZip override (when supplied): same 7z invocation. It is the FIRST
+       route so a host whose 7z is not on PATH (the local dev box has 7z only
+       outside the repo) can still extract. A supplied override that does not
+       exist is a REFUSED precondition (exit 2,
+       ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND), never a silent fall-back - a typo in
+       the override must not turn into an "extractor missing" verdict.
     1. 7z on PATH:                 7z x -y -o<WorkDir> <Installer>
     2. %ProgramFiles%\7-Zip\7z.exe: same invocation
     3. NSIS silent install:        <Installer> /S /D=<WorkDir>
@@ -65,8 +71,15 @@
   <repo>/.opencode/tmp/installer-payload/<stamp>. Created fresh (a previous
   directory is replaced); left in place as evidence after the run.
 
+.PARAMETER SevenZip
+  Optional path to a 7z executable used as the FIRST extraction route, so a
+  produced installer can be extracted on a host whose 7z is not on PATH. A
+  supplied path that does not exist is refused (exit 2,
+  ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND) instead of falling through to the other
+  routes. When omitted, the route order is unchanged.
+
 .PARAMETER SelfTest
-  Run the eight deterministic instrument controls (hermetic, synthetic fixtures,
+  Run the nine deterministic instrument controls (hermetic, synthetic fixtures,
   no real installer and no real extractor required) and exit 0 only if all pass,
   else 3. Ends with a single SELFTEST: PASS|FAIL line.
 
@@ -96,6 +109,7 @@
     ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT edge=<dll> -> <module> kind=<import|delay-import>
     ERROR=PAYLOAD_IMPORT_PARSE_FAIL_IN_ARTIFACT dll=<dll> reason=<why>
     ERROR=EXTRACTOR_MISSING tried=<comma list>
+    ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND path=<path>
     ERROR=DEBUG_ARTIFACT_REFUSED path=<path>
     ERROR=INSTALLER_NOT_FOUND path=<path>
     ERROR=PAYLOAD_MANIFEST_INVALID path=<path> reason=<why>
@@ -106,7 +120,7 @@
   1  FAIL - payload incomplete in the artifact, or a present payload DLL carries
      a forbidden / unresolved / unparsable import
   2  refused precondition (debug path, missing installer, no extractor,
-     missing/invalid manifest)
+     missing/invalid manifest, a supplied -SevenZip override that does not exist)
   3  -SelfTest control failed
 
 .EXAMPLE
@@ -120,7 +134,8 @@ param(
     [string]$ExpectedPayload = '',
     [string]$WorkDir = '',
     [switch]$SelfTest,
-    [switch]$ForceNoExtractor
+    [switch]$ForceNoExtractor,
+    [string]$SevenZip = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -346,10 +361,18 @@ function Test-PayloadTree {
 # Extraction routes
 # ---------------------------------------------------------------------------
 function Get-ExtractionRoutes {
-    param([bool]$ForceNone)
+    param([bool]$ForceNone, [string]$SevenZipOverride = '')
 
     $routes = New-Object System.Collections.ArrayList
     if ($ForceNone) { return @($routes) }
+
+    # An explicit -SevenZip override is the FIRST route: a host whose 7z is not
+    # on PATH (the only local 7z lives outside the repo) can still extract, and
+    # the caller's chosen extractor is preferred over a PATH binary of unknown
+    # version. Its existence is validated by Invoke-Verify before this point.
+    if (-not [string]::IsNullOrWhiteSpace($SevenZipOverride)) {
+        [void]$routes.Add([pscustomobject]@{ Name = 'sevenzip-override'; Kind = '7z'; Exe = $SevenZipOverride })
+    }
 
     $onPath = Get-Command 7z -ErrorAction SilentlyContinue
     if ($null -ne $onPath -and -not [string]::IsNullOrWhiteSpace($onPath.Source)) {
@@ -432,7 +455,8 @@ function Invoke-Verify {
         [string[]]$RequiredNames,
         [string[]]$OptionalNames = @(),
         [string[]]$ForbiddenPrefixes = @(),
-        [bool]$ForceNoRoute
+        [bool]$ForceNoRoute,
+        [string]$SevenZipOverride = ''
     )
 
     # 1. Refused preconditions come before any work.
@@ -461,6 +485,19 @@ function Invoke-Verify {
         return 2
     }
 
+    # A supplied -SevenZip override is a REFUSED precondition when it is absent:
+    # never fall back silently, because a typo would otherwise read as
+    # "no extraction route available" and mask the real cause.
+    $resolvedOverride = ''
+    if (-not [string]::IsNullOrWhiteSpace($SevenZipOverride)) {
+        if (-not (Test-Path -LiteralPath $SevenZipOverride -PathType Leaf)) {
+            Emit 'RESULT=FAIL'
+            Emit "ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND path=$SevenZipOverride"
+            return 2
+        }
+        $resolvedOverride = (Resolve-Path -LiteralPath $SevenZipOverride).Path
+    }
+
     $installerFull = (Resolve-Path -LiteralPath $InstallerPath).Path
     $installerItem = Get-Item -LiteralPath $installerFull
     $sha = (Get-FileHash -LiteralPath $installerFull -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -481,7 +518,7 @@ function Invoke-Verify {
     Emit "PAYLOAD_MANIFEST_JSON=$script:ManifestPath"
 
     # 3. Extraction: probe routes in order, record the answering route.
-    $routes = @(Get-ExtractionRoutes -ForceNone $ForceNoRoute)
+    $routes = @(Get-ExtractionRoutes -ForceNone $ForceNoRoute -SevenZipOverride $resolvedOverride)
     if ($routes.Count -eq 0) {
         Emit 'EXTRACT_ROUTES=none'
     } else {
@@ -524,7 +561,7 @@ function Invoke-Verify {
 }
 
 # ---------------------------------------------------------------------------
-# -SelfTest: eight deterministic instrument controls (hermetic, synthetic)
+# -SelfTest: nine deterministic instrument controls (hermetic, synthetic)
 # ---------------------------------------------------------------------------
 function Invoke-CapturedTree {
     param([string]$Root, [string[]]$Names, [string[]]$Optional = @(), [string[]]$Forbidden = @())
@@ -542,12 +579,12 @@ function Invoke-CapturedTree {
 }
 
 function Invoke-CapturedVerify {
-    param([string]$InstallerPath, [string]$WorkDirPath, [string[]]$Names, [string[]]$Optional = @(), [string[]]$Forbidden = @(), [bool]$ForceNoRoute)
+    param([string]$InstallerPath, [string]$WorkDirPath, [string[]]$Names, [string[]]$Optional = @(), [string[]]$Forbidden = @(), [bool]$ForceNoRoute, [string]$SevenZipOverride = '')
 
     $script:Captured = New-Object System.Collections.ArrayList
     $code = 99
     try {
-        $code = Invoke-Verify -InstallerPath $InstallerPath -WorkDirPath $WorkDirPath -RequiredNames $Names -OptionalNames $Optional -ForbiddenPrefixes $Forbidden -ForceNoRoute $ForceNoRoute
+        $code = Invoke-Verify -InstallerPath $InstallerPath -WorkDirPath $WorkDirPath -RequiredNames $Names -OptionalNames $Optional -ForbiddenPrefixes $Forbidden -ForceNoRoute $ForceNoRoute -SevenZipOverride $SevenZipOverride
     } catch {
         [void]$script:Captured.Add("ERROR=SELFTEST_EXCEPTION $($_.Exception.Message)")
     }
@@ -784,6 +821,49 @@ function Invoke-SelfTest {
         }
         Emit 'CONTROL 8 - ARTIFACT-IMPORT-GAP'
         if ($pass8) { Emit '[PASS]' } else { Emit "[FAIL] $detail8"; $allPassed = $false }
+
+        # ---- CONTROL 9 - SEVENZIP-OVERRIDE ------------------------------
+        # Two hermetic assertions, no external process:
+        #   (a) an existing -SevenZip override is the FIRST extraction route
+        #       (and is absent when no override is supplied), so a host without
+        #       7z on PATH can still extract;
+        #   (b) a NON-EXISTENT override is refused BEFORE any route is attempted
+        #       (exit 2, ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND), never a silent
+        #       fall-through to the other routes.
+        $pass9 = $false
+        $detail9 = ''
+        try {
+            $overrideFixture = Join-Path $root 'fake-7z.exe'
+            [System.IO.File]::WriteAllText($overrideFixture, 'stub', [System.Text.UTF8Encoding]::new($false))
+
+            $routesWithOverride = @(Get-ExtractionRoutes -ForceNone $false -SevenZipOverride $overrideFixture)
+            $routesWithoutOverride = @(Get-ExtractionRoutes -ForceNone $false)
+            $overrideFirst = ($routesWithOverride.Count -gt 0) -and
+                             ($routesWithOverride[0].Name -eq 'sevenzip-override') -and
+                             ($routesWithOverride[0].Kind -eq '7z') -and
+                             ($routesWithOverride[0].Exe -eq $overrideFixture)
+            $overrideCount = @($routesWithOverride | Where-Object { $_.Name -eq 'sevenzip-override' }).Count
+            $absentWhenUnset = -not (@($routesWithoutOverride | Where-Object { $_.Name -eq 'sevenzip-override' }).Count -gt 0)
+
+            # (b) not-found refusal: the override is validated before routes run.
+            $standIn9 = Join-Path $root 'fixture-installer-9.exe'
+            [System.IO.File]::WriteAllText($standIn9, 'stub', [System.Text.UTF8Encoding]::new($false))
+            $missingOverride = Join-Path $root 'does-not-exist\7z.exe'
+            $run9 = Invoke-CapturedVerify -InstallerPath $standIn9 -WorkDirPath (Join-Path $root 'extract-override-missing') -Names $required -ForceNoRoute $false -SevenZipOverride $missingOverride
+            $noExtraction9 = -not (Test-AnyLine -Lines $run9.Lines -Needle 'EXTRACT_ATTEMPT=')
+            $notFoundRefusal = ($run9.Code -eq 2) -and
+                               (Test-AnyLine -Lines $run9.Lines -Needle 'ERROR=EXTRACTOR_OVERRIDE_NOT_FOUND') -and
+                               $noExtraction9
+
+            $pass9 = $overrideFirst -and ($overrideCount -eq 1) -and $absentWhenUnset -and $notFoundRefusal
+            if (-not $pass9) {
+                $detail9 = "overrideFirst=$overrideFirst overrideCount=$overrideCount absentWhenUnset=$absentWhenUnset notFoundRefusal=$notFoundRefusal exit=$($run9.Code) lines=$($run9.Lines -join ' / ')"
+            }
+        } catch {
+            $detail9 = $_.Exception.Message
+        }
+        Emit 'CONTROL 9 - SEVENZIP-OVERRIDE'
+        if ($pass9) { Emit '[PASS]' } else { Emit "[FAIL] $detail9"; $allPassed = $false }
     } catch {
         Emit "SELFTEST_EXCEPTION=$($_.Exception.Message)"
         $allPassed = $false
@@ -817,4 +897,4 @@ if ($SelfTest) {
     exit (Invoke-SelfTest -Manifest $manifest)
 }
 
-exit (Invoke-Verify -InstallerPath $Installer -WorkDirPath $WorkDir -RequiredNames @($manifest.Core) -OptionalNames @($manifest.ToolModules) -ForbiddenPrefixes @($manifest.ForbiddenPrefixes) -ForceNoRoute ([bool]$ForceNoExtractor))
+exit (Invoke-Verify -InstallerPath $Installer -WorkDirPath $WorkDir -RequiredNames @($manifest.Core) -OptionalNames @($manifest.ToolModules) -ForbiddenPrefixes @($manifest.ForbiddenPrefixes) -ForceNoRoute ([bool]$ForceNoExtractor) -SevenZipOverride $SevenZip)

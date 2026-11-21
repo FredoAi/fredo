@@ -17,6 +17,15 @@
 > (R-4 payload-gate ordering, R-8 control counts), `release-pipeline/regression.md` (R-3/R-4
 > trigger + draft contract), `webview-security-boundary/functional.md` F-5 (release bridge closed),
 > `ci-pipeline/regression.md` (the `validate` merge gate).
+>
+> **Round-1 dependency (binding).** The three negative legs
+> (`.opencode/scripts/gate-artifact-negative.psm1:980,1020,1060`) invoke the probe with the
+> driver's port list, so the **port-array contract (`functional.md` F-28) is a precondition for
+> `F-14`/`F-15`/`F-16`**: if `-Ports 9223,16932,19631` does not bind, every negative leg fails at
+> child start (round 1: `NEGATIVE_NOT_REPRODUCED`/`NEGATIVE_WRONG_ERROR`) and the AC3 rows are
+> untestable. Any change to `-Ports`' accepted form must keep R-6 green **and** re-run F-28; a
+> negative leg that cannot run its instrument must classify as `NEGATIVE_INSTRUMENT_FAILURE`
+> (`functional.md` F-29), never as a wrong/absent observation.
 
 ## R-1 — The payload gate is untouched and still runs FIRST
 
@@ -79,7 +88,11 @@
   - **Expected:** the verifier keeps `CONTROL 1 - PASS-ON-COMPLETE` … `CONTROL 8 - ARTIFACT-IMPORT-GAP`
     under their unchanged names and assertions and gains the new control (9) for the `-SevenZip`
     override ordering / not-found refusal; the stager keeps its 11 controls unchanged; both print
-    `SELFTEST: PASS` with `EXITCODE=0`.
+    `SELFTEST: PASS` with `EXITCODE=0`. **The negative module's own harness is pinned too:**
+    `Import-Module .opencode/scripts/gate-artifact-negative.psm1 -Force; Invoke-NegativeControlSelfTest`
+    prints `NEGATIVE_CONTROLS=23 FAILURES=0` / `NEGATIVE_MODULE_SELFTEST: PASS` with `EXITCODE=0`, and
+    carries `CSP-INDUCTION-NOT-DOCUMENT-WRITE [PASS]` (a hermetic source invariant: the generated Csp
+    hook uses a response header, not a `document.write`).
   - **Edge:** a renamed or dropped pre-existing control ⇒ **FAIL**; a weakened assertion ⇒ **FAIL**;
     the `-SevenZip` route becoming the DEFAULT route (rather than first-among-routes when supplied)
     ⇒ **FAIL**.
@@ -87,17 +100,50 @@
 ## R-6 — The single GUI launch primitive survives (no second launcher)
 
 - [ ] **R-6.** `RC("powershell -NoProfile -File .opencode/scripts/launch-artifact-probe.ps1 -SelfTest")`;
-  read `.opencode/scripts/launch-artifact-probe.ps1`.
+  read `.opencode/scripts/launch-artifact-probe.ps1` **and** `.opencode/scripts/detach-process.psm1`.
+  - **Reconciliation (round 3 — human directive, guardrail G-450).** This row previously read,
+    verbatim:
+    > the source still carries `Start-DetachedProcess` as the only GUI launch,
+    > `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`
+    with the read target `.opencode/scripts/launch-artifact-probe.ps1`.
+    The three mechanism tokens are no longer in the probe: they were **extracted** into the ONE
+    shared handle-whitelist primitive `.opencode/scripts/detach-process.psm1` (`CreateProcessW` +
+    `EXTENDED_STARTUPINFO_PRESENT` + `STARTF_USESTDHANDLES` + `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`)
+    because the gate's own child runner had re-invented an inheriting spawn. The row is reconciled
+    **old → new**: the three mechanism tokens are read in **`detach-process.psm1`**, while
+    `launch-artifact-probe.ps1` must still (i) `Import-Module` that module, (ii) call
+    `Start-DetachedProcess` at its GUI launch site, and (iii) hold **no second GUI spawn**. The edge
+    is **strengthened, not weakened** — the ban now covers every gate-owned child runner, not only
+    the app launch.
   - **Expected:** `SELFTEST: PASS` with the three original controls (including the inline-handle
-    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`); the
-    source still carries `Start-DetachedProcess` as the only GUI launch,
-    `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`;
-    `-CdpPort`/`-CdpProbe` are **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath`
-    semantics are unchanged.
+    inheritance control) green plus the two new controls (4 `CDP-HOOK`, 5 `CDP-HOOK-FAIL`), the
+    retained-handle exit-code control `DETACHED-EXIT-CODE`, **and the round-5 transcript control
+    `CONTROL 9 - HOOK-TRANSCRIPT-SURFACED`** (assert it by **NAME**, not an ordinal — the emitted line
+    is `CONTROL 9 - HOOK-TRANSCRIPT-SURFACED` with `[PASS] Invoke-WindowHook emits its transcript to
+    the process console and never through the pipeline`; the probe now emits **9** controls); the
+    retained-handle exit-code control is `DETACHED-EXIT-CODE` (asserted by **NAME**, not a guessed
+    ordinal — the round-4 plan literal called it control "6" but the probe **shipped it as control 8**
+    after controls 6/7 were added; the emitted line is `CONTROL 8 - DETACHED-EXIT-CODE` with
+    `DETACHED_CHILD_EXIT=42` / `DETACHED_CHILD_EXIT_STATUS=observed` and `[PASS]`. **Disclosed
+    plan-literal deviation: plan said "6", shipped as control 8; the row pins the NAME.**); the probe
+    still calls `Start-DetachedProcess` as its only GUI launch and `Import-Module`s
+    `detach-process.psm1`; `detach-process.psm1` carries `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`,
+    `EXTENDED_STARTUPINFO_PRESENT` and `STARTF_USESTDHANDLES`; `-CdpPort`/`-CdpProbe` are
+    **additive** and the existing `-ProbeOnly`/`-RemoveDll`/`-SanitizePath` semantics are unchanged;
+    **`-Ports` still accepts the driver's three-port list** and the probe's own self-test covers the
+    port-binding form (`functional.md` F-28) — the round-1 fix must not regress it. **Stream-B gate
+    controls are asserted by NAME only** (`OUTDIR-UNUSABLE`, `DB-ISOLATION-MISMATCH`,
+    `BLANK-FRAME-NOT-ATTRIBUTED`, `HOST-SETTLED`), never by a guessed ordinal.
   - **Edge:** a second spawn path for the app (a `Start-Process`/`Process::Start` outside the
-    primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); the hand-off of
-    stdin/stdout/stderr no longer whitelisted ⇒ **FAIL**; `-CdpPort` sharing a probed bridge port
-    (`9223`/`16932`/`19631`) ⇒ **FAIL**.
+    primitive) ⇒ **FAIL** (re-introduces the #3172 ST-5 inheritance hang); **any `-NoNewWindow` +
+    redirect combination in a gate-owned runner** (the gate, the negative module, the probe, the
+    wrapper) ⇒ **FAIL** (G-450 — the child inherits the caller's stdout pipe and the caller blocks on
+    EOF with no output); a gate-owned child spawned with default handle inheritance instead of
+    `Start-DetachedProcess` ⇒ **FAIL**; the hand-off of stdin/stdout/stderr no longer whitelisted ⇒
+    **FAIL**; `-CdpPort` sharing a probed bridge port (`9223`/`16932`/`19631`) ⇒ **FAIL**; the three
+    negative legs' probe invocation (`gate-artifact-negative.psm1`) drifting from the driver's port
+    form, or a leg falling back to a single-port invocation → **FAIL** (the other two ports would go
+    unprobed — `functional.md` F-28's edge, F-12's three `PORT_` lines).
 
 ## R-7 — The webview-security-evidence skill's pinned tokens stay green
 
