@@ -21,6 +21,11 @@
 //! * a LEGACY cluster at `<app_data_dir>/postgres` (recognised by
 //!   [`PG_CLUSTER_MARKER`] — `postgresql.conf`, the crate's own
 //!   `is_initialized()` predicate) is used as-is and never re-initialised;
+//! * an existing-but-EMPTY dedicated directory is VACATED by RENAME to a
+//!   timestamped sibling before `initdb` runs (Spec #3188) — so `initdb` creates
+//!   the directory itself and never takes the "fixing permissions on existing
+//!   directory" branch a locked-down filesystem refuses; it is never deleted and
+//!   never chmod-dependent;
 //! * RESIDUE at the dedicated path (exists, non-empty, no cluster marker) is
 //!   quarantined by RENAME to a timestamped sibling — never deleted.
 //!
@@ -56,6 +61,14 @@ pub const PG_REJECT_PREFIX: &str = "cluster.rejected-";
 /// receipt). Inert when unset — the default recovery path is byte-identical.
 pub const PG_CLUSTER_QUARANTINE_FAIL_ENV: &str = "FREDO_PG_CLUSTER_QUARANTINE_FAIL";
 
+/// **G-275** injectable fault seam (Spec #3188 ST-1): when set to a non-blank
+/// value other than `0`/`false`, [`ensure_initialisable`] REFUSES to VACATE an
+/// existing-but-empty cluster directory and surfaces the typed
+/// [`ClusterDirError`] with the `Empty` state instead, deterministically
+/// exercising the "permission change refused" condition without a second
+/// filesystem. Inert when unset — the default vacate path is byte-identical.
+pub const PG_CLUSTER_PERMISSION_FAIL_ENV: &str = "FREDO_PG_CLUSTER_PERMISSION_FAIL";
+
 /// The crate's own initialised-cluster predicate: `postgresql.conf` at the
 /// cluster root. MUST equal `postgresql_embedded`'s `is_initialized()` — see the
 /// module docs. `PG_VERSION` alone is NOT a cluster (it is written by `initdb`
@@ -67,7 +80,10 @@ const PG_CLUSTER_MARKER: &str = "postgresql.conf";
 pub enum ClusterDirState {
     /// The directory does not exist — `initdb` will create it.
     Absent,
-    /// The directory exists and is empty — `initdb` may initialise it.
+    /// The directory exists and is empty. It is VACATED by RENAME to a
+    /// timestamped sibling (never deleted, never chmod-dependent) before
+    /// `initdb` runs, so `initdb` creates it itself and never takes its
+    /// existing-directory permission-change branch (Spec #3188 ST-1).
     Empty,
     /// The directory is an initialised cluster ([`PG_CLUSTER_MARKER`] present).
     Cluster,
@@ -76,11 +92,13 @@ pub enum ClusterDirState {
     Residue,
 }
 
-/// A cluster directory that cannot be initialised and could not be quarantined.
+/// A cluster directory that cannot be initialised and could not be vacated /
+/// quarantined.
 ///
 /// Carried as a concrete error type so [`super::state::classify_failure`] can
-/// downcast it from the error chain and publish the typed
-/// `PgFailureKind::DataDirNotEmpty` (rather than the non-actionable `Unknown`).
+/// downcast it from the error chain and publish the typed failure kind for its
+/// [`ClusterDirState`]: `Residue` -> `PgFailureKind::DataDirNotEmpty`, `Empty` ->
+/// `PgFailureKind::DataDirPermissionDenied` — never the non-actionable `Unknown`.
 #[derive(Debug)]
 pub struct ClusterDirError {
     /// The cluster directory that blocked initialisation.
@@ -91,13 +109,26 @@ pub struct ClusterDirError {
 
 impl std::fmt::Display for ClusterDirError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "the PostgreSQL cluster directory {} is not empty and could not be quarantined (state: {:?}); \
-             move or rename it, then restart Fredo",
-            self.path.display(),
-            self.state
-        )
+        match self.state {
+            // Spec #3188 ST-1: an existing-but-empty directory that could not be
+            // vacated. The remedy must be actionable and non-destructive.
+            ClusterDirState::Empty => write!(
+                formatter,
+                "the PostgreSQL cluster directory {} could not be prepared for initialisation \
+                 (the filesystem refused the permission change); grant the current Windows user \
+                 modify permission on its parent folder or set FREDO_PG_DATA_DIR to a writable \
+                 folder, then restart Fredo. Nothing is removed.",
+                self.path.display()
+            ),
+            // Every other state keeps the Spec #3180 residue wording unchanged.
+            _ => write!(
+                formatter,
+                "the PostgreSQL cluster directory {} is not empty and could not be quarantined (state: {:?}); \
+                 move or rename it, then restart Fredo",
+                self.path.display(),
+                self.state
+            ),
+        }
     }
 }
 
@@ -180,10 +211,13 @@ pub fn inspect_cluster_dir(dir: &Path) -> ClusterDirState {
 
 /// Make `dir` safe for `initdb` without ever deleting user files.
 ///
-/// * `Absent` / `Empty` / `Cluster` -> `Ok(())`, nothing touched.
+/// * `Absent` / `Cluster` -> `Ok(())`, nothing touched.
+/// * `Empty` -> VACATE by RENAME to a timestamped sibling (see
+///   [`quarantine_cluster_dir`]), `Ok(())` — `initdb` then creates the directory
+///   itself and never needs to change its permissions (Spec #3188 ST-1).
 /// * `Residue` -> quarantine by RENAME (see [`quarantine_cluster_dir`]), `Ok(())`.
-/// * any failure (including the [`PG_CLUSTER_QUARANTINE_FAIL_ENV`] seam) ->
-///   [`ClusterDirError`].
+/// * any failure (including the [`PG_CLUSTER_PERMISSION_FAIL_ENV`] /
+///   [`PG_CLUSTER_QUARANTINE_FAIL_ENV`] seams) -> [`ClusterDirError`].
 ///
 /// This is the SINGLE choke point every owner path reaches through
 /// [`super::runtime::PgRuntime::setup`] (GUI boot, config-apply restart, headless
@@ -192,40 +226,49 @@ pub fn ensure_initialisable(dir: &Path) -> anyhow::Result<()> {
     ensure_initialisable_with(
         dir,
         quarantine_fail_enabled(),
+        permission_fail_enabled(),
         now_unix_secs(),
     )
 }
 
-/// The pure recovery rule (G-222): the seam flag and the timestamp are injected
+/// The pure recovery rule (G-222): the seam flags and the timestamp are injected
 /// so both branches are unit-testable without mutating process-global state.
 fn ensure_initialisable_with(
     dir: &Path,
     refuse_quarantine: bool,
+    refuse_permission: bool,
     at_unix_secs: u64,
 ) -> anyhow::Result<()> {
-    if inspect_cluster_dir(dir) != ClusterDirState::Residue {
-        return Ok(());
-    }
-    if refuse_quarantine {
+    let (refuse, state) = match inspect_cluster_dir(dir) {
+        // Nothing to prepare.
+        ClusterDirState::Absent | ClusterDirState::Cluster => return Ok(()),
+        // An existing-but-empty dir would make `initdb` take its
+        // existing-directory permission-change branch — vacate it instead.
+        ClusterDirState::Empty => (refuse_permission, ClusterDirState::Empty),
+        // Residue is quarantined exactly as before.
+        ClusterDirState::Residue => (refuse_quarantine, ClusterDirState::Residue),
+    };
+    if refuse {
         return Err(anyhow::Error::new(ClusterDirError {
             path: dir.to_path_buf(),
-            state: ClusterDirState::Residue,
+            state,
         }));
     }
     match quarantine_cluster_dir(dir, at_unix_secs) {
         Ok(_target) => Ok(()),
         Err(source) => {
             // The io detail is logged; the caller sees the typed error so the
-            // failure classifies as `DataDirNotEmpty` (never a bare `Unknown`).
+            // failure classifies from the STORE state (never a bare `Unknown`).
             tracing::warn!(
                 target: "fredo::pg_supervisor",
                 path = %dir.display(),
+                state = ?state,
                 error = %source,
-                "could not quarantine the non-empty cluster directory"
+                "could not vacate the cluster directory for initialisation"
             );
             Err(anyhow::Error::new(ClusterDirError {
                 path: dir.to_path_buf(),
-                state: ClusterDirState::Residue,
+                state,
             }))
         }
     }
@@ -269,6 +312,26 @@ fn quarantine_fail_enabled() -> bool {
 
 /// The pure seam rule (G-222).
 fn quarantine_fail_with(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => {
+            let raw = value.trim();
+            !raw.is_empty() && !raw.eq_ignore_ascii_case("0") && !raw.eq_ignore_ascii_case("false")
+        }
+        None => false,
+    }
+}
+
+/// Resolve the **`FREDO_PG_CLUSTER_PERMISSION_FAIL`** seam (mirrors the other
+/// G-275 levers): `true` when the env var is set to a non-blank value other than
+/// `0`/`false`, else `false`. Inert by default.
+fn permission_fail_enabled() -> bool {
+    permission_fail_with(std::env::var(PG_CLUSTER_PERMISSION_FAIL_ENV).ok().as_deref())
+}
+
+/// The pure permission-seam rule (G-222) — byte-identical semantics to
+/// [`quarantine_fail_with`]: armed = trimmed non-blank AND != `0` AND != `false`
+/// (ASCII case-insensitive); inert otherwise.
+fn permission_fail_with(value: Option<&str>) -> bool {
     match value {
         Some(value) => {
             let raw = value.trim();
@@ -459,40 +522,59 @@ mod tests {
         assert!(override_target.join("start.log").is_file());
     }
 
-    /// `ensure_initialisable` quarantines residue and leaves the other three
-    /// states completely untouched (no rename, no delete).
+    /// `ensure_initialisable` VACATES an empty dir and QUARANTINES residue by
+    /// rename (never a delete), and leaves `Absent`/`Cluster` completely
+    /// untouched (no rename, no delete).
     #[test]
-    fn ensure_initialisable_quarantines_only_residue() {
+    fn ensure_initialisable_vacates_empty_and_quarantines_residue() {
         let root = tempfile::tempdir().expect("tempdir");
 
         // Absent -> Ok, still absent.
         let absent = root.path().join("absent");
-        ensure_initialisable_with(&absent, false, 7).expect("absent is initialisable");
+        ensure_initialisable_with(&absent, false, false, 7).expect("absent is initialisable");
         assert!(!absent.exists(), "an absent dir must not be created here");
 
-        // Empty -> Ok, still empty.
-        let empty = root.path().join("empty");
+        // Empty -> VACATED by rename (never deleted): the path is absent and a
+        // timestamped sibling holds the (still empty) directory.
+        let empty = root.path().join("empty-cluster");
         std::fs::create_dir_all(&empty).expect("create empty");
-        ensure_initialisable_with(&empty, false, 7).expect("empty is initialisable");
-        assert!(empty.is_dir(), "an empty dir stays in place");
+        ensure_initialisable_with(&empty, false, false, 7).expect("empty is vacated");
+        assert!(!empty.exists(), "the empty dir is vacated by rename");
+        assert_eq!(
+            inspect_cluster_dir(&empty),
+            ClusterDirState::Absent,
+            "the vacated path is ready for initdb to create"
+        );
+        let empty_sibling = root.path().join("empty-cluster.rejected-7");
+        assert!(
+            empty_sibling.is_dir(),
+            "the vacated directory survives under the timestamped sibling"
+        );
+        assert_eq!(
+            std::fs::read_dir(&empty_sibling)
+                .expect("read the vacated sibling")
+                .count(),
+            0,
+            "the vacated empty directory is preserved (nothing added, nothing deleted)"
+        );
 
-        // Cluster -> Ok, untouched.
+        // Cluster -> Ok, untouched (never vacated).
         let cluster = root.path().join("cluster-proof");
         seed_cluster(&cluster);
-        ensure_initialisable_with(&cluster, false, 7).expect("a cluster is initialisable");
-        assert!(cluster.join(PG_CLUSTER_MARKER).is_file(), "the cluster stays in place");
+        ensure_initialisable_with(&cluster, false, false, 7).expect("a cluster is initialisable");
         assert!(
-            !root
-                .path()
-                .join(format!("{PG_REJECT_PREFIX}7"))
-                .exists(),
-            "a cluster must never be quarantined"
+            cluster.join(PG_CLUSTER_MARKER).is_file(),
+            "the cluster stays in place"
+        );
+        assert!(
+            !root.path().join("cluster-proof.rejected-7").exists(),
+            "an initialised cluster must never be vacated"
         );
 
         // Residue -> quarantined, initialisable afterwards.
         let residue = root.path().join(PG_CLUSTER_SUBDIR);
         seed_residue(&residue);
-        ensure_initialisable_with(&residue, false, 11).expect("residue is quarantined");
+        ensure_initialisable_with(&residue, false, false, 11).expect("residue is quarantined");
         assert!(!residue.exists(), "the residue path is vacated");
         assert_eq!(
             inspect_cluster_dir(&residue),
@@ -514,7 +596,7 @@ mod tests {
         let residue = root.path().join(PG_CLUSTER_SUBDIR);
         seed_residue(&residue);
 
-        let error = ensure_initialisable_with(&residue, true, 99)
+        let error = ensure_initialisable_with(&residue, true, false, 99)
             .expect_err("the seam must refuse to quarantine");
         let typed = error
             .downcast_ref::<ClusterDirError>()
@@ -531,6 +613,119 @@ mod tests {
         assert!(
             !root.path().join(format!("{PG_REJECT_PREFIX}99")).exists(),
             "a refused quarantine creates no sibling"
+        );
+    }
+
+    /// With the permission seam armed, an EMPTY directory is REFUSED (not
+    /// vacated): the typed `ClusterDirError` surfaces with the `Empty` state and
+    /// the actionable remedy, and the directory is left untouched.
+    #[test]
+    fn ensure_initialisable_refuses_empty_vacate_under_the_permission_seam() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let empty = root.path().join(PG_CLUSTER_SUBDIR);
+        std::fs::create_dir_all(&empty).expect("create empty");
+
+        let error = ensure_initialisable_with(&empty, false, true, 99)
+            .expect_err("the permission seam must refuse to vacate");
+        let typed = error
+            .downcast_ref::<ClusterDirError>()
+            .expect("the error must be a typed ClusterDirError");
+        assert_eq!(typed.path, empty);
+        assert_eq!(
+            typed.state,
+            ClusterDirState::Empty,
+            "the typed state must carry Empty so classification picks permission-denied"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("permission"),
+            "the message names the permission refusal: {message}"
+        );
+        assert!(
+            message.contains("FREDO_PG_DATA_DIR"),
+            "the message names the writable-folder remedy: {message}"
+        );
+        assert!(
+            message.contains("Nothing is removed"),
+            "the message is non-destructive: {message}"
+        );
+
+        // Nothing was renamed or deleted under the refusal.
+        assert!(empty.is_dir(), "the directory is untouched");
+        assert_eq!(
+            std::fs::read_dir(&empty)
+                .expect("read the untouched dir")
+                .count(),
+            0,
+            "the directory is still empty (nothing added)"
+        );
+        assert!(
+            !root.path().join(format!("{PG_REJECT_PREFIX}99")).exists(),
+            "a refused vacate creates no sibling"
+        );
+    }
+
+    /// The permission seam is inert by default and `0`/`false` leaves it off —
+    /// the same rule as the shipped quarantine seam (G-275/G-222).
+    #[test]
+    fn permission_fail_rule_is_inert_by_default_and_reads_the_lever() {
+        assert_eq!(
+            PG_CLUSTER_PERMISSION_FAIL_ENV, "FREDO_PG_CLUSTER_PERMISSION_FAIL",
+            "the seam env name is the QA-facing contract"
+        );
+        assert!(!permission_fail_with(None), "unset is inert");
+        assert!(!permission_fail_with(Some("")), "blank is inert");
+        assert!(!permission_fail_with(Some("   ")), "blank is inert");
+        assert!(!permission_fail_with(Some("0")), "0 is inert");
+        assert!(!permission_fail_with(Some("false")), "false is inert");
+        assert!(!permission_fail_with(Some("FALSE")), "false is case-insensitive");
+        assert!(permission_fail_with(Some("1")));
+        assert!(permission_fail_with(Some("true")));
+        assert!(permission_fail_with(Some("yes")));
+    }
+
+    /// `ClusterDirError`'s `Display` is STATE-AWARE: the `Empty` state carries the
+    /// permission remedy, the `Residue` state keeps the Spec #3180 wording.
+    #[test]
+    fn cluster_dir_error_display_is_state_aware() {
+        let path = PathBuf::from("C:/app/postgres/cluster");
+
+        let empty_text = ClusterDirError {
+            path: path.clone(),
+            state: ClusterDirState::Empty,
+        }
+        .to_string();
+        assert!(
+            empty_text.contains("could not be prepared for initialisation"),
+            "{empty_text}"
+        );
+        assert!(
+            empty_text.contains("the filesystem refused the permission change"),
+            "{empty_text}"
+        );
+        assert!(
+            empty_text.contains("grant the current Windows user modify permission"),
+            "{empty_text}"
+        );
+        assert!(empty_text.contains("FREDO_PG_DATA_DIR"), "{empty_text}");
+        assert!(empty_text.contains("Nothing is removed."), "{empty_text}");
+        assert!(
+            !empty_text.contains("is not empty and could not be quarantined"),
+            "the Empty state must not reuse the residue wording: {empty_text}"
+        );
+
+        let residue_text = ClusterDirError {
+            path,
+            state: ClusterDirState::Residue,
+        }
+        .to_string();
+        assert!(
+            residue_text.contains("is not empty and could not be quarantined"),
+            "the Residue wording must stay unchanged: {residue_text}"
+        );
+        assert!(
+            residue_text.contains("move or rename it, then restart Fredo"),
+            "{residue_text}"
         );
     }
 

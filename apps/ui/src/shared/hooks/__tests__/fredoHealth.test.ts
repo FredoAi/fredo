@@ -258,6 +258,26 @@ describe('#3180 — postgres cause + remedy + technical detail', () => {
     expect(line.technicalDetail).toBe('initdb: directory "postgres" exists but is not empty');
   });
 
+  it('dataDirPermissionDenied → down with the permission remedy, never tells the user to delete', () => {
+    const line = pgLine({
+      state: 'failed',
+      failureKind: 'dataDirPermissionDenied',
+      error:
+        'the PostgreSQL cluster directory D:/a/run-fresh/postgres/cluster could not be prepared for initialisation',
+    });
+    expect(line.state).toBe('down');
+    expect(line.detail).toBe('Windows is blocking Fredo from preparing the database folder.');
+    expect(line.remedy).toBe(
+      "Grant your Windows user modify permission on the PostgreSQL cluster folder's parent, or choose a writable folder with FREDO_PG_DATA_DIR, then restart Fredo. Nothing is removed.",
+    );
+    expect(line.technicalDetail).toBe(
+      'the PostgreSQL cluster directory D:/a/run-fresh/postgres/cluster could not be prepared for initialisation',
+    );
+    // Non-destructive (R-2.2): the remedy never instructs a deletion.
+    expect(line.remedy?.toLowerCase()).not.toContain('delete');
+    expect(line.remedy).toContain('Nothing is removed.');
+  });
+
   it('portInUse → down, names Settings → Database and the port control', () => {
     const line = pgLine({ state: 'failed', failureKind: 'portInUse', error: 'address in use' });
     expect(line.state).toBe('down');

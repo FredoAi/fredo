@@ -463,6 +463,34 @@ describe('useFredoHealth — #3180 failure copy normalization (consumer boundary
     });
   });
 
+  it('keeps the dataDirPermissionDenied member through the closed validator (#3188 ST-3)', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        pg_supervisor_status: () => ({
+          state: 'failed',
+          failureKind: 'dataDirPermissionDenied',
+          error: 'permission refused',
+        }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(stateOf(result.current, 'postgres')).toBe('down');
+    result.current.subsystems.forEach((line) => {
+      if (line.id === 'postgres') {
+        expect(line.detail).toBe('Windows is blocking Fredo from preparing the database folder.');
+        expect(line.remedy).toContain('FREDO_PG_DATA_DIR');
+        expect(line.remedy).toContain('Nothing is removed.');
+        expect(line.technicalDetail).toBe('permission refused');
+      }
+    });
+  });
+
   it('drops an unknown failureKind to null and falls back to the unknown cause (closed validator)', async () => {
     adapterBridge.setInvoke(
       makeInvoke({
