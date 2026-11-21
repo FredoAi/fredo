@@ -136,7 +136,7 @@
     CHECK REQ-2.8 PASS   SURFACE_RECT=launcher-command-bar x= y= w= h= viewport=<WxH> source=getBoundingClientRect
     SURFACE_RECT=launcher-command-bar ... source=getBoundingClientRect
     QUARANTINE_EVIDENCE=<absolute path>
-    NEGATIVE_EXPECTED=<id> NEGATIVE_OBSERVED=<ids> GATE_EXIT=<n>
+    NEGATIVE_EXPECTED=<id>[+<id>...] NEGATIVE_OBSERVED=<ids> GATE_EXIT=<n>
     MANUAL_ENTRY=true
     VERDICT=PASS|FAIL|REFUSED
     RECEIPT=<path>
@@ -223,7 +223,7 @@ $script:QuarantinePath = ''
 $script:SurfaceRect = ''
 $script:CdpJsonFresh = $null
 $script:NegativeObserved = @()
-$script:NegativeExpected = ''
+$script:NegativeExpected = @()
 $script:NegativeGateExit = $null
 
 function Reset-RunState {
@@ -240,7 +240,7 @@ function Reset-RunState {
     $script:SurfaceRect = ''
     $script:CdpJsonFresh = $null
     $script:NegativeObserved = @()
-    $script:NegativeExpected = ''
+    $script:NegativeExpected = @()
     $script:NegativeGateExit = $null
     $script:StartedAt = Get-Date
 }
@@ -1020,17 +1020,30 @@ function Publish-EvidenceSet {
 }
 
 # ---- negative leg verdict ----------------------------------------------------
+# The EXPECTATION is a SET of ids, because one leg can owe more than one.
+#   MissingDll -> LAUNCH_EXIT:-1073741515                (one id)
+#   Csp        -> CSP_VIOLATION AND UNSTYLED             (REQ-3.2a / QA F-15: the
+#                 0.2.3 mechanism is a nonce-bearing style-src, which BOTH refuses
+#                 the runtime style tags AND leaves the UI unstyled. UNSTYLED
+#                 alone, or CSP_VIOLATION alone, is NEGATIVE_WRONG_ERROR.)
+#   Database   -> DB_NOT_READY:dirty                     (one id)
+# EVERY expected id must be observed for the leg to count as reproduced.
 
 function Get-ExpectedNegativeId {
     param([string]$Name)
+    # Callers ALWAYS wrap this with @(...): a one-element set unrolls to a scalar
+    # on return, so `.Count` is only reliable through the wrapper.
     switch ($Name) {
-        'MissingDll' { return 'LAUNCH_EXIT:-1073741515' }
-        'Csp' { return 'CSP_VIOLATION' }
-        'Database' { return 'DB_NOT_READY:dirty' }
-        default { return '' }
+        'MissingDll' { return @('LAUNCH_EXIT:-1073741515') }
+        'Csp' { return @('CSP_VIOLATION', 'UNSTYLED') }
+        'Database' { return @('DB_NOT_READY:dirty') }
+        default { return @() }
     }
 }
 
+# Single-id matcher: does ONE observation satisfy ONE expectation? Kept as the
+# sole comparison primitive so the signed/unsigned LAUNCH_EXIT equivalence lives
+# in exactly one place; Get-MissingExpectedIds below applies it per expected id.
 function Test-ObservedId {
     param([string[]]$Observed, [string]$Expected)
 
@@ -1073,8 +1086,22 @@ function Test-ObservedId {
     return $false
 }
 
+# The ids in the expected SET that the observation set does NOT satisfy.
+function Get-MissingExpectedIds {
+    param([string[]]$Expected, [string[]]$Observed)
+
+    $missing = New-Object System.Collections.ArrayList
+    foreach ($expectedId in $Expected) {
+        if ([string]::IsNullOrWhiteSpace($expectedId)) { continue }
+        if (-not (Test-ObservedId -Observed $Observed -Expected $expectedId)) {
+            [void]$missing.Add($expectedId)
+        }
+    }
+    return @($missing)
+}
+
 function Get-NegativeVerdict {
-    param([string]$Expected, [string[]]$Observed, [int]$GateExit)
+    param([string[]]$Expected, [string[]]$Observed, [int]$GateExit)
 
     $verdict = [pscustomobject]@{ Reproduced = $false; Id = ''; Detail = '' }
 
@@ -1084,19 +1111,19 @@ function Get-NegativeVerdict {
         return $verdict
     }
 
-    if (Test-ObservedId -Observed $Observed -Expected $Expected) {
+    $missing = @(Get-MissingExpectedIds -Expected $Expected -Observed $Observed)
+    if ($missing.Count -eq 0) {
         $verdict.Reproduced = $true
         return $verdict
     }
 
-    if ($Observed.Count -eq 0) {
-        $verdict.Id = 'NEGATIVE_NOT_REPRODUCED'
-        $verdict.Detail = 'the gate failed without emitting any named error'
-        return $verdict
-    }
-
+    # The gate failed, but not with the whole expected set: a partial
+    # reproduction (the Csp leg emitting only one of its two ids) is the wrong
+    # error, never a pass.
+    $observedText = 'none'
+    if ($Observed.Count -gt 0) { $observedText = ($Observed -join ',') }
     $verdict.Id = 'NEGATIVE_WRONG_ERROR'
-    $verdict.Detail = 'expected ' + $Expected + ' observed ' + ($Observed -join ',')
+    $verdict.Detail = ('expected ' + (($Expected -join '+')) + ' observed ' + $observedText + ' missing=' + (($missing -join '+')))
     return $verdict
 }
 
@@ -1108,7 +1135,12 @@ function Publish-NegativeVerdict {
     $gateExitText = 'none'
     if ($null -ne $script:NegativeGateExit) { $gateExitText = [string]$script:NegativeGateExit }
 
-    Emit ('NEGATIVE_EXPECTED=' + $script:NegativeExpected)
+    # The expected SET in a stable, greppable form: one id is printed bare,
+    # several are joined with '+'.
+    $expectedText = ''
+    if ($script:NegativeExpected.Count -gt 0) { $expectedText = ($script:NegativeExpected -join '+') }
+
+    Emit ('NEGATIVE_EXPECTED=' + $expectedText)
     Emit ('NEGATIVE_OBSERVED=' + $observedText)
     Emit ('GATE_EXIT=' + $gateExitText)
 
@@ -1414,6 +1446,12 @@ function Invoke-GateMode {
 #     Observed (string[] of `ID` or `ID:<detail>` emitted by the inner gate)
 #     GateExit (int, the inner gate's own exit code)
 #   Anything else (a missing export, a throw) is reported as GATE_REFUSED.
+#
+#   The DRIVER owns the verdict, and its expectation is a SET: the Csp leg must
+#   reproduce BOTH `CSP_VIOLATION` AND `UNSTYLED` (REQ-3.2a / QA F-15) - a leg
+#   that induced only one of them is the wrong error, not a pass. A module that
+#   also returns an `Expected` array is NOT consulted: the driver's table is the
+#   single source of the contract.
 
 function Invoke-NegativeMode {
     param([string]$OutRoot)
@@ -1473,7 +1511,7 @@ function Invoke-NegativeMode {
         return (Complete-Run -OutRoot $OutRoot -Installers $installerFull -ChecksExpected $false)
     }
 
-    $script:NegativeExpected = Get-ExpectedNegativeId -Name $Negative
+    $script:NegativeExpected = @(Get-ExpectedNegativeId -Name $Negative)
 
     $legResult = $null
     try {
@@ -1947,7 +1985,7 @@ function Invoke-SelfTest {
         if (-not $ok) { $failures++ }
 
         # ---------- 18. NEGATIVE_NOT_REPRODUCED (fail class) --------------
-        $expected = Get-ExpectedNegativeId -Name 'MissingDll'
+        $expected = @(Get-ExpectedNegativeId -Name 'MissingDll')
         $run = Invoke-Captured {
             $script:NegativeExpected = $expected
             $script:NegativeObserved = @()
@@ -1971,6 +2009,57 @@ function Invoke-SelfTest {
         }
         $ok = ($run.Code -eq 1) -and ($run.Ids -contains 'NEGATIVE_WRONG_ERROR')
         New-ControlLine 'NEGATIVE_WRONG_ERROR' 'a leg failing with another id fails (exit 1)' $ok ("exit=$($run.Code) ids=$($run.Ids -join ',')")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 19a. CSP_PAIR_PARTIAL (REQ-3.2a / QA F-15) ------------
+        # The Csp leg owes BOTH ids. A partial reproduction (CSP_VIOLATION only,
+        # or UNSTYLED only) must be NEGATIVE_WRONG_ERROR, never an accepted leg.
+        $cspExpected = @(Get-ExpectedNegativeId -Name 'Csp')
+        $cspExpectedSetOk = ($cspExpected.Count -eq 2) -and ($cspExpected -contains 'CSP_VIOLATION') -and ($cspExpected -contains 'UNSTYLED')
+        $runCspOnly = Invoke-Captured {
+            $script:NegativeExpected = $cspExpected
+            $script:NegativeObserved = @('CSP_VIOLATION: 122 recorded')
+            $script:NegativeGateExit = 1
+            $v = Get-NegativeVerdict -Expected $cspExpected -Observed @('CSP_VIOLATION: 122 recorded') -GateExit 1
+            Publish-NegativeVerdict -Verdict $v | Out-Null
+            Get-FinalExitCode
+        }
+        $runStyledOnly = Invoke-Captured {
+            $script:NegativeExpected = $cspExpected
+            $script:NegativeObserved = @('UNSTYLED: injected style produced 0 rules')
+            $script:NegativeGateExit = 1
+            $v = Get-NegativeVerdict -Expected $cspExpected -Observed @('UNSTYLED: injected style produced 0 rules') -GateExit 1
+            Publish-NegativeVerdict -Verdict $v | Out-Null
+            Get-FinalExitCode
+        }
+        $ok = $cspExpectedSetOk -and
+              ($runCspOnly.Code -eq 1) -and
+              ($runCspOnly.Ids -contains 'NEGATIVE_WRONG_ERROR') -and
+              (Test-ContainsLine $runCspOnly.Lines 'missing=UNSTYLED') -and
+              (Test-ContainsLine $runCspOnly.Lines 'NEGATIVE_EXPECTED=CSP_VIOLATION+UNSTYLED') -and
+              ($runStyledOnly.Code -eq 1) -and
+              ($runStyledOnly.Ids -contains 'NEGATIVE_WRONG_ERROR') -and
+              (Test-ContainsLine $runStyledOnly.Lines 'missing=CSP_VIOLATION')
+        New-ControlLine 'CSP_PAIR_PARTIAL' 'one half of the CSP/UNSTYLED pair is the wrong error (exit 1)' $ok ("expected=$($cspExpected -join '+') csp-only-exit=$($runCspOnly.Code) styled-only-exit=$($runStyledOnly.Code)")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 19b. CSP_PAIR_FULL (REQ-3.2a / QA F-15) ----------------
+        # Both ids observed => the leg reproduced: exit 0, no named error, and the
+        # full expected set printed in its stable greppable form.
+        $runPair = Invoke-Captured {
+            $script:NegativeExpected = $cspExpected
+            $script:NegativeObserved = @('CSP_VIOLATION: 122 recorded', 'UNSTYLED: injected style produced 0 rules')
+            $script:NegativeGateExit = 1
+            $v = Get-NegativeVerdict -Expected $cspExpected -Observed @('CSP_VIOLATION: 122 recorded', 'UNSTYLED: injected style produced 0 rules') -GateExit 1
+            Publish-NegativeVerdict -Verdict $v | Out-Null
+            Get-FinalExitCode
+        }
+        $ok = ($runPair.Code -eq 0) -and
+              ($runPair.Ids.Count -eq 0) -and
+              (Test-ContainsLine $runPair.Lines 'NEGATIVE_EXPECTED=CSP_VIOLATION+UNSTYLED') -and
+              (Test-ContainsLine $runPair.Lines 'NEGATIVE_OBSERVED=CSP_VIOLATION: 122 recorded,UNSTYLED: injected style produced 0 rules') -and
+              (Test-ContainsLine $runPair.Lines 'GATE_EXIT=1')
+        New-ControlLine 'CSP_PAIR_FULL' 'both halves of the CSP/UNSTYLED pair reproduce the leg (exit 0)' $ok ("exit=$($runPair.Code) ids=$($runPair.Ids -join ',')")
         if (-not $ok) { $failures++ }
 
         # ---------- 20. GATE_REFUSED (dispatch) ---------------------------
