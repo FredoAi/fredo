@@ -146,22 +146,24 @@ fn write_atomically(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// **Q-17 log-destination mechanism (Spec #2978 S4, REQ-3.2).** The crate
-/// (`postgresql_embedded` 0.21) owns the postmaster spawn, so Fredo cannot apply
-/// `CREATE_NO_WINDOW`/stdout redirection at the spawn boundary (the
-/// `applications/llm_server/process.rs` pattern). The crate DOES expose its server
-/// configuration surface — [`Settings::configuration`] ("Server configuration
-/// options", a `HashMap<String, String>`) — so the postmaster's own
-/// `logging_collector` is pointed at `<data_dir>/log/postgres.log`, the exact
-/// path [`crate::applications::pg_supervisor::state::pg_server_log_tail`] reads.
+/// **Q-17 log-destination mechanism (Spec #2978 S4, REQ-3.2; relocated by
+/// Spec #3180 ST-1).** The crate (`postgresql_embedded` 0.21) owns the postmaster
+/// spawn, so Fredo cannot apply `CREATE_NO_WINDOW`/stdout redirection at the spawn
+/// boundary (the `applications/llm_server/process.rs` pattern). The crate DOES
+/// expose its server configuration surface — [`Settings::configuration`] ("Server
+/// configuration options", a `HashMap<String, String>`) — so the postmaster's own
+/// `logging_collector` is pointed at the resolved LOG directory's
+/// `postgres.log`, the exact path
+/// [`crate::applications::pg_supervisor::state::pg_server_log_tail`] reads.
 ///
-/// `log_directory = 'log'` is resolved by PostgreSQL relative to the data
-/// directory, so the collector writes `<data_dir>/log/postgres.log`. Rotation is
-/// disabled (`log_rotation_age`/`log_rotation_size = 0`) so the filename is
-/// stable and the tail never races a renamed file.
+/// `log_directory` is NOT a literal here: [`build_settings`] inserts the ABSOLUTE
+/// resolved log dir ([`super::resolve_log_dir`]) so the collector writes OUTSIDE
+/// the `initdb` target (a relative `"log"` would land inside it and re-open the
+/// "directory not empty" class). Rotation is disabled
+/// (`log_rotation_age`/`log_rotation_size = 0`) so the filename is stable and the
+/// tail never races a renamed file.
 pub const PG_LOG_COLLECTOR_CONFIG: &[(&str, &str)] = &[
     ("logging_collector", "on"),
-    ("log_directory", "log"),
     ("log_filename", "postgres.log"),
     ("log_rotation_age", "0"),
     ("log_rotation_size", "0"),
@@ -385,9 +387,14 @@ pub(crate) fn apply_acquisition_mode(settings: &mut Settings, mode: PgAcquisitio
 /// The ONE place `Settings` is assembled (Spec #3076 ST-2). Every constructor
 /// funnels through here, and [`apply_acquisition_mode`] runs BEFORE the caller's
 /// `PostgreSQL::new` (G-404).
+///
+/// `log_dir` is the ABSOLUTE resolved postmaster log directory
+/// ([`super::resolve_log_dir`], Spec #3180 ST-1); it is installed as the
+/// `log_directory` server value so the collector writes outside the cluster dir.
 fn build_settings(
     data_dir: &Path,
     install_dir: &Path,
+    log_dir: &Path,
     password: String,
     port: u16,
     log_min_messages: Option<&str>,
@@ -404,9 +411,13 @@ fn build_settings(
     // G-263: a finite bound on EVERY `pg_ctl` control command. Leaving this
     // `None` is exactly what let `pg_ctl -w stop` wait ~11 h in #2948.
     settings.timeout = Some(PG_CONTROL_TIMEOUT);
-    // Q-17 (S4): point the crate-spawned postmaster's logging collector at
-    // `<data_dir>/log/postgres.log` through the crate's server-configuration
-    // hook. This is the surface `pg_server_log_tail` reads (REQ-3.2).
+    // Q-17 (S4) + #3180 ST-1: point the crate-spawned postmaster's logging
+    // collector at an ABSOLUTE directory OUTSIDE the cluster data dir, so the
+    // `initdb` target stays empty apart from cluster files. This is the surface
+    // `pg_server_log_tail` reads (REQ-3.2).
+    settings
+        .configuration
+        .insert("log_directory".to_string(), log_dir.display().to_string());
     for &(key, value) in PG_LOG_COLLECTOR_CONFIG {
         settings
             .configuration
@@ -453,6 +464,16 @@ fn build_settings(
     settings
 }
 
+/// The three filesystem roots a [`PgRuntime`] is assembled from (Spec #3180
+/// ST-1-ci1). Grouping them keeps [`PgRuntime::assemble`] within clippy's
+/// argument limit without changing any constructor's argument list or the
+/// resulting settings.
+struct SettingsPaths<'a> {
+    data_dir: &'a Path,
+    install_dir: &'a Path,
+    log_dir: &'a Path,
+}
+
 impl PgRuntime {
     /// Build a runtime rooted at `app_data_dir` (data dir `<app>/postgres`, or
     /// the **FS-1** [`super::PG_DATA_DIR_ENV`] override when set; install dir
@@ -467,12 +488,20 @@ impl PgRuntime {
     /// override (Spec #2978 S2) can never make the extraction dir and the archive
     /// staging dir diverge.
     pub fn with_kill(app_data_dir: &Path, password: String, kill: KillTreeFn) -> Self {
-        Self::with_dirs(
-            &super::resolve_data_dir(app_data_dir),
-            &super::resolve_install_dir(app_data_dir),
+        // #3180 ST-1: the cluster dir, install dir and log dir all resolve from
+        // the ONE `app_data_dir` through the shared rules, so they can never
+        // diverge (the log is a SIBLING of the cluster, never inside it).
+        Self::assemble(
+            SettingsPaths {
+                data_dir: &super::resolve_data_dir(app_data_dir),
+                install_dir: &super::resolve_install_dir(app_data_dir),
+                log_dir: &super::resolve_log_dir(app_data_dir),
+            },
             password,
             kill,
             pg_stop_with_env_hook,
+            0,
+            None,
         )
     }
 
@@ -508,12 +537,16 @@ impl PgRuntime {
     pub fn with_config(
         data_dir: &Path,
         install_dir: &Path,
+        log_dir: &Path,
         password: String,
         config: &PgSupervisorConfig,
     ) -> Self {
         Self::assemble(
-            data_dir,
-            install_dir,
+            SettingsPaths {
+                data_dir,
+                install_dir,
+                log_dir,
+            },
             password,
             kill_pid_tree,
             pg_stop_with_env_hook,
@@ -525,6 +558,10 @@ impl PgRuntime {
     /// Full constructor with explicit data/install dirs and BOTH injectable seams
     /// (**FS-1**/**FS-2**). Private: [`Self::new`]/[`Self::with_kill`] are the
     /// production and retained seams; the unit tests reach it as a child module.
+    ///
+    /// The postmaster log dir is `<data_dir>/log` here (a test-only convenience
+    /// layout); production paths pass the exact [`super::resolve_log_dir`] value
+    /// through [`Self::assemble`] instead.
     fn with_dirs(
         data_dir: &Path,
         install_dir: &Path,
@@ -532,7 +569,19 @@ impl PgRuntime {
         kill: KillTreeFn,
         stop: StopFn,
     ) -> Self {
-        Self::assemble(data_dir, install_dir, password, kill, stop, 0, None)
+        let log_dir = data_dir.join(super::PG_LOG_SUBDIR);
+        Self::assemble(
+            SettingsPaths {
+                data_dir,
+                install_dir,
+                log_dir: &log_dir,
+            },
+            password,
+            kill,
+            stop,
+            0,
+            None,
+        )
     }
 
     /// Assemble a runtime from explicit dirs, seams, bind `port`, and an optional
@@ -541,19 +590,19 @@ impl PgRuntime {
     /// byte-identical to the pre-ST-2 path; [`Self::with_config`] passes the
     /// persisted config's port + verbosity.
     fn assemble(
-        data_dir: &Path,
-        install_dir: &Path,
+        paths: SettingsPaths<'_>,
         password: String,
         kill: KillTreeFn,
         stop: StopFn,
         port: u16,
         log_min_messages: Option<&str>,
     ) -> Self {
-        let data_dir = data_dir.to_path_buf();
-        let install_dir = install_dir.to_path_buf();
+        let data_dir = paths.data_dir.to_path_buf();
+        let install_dir = paths.install_dir.to_path_buf();
         let settings = build_settings(
             &data_dir,
             &install_dir,
+            paths.log_dir,
             password,
             port,
             log_min_messages,
@@ -576,12 +625,13 @@ impl PgRuntime {
     fn with_test_releases_url(
         data_dir: &Path,
         install_dir: &Path,
+        log_dir: &Path,
         password: String,
         releases_url: String,
     ) -> Self {
         let data_dir = data_dir.to_path_buf();
         let install_dir = install_dir.to_path_buf();
-        let mut settings = build_settings(&data_dir, &install_dir, password, 0, None);
+        let mut settings = build_settings(&data_dir, &install_dir, log_dir, password, 0, None);
         settings.releases_url = releases_url;
         Self {
             pg: PostgreSQL::new(settings),
@@ -639,6 +689,14 @@ impl PgRuntime {
     /// (the crate will not create the tree for us). The crate performs no
     /// download on this path.
     pub async fn setup(&mut self) -> Result<()> {
+        // #3180 ST-1: the SINGLE choke point every owner path reaches (GUI boot,
+        // config-apply restart, headless `fredo ingest`). Make the cluster directory
+        // initialisable BEFORE the crate runs: residue is quarantined by rename
+        // (never deleted) so `initdb` can never refuse on "directory not empty";
+        // a refused/failed quarantine surfaces the typed `ClusterDirError` so the
+        // status view classifies it as `DataDirNotEmpty`. A legacy cluster and an
+        // absent/empty dir are no-ops here.
+        super::cluster_dir::ensure_initialisable(&self.data_dir)?;
         if super::acquisition::trusted_install_path_enabled(super::acquisition::ACQUISITION_MODE) {
             super::acquisition::ensure_verified_install(&self.install_dir)
                 .await
@@ -938,6 +996,7 @@ impl Drop for PgRuntime {
 mod tests {
     use super::*;
     use crate::applications::pg_supervisor::config::{PgLogVerbosity, PgSupervisorConfig};
+    use crate::applications::pg_supervisor::cluster_dir::PG_CLUSTER_SUBDIR;
     use crate::applications::pg_supervisor::{
         force_start_fail, skip_server_knobs, PG_DATA_SUBDIR, PG_FORCE_START_FAIL_ENV,
         PG_SERVER_KNOBS, PG_SKIP_SERVER_KNOBS_ENV,
@@ -989,12 +1048,15 @@ mod tests {
     }
 
     /// Build a runtime with the recording kill seam and a seeded
-    /// `postmaster.pid`, so teardown paths are observable without a server.
+    /// `postmaster.pid`, so teardown paths are observable without a server. The
+    /// pid is seeded at the runtime's OWN resolved cluster dir, so the helper
+    /// tracks the #3180 ST-1 layout change without duplicating the path rule.
     fn seeded_runtime(app_data_dir: &Path, pid: u32) -> PgRuntime {
-        let data_dir = app_data_dir.join(PG_DATA_SUBDIR);
+        let runtime = PgRuntime::with_kill(app_data_dir, "test-password".to_string(), record_kill);
+        let data_dir = runtime.data_dir().to_path_buf();
         std::fs::create_dir_all(&data_dir).expect("create data dir");
         std::fs::write(data_dir.join("postmaster.pid"), format!("{pid}\n")).expect("write pid");
-        PgRuntime::with_kill(app_data_dir, "test-password".to_string(), record_kill)
+        runtime
     }
 
     #[tokio::test]
@@ -1036,7 +1098,7 @@ mod tests {
             Some(PG_CONTROL_TIMEOUT),
             "Settings::timeout must never be None (the #2948 stop hang)"
         );
-        let expected = dir.path().join(PG_DATA_SUBDIR);
+        let expected = dir.path().join(PG_DATA_SUBDIR).join(PG_CLUSTER_SUBDIR);
         assert_eq!(runtime.data_dir(), expected.as_path());
     }
 
@@ -1189,7 +1251,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let data_dir = dir.path().join("pgdata");
         let install_dir = dir.path().join("postgres-install");
-        let mut settings = build_settings(&data_dir, &install_dir, "pw".to_string(), 0, None);
+        let log_dir = dir.path().join("pglog");
+        let mut settings =
+            build_settings(&data_dir, &install_dir, &log_dir, "pw".to_string(), 0, None);
         // Reset to the crate defaults the BUNDLED branch must preserve, so the
         // bundled branch is exercised in this (default runtime-download) build.
         settings.trust_installation_dir = false;
@@ -1266,6 +1330,7 @@ mod tests {
         let mut runtime = PgRuntime::with_test_releases_url(
             &data_dir,
             &install_dir,
+            &dir.path().join("pglog"),
             "pw".to_string(),
             probe.url(),
         );
@@ -1393,12 +1458,13 @@ mod tests {
         }
     }
 
-    /// S4 / REQ-3.2 (Q-17): the crate settings point the postmaster's logging
-    /// collector at `<data_dir>/log/postgres.log` — the path the read-only tail
+    /// S4 / REQ-3.2 (Q-17) + #3180 ST-1: the crate settings point the
+    /// postmaster's logging collector at the ABSOLUTE `<data_dir>/log` directory
+    /// (a sibling of the cluster, never inside it) — the path the read-only tail
     /// reads — and the console-flash deviation is recorded (the crate exposes no
     /// creation-flag hook).
     #[test]
-    fn settings_route_the_postmaster_log_to_the_data_dir_log_path() {
+    fn settings_route_the_postmaster_log_to_the_absolute_log_dir() {
         // Explicit dirs (not the FS-1 resolver) so the assertion is independent
         // of any sibling test's process-global env state (G-222).
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1422,9 +1488,25 @@ mod tests {
                 "server configuration must set {key} = {value}"
             );
         }
+        // #3180 ST-1: the log dir is ABSOLUTE and outside the data dir — a
+        // relative `"log"` would resolve INSIDE the initdb target.
+        let expected_log_dir = data_dir.join("log");
+        assert_eq!(
+            configuration.get("log_directory").map(String::as_str),
+            Some(expected_log_dir.display().to_string().as_str()),
+            "log_directory must be the absolute log dir, not a relative \"log\""
+        );
+        assert!(
+            !configuration
+                .get("log_directory")
+                .map(String::as_str)
+                .unwrap_or_default()
+                .starts_with("log"),
+            "the collector must never receive the relative \"log\" value"
+        );
         // The path rule the tail reads and the config writes must agree.
         assert_eq!(
-            crate::applications::pg_supervisor::pg_log_path(runtime.data_dir()),
+            crate::applications::pg_supervisor::pg_log_path(&expected_log_dir),
             data_dir.join("log").join("postgres.log")
         );
         assert!(
@@ -1805,6 +1887,7 @@ mod tests {
         let runtime = PgRuntime::with_config(
             &data_dir,
             &install_dir,
+            &dir.path().join("pglog"),
             "test-password".to_string(),
             &config,
         );
@@ -1861,6 +1944,7 @@ mod tests {
         let runtime = PgRuntime::with_config(
             &data_dir,
             &install_dir,
+            &dir.path().join("pglog"),
             "test-password".to_string(),
             &PgSupervisorConfig::default(),
         );

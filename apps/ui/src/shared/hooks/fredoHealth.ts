@@ -21,10 +21,13 @@
  *
  * State-source → state mapping (frozen by the plan's Binding Names Block):
  *   - telemetry     : `StreamHealth` 1:1 → `healthy`/`degraded`/`down` (event-driven; never polled).
- *   - postgres      : `ready`/`attached` → healthy; `starting` → unknown; `failed`/`disabled` → down.
- *   - llamaServer   : `healthy` → healthy; running-but-not-ready → degraded; otherwise
- *                     (configured but not running) → down; companion not configured
- *                     (no model files) → notSetUp.
+ *   - postgres      : `ready`/`attached` → healthy; `starting` → unknown; `failed`/`disabled` → down
+ *                     (with a typed cause + remedy + raw detail — #3180 R-5).
+ *   - llamaServer   : `healthy` → healthy; `starting` (in-flight) → unknown "Starting";
+ *                     running-but-not-ready → degraded; a TYPED failure → down with a
+ *                     remedy + detail; otherwise (idle) → unknown "Idle". NEVER a false
+ *                     `down` for idle/starting (#3180); companion not configured (no
+ *                     model files) → notSetUp.
  *   - companionModel: model files complete → healthy; companion configured but files
  *                     missing → down; companion not configured → notSetUp.
  *
@@ -36,9 +39,20 @@
 // ── Aggregate (worst-wins over enabled subsystems) ───────────────────────────
 
 import type { StreamHealth } from './streamHealth';
+import {
+  engineFailureCopy,
+  type CompanionEngineErrorCode,
+} from '../components/companion/companionReadiness';
 
 /** The three-valued overall health. There is deliberately NO `unknown`/`checking` value. */
 export type FredoHealthState = 'healthy' | 'degraded' | 'down';
+
+/**
+ * Postgres failure cause (#3180 ST-3) — the camelCase subset of the backend
+ * `PgFailureKind` the health surface renders (additive `dataDirNotEmpty`). A
+ * `null`/absent kind is treated as `unknown`.
+ */
+export type FredoPgFailureKind = 'authMismatch' | 'portInUse' | 'dataDirNotEmpty' | 'unknown';
 
 /**
  * Per-subsystem health. `notSetUp` and `unknown` are NEUTRAL: neither by itself
@@ -60,6 +74,16 @@ export interface FredoHealthLine {
   label: string;
   state: SubsystemHealth;
   detail: string;
+  /**
+   * The next step a user can take — one sentence, present only on a `down` row
+   * (#3180 R-5.3). ABSENT KEY when unset — never `null`.
+   */
+  remedy?: string;
+  /**
+   * Raw, untranslated backend evidence (a typed engine code, a Postgres error).
+   * ABSENT KEY when unset — never `null` (#3180, wire rule G-413).
+   */
+  technicalDetail?: string;
 }
 
 /** The whole-system readout: one overall state + exactly the four subsystem lines, fixed order. */
@@ -122,6 +146,16 @@ export interface FredoCompanionSnapshot {
 export interface FredoLlamaServerSnapshot {
   running: boolean;
   healthy: boolean;
+  /**
+   * An engine start is in flight (#3180 ST-2). A NON-optional boolean — always
+   * present on the wire, exactly like `backendMode`/`devices`; absent/foreign
+   * payloads settle to `false` (idle) in the normalizer.
+   */
+  starting: boolean;
+  /** Typed failure of the most recent start — ABSENT KEY when none. */
+  lastErrorCode?: CompanionEngineErrorCode;
+  /** Raw persisted engine error — ABSENT KEY when unset/empty. */
+  lastError?: string;
 }
 
 /**
@@ -137,8 +171,60 @@ export interface FredoHealthSnapshots {
   /** Llama-server status probe; `null` while unresolved/unavailable. */
   llamaServer: FredoLlamaServerSnapshot | null;
   /** Postgres supervisor status probe; `null` while unresolved/unavailable. */
-  postgres: { state: FredoPgState } | null;
+  postgres: {
+    state: FredoPgState;
+    /** Additive typed cause (#3180); `null`/absent → treated as `unknown`. */
+    failureKind?: FredoPgFailureKind | null;
+    /** Raw backend error carried verbatim to `technicalDetail`. */
+    error?: string | null;
+  } | null;
 }
+
+/**
+ * Build a line, adding the two optional fields ONLY when they carry a value —
+ * they are ABSENT KEYS when unset (never `null`; #3180 wire rule / G-413).
+ */
+function makeLine(
+  id: FredoSubsystemId,
+  label: string,
+  state: SubsystemHealth,
+  detail: string,
+  extra?: { remedy?: string; technicalDetail?: string },
+): FredoHealthLine {
+  const line: FredoHealthLine = { id, label, state, detail };
+  if (extra?.remedy) line.remedy = extra.remedy;
+  if (extra?.technicalDetail) line.technicalDetail = extra.technicalDetail;
+  return line;
+}
+
+/**
+ * Postgres failure copy (#3180 ST-3), authored from the typed causes. `cause`
+ * is the row `detail`; `remedy` is the user's next step (R-5.1/R-5.3). No
+ * SQLSTATE, stack trace or raw library string appears in the remedy — that
+ * belongs in `technicalDetail` (`status.error`). The `dataDirNotEmpty` remedy
+ * names the cluster folder and says move/rename — it NEVER tells the user to
+ * delete data (R-2.2 — recovery is a rename, never a delete).
+ */
+const PG_FAILURE_COPY: Record<FredoPgFailureKind, { cause: string; remedy: string }> = {
+  dataDirNotEmpty: {
+    cause: 'The database folder Fredo uses already contains files.',
+    remedy:
+      "Move or rename the PostgreSQL cluster folder (postgres/cluster in Fredo's app-data folder), then restart Fredo. Nothing is removed.",
+  },
+  portInUse: {
+    cause: 'The database port Fredo needs is already in use.',
+    remedy: 'Change the port in Settings → Database, then restart Fredo.',
+  },
+  authMismatch: {
+    cause: 'Fredo cannot sign in to the database with its saved password.',
+    remedy:
+      'Open Settings → Database and reset the database. This deletes local Fredo data.',
+  },
+  unknown: {
+    cause: "The database didn't start and the cause is unknown.",
+    remedy: 'Restart Fredo. If it keeps failing, open Settings → Database.',
+  },
+};
 
 /**
  * Map the three-valued `StreamHealth` 1:1 onto the telemetry subsystem line
@@ -157,27 +243,49 @@ function telemetryLine(health: StreamHealth): FredoHealthLine {
   }
 }
 
+/**
+ * Companion engine line — the #3180 honest-state precedence (G-220: every
+ * branch stays reachable). `down` is reserved for a TYPED failure and then
+ * always carries a remedy + technical detail; an idle or in-flight engine is
+ * NEUTRAL (`unknown`), never a false `down`/`Not running`.
+ */
 function llamaServerLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
   const { companion, llamaServer } = snapshots;
-  const line = (state: SubsystemHealth, detail: string): FredoHealthLine => ({
-    id: 'llamaServer',
-    label: SUBSYSTEM_LABELS.llamaServer,
-    state,
-    detail,
-  });
-  // Unresolved companion probe → neutral `unknown`.
+  const line = (
+    state: SubsystemHealth,
+    detail: string,
+    extra?: { remedy?: string; technicalDetail?: string },
+  ): FredoHealthLine => makeLine('llamaServer', SUBSYSTEM_LABELS.llamaServer, state, detail, extra);
+
+  // 1. Unresolved companion probe → neutral `unknown`.
   if (!companion) return line('unknown', 'Checking');
-  // Not configured (no model files) → neutral `notSetUp` (never degrades — AC4).
+  // 2. Not configured (no model files) → neutral `notSetUp` (never degrades — AC4).
   // Spec #3141 ST-6: this gate used to read the retired runtime-install flag;
   // "configured" now means the model files are present.
   if (!companion.modelFilesComplete) return line('notSetUp', 'Not set up');
-  // Configured: the engine must be running AND ready to read healthy.
+  // 3. Unresolved engine probe → neutral `unknown`.
   if (!llamaServer) return line('unknown', 'Checking');
+  // 4. Loaded and ready to accept a turn.
   if (llamaServer.healthy) return line('healthy', 'Running');
-  // Loaded but not yet accepting a turn — a transition, not a failure.
+  // 5. An engine start is in flight (#3180 ST-2) — neutral, NEVER `down`.
+  if (llamaServer.starting) return line('unknown', 'Starting');
+  // 6. Loaded-but-not-ready fallback (the legacy branch, now reachable) — a
+  //    transition, not a failure.
   if (llamaServer.running) return line('degraded', 'Starting');
-  // Configured but idle: the shot the LED must never hide behind `unknown`.
-  return line('down', 'Not running');
+  // 7. A TYPED start failure owns `down`, always with a remedy + raw detail.
+  if (llamaServer.lastErrorCode) {
+    const copy = engineFailureCopy(llamaServer.lastErrorCode);
+    const technicalDetail = llamaServer.lastError
+      ? `${llamaServer.lastErrorCode} · ${llamaServer.lastError}`
+      : llamaServer.lastErrorCode;
+    return line('down', 'Could not start', {
+      remedy: `${copy.sentence} Open Settings → Companion.`,
+      technicalDetail,
+    });
+  }
+  // 8. Configured but idle, with no failure on record → neutral `unknown`
+  //    ("Idle"), NEVER `down` (a launch start or the first turn owns the start).
+  return line('unknown', 'Idle');
 }
 
 function companionModelLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
@@ -198,19 +306,36 @@ function companionModelLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
 
 function postgresLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
   const status = snapshots.postgres;
-  const base = { id: 'postgres' as const, label: SUBSYSTEM_LABELS.postgres };
-  if (!status) return { ...base, state: 'unknown', detail: 'Starting' };
+  const line = (
+    state: SubsystemHealth,
+    detail: string,
+    extra?: { remedy?: string; technicalDetail?: string },
+  ): FredoHealthLine => makeLine('postgres', SUBSYSTEM_LABELS.postgres, state, detail, extra);
+  if (!status) return line('unknown', 'Starting');
   switch (status.state) {
     case 'ready':
     case 'attached':
-      return { ...base, state: 'healthy', detail: 'Ready' };
+      return line('healthy', 'Ready');
     case 'starting':
-      return { ...base, state: 'unknown', detail: 'Starting' };
-    case 'failed':
+      return line('unknown', 'Starting');
+    case 'failed': {
+      // A typed cause plus the user's next step — never a bare "Not available".
+      // A `null`/absent kind falls through to `unknown` (fail-closed copy).
+      const copy = PG_FAILURE_COPY[status.failureKind ?? 'unknown'];
+      return line('down', copy.cause, {
+        remedy: copy.remedy,
+        technicalDetail: status.error ?? undefined,
+      });
+    }
     case 'disabled':
-      return { ...base, state: 'down', detail: 'Not available' };
+      // Resolution (a): keep the shipped `down` classification, but R-5.3 now
+      // demands a remedy + raw detail on EVERY down row.
+      return line('down', 'Not available', {
+        remedy: 'Turn Postgres on in Settings → Database.',
+        technicalDetail: 'state=disabled',
+      });
     default:
-      return { ...base, state: 'unknown', detail: 'Starting' };
+      return line('unknown', 'Starting');
   }
 }
 

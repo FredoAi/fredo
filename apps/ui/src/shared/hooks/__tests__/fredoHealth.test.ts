@@ -1,10 +1,14 @@
 /**
- * fredoHealth — pure derivation unit pins (Spec #3052 ST-1).
+ * fredoHealth — pure derivation unit pins (Spec #3052 ST-1; #3180 ST-3).
  *
- * Covers the frozen contract the LED (ST-3) and the aggregator hook (ST-2)
- * consume: the fixed order + labels, the source→state mapping, the worst-wins
- * aggregate with neutral handling, and the non-AC F-4b static pin
- * (`pg_supervisor_status.state === 'disabled'` → `postgres` `down` → overall `down`).
+ * Covers the frozen contract the LED and the aggregator hook consume: the fixed
+ * order + labels, the source→state mapping, the worst-wins aggregate with
+ * neutral handling, and #3180's honest engine precedence + cause/remedy copy.
+ *
+ * #3180 ST-3 inverted the shipped "engine idle ⇒ down + aggregate Degraded" pin
+ * (an idle engine is now NEUTRAL `unknown`/"Idle", never a false `down`) and
+ * added the typed-failure / Postgres-failure legs that carry `remedy` +
+ * `technicalDetail` (R-5.1…R-5.3).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -17,13 +21,14 @@ import {
   type FredoSubsystemId,
   type SubsystemHealth,
 } from '../fredoHealth';
+import { engineFailureCopy } from '../../components/companion/companionReadiness';
 
 /** All-neutral base: nothing to degrade, everything settled healthy where possible. */
 function snapshots(overrides: Partial<FredoHealthSnapshots> = {}): FredoHealthSnapshots {
   return {
     telemetry: 'healthy',
     companion: { modelFilesComplete: true },
-    llamaServer: { running: true, healthy: true },
+    llamaServer: { running: true, healthy: true, starting: false },
     postgres: { state: 'ready' },
     ...overrides,
   };
@@ -84,7 +89,7 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
     );
   });
 
-  it('postgres: ready/attached → healthy, starting → unknown, failed/disabled → down', () => {
+  it('postgres: ready/attached → healthy, starting → unknown', () => {
     expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'ready' } })), 'postgres')).toMatchObject(
       { state: 'healthy', detail: 'Ready' },
     );
@@ -94,21 +99,6 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
     expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'starting' } })), 'postgres')).toMatchObject(
       { state: 'unknown', detail: 'Starting' },
     );
-    expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'failed' } })), 'postgres')).toMatchObject(
-      { state: 'down', detail: 'Not available' },
-    );
-  });
-
-  it('llamaServer: healthy → healthy; running-but-not-ready → degraded; stopped → down', () => {
-    expect(
-      lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: true, healthy: true } })), 'llamaServer'),
-    ).toMatchObject({ state: 'healthy', detail: 'Running' });
-    expect(
-      lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: true, healthy: false } })), 'llamaServer'),
-    ).toMatchObject({ state: 'degraded', detail: 'Starting' });
-    expect(
-      lineOf(deriveSubsystemLines(snapshots({ llamaServer: { running: false, healthy: false } })), 'llamaServer'),
-    ).toMatchObject({ state: 'down', detail: 'Not running' });
   });
 
   it('companionModel: complete → healthy; missing model files → notSetUp (neutral)', () => {
@@ -132,44 +122,11 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
     const lines = deriveSubsystemLines(
       snapshots({
         companion: { modelFilesComplete: false },
-        llamaServer: { running: false, healthy: false },
+        llamaServer: { running: false, healthy: false, starting: false },
       }),
     );
     expect(lineOf(lines, 'llamaServer')).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
     expect(lineOf(lines, 'companionModel')).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
-  });
-
-  // ── Spec #3141 ST-6 / QA R-3 — the UI/UX §5.2 truth table ─────────────────
-
-  it('files present + engine idle ⇒ Companion model healthy + Companion engine down + aggregate Degraded', () => {
-    const lines = deriveSubsystemLines(
-      snapshots({
-        companion: { modelFilesComplete: true },
-        llamaServer: { running: false, healthy: false },
-      }),
-    );
-    expect(lineOf(lines, 'companionModel')).toMatchObject({
-      state: 'healthy',
-      detail: 'Model files present',
-    });
-    expect(lineOf(lines, 'llamaServer')).toMatchObject({
-      state: 'down',
-      detail: 'Not running',
-    });
-    // Never `unknown`, never neutral-forever, never `Down` (llamaServer is optional).
-    expect(aggregateFredoHealth(lines)).toBe('degraded');
-  });
-
-  it('files missing (empty model set) ⇒ notSetUp on BOTH lines and a sustained-healthy aggregate', () => {
-    const lines = deriveSubsystemLines(
-      snapshots({
-        companion: { modelFilesComplete: false },
-        llamaServer: { running: false, healthy: false },
-      }),
-    );
-    expect(lineOf(lines, 'llamaServer').state).toBe('notSetUp');
-    expect(lineOf(lines, 'companionModel').state).toBe('notSetUp');
-    expect(aggregateFredoHealth(lines)).toBe('healthy');
   });
 
   it('unresolved probes → neutral unknown (R-7 settle)', () => {
@@ -185,6 +142,166 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
   });
 });
 
+describe('#3180 — llamaServer honest-state precedence', () => {
+  function engineLine(overrides: Partial<FredoHealthSnapshots>) {
+    return lineOf(deriveSubsystemLines(snapshots(overrides)), 'llamaServer');
+  }
+
+  it('unresolved companion probe → unknown "Checking"', () => {
+    expect(engineLine({ companion: null })).toMatchObject({ state: 'unknown', detail: 'Checking' });
+  });
+
+  it('not configured (no model files) → notSetUp "Not set up" (wins over engine state)', () => {
+    expect(
+      engineLine({ companion: { modelFilesComplete: false } }),
+    ).toMatchObject({ state: 'notSetUp', detail: 'Not set up' });
+  });
+
+  it('unresolved engine probe → unknown "Checking"', () => {
+    expect(engineLine({ llamaServer: null })).toMatchObject({ state: 'unknown', detail: 'Checking' });
+  });
+
+  it('healthy → healthy "Running"', () => {
+    expect(
+      engineLine({ llamaServer: { running: true, healthy: true, starting: false } }),
+    ).toMatchObject({ state: 'healthy', detail: 'Running' });
+  });
+
+  it('in-flight (starting) → NEUTRAL unknown "Starting", never down', () => {
+    const line = engineLine({
+      llamaServer: { running: false, healthy: false, starting: true },
+    });
+    expect(line).toMatchObject({ state: 'unknown', detail: 'Starting' });
+    expect(line.state).not.toBe('down');
+    expect(line).not.toHaveProperty('remedy');
+    expect(line).not.toHaveProperty('technicalDetail');
+  });
+
+  it('legacy running-but-not-ready → degraded "Starting" (branch stays reachable)', () => {
+    expect(
+      engineLine({ llamaServer: { running: true, healthy: false, starting: false } }),
+    ).toMatchObject({ state: 'degraded', detail: 'Starting' });
+  });
+
+  it('a TYPED failure → down "Could not start" + remedy + technicalDetail', () => {
+    const line = engineLine({
+      llamaServer: {
+        running: false,
+        healthy: false,
+        starting: false,
+        lastErrorCode: 'gpuUnavailable',
+        lastError: 'no usable vulkan device',
+      },
+    });
+    const copy = engineFailureCopy('gpuUnavailable');
+    expect(line).toMatchObject({ state: 'down', detail: 'Could not start' });
+    expect(line.remedy).toBe(`${copy.sentence} Open Settings → Companion.`);
+    expect(line.technicalDetail).toBe('gpuUnavailable · no usable vulkan device');
+  });
+
+  it('a typed failure WITHOUT a raw error → technicalDetail is the code alone', () => {
+    const line = engineLine({
+      llamaServer: {
+        running: false,
+        healthy: false,
+        starting: false,
+        lastErrorCode: 'backendInitFailed',
+      },
+    });
+    expect(line.state).toBe('down');
+    expect(line.technicalDetail).toBe('backendInitFailed');
+    expect(line.remedy).toContain('Open Settings → Companion.');
+  });
+
+  it('idle with no failure → NEUTRAL unknown "Idle", never down', () => {
+    const line = engineLine({
+      llamaServer: { running: false, healthy: false, starting: false },
+    });
+    expect(line).toMatchObject({ state: 'unknown', detail: 'Idle' });
+    expect(line.state).not.toBe('down');
+    expect(line.detail).not.toBe('Not running');
+  });
+
+  it('healthy/neutral rows carry NO remedy or technicalDetail (absent keys — G-413)', () => {
+    const healthy = lineOf(deriveSubsystemLines(snapshots()), 'llamaServer');
+    expect(healthy).not.toHaveProperty('remedy');
+    expect(healthy).not.toHaveProperty('technicalDetail');
+
+    const idle = engineLine({
+      llamaServer: { running: false, healthy: false, starting: false },
+    });
+    expect(idle).not.toHaveProperty('remedy');
+    expect(idle).not.toHaveProperty('technicalDetail');
+  });
+});
+
+describe('#3180 — postgres cause + remedy + technical detail', () => {
+  function pgLine(
+    postgres: FredoHealthSnapshots['postgres'],
+  ): FredoHealthLine {
+    return lineOf(deriveSubsystemLines(snapshots({ postgres })), 'postgres');
+  }
+
+  it('dataDirNotEmpty → down, names the cluster folder, says move/rename, never tells the user to delete data', () => {
+    const line = pgLine({
+      state: 'failed',
+      failureKind: 'dataDirNotEmpty',
+      error: 'initdb: directory "postgres" exists but is not empty',
+    });
+    expect(line.state).toBe('down');
+    expect(line.detail).toContain('database folder');
+    expect(line.remedy).toContain('Move or rename');
+    expect(line.remedy).toContain('postgres/cluster');
+    expect(line.remedy).toContain('restart Fredo');
+    // Non-destructive (R-2.2): the remedy never instructs a deletion.
+    expect(line.remedy?.toLowerCase()).not.toContain('delete');
+    expect(line.technicalDetail).toBe('initdb: directory "postgres" exists but is not empty');
+  });
+
+  it('portInUse → down, names Settings → Database and the port control', () => {
+    const line = pgLine({ state: 'failed', failureKind: 'portInUse', error: 'address in use' });
+    expect(line.state).toBe('down');
+    expect(line.detail).toContain('port');
+    expect(line.remedy).toContain('Settings → Database');
+    expect(line.remedy).toContain('port');
+    expect(line.technicalDetail).toBe('address in use');
+  });
+
+  it('authMismatch → down, names Settings → Database and the destructive reset', () => {
+    const line = pgLine({ state: 'failed', failureKind: 'authMismatch', error: 'password auth failed' });
+    expect(line.state).toBe('down');
+    expect(line.remedy).toContain('Settings → Database');
+    expect(line.remedy).toContain('reset the database');
+    expect(line.remedy).toContain('deletes local Fredo data');
+    expect(line.technicalDetail).toBe('password auth failed');
+  });
+
+  it('a failed row with a null/absent cause falls back to the unknown remedy (restart Fredo)', () => {
+    const absent = pgLine({ state: 'failed' });
+    expect(absent.state).toBe('down');
+    expect(absent.remedy).toContain('Restart Fredo');
+    expect(absent).not.toHaveProperty('technicalDetail');
+
+    const nullKind = pgLine({ state: 'failed', failureKind: null, error: 'boom' });
+    expect(nullKind).toMatchObject({ state: 'down', technicalDetail: 'boom' });
+    expect(nullKind.remedy).toContain('Restart Fredo');
+  });
+
+  it('disabled → down "Not available" + a remedy + state=disabled detail (R-5.3, resolution a)', () => {
+    const line = pgLine({ state: 'disabled' });
+    expect(line).toMatchObject({ state: 'down', detail: 'Not available' });
+    expect(line.remedy).toBe('Turn Postgres on in Settings → Database.');
+    expect(line.technicalDetail).toBe('state=disabled');
+  });
+
+  it('ready/starting rows carry NO remedy or technicalDetail (absent keys — G-413)', () => {
+    expect(pgLine({ state: 'ready' })).not.toHaveProperty('remedy');
+    expect(pgLine({ state: 'ready' })).not.toHaveProperty('technicalDetail');
+    expect(pgLine({ state: 'starting' })).not.toHaveProperty('remedy');
+    expect(pgLine({ state: 'starting' })).not.toHaveProperty('technicalDetail');
+  });
+});
+
 describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
   it('all-healthy → healthy', () => {
     expect(aggregateFredoHealth(deriveSubsystemLines(snapshots()))).toBe('healthy');
@@ -194,7 +311,9 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
     const telemetryDown = deriveSubsystemLines(snapshots({ telemetry: 'down' }));
     expect(aggregateFredoHealth(telemetryDown)).toBe('down');
 
-    const postgresDown = deriveSubsystemLines(snapshots({ postgres: { state: 'failed' } }));
+    const postgresDown = deriveSubsystemLines(
+      snapshots({ postgres: { state: 'failed', failureKind: 'unknown', error: 'boom' } }),
+    );
     expect(aggregateFredoHealth(postgresDown)).toBe('down');
 
     const postgresDisabled = deriveSubsystemLines(snapshots({ postgres: { state: 'disabled' } }));
@@ -208,19 +327,26 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
     expect(telemetryDegraded.some((l) => l.state === 'down')).toBe(false);
   });
 
-  it('only an OPTIONAL subsystem down ⇒ overall degraded (never down)', () => {
+  it('a TYPED optional engine failure ⇒ overall degraded (never down)', () => {
     const llamaDown = deriveSubsystemLines(
-      snapshots({ llamaServer: { running: false, healthy: false } }),
+      snapshots({
+        llamaServer: {
+          running: false,
+          healthy: false,
+          starting: false,
+          lastErrorCode: 'backendInitFailed',
+        },
+      }),
     );
     expect(aggregateFredoHealth(llamaDown)).toBe('degraded');
 
-    const modelDown = deriveSubsystemLines(
-      snapshots({ llamaServer: { running: true, healthy: false } }),
+    const loading = deriveSubsystemLines(
+      snapshots({ llamaServer: { running: true, healthy: false, starting: false } }),
     );
-    expect(aggregateFredoHealth(modelDown)).toBe('degraded');
+    expect(aggregateFredoHealth(loading)).toBe('degraded');
   });
 
-  it('neutral states (notSetUp / unknown) never degrade the aggregate', () => {
+  it('neutral states (notSetUp / unknown / idle) never degrade the aggregate', () => {
     const neutral = deriveSubsystemLines(
       snapshots({ companion: null, llamaServer: null, postgres: { state: 'starting' } }),
     );
@@ -231,17 +357,29 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
     const notSetUp = deriveSubsystemLines(
       snapshots({
         companion: { modelFilesComplete: false },
-        llamaServer: { running: false, healthy: false },
+        llamaServer: { running: false, healthy: false, starting: false },
       }),
     );
     expect(aggregateFredoHealth(notSetUp)).toBe('healthy');
+
+    // #3180 — an idle engine (files present, no failure) is neutral, not `down`.
+    const idle = deriveSubsystemLines(
+      snapshots({ llamaServer: { running: false, healthy: false, starting: false } }),
+    );
+    expect(lineOf(idle, 'llamaServer')).toMatchObject({ state: 'unknown', detail: 'Idle' });
+    expect(aggregateFredoHealth(idle)).toBe('healthy');
   });
 
   it('mandatory down outranks an optional down (down wins over degraded)', () => {
     const lines = deriveSubsystemLines(
       snapshots({
         telemetry: 'down',
-        llamaServer: { running: false, healthy: false },
+        llamaServer: {
+          running: false,
+          healthy: false,
+          starting: false,
+          lastErrorCode: 'backendInitFailed',
+        },
       }),
     );
     expect(aggregateFredoHealth(lines)).toBe('down');
@@ -249,9 +387,14 @@ describe('aggregateFredoHealth — worst-wins with neutral handling', () => {
 });
 
 describe('F-4b (static/unit pin — NON-AC) — pg_supervisor_status `disabled` ⇒ postgres down ⇒ overall down', () => {
-  it('maps `disabled` to postgres down and folds the aggregate to down', () => {
+  it('maps `disabled` to postgres down (with remedy + state detail) and folds the aggregate to down', () => {
     const lines = deriveSubsystemLines(snapshots({ postgres: { state: 'disabled' } }));
-    expect(lineOf(lines, 'postgres')).toMatchObject({ state: 'down', detail: 'Not available' });
+    expect(lineOf(lines, 'postgres')).toMatchObject({
+      state: 'down',
+      detail: 'Not available',
+      remedy: 'Turn Postgres on in Settings → Database.',
+      technicalDetail: 'state=disabled',
+    });
     expect(aggregateFredoHealth(lines)).toBe('down');
   });
 });

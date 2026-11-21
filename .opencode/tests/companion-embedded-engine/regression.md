@@ -117,3 +117,37 @@
 - `.opencode/tests/companion-audio-skill-parity/` — skill offer parity + audio turn.
 - `.opencode/tests/multi-env-isolation/`, `.opencode/tests/env-isolation/` — isolation.
 - `.opencode/tests/doom-companion-planning/`, `.opencode/tests/doom-autoplay-fluency/` — Doom.
+
+---
+
+# Spec #3180 — re-scope of R-3 (engine-idle no longer `down`), plus the launch-start invariants
+
+> Feature issue **#3180**. R-3 above is retained byte-identical as history and **its idle clause is
+> SUPERSEDED**: with the launch auto-start + the honest in-flight state, an idle (non-failed) engine
+> reads NEUTRAL `unknown` / `Idle` and the overall is NOT degraded by it. `down` / `Could not start`
+> is reserved for a TYPED failure and then always carries a remedy + technical detail.
+> Every other R-3 clause (both lines populated, the `notSetUp` boundary, never stuck `unknown`
+> forever) still holds.
+
+- [ ] **R-11 (SUPERSEDES R-3's idle clause, #3180 AC-4.2).** Model files present + engine idle
+      (`running:false, healthy:false, starting:false, lastErrorCode` absent) ⇒
+      `health-line-llamaServer` `data-health-state="unknown"` text `Idle`; overall NOT `degraded`
+      from this line. Driven live by `stop_llama_server` after a healthy launch start (functional
+      FR-29 leg b). The old expectation (`down` / `Not running` + `Degraded`) must NOT be restored.
+- [ ] **R-12 (#3180 AC-1.2 — the launch start is not a second spawn site).** Still exactly ONE
+      engine thread and no child process: `Get-Process -Name llama-server` finds nothing on every
+      sample, one stable `modelId` across the launch start and a later lazy turn, and
+      `DEFAULT_START_BUDGET` remains 120 s. Tying the start to launch must not widen the engine's
+      ownership model (ENGINEERING_RULES: one thread, channel-only access).
+- [ ] **R-13 (#3180 AC-4.3 — the lazy `Chat` path stays the fallback).** After a manual
+      `stop_llama_server`, a user turn still starts the engine through the shipped lazy path
+      (`ensure_started`) and settles with exactly one `llm-done`; the launch trigger is
+      process-once and never restarts a deliberately stopped engine.
+- [ ] **R-14 (#3180 — settings ordering).** The launch start resolves the backend mode AFTER
+      hydration: a persisted `cpu` / `gpu` selection is honoured on the launch start (the
+      `gpuUnavailable` leg in FR-32 depends on it). A launch start that used the pre-hydration
+      default (`auto`) would silently ignore the user's choice — FAIL.
+- [ ] **R-15 (#3180 — the push channel has a real emitter and costs no IPC).** `llama-server-status`
+      is emitted from Rust (`EventBus::emit_global`) on start completion/failure and the existing
+      listener applies it with ZERO extra IPC; no new poll is introduced (cross-ref
+      `fredo-health-led` F-19).

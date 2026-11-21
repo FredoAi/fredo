@@ -551,4 +551,141 @@
     adapters); one generation at a time (a concurrent turn is queued or refused typed `Busy`,
     NFR-2); engine start is bounded (NFR-3).
   - **Edge:** a green build script that never ran is not evidence (G-314); a suppressed warning
-    is a FAIL; `native` enabled in a release build ⇒ FAIL.
+      is a FAIL; `native` enabled in a release build ⇒ FAIL.
+
+---
+
+## Spec #3180 — launch auto-start, in-flight `starting`, first-use turn, typed start failure
+
+> Feature issue **#3180**. Adds FR-28…FR-33 for the launch trigger + the honest in-flight state.
+> Verification policy: **LIVE** on the LIVE WEBVIEW / status-command receipt
+> (`tauri_webview_dom_snapshot` / `find_element` / `execute_js` results plus a live
+> `get_llama_server_status`). This feature emits **no OTLP producer of its own** — a
+> `telemetry_spans` query is neither required nor sufficient (E-SPAN is a NAMED BLOCKER, never a
+> FAIL). Evidence frames are named without image extensions (G-104).
+>
+> **Re-scope, not a new expectation:** `regression.md` R-3 (`engine idle ⇒ down / "Not running"` +
+> overall `degraded`) is SUPERSEDED by this spec — see the re-scope block appended there. The
+> `fredo-health-led` F-15 row that asserts the same old truth is likewise superseded.
+
+## Named in-repo levers for #3180 (G-275 / G-300 / G-409)
+
+| Lever | Status | Used by |
+|---|---|---|
+| **Launch auto-start** (`start_companion_engine_on_launch`, called from `lib.rs` right after the engine state is managed) | **NEW — ST-2(f)/(g)** | FR-28, FR-29, FR-30, FR-31 |
+| `LlamaServerStatus.starting` (always-present bool) + the `llama-server-status` push (`EventBus::emit_global`) | **NEW — ST-2(a-d)** | FR-28, FR-29, FR-30 |
+| `FREDO_COMPANION_FORCE_CPU=1` (existing, `engine/device.rs:44`) + persisted `llama_server_backend="gpu"` | existing seam, existing setting | FR-32 |
+| `save_setting('models_dir', <empty dir under .opencode/tmp/3180/>)` | existing IPC control plane (FS-3 pattern) | FR-28 edge |
+| Model-files precondition gate: the product's OWN `check_companion_readiness` → `modelFiles` `installed` | shipped probe (**never** read/glob the model dir) | FR-28, FR-30, FR-31 |
+| `tauri_webview_execute_js` → `__TAURI__.core.invoke(...)` (the dev env's `tauri.env.conf.json` sets `withGlobalTauri = true`) | shipped dev-env config | all rows |
+| `run-exitcode.ps1 -Command "Get-Process …"` | committed wrapper (no shell chaining in the sandbox) | FR-33 |
+
+## Cases
+
+- [ ] **FR-28 (AC-1.2 / R-1.2, LIVE) — the engine starts at LAUNCH, bounded, without blocking the shell.**
+  - **Data/precondition:** `check_companion_readiness` reports the `modelFiles` prerequisite
+    `installed` in the served env (the product's own probe). If it reports `missing` and the host
+    has no network to run the product's own `Download model files`, the engine legs are a **NAMED
+    BLOCKER** (never a PASS) — record it and still execute every non-engine row.
+  - **Steps:** cold boot (`dev-env.ps1 -Action Up -Spec 3180 …`); from the FIRST painted frame,
+    sample `__TAURI__.core.invoke('get_llama_server_status')` and the LED row every ~2 s, recording
+    an ordered sample log; **never** invoke `start_companion_engine` / `launch_llama_server` and
+    never open Settings → Companion.
+  - **Expected:** `running:true, healthy:true` within `DEFAULT_START_BUDGET` (120 s); `backend`
+    present; `modelId` = `gemma-4-E2B-it-qat-UD-Q4_K_XL`; `health-line-llamaServer`
+    `data-health-state="healthy"` with detail `Running` (the state word is `Healthy`); the row's
+    label still reads `Companion engine`; **`starting:true` appears in at least one pre-healthy
+    sample and `starting:false` once healthy** (the always-present key — an ABSENT key is a FAIL:
+    G-413); the shell rendered a non-empty `<body>` BEFORE the engine became healthy (boot never
+    blocked — R-1.2); the sample log contains ZERO `down`/`Not running` samples (→ FR-29).
+  - **Edge (mandatory, no-start control):** persist `save_setting('models_dir','<scratch>/no-models')`
+    (an empty dir), relaunch ⇒ the launch start SKIPS (no engine start; log line says so), both
+    companion lines read `notSetUp` / `Not set up`, the overall stays neutral-not-degraded by them,
+    and a later user turn still starts the engine through the lazy path (FR-33).
+  - **FAIL:** never healthy within the budget; a manual start needed; `starting` absent from the
+    payload; a blocked/blinking shell until the engine loads.
+
+- [ ] **FR-29 (AC-4.2 / R-4.2, LIVE) — an in-flight load is NEUTRAL, an idle engine is NEUTRAL; `down` is reserved for a typed failure.**
+  - **Leg (a) in-flight:** while the launch start is loading (FR-28's sample log), every
+    `health-line-llamaServer` sample is `data-health-state="unknown"` with detail `Starting` (state
+    word `Checking`) — ZERO `down` / `Not running` samples and zero overall `Degraded` attributable
+    to this line.
+  - **Leg (b) idle:** on a healthy engine, invoke `__TAURI__.core.invoke('stop_llama_server')` and
+    poll `get_llama_server_status` for a bounded ≤30 s until it converges; then read the row.
+    Expected `data-health-state="unknown"`, detail `Idle` (state word `Checking`; never `down`), and
+    the launch start does NOT restart it (the process-once guard): after a further ~20 s the status
+    is still `running:false` / `starting:false`.
+  - **Edge:** `stop_llama_server` twice in a row ⇒ still `Idle`, no crash, no restart; a second
+    `stop` after no start is a no-op.
+  - **FAIL:** any `down` during loading; `down` in the idle state; an auto-restart after a manual
+    stop (that would be a launch loop).
+
+- [ ] **FR-30 (AC-4.1 / R-4.1, LIVE) — first use: open the companion, send a message, get a reply, with the engine healthy at the reply and NO setup step.**
+  - **Data:** a fresh app-data profile (`FREDO_DATA_DIR=<scratch>/fresh-data`, the PG override
+    UNSET via the empty `-EnvVar "FREDO_PG_DATA_DIR="` form, `FREDO_PG_INSTALL_DIR=<env-root>/postgres-install`),
+    model files present per FR-28.
+  - **Steps:** wait for (or drive through, per FR-31) the engine to become healthy; if the
+    companion renders the away seat (`aria-label="Fredo is away"`), place it with the shipped
+    seat gesture (Ctrl+right-click on the desktop) — placement, not a setup step; then focus
+    `[data-testid="launcher-command-input"]`, type one short sentence (e.g. `In one short sentence,
+    say hello.`), press Enter; then read `[data-testid="fredo-reply-surface"]` and
+    `[data-testid="fredo-companion-live-region"]`.
+  - **Expected:** a NON-EMPTY reply renders (bubble text differs from the pre-send state; not the
+    idle copy); the reply is not a raw error string; **at the moment the reply is rendered**
+    `get_llama_server_status` reports `running:true, healthy:true` and `health-line-llamaServer` is
+    `healthy` / `Running`; exactly one `llm-done` and no `llm-error` in the ordered event stream
+    (listeners attached via `execute_js` BEFORE the Enter). The drive transcript contains **no
+    Settings → Companion visit and no Start/Retry click**.
+  - **FAIL:** the reply requires a setup step; the reply arrives while the status is not healthy;
+    no reply / an error surface; two `llm-done`.
+
+- [ ] **FR-31 (AC-4.3 / R-4.3, LIVE) — a first turn sent WHILE the engine is loading is kept alive to the bounded budget.**
+  - **Data:** FR-30's profile, but send at the first painted frame (the status reports
+    `starting:true`).
+  - **Expected:** the turn does NOT fail; a reply renders within the start budget plus normal turn
+    time; no `llm-error`; no "still loading" error copy on the reply surface; exactly one
+    `llm-done`; the concurrent user turn does NOT spawn a second engine — one stable `modelId` and
+    one `get_llama_server_status` identity across the load (the channel's FIFO orders the turn
+    after the start).
+  - **Edge:** a second message sent while the first reply streams ⇒ the shipped queue/disposition
+    behaviour is unchanged, no duplicate `llm-done`.
+  - **FAIL:** a turn that errors or is dropped because the engine was loading; two engine starts;
+    an unbounded wait past the budget.
+
+- [ ] **FR-32 (AC-5.2 / R-5.2 + R-5.3, LIVE) — a typed start failure names cause, remedy and the engine's `code`/`lastError`.**
+  - **Data:** persist `save_setting('llama_server_backend','gpu')` (confirm with `get_setting`),
+    then relaunch with `-EnvVar "FREDO_COMPANION_FORCE_CPU=1"` — the shipped `gpuUnavailable` seam
+    (`engine/device.rs:44`).
+  - **Steps:** read `get_llama_server_status`, then read the rows with the plan's ONE-SHOT recipe
+    (focus `[data-testid="desktop-status-led"]` in an `execute_js` call, wait ~300 ms, read
+    `[data-testid="health-line-llamaServer"]` + the trigger `aria-label`) — focus, not a bare
+    hover, so the tooltip stays open across the tool call.
+  - **Expected:** `lastErrorCode:"gpuUnavailable"` and a non-empty `lastError`;
+    `health-line-llamaServer` `data-health-state="down"` with detail `Could not start` (state word
+    `Down`); the row carries (a) a non-empty **remedy** containing the shipped
+    `engineFailureCopy('gpuUnavailable')` sentence (it names switching the backend to Automatic or
+    CPU, then Start — substring match, not full-string equality; a trailing location clause such as
+    `Open Settings → Companion.` is additive and does not break this assertion) and (b) a **technical
+    detail** node (mono, single line, ellipsised) whose text contains BOTH the typed code
+    (`gpuUnavailable`) and the raw `lastError` text, and whose native `title` equals its text
+    content (UI/UX §11 hook 3); the persisted `llama_server_backend` is STILL `gpu` (never
+    overwritten). The composed trigger `aria-label` carries the remedy but NOT the technical detail
+    (UI/UX §8).
+  - **Edge (mandatory control):** the same boot WITHOUT `FREDO_COMPANION_FORCE_CPU` ⇒ the launch
+    start succeeds and the row reads `Running` — the discriminator that the seam produced the
+    failure.
+  - **FAIL:** bare `Not running` with no next step; the typed code absent from the row; the mode
+    silently rewritten; a hang instead of a typed failure.
+
+- [ ] **FR-33 (regression — the lazy path, one thread, no child process, unchanged budget).**
+  - **Steps:** with the engine healthy from the launch start, `stop_llama_server`, then send one
+    turn; read the ordered stream and the status.
+  - **Expected:** the lazy `Chat` path starts the engine and the turn settles with exactly ONE
+    `llm-done` and ≥1 `llm-token`, no `llm-error` (the fallback survives the new launch trigger);
+    `DEFAULT_START_BUDGET` is unchanged at 120 s (static read of
+    `engine/handle.rs` — `pub const DEFAULT_START_BUDGET: Duration = Duration::from_secs(120)`);
+    **no `llama-server` process exists** at any sample
+    (`run-exitcode.ps1 -Command "Get-Process -Name llama-server"` ⇒ not found); ONE engine thread
+    for the whole process (the `modelId` after the lazy start equals the launch-start one).
+  - **FAIL:** the lazy turn fails after a manual stop; a `llama-server` process appears; two engine
+    instances; the budget changed.

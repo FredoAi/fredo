@@ -133,3 +133,96 @@ All of F-1 … F-9 PASS live; F-3 and F-5 (UNVERIFIED in round 1) are now live-p
   regression R-3). The producer to validate is the ST-6 rewrite of `normalizeCompanion`; the
   `both-prerequisites` gate is current on the pre-#3141 tip (`useFredoHealth.ts:181`:
   `if (!sawLlama || !sawModels) return null;`).
+
+---
+
+## Spec #3180 — honest engine states + cause/remedy on every `down` row
+
+> Feature issue **#3180**. Verification policy: **LIVE** (rendered LED rows from live backend
+> sources). Receipts are live webview results plus live IPC payloads; this feature emits **no OTLP
+> producer of its own**, so a `telemetry_spans` query is neither required nor sufficient (E-SPAN is
+> a NAMED BLOCKER, never a FAIL). Evidence frames are named without image extensions (G-104).
+
+> **SUPERSEDED BY #3180 — F-15's idle clause only.** F-15's main leg asserts
+> `llamaServer: {running:false, healthy:false}` ⇒ `down` / `Not running` + overall `Degraded`. That
+> contract is **replaced**: an idle (non-failed) engine is now NEUTRAL `unknown` / `Idle`, and
+> `down` is reserved for a TYPED failure (F-16/F-17 below). F-15's other clauses (the
+> `notSetUp` boundary, the model-files line, never-`unknown`-forever) still hold. The old text is
+> kept above byte-identical as history; do not read F-15's idle leg as a regression when it goes
+> green under the new contract.
+
+## Cases
+
+- [ ] **F-16 (#3180 AC-4.2 / R-4.2, LIVE + static pin) — the engine line's four states.**
+  - **Data:** one boot sequence on the round's env: (1) healthy after the launch start; (2) invoke
+    `stop_llama_server` ⇒ idle; (3) relaunch with `llama_server_backend=gpu` persisted +
+    `FREDO_COMPANION_FORCE_CPU=1` ⇒ typed failure. Sample the in-flight `starting` window during
+    (1)/(3) every ~2 s.
+  - **Expected (binding table — state word / detail):** `starting` ⇒ `data-health-state="unknown"`,
+    state word `Checking`, detail `Starting`; `healthy` ⇒ `healthy`, word `Healthy`, detail
+    `Running`; `idle` (no failure) ⇒ `unknown`, word `Checking`, detail `Idle`; typed failure ⇒
+    `down`, word `Down`, detail `Could not start` + remedy + technical detail. The composed trigger
+    `aria-label` reads `… Companion engine: Healthy` / `… : Checking` / `… : Down — <remedy>` and is
+    consistent with each sample (the subsystem ID stays `llamaServer`, the row hook stays
+    `health-line-llamaServer`, the row label stays `Companion engine`).
+  - **Static corroboration:** the inverted pin
+    `apps/ui/src/shared/hooks/__tests__/fredoHealth.test.ts` (the former
+    `files present + engine idle ⇒ … down … aggregate Degraded`, title at `:144`) now asserts
+    `unknown` / `Idle` with an aggregate that is NOT degraded; record = the green CI `validate` run
+    on the tested head SHA (this pin is corroboration, the live row is the ground).
+  - **FAIL:** idle or starting rendered as `down`; a `down` row without a typed code; the old
+    `Not running` copy surviving on the idle path.
+
+- [ ] **F-17 (#3180 AC-1.3, LIVE) — a clean profile with both target rows healthy is never `Degraded`.**
+  - **Data:** fresh app-data profile + model files present (the `companion-embedded-engine` FR-30
+    boot).
+  - **Steps:** read `desktop-status-led-overall` (`data-health-state`), the trigger `aria-label`,
+    and all four `health-line-*` rows.
+  - **Expected:** `health-line-postgres` = `healthy` / `Ready`; `health-line-llamaServer` =
+    `healthy` / `Running`; **overall `data-health-state` ≠ `degraded`** (AC-1 verbatim: "overall not
+    Degraded"). Record the telemetry line's state as disclosed context — an overall `down` driven
+    ONLY by the telemetry line (a stream condition, not this feature) is disclosed, never a FAIL of
+    this row; an overall `degraded` while both target rows are healthy **IS** a FAIL (that is the
+    exact defect class #3180 fixes).
+  - **Edge:** sample the overall immediately after both target rows turn healthy (the tightest
+    window) — a `degraded` blip there is a FAIL.
+
+- [ ] **F-18 (#3180 AC-5.3 / R-5.3, LIVE) — every `down` row carries a remedy AND the technical detail; the tooltip never regresses in shape.**
+  - **Data:** the two failure drives (postgres `dataDirNotEmpty` via
+    `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1`; engine `gpuUnavailable` via the force-CPU seam).
+  - **Steps:** read the rows with the ONE-SHOT recipe (focus `[data-testid="desktop-status-led"]`,
+    wait ~300 ms, then read `[data-testid="desktop-status-led-tooltip"]`, each `health-line-*` and
+    the trigger `aria-label` in the same `execute_js` call) — focus, not a bare hover.
+  - **Expected:** for EACH `down` line: a non-empty cause detail, a non-empty **remedy** (a next
+    step, not a restatement), and a non-empty **technical detail** (the raw backend error / typed
+    code); the row's text is never the bare pair `Down` / `Not available`; the composed `aria-label`
+    includes the remedy text for that down row (ST-4); the tooltip still renders exactly ONE
+    `desktop-status-led-overall` plus the four `health-line-*` in the fixed order
+    `telemetry → llamaServer → companionModel → postgres` (no fifth row), each with
+    `data-health-state`, and it does not clip horizontally (`scrollWidth <= clientWidth`).
+  - **FAIL:** a `down` row without a remedy or without technical detail; a new row/anchor; clipping;
+    a remedy that only repeats the cause.
+
+- [ ] **F-19 (#3180 NFR / regression, LIVE) — the poll budget is unchanged and the new push costs no IPC.**
+  - **Data:** `tauri_ipc_monitor(action="start")`; wait ≥2 full intervals (`HEALTH_POLL_INTERVAL_MS`
+    = 15 000 ms); optionally set
+    `window.__FREDO_HEALTH_INSTRUMENT_PROBES__ = true` and read
+    `window.__FREDO_HEALTH_PROBE_COUNT__` (FS-4). Then drive a real `llama-server-status` push (the
+    launch start / a stop publishes it from Rust — ST-2(d)).
+  - **Expected:** ≤1 probe-set per 15 000 ms; ≤3 read-only IPCs per tick
+    (`check_companion_readiness`, `get_llama_server_status`, `pg_supervisor_status`); telemetry NOT
+    polled; ZERO IPC added by the push event (the line updates immediately from the payload); zero
+    IPC on a re-render.
+  - **FAIL:** a fourth IPC, an extra poll, per-render IPC, or a push that needs a fresh poll.
+
+- [ ] **F-20 (#3180 regression, LIVE + pins) — the aggregate contract and the five anchors are unchanged.**
+  - **Expected:** `SubsystemHealth` gains NO new value; `aggregateFredoHealth`'s worst-wins rule and
+    the four ids/order/labels are unchanged; `notSetUp` / `unknown` stay NEUTRAL; the five anchors
+    (`desktop-status-led`, `desktop-status-led-tooltip`, `desktop-status-led-overall`,
+    `health-line-{telemetry|llamaServer|companionModel|postgres}`) survive unchanged; the trigger
+    keeps `role="status"`, `aria-live="polite"`, `aria-atomic="true"`, `tabIndex={0}`; the LED still
+    does NOT mount `useCompanionReadiness` (the engine start moved into Rust, not into this hook).
+    Record = the live render plus the green CI `validate` run on the tested head SHA (the
+    `launcherHealthLed.test.tsx` inversion is ST-4's artifact).
+  - **FAIL:** a new `SubsystemHealth` value; a reordered/renamed row; a new anchor; the hook
+    mounting the readiness controller.

@@ -22,8 +22,30 @@ use crate::applications::llm_server::engine::paths;
 use crate::applications::llm_server::engine::{
     CompanionEngineErrorCode, CompanionEngineStartResult,
 };
+use crate::infrastructure::comm::bus::EventBus;
 
 use super::{backend_mode, current_status, CompanionEngineState, LlamaServerStatus};
+
+/// The global push event carrying the CURRENT [`LlamaServerStatus`].
+///
+/// The webview already listens on this channel (`useFredoHealth` /
+/// `useCompanionReadiness`); until Spec #3180 ST-2 there was no producer at all.
+pub const COMPANION_ENGINE_STATUS_EVENT: &str = "llama-server-status";
+
+/// Broadcast the current engine status to every webview through the EventBus —
+/// the sanctioned global emission path (application code never calls
+/// `AppHandle::emit` directly).
+///
+/// Best-effort: before the `EventBus` is managed (a very early launch start)
+/// there is simply nothing to publish to, so the push is skipped rather than
+/// failing the start.
+pub(crate) fn publish_engine_status(app: &AppHandle) {
+    let Some(bus) = app.try_state::<EventBus>() else {
+        return;
+    };
+    let status = current_status(app);
+    bus.emit_global(COMPANION_ENGINE_STATUS_EVENT, &status);
+}
 
 /// Start the in-process companion engine.
 ///
@@ -57,10 +79,16 @@ async fn start(app: &AppHandle) -> CompanionEngineStartResult {
         let outcome = handle.start(model_paths, mode);
         let _ = tx.send(outcome);
     });
-    match rx.await {
+    let outcome = match rx.await {
         Ok(outcome) => outcome,
         Err(_) => CompanionEngineStartResult::failure(CompanionEngineErrorCode::StartTimeout),
-    }
+    };
+    // BOTH explicit start adapters funnel through here, so the webview is pushed
+    // the terminal status on completion AND failure (Spec #3180 ST-2). The row
+    // therefore stops reading "not running" the moment a start settles instead
+    // of waiting for the next poll.
+    publish_engine_status(app);
+    outcome
 }
 
 /// Start the in-process companion engine (the ST-1 name, kept as the explicit

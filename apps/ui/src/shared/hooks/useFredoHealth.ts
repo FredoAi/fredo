@@ -43,8 +43,10 @@ import {
   type FredoHealth,
   type FredoHealthSnapshots,
   type FredoLlamaServerSnapshot,
+  type FredoPgFailureKind,
   type FredoPgState,
 } from './fredoHealth';
+import type { CompanionEngineErrorCode } from '../components/companion/companionReadiness';
 
 /**
  * The single bounded poll cadence for the health probes. Telemetry is
@@ -133,7 +135,11 @@ export function recordProbeSet(): void {
 interface HealthProbeState {
   companion: FredoCompanionSnapshot | null;
   llamaServer: FredoLlamaServerSnapshot | null;
-  postgres: { state: FredoPgState } | null;
+  postgres: {
+    state: FredoPgState;
+    failureKind?: FredoPgFailureKind | null;
+    error?: string | null;
+  } | null;
   /** FS-1 test-only seam: when true the telemetry line is forced `down`. */
   forceTelemetryDown: boolean;
 }
@@ -182,22 +188,87 @@ function normalizeCompanion(raw: unknown): FredoCompanionSnapshot | null {
   return { modelFilesComplete };
 }
 
-/** Normalize `get_llama_server_status` (also the `llama-server-status` event payload). */
-function normalizeLlamaServer(raw: unknown): FredoLlamaServerSnapshot | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const { running, healthy } = raw as { running?: unknown; healthy?: unknown };
-  if (typeof running !== 'boolean' || typeof healthy !== 'boolean') return null;
-  return { running, healthy };
+/** The typed engine failure vocabulary the health surface accepts (1:1 with Rust). */
+const COMPANION_ENGINE_ERROR_CODES: readonly CompanionEngineErrorCode[] = [
+  'gpuUnavailable',
+  'backendInitFailed',
+  'modelMissing',
+  'modelLoadFailed',
+  'mtpInitFailed',
+  'mmprojInitFailed',
+  'contextCreateFailed',
+  'busy',
+  'startTimeout',
+];
+
+function isCompanionEngineErrorCode(value: unknown): value is CompanionEngineErrorCode {
+  return (
+    typeof value === 'string' &&
+    (COMPANION_ENGINE_ERROR_CODES as readonly string[]).includes(value)
+  );
 }
 
-/** Normalize `pg_supervisor_status` — only the lifecycle state is consumed. */
-function normalizePostgres(raw: unknown): { state: FredoPgState } | null {
+/** The additive Postgres failure causes the derivation renders (closed list). */
+const PG_FAILURE_KINDS: readonly FredoPgFailureKind[] = [
+  'authMismatch',
+  'portInUse',
+  'dataDirNotEmpty',
+  'unknown',
+];
+
+function isPgFailureKind(value: unknown): value is FredoPgFailureKind {
+  return typeof value === 'string' && (PG_FAILURE_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Normalize `get_llama_server_status` (also the `llama-server-status` event
+ * payload). `running`/`healthy` are required; `starting` is a NON-optional
+ * boolean on the wire (#3180 ST-2) but a foreign/absent value settles to
+ * `false` (idle) defensively. The typed code and raw error are carried only when
+ * present (absent keys otherwise — G-413).
+ */
+function normalizeLlamaServer(raw: unknown): FredoLlamaServerSnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
-  const { state } = raw as { state?: unknown };
+  const { running, healthy, starting, lastErrorCode, lastError } = raw as {
+    running?: unknown;
+    healthy?: unknown;
+    starting?: unknown;
+    lastErrorCode?: unknown;
+    lastError?: unknown;
+  };
+  if (typeof running !== 'boolean' || typeof healthy !== 'boolean') return null;
+  const snapshot: FredoLlamaServerSnapshot = {
+    running,
+    healthy,
+    starting: starting === true,
+  };
+  if (isCompanionEngineErrorCode(lastErrorCode)) snapshot.lastErrorCode = lastErrorCode;
+  if (typeof lastError === 'string' && lastError.length > 0) snapshot.lastError = lastError;
+  return snapshot;
+}
+
+/** Normalize `pg_supervisor_status` — lifecycle state + additive typed cause/error. */
+function normalizePostgres(
+  raw: unknown,
+): {
+  state: FredoPgState;
+  failureKind?: FredoPgFailureKind | null;
+  error?: string | null;
+} | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const { state, failureKind, error } = raw as {
+    state?: unknown;
+    failureKind?: unknown;
+    error?: unknown;
+  };
   if (typeof state !== 'string' || !(PG_STATES as readonly string[]).includes(state)) {
     return null;
   }
-  return { state: state as FredoPgState };
+  return {
+    state: state as FredoPgState,
+    failureKind: isPgFailureKind(failureKind) ? failureKind : null,
+    error: typeof error === 'string' ? error : null,
+  };
 }
 
 export function useFredoHealth(): FredoHealth {

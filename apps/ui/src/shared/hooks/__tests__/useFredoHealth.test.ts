@@ -37,7 +37,7 @@ const COMPANION_STALE = {
   ],
 };
 
-const LLAMA_OK = { running: true, healthy: true, port: null, pid: null, configPath: '', logPath: '', lastError: null, backendMode: 'auto', devices: [], backend: 'cpu' };
+const LLAMA_OK = { running: true, healthy: true, starting: false, port: null, pid: null, configPath: '', logPath: '', lastError: null, backendMode: 'auto', devices: [], backend: 'cpu' };
 
 function stateOf(health: FredoHealth, id: FredoSubsystemId): SubsystemHealth {
   const line = health.subsystems.find((l) => l.id === id);
@@ -240,10 +240,11 @@ describe('useFredoHealth — normalizeCompanion survives the one-prerequisite wo
             { id: 'modelFiles', state: 'installed', detail: 'ok', resolvedPath: 'y' },
           ],
         }),
-        // The engine is loaded but idle — the shipped "configured, not running" state.
+        // #3180 — an idle engine (loaded not, no failure) is NEUTRAL now.
         get_llama_server_status: () => ({
           running: false,
           healthy: false,
+          starting: false,
           port: null,
           pid: null,
           configPath: '',
@@ -263,14 +264,18 @@ describe('useFredoHealth — normalizeCompanion survives the one-prerequisite wo
 
     // NEVER permanently `unknown` — the retired both-prerequisite gate is gone.
     expect(stateOf(result.current, 'companionModel')).toBe('healthy');
-    expect(stateOf(result.current, 'llamaServer')).toBe('down');
-    expect(result.current.overall).toBe('degraded');
+    // #3180 — idle is `unknown` "Idle", never `down` / "Not running".
+    expect(stateOf(result.current, 'llamaServer')).toBe('unknown');
+    expect(result.current.overall).toBe('healthy');
 
     const modelLine = result.current.subsystems.find((l) => l.id === 'companionModel');
     expect(modelLine?.detail).toBe('Model files present');
     const engineLine = result.current.subsystems.find((l) => l.id === 'llamaServer');
-    expect(engineLine?.detail).toBe('Not running');
+    expect(engineLine?.detail).toBe('Idle');
     expect(engineLine?.label).toBe('Companion engine');
+    // Optional fields are ABSENT KEYS on a neutral row (G-413).
+    expect(engineLine).not.toHaveProperty('remedy');
+    expect(engineLine).not.toHaveProperty('technicalDetail');
   });
 
   it('reads notSetUp on BOTH companion lines for an empty model set (fresh machine)', async () => {
@@ -329,12 +334,68 @@ describe('useFredoHealth — llama-server-status push event', () => {
     const callsBefore = invoke.mock.calls.length;
 
     act(() => {
-      handler?.({ running: false, healthy: false, code: null });
+      handler?.({
+        running: false,
+        healthy: false,
+        starting: false,
+        lastErrorCode: 'backendInitFailed',
+        lastError: 'boom',
+      });
     });
 
     expect(stateOf(result.current, 'llamaServer')).toBe('down');
     expect(result.current.overall).toBe('degraded'); // optional subsystem down
+    const engineLine = result.current.subsystems.find((l) => l.id === 'llamaServer');
+    expect(engineLine?.detail).toBe('Could not start');
+    expect(engineLine?.remedy).toContain('Open Settings → Companion.');
+    expect(engineLine?.technicalDetail).toBe('backendInitFailed · boom');
     expect(invoke.mock.calls.length).toBe(callsBefore); // no IPC per event
+  });
+
+  it('an idle push (no typed failure) stays NEUTRAL, never down (#3180)', async () => {
+    let handler: ((payload: unknown) => void) | null = null;
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async (_event, h) => {
+      handler = h as (payload: unknown) => void;
+      return () => {};
+    });
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(stateOf(result.current, 'llamaServer')).toBe('healthy');
+
+    act(() => {
+      handler?.({ running: false, healthy: false, starting: false });
+    });
+
+    expect(stateOf(result.current, 'llamaServer')).toBe('unknown');
+    expect(result.current.overall).toBe('healthy');
+    const engineLine = result.current.subsystems.find((l) => l.id === 'llamaServer');
+    expect(engineLine?.detail).toBe('Idle');
+  });
+
+  it('an in-flight `starting` push reads NEUTRAL "Starting", never down (#3180)', async () => {
+    let handler: ((payload: unknown) => void) | null = null;
+    adapterBridge.setInvoke(makeInvoke());
+    adapterBridge.setListen(async (_event, h) => {
+      handler = h as (payload: unknown) => void;
+      return () => {};
+    });
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    act(() => {
+      handler?.({ running: false, healthy: false, starting: true });
+    });
+
+    const engineLine = result.current.subsystems.find((l) => l.id === 'llamaServer');
+    expect(engineLine).toMatchObject({ state: 'unknown', detail: 'Starting' });
+    expect(engineLine?.state).not.toBe('down');
   });
 
   it('ignores a malformed event payload', async () => {
@@ -355,6 +416,88 @@ describe('useFredoHealth — llama-server-status push event', () => {
       handler?.({ running: 'yes', healthy: null });
     });
     expect(stateOf(result.current, 'llamaServer')).toBe('healthy');
+  });
+});
+
+describe('useFredoHealth — #3180 failure copy normalization (consumer boundary, G-413)', () => {
+  it('renders a Postgres typed cause + remedy + raw error from the probe', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        pg_supervisor_status: () => ({
+          state: 'failed',
+          failureKind: 'dataDirNotEmpty',
+          error: 'initdb: directory not empty',
+        }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(stateOf(result.current, 'postgres')).toBe('down');
+    expect(result.current.overall).toBe('down'); // postgres is mandatory
+    const pg = result.current.subsystems.find((l) => l.id === 'postgres');
+    expect(pg?.detail).toContain('database folder');
+    expect(pg?.remedy).toContain('Move or rename');
+    expect(pg?.technicalDetail).toBe('initdb: directory not empty');
+  });
+
+  it('renders disabled with a remedy + state=disabled detail', async () => {
+    adapterBridge.setInvoke(makeInvoke({ pg_supervisor_status: () => ({ state: 'disabled' }) }));
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const pg = result.current.subsystems.find((l) => l.id === 'postgres');
+    expect(pg).toMatchObject({
+      state: 'down',
+      detail: 'Not available',
+      remedy: 'Turn Postgres on in Settings → Database.',
+      technicalDetail: 'state=disabled',
+    });
+  });
+
+  it('drops an unknown failureKind to null and falls back to the unknown cause (closed validator)', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        pg_supervisor_status: () => ({ state: 'failed', failureKind: 'somethingElse', error: 'raw' }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const pg = result.current.subsystems.find((l) => l.id === 'postgres');
+    expect(pg?.state).toBe('down');
+    expect(pg?.remedy).toContain('Restart Fredo');
+    expect(pg?.technicalDetail).toBe('raw');
+  });
+
+  it('an ABSENT `starting` key on the wire settles idle (not down) — boundary (G-413)', async () => {
+    adapterBridge.setInvoke(
+      makeInvoke({
+        get_llama_server_status: () => ({ running: false, healthy: false }),
+      }),
+    );
+    adapterBridge.setListen(async () => () => {});
+
+    const { result } = renderHook(() => useFredoHealth());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const engine = result.current.subsystems.find((l) => l.id === 'llamaServer');
+    expect(engine).toMatchObject({ state: 'unknown', detail: 'Idle' });
+    expect(engine?.state).not.toBe('down');
   });
 });
 
