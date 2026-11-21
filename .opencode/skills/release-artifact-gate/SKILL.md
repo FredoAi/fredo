@@ -57,7 +57,7 @@ checks to `verify-installer-payload.ps1`. Do not add a second launcher.
 |---|---|---|
 | `MissingDll` | Deletes a core payload DLL from a **copy** of the extracted tree; the original tree is untouched. | `LAUNCH_EXIT:-1073741515` (`0xC0000135`) |
 | `Csp` | Installs a nonce-bearing `style-src` policy in the live document (via `Page.addScriptToEvaluateOnNewDocument` + `Page.reload`), reproducing the 0.2.3 condition -- the in-gate detector control the CI step runs. | `CSP_VIOLATION:<detail>` **and** `UNSTYLED:<detail>` (an `UNSTYLED`-only observation is `NEGATIVE_WRONG_ERROR`) |
-| `Database` | Seeds `<DataDir>/postgres/cluster/start.log` and sets `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1`. | `DB_NOT_READY:dirty` |
+| `Database` | Seeds `<FREDO_PG_DATA_DIR>/start.log` (the probe's per-run cluster dir; the seed at `<OUTDIR>\run-dirty\postgres\cluster\start.log` equals `<FREDO_PG_DATA_DIR>\start.log`) and sets `FREDO_PG_CLUSTER_QUARANTINE_FAIL=1`. The leg's probe sets `FREDO_PG_DATA_DIR=<OUTDIR>\negative-database\run-dirty\postgres\cluster`, and the inner gate proves the EFFECTIVE dir from the product (`pg_supervisor_status.dataDir`), recording `DB_EFFECTIVE_DIR=dirty=<path>` + `NEGATIVE_LEG_EFFECTIVE_DIR=`. A shared `%APPDATA%\com.fredo.app\postgres\cluster` value is `GATE_REFUSED reason=db-isolation-shared` (an instrument refusal, never an observation). | `DB_NOT_READY:dirty` |
 
 A negative leg prints `NEGATIVE_EXPECTED=<id>`, `NEGATIVE_OBSERVED=<ids>`, `GATE_EXIT=<n>`
 and exits **0 only** when the inner gate exited non-zero **and** emitted the expected id --
@@ -104,7 +104,8 @@ receipt `errors[]`. A failure class never reuses another's id.
 | `MCP_PORT_OPEN:<port>` | A probed bridge port accepted a connection. |
 | `MCP_BRIDGE_LOG_LINE` | `WebSocket server listening` appeared in the app log. |
 | `EVIDENCE_MISSING:<name>` | A required evidence artifact is absent. |
-| `CDP_UNAVAILABLE` | No DevTools target after the launch. |
+| `CDP_UNAVAILABLE` | No DevTools target after the launch, **or** the readiness gate saw a blank/incomplete document (`CDP_UNAVAILABLE:blank-document`). An instrument class, never a style/CSP attribution. |
+| `GATE_REFUSED:reason=<r> detail=<d>` | A precondition refusal that is not a section-B assertion. Reasons include `outdir-unusable` / `outdir-locked` (the evidence root could not be created/written/cleaned), `db-isolation-shared` (the product reported the shared `%APPDATA%` cluster), `db-isolation-mismatch expected=<e> observed=<o>` (the product reported a dir that is not this run's `GATE_PG_DATA_DIR`), and `host-not-settled label=<fresh\|dirty> pid=<p> cdp=<open>` (the previous launch's PID or CDP port did not clear within 30 s). Refused, exit 2 -- never a product FAIL. |
 | `WEBVIEW2_MISSING` | The WebView2 runtime is absent on the host (refused, exit 2). |
 | `MODEL_SET_MISSING:<file>` | The companion clause is requested but a model file is absent (refused, exit 2). |
 | `CDP_PORT_IN_USE` | The DevTools port was already listening before launch (refused, exit 2). |
@@ -113,7 +114,50 @@ receipt `errors[]`. A failure class never reuses another's id.
 | `NEGATIVE_INSTRUMENT_FAILURE:<detail>` | A negative leg's launch **instrument** could not run (a parameter-bind failure or an empty probe transcript). A named refusal, never an observation and never a pass. |
 
 `-SelfTest` runs one control **per** named error id, so every id above is proven to be
-emitted by its own control.
+emitted by its own control. The round-4 controls additionally pin the profile-orchestration
+classes: `OUTDIR-UNUSABLE`, `DB-ISOLATION-MISMATCH`, `BLANK-FRAME-NOT-ATTRIBUTED`,
+`HOST-SETTLED`.
+
+## Profile isolation, readiness and settle
+
+The gate's clauses are only meaningful on a **per-run isolated** app. The launch probe sets
+the product seams for every run and publishes the facts; the harness records them on stdout
+and in `gate.log`:
+
+| Fact | Meaning |
+|---|---|
+| `OUTDIR=<dir>` | The evidence root actually used. It is created fresh each run (default a `Get-Stamp` name) and the stale `run-fresh`/`run-dirty` dirs are removed; an un-creatable, unwritable or undeletable root is `GATE_REFUSED reason=outdir-unusable\|outdir-locked` (exit 2), never a silent reuse. |
+| `PG_DATA_DIR=<path>` | The probe's per-run cluster dir (probe stdout). |
+| `WEBVIEW2_USER_DATA_DIR=<path>` | The per-run WebView2 user-data folder (probe stdout). Every profile gets its own, so a lingering browser process from the previous launch cannot share the next one. |
+| `OTLP_PORTS=<g>,<h>` | The free OTLP gRPC/HTTP port pair the probe bound for this run (`FREDO_INGEST_GRPC_PORT` / `FREDO_INGEST_HTTP_PORT`). A host whose usual ports are wedged still gets a run. |
+| `DB_ISOLATION=<isolated\|shared\|mismatch>` | The **effective-dir proof** (G-449). The hook compares the dir the PRODUCT reports (`pg_supervisor_status.dataDir`) against the run's `GATE_PG_DATA_DIR`, never against the variable alone. |
+| `DB_EFFECTIVE_DIR=<fresh\|dirty>=<path>` | The product-observed cluster dir, emitted by the hook **and** re-emitted by the driver from `cdp.json`. |
+| `SETTLE_fresh=ok seconds=<n>` / `SETTLE_dirty=ok seconds=<n>` | The post-launch settle: that probe's app PID is gone and the CDP port is closed. A host that does not settle is `GATE_REFUSED reason=host-not-settled label=<fresh\|dirty> pid=<p> cdp=<open>` (exit 2). The gate never name-sweeps `fredo`/`msedgewebview2` -- a human dev instance must survive. |
+
+The three seams the probe sets from the launch profile are `FREDO_PG_DATA_DIR` (the cluster
+dir), `FREDO_PG_LOCK_DIR` (the lock dir) and `WEBVIEW2_USER_DATA_FOLDER` (the browser
+profile). The hook receives `GATE_PG_DATA_DIR` (expected cluster identity),
+`GATE_DB_READY_SECS` (DB-ready bound) and `GATE_BOOT_SETTLE_SECS` (readiness bound).
+
+**A shared or mismatched effective dir is a refusal, never `DB_NOT_READY`:** the product
+reaching `ready` on the shared `%APPDATA%\com.fredo.app\postgres\cluster` is an isolation
+breach, so the gate exits 2 with the reason above instead of blaming the product for a state
+the instrument created.
+
+**Readiness gate.** After the reload and before the clauses, the hook waits up to
+`GATE_BOOT_SETTLE_SECS` (60) for `readyState=complete` **and** `href != about:blank` **and**
+`__TAURI_INTERNALS__` **and** `bodyChildren>=1`. A slow boot is therefore not a DB wedge. On
+a blank frame the hook emits `CDP_UNAVAILABLE:blank-document`, records
+`db.state=not-observed-blank-document`, still runs the styled/screenshot clauses (so the
+readiness failure is visible as `UNSTYLED:screenshot-frame S1=...`) and **skips** the DB
+clause. Attribution is earned: the styled `UNSTYLED` and `CSP_VIOLATION` ids are emitted only
+from a rendered document, so the F-15b discriminator is the PAIR (a `style-src 'nonce-...'`
+violation plus `emotionRules=0` on `S1=true`) -- a blank frame can never produce it.
+
+**Window derivation.** The probe's `-WaitSecs` is the hook's `GATE_WINDOW_SECS` budget. For a
+non-companion profile the driver sizes it `BootSettle(60) + DbReadySecs(180) + 30 = 270`,
+capped at 360; the DB bound stays `min(DbReadySecs, available)` and is counted only from a
+ready document. The post-launch settle allows up to 30 s per profile.
 
 ## The live-receipt anchor: `SURFACE_RECT=`
 
@@ -213,10 +257,10 @@ rectangle; a readiness failure captures anyway and routes to
 -Installer <path>     produced *-setup.exe (required unless -SelfTest; a \debug\ path is refused)
 -Mode gate|negative|selftest   (default gate)
 -Negative MissingDll|Csp|Database   (required when -Mode negative)
--OutDir <dir>         evidence root (default .opencode/tmp/release-gate/<stamp>)
+-OutDir <dir>         evidence root; created FRESH each run or refused (default .opencode/tmp/release-gate/<stamp>)
 -CdpPort <n>          WebView2 DevTools port (default 9333)
 -WaitSecs <n>         launch observation window (default 90; 1..300)
--DbReadySecs <n>      DB-ready bound per profile (default 180)
+-DbReadySecs <n>      DB-ready bound per profile (default 180; the plain window is BootSettle(60) + this + 30)
 -CompanionSecs <n>    companion-turn bound (default 600)
 -SkipCompanion        skip the companion clause (negative legs only -- forbidden on a canonical/AC5 run)
 -SevenZip <path>      optional local 7z override, forwarded to the payload verifier

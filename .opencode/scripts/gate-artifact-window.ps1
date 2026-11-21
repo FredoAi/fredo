@@ -10,23 +10,43 @@
   never starts a process.
 
   Hook environment (binding):
-    GATE_EXE          the launched executable (evidence identity only).
-    GATE_CDP_PORT     the WebView2 DevTools port (--remote-debugging-port).
-    GATE_DATA_DIR     the run's isolated app-data dir (profile identity).
-    GATE_LOG_DIR      the run's log dir; cdp.json + screenshot.png are written
-                      here (run-fresh / run-dirty).
-    GATE_WINDOW_SECS  the whole-hook budget in seconds. The caller MUST size it
-                      to cover the DB-ready bound plus the companion-turn bound;
-                      every clause below derives its own bound from it.
-    GATE_ASSERTIONS   comma list of: styled,database,companion,screenshot.
-                      Only the selected clauses run. An unknown token or an
-                      empty list is a refusal (exit 2), never a silent skip.
+    GATE_EXE               the launched executable (evidence identity only).
+    GATE_CDP_PORT          the WebView2 DevTools port (--remote-debugging-port).
+    GATE_DATA_DIR          the run's isolated app-data dir (profile identity).
+    GATE_LOG_DIR           the run's log dir; cdp.json + screenshot.png are written
+                           here (run-fresh / run-dirty).
+    GATE_WINDOW_SECS       the whole-hook budget in seconds. The caller MUST size
+                           it to cover the boot settle, the DB-ready bound and the
+                           companion-turn bound; every clause derives its bound.
+    GATE_ASSERTIONS        comma list of: styled,database,companion,screenshot.
+                           Only the selected clauses run. An unknown token or an
+                           empty list is a refusal (exit 2), never a silent skip.
+    GATE_PG_DATA_DIR       the per-run cluster dir the probe configured through
+                           the product's FREDO_PG_DATA_DIR seam. It is the
+                           EXPECTED identity; the DB clause proves the EFFECTIVE
+                           dir from pg_supervisor_status.dataDir, never from this
+                           variable (G-449).
+    GATE_DB_READY_SECS     the DB-ready bound in seconds (default 180).
+    GATE_BOOT_SETTLE_SECS  the document-readiness bound in seconds (default 60).
 
   Stdout literals (the driver tees them into gate.log and quotes them):
     CHECK <id> PASS|FAIL <detail>        one line per clause, pass or fail
     SURFACE_RECT=launcher-command-bar x=<n> y=<n> w=<n> h=<n> viewport=<WxH> source=getBoundingClientRect
+    BOOT_SETTLE=<ready|blank-document> seconds=<n>
+    DB_ISOLATION=<isolated|shared|mismatch>
+    DB_EFFECTIVE_DIR=<fresh|dirty>=<absolute path>
+    DB_STATE=<fresh|dirty>=<state>
     UNSTYLED:<detail> / CSP_VIOLATION:<detail> / DB_NOT_READY:<fresh|dirty>
     COMPANION_NO_REPLY / COMPANION_ENGINE:<code> / CDP_UNAVAILABLE / EVIDENCE_MISSING:screenshot
+
+  Readiness gate (before the clauses): the document must reach
+    readyState=complete && href != about:blank && __TAURI_INTERNALS__ &&
+    bodyChildren >= 1 within GATE_BOOT_SETTLE_SECS. A blank frame emits
+    CDP_UNAVAILABLE:blank-document, records db.state=not-observed-blank-document,
+    still runs styled/screenshot (so the readiness failure is visible as
+    UNSTYLED:screenshot-frame) and SKIPS the DB clause. A blank frame is an
+    instrument state: the styled UNSTYLED and CSP_VIOLATION ids are only ever
+    attributed to a RENDERED document.
 
   Clauses:
     styled      (a) an injected <style> yields exactly 1 rule,
@@ -48,8 +68,17 @@
                 verified. Failure routes to UNSTYLED:screenshot-frame.
     (SURFACE_RECT is emitted when styled or screenshot is selected, from a real
      getBoundingClientRect() reading of [data-testid="launcher-command-bar"].)
-    database    page-evaluated invoke('pg_supervisor_status'), polled to
-                state == "ready" within the bound; on failure DB_NOT_READY:<profile>.
+    database    page-evaluated invoke('pg_supervisor_status'). Before the ready
+                bound it OBSERVES the product's effective cluster dir
+                (dataDir) and proves isolation: equal to GATE_PG_DATA_DIR ->
+                DB_ISOLATION=isolated; equal to the shared
+                %APPDATA%\com.fredo.app\postgres\cluster ->
+                GATE_REFUSED reason=db-isolation-shared; anything else ->
+                GATE_REFUSED reason=db-isolation-mismatch, never DB_NOT_READY.
+                Both refusals emit DB_EFFECTIVE_DIR=<profile>=<observed>. Only an
+                isolated profile is then polled to state == "ready" within the
+                bound (min(GATE_DB_READY_SECS, available), counted from a ready
+                document); on failure DB_NOT_READY:<profile>.
     companion   writes Fredo_companion_visible THROUGH the app
                 (invoke('save_setting')) then reloads and drives one turn
                 through the launcher field + Enter. If no rendered reply lands,
@@ -74,6 +103,7 @@ $script:StartedAt = Get-Date
 $script:Checks = New-Object System.Collections.ArrayList
 $script:Errors = New-Object System.Collections.ArrayList
 $script:ExitCode = 0
+$script:Refused = $false
 $script:Result = $null
 $script:DataDir = ''
 
@@ -143,6 +173,71 @@ function Get-Excerpt {
     $flat = ($Text -replace '\s+', ' ').Trim()
     if ($flat.Length -le 200) { return $flat }
     return $flat.Substring(0, 200)
+}
+
+# A positive numeric hook bound from an environment variable, with a default.
+# A malformed/absent value never aborts the hook: it falls back to the documented
+# default (the caller sizes its launch window from the same defaults).
+function Get-EnvPositiveNumber {
+    param([string]$Name, [double]$Default)
+    $raw = [string][Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $Default }
+    $parsed = 0.0
+    if ([double]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) { return $parsed }
+    return $Default
+}
+
+# Normalize a filesystem path for identity comparison: absolute, no trailing
+# separator, case-insensitive (Windows). Comparison is by normalized string, so a
+# different case or a trailing slash can never masquerade as an isolated cluster.
+function ConvertTo-NormalizedDir {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $text = $Path.Trim().Trim('"').Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+    try { $text = [System.IO.Path]::GetFullPath($text) } catch { }
+    return ($text.TrimEnd('\', '/')).ToLowerInvariant()
+}
+
+# The effective-dir proof (G-449). The observed dir comes from the PRODUCT
+# (pg_supervisor_status.dataDir); ExpectedDir is the run's configured
+# GATE_PG_DATA_DIR and SharedDir is the OS app-data cluster. A value that cannot
+# be observed is NOT treated as isolated -- it is a mismatch refusal.
+function Get-DbIsolationVerdict {
+    param([string]$Profile, [string]$ObservedDir, [string]$ExpectedDir, [string]$SharedDir)
+
+    $observed = ConvertTo-NormalizedDir $ObservedDir
+    $expected = ConvertTo-NormalizedDir $ExpectedDir
+    $shared = ConvertTo-NormalizedDir $SharedDir
+    $effective = $ObservedDir
+    if ([string]::IsNullOrWhiteSpace($effective)) { $effective = '<unobserved>' }
+    $expectedText = $ExpectedDir
+    if ([string]::IsNullOrWhiteSpace($expectedText)) { $expectedText = '<unset>' }
+
+    $verdict = [pscustomobject]@{
+        Profile = $Profile
+        Isolation = 'mismatch'
+        State = 'db-isolation-mismatch'
+        Refused = $true
+        RefusalDetail = ('reason=db-isolation-mismatch expected=' + $expectedText + ' observed=' + $effective)
+        EffectiveDir = $effective
+    }
+
+    if ([string]::IsNullOrWhiteSpace($observed)) { return $verdict }
+    if ((-not [string]::IsNullOrWhiteSpace($expected)) -and $observed -eq $expected) {
+        $verdict.Isolation = 'isolated'
+        $verdict.State = 'observed'
+        $verdict.Refused = $false
+        $verdict.RefusalDetail = ''
+        return $verdict
+    }
+    if ((-not [string]::IsNullOrWhiteSpace($shared)) -and $observed -eq $shared) {
+        $verdict.Isolation = 'shared'
+        $verdict.State = 'db-isolation-shared'
+        $verdict.RefusalDetail = 'reason=db-isolation-shared'
+        return $verdict
+    }
+    return $verdict
 }
 
 # ---- page-evaluated scripts --------------------------------------------------
@@ -318,6 +413,21 @@ $script:FrameScript = @'
 })()
 '@
 
+$script:DocumentReadyScript = @'
+(function () {
+  var out = {
+    ready: false,
+    readyState: document.readyState,
+    href: String(location.href),
+    bodyChildren: document.body ? document.body.childElementCount : -1,
+    hasInternals: (typeof window.__TAURI_INTERNALS__ !== 'undefined' && window.__TAURI_INTERNALS__ !== null)
+  };
+  out.s1 = (out.readyState === 'complete' && out.href !== 'about:blank' && out.bodyChildren >= 1);
+  out.ready = (out.s1 && out.hasInternals);
+  return out;
+})()
+'@
+
 $script:DbScript = @'
 (function () {
   try {
@@ -437,10 +547,71 @@ $script:CompanionIpcStateScript = @'
 })()
 '@
 
+# ---- readiness gate ----------------------------------------------------------
+
+# Poll the document for the real-document predicate until the bound. A blank or
+# uninitialised frame is an INSTRUMENT state: callers must not attribute style or
+# CSP findings to it (the 0.2.3 CSP-revert discriminator is only meaningful on a
+# rendered document).
+function Wait-DocumentReady {
+    param($Session, [double]$TimeoutSecs = 60.0, [datetime]$Deadline = [datetime]::MaxValue)
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $budgetSeconds = $TimeoutSecs
+    if ($Deadline -ne [datetime]::MaxValue) {
+        $remaining = ($Deadline - (Get-Date)).TotalSeconds
+        if ($remaining -lt $budgetSeconds) { $budgetSeconds = $remaining }
+    }
+    $timeoutMs = [int][Math]::Max(1000, $budgetSeconds * 1000)
+    $last = $null
+    while ($watch.ElapsedMilliseconds -lt $timeoutMs) {
+        $eval = Invoke-CdpEvaluate -Session $Session -Expression $script:DocumentReadyScript -TimeoutMs 8000
+        if ($eval.Ok -and $null -ne $eval.Value) {
+            $last = $eval.Value
+            if ((Get-GateProp $last 'ready') -eq $true) {
+                return [pscustomobject]@{ Ok = $true; Value = $last; Seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1) }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return [pscustomobject]@{ Ok = $false; Value = $last; Seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1) }
+}
+
+function Get-DocumentFrameDetail {
+    param($Value)
+    return ('readyState={0} href={1} bodyChildren={2} internals={3}' -f
+        (Get-GateProp $Value 'readyState' ''),
+        (Get-GateProp $Value 'href' ''),
+        (Get-GateProp $Value 'bodyChildren' ''),
+        (Get-GateProp $Value 'hasInternals' ''))
+}
+
 # ---- clause: styled ----------------------------------------------------------
 
 function Invoke-StyledClause {
     param($Session, [int]$Floor = 1)
+
+    # ATTRIBUTION IS EARNED (F-15b). The styled UNSTYLED and CSP_VIOLATION ids are
+    # only emitted from a rendered document; a blank frame can never produce the
+    # discriminator pair (a nonce-bearing style-src violation + emotionRules=0 on
+    # S1=true). On a blank frame the clause records the frame state and emits no
+    # styled/CSP finding -- the readiness failure is carried by the screenshot
+    # clause (UNSTYLED:screenshot-frame) and by CDP_UNAVAILABLE:blank-document.
+    $frame = Invoke-CdpEvaluate -Session $Session -Expression $script:DocumentReadyScript -TimeoutMs 8000
+    $frameReady = ($frame.Ok -and ((Get-GateProp $frame.Value 'ready') -eq $true))
+    if (-not $frameReady) {
+        $frameDetail = ('frame=blank-document ' + (Get-DocumentFrameDetail $frame.Value) + ' (not attributed)')
+        Add-Check 'REQ-2.3' $false $frameDetail
+        $script:Result.styled = [ordered]@{
+            ok = $false
+            frameReady = $false
+            readyState = [string](Get-GateProp $frame.Value 'readyState' '')
+            href = [string](Get-GateProp $frame.Value 'href' '')
+            bodyChildren = [int](Get-GateProp $frame.Value 'bodyChildren' -1)
+            detail = $frameDetail
+        }
+        return
+    }
 
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $timeoutMs = 15000
@@ -508,6 +679,11 @@ function Invoke-StyledClause {
 
     $script:Result.styled = [ordered]@{
         ok = ($styledOk -and $cspOk)
+        frameReady = $true
+        s1 = ((Get-GateProp $frame.Value 's1') -eq $true)
+        readyState = [string](Get-GateProp $frame.Value 'readyState' '')
+        href = [string](Get-GateProp $frame.Value 'href' '')
+        bodyChildren = [int](Get-GateProp $frame.Value 'bodyChildren' -1)
         rules = $rules
         floor = $Floor
         injectedRules = $injectedRules
@@ -667,15 +843,76 @@ function Invoke-DatabaseClause {
     param($Session, [string]$Profile, [datetime]$Deadline, [switch]$WantCompanion)
 
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
-    $boundSeconds = 180.0
+
+    # The expected identity comes from the probe (GATE_PG_DATA_DIR), but the
+    # EFFECTIVE identity is proven from the product's own report below. The OS
+    # app-data cluster is the shared-profile sentinel (G-449).
+    $expectedDbDir = [string]$env:GATE_PG_DATA_DIR
+    $sharedDbDir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'com.fredo.app\postgres\cluster'
+
+    $last = $null
+    $state = ''
+    $evalError = ''
+    $dbDir = ''
+    $gateError = ''
+
+    # PHASE 1 (before the ready bound): observe the product's effective dir. A
+    # supervisor publishes dataDir as soon as it initialises, so a short bounded
+    # window is enough; failing to observe it is NOT treated as isolated.
+    $observeSeconds = 20.0
+    $availableForObserve = ($Deadline - (Get-Date)).TotalSeconds
+    if ($availableForObserve -lt $observeSeconds) { $observeSeconds = [Math]::Max(2.0, $availableForObserve) }
+    $observeDeadline = (Get-Date).AddSeconds($observeSeconds)
+    while ((Get-Date) -lt $observeDeadline) {
+        $remainingMs = [int][Math]::Max(1000, ($observeDeadline - (Get-Date)).TotalMilliseconds)
+        $eval = Invoke-CdpEvaluate -Session $Session -Expression $script:DbScript -AwaitPromise -TimeoutMs $remainingMs
+        if ($eval.Ok) {
+            $last = $eval.Value
+            $gateError = [string](Get-GateProp $last '__gateError' '')
+            if (-not [string]::IsNullOrWhiteSpace($gateError)) { $evalError = $gateError }
+            $state = [string](Get-GateProp $last 'state' '')
+            $dbDir = [string](Get-GateProp $last 'dataDir' '')
+            if (-not [string]::IsNullOrWhiteSpace($dbDir)) { break }
+        } else {
+            $evalError = $eval.Exception
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    # PHASE 2 (the isolation proof): the directive that makes the DB clause
+    # meaningful. A shared or mismatched effective dir is a REFUSAL, never a
+    # DB_NOT_READY (which would blame the product for the instrument's state).
+    $isolation = Get-DbIsolationVerdict -Profile $Profile -ObservedDir $dbDir -ExpectedDir $expectedDbDir -SharedDir $sharedDbDir
+    Write-GateLine ('DB_ISOLATION=' + $isolation.Isolation)
+    Write-GateLine ('DB_EFFECTIVE_DIR=' + $Profile + '=' + $isolation.EffectiveDir)
+
+    if ($isolation.Refused) {
+        $dbInfo = [ordered]@{
+            ok = $false
+            state = $isolation.State
+            isolation = $isolation.Isolation
+            effectiveDir = $isolation.EffectiveDir
+            expectedDir = $expectedDbDir
+            dataDir = $dbDir
+            waitedMs = $watch.ElapsedMilliseconds
+        }
+        if (-not [string]::IsNullOrWhiteSpace($evalError)) { $dbInfo['evalError'] = $evalError }
+        $script:Result.db = $dbInfo
+        Add-Check 'REQ-2.4' $false ('profile={0} state={1} dataDir={2}' -f $Profile, $isolation.State, $isolation.EffectiveDir)
+        Add-GateError 'GATE_REFUSED' $isolation.RefusalDetail
+        $script:Refused = $true
+        return
+    }
+
+    # PHASE 3 (only an isolated profile): wait for ready. The bound is
+    # GATE_DB_READY_SECS (default 180), never more than the remaining window, and
+    # it starts here -- i.e. counted from a ready document.
+    $boundSeconds = Get-EnvPositiveNumber -Name 'GATE_DB_READY_SECS' -Default 180.0
     $available = ($Deadline - (Get-Date)).TotalSeconds
     if ($WantCompanion) { $available = $available - 30.0 }
     if ($available -lt $boundSeconds) { $boundSeconds = [Math]::Max(5.0, $available) }
     $dbDeadline = (Get-Date).AddSeconds($boundSeconds)
 
-    $last = $null
-    $state = ''
-    $evalError = ''
     while ((Get-Date) -lt $dbDeadline) {
         $remainingMs = [int][Math]::Max(1000, ($dbDeadline - (Get-Date)).TotalMilliseconds)
         $eval = Invoke-CdpEvaluate -Session $Session -Expression $script:DbScript -AwaitPromise -TimeoutMs $remainingMs
@@ -684,6 +921,8 @@ function Invoke-DatabaseClause {
             $gateError = [string](Get-GateProp $last '__gateError' '')
             if (-not [string]::IsNullOrWhiteSpace($gateError)) { $evalError = $gateError }
             $state = [string](Get-GateProp $last 'state' '')
+            $observedNow = [string](Get-GateProp $last 'dataDir' '')
+            if (-not [string]::IsNullOrWhiteSpace($observedNow)) { $dbDir = $observedNow }
             if ($state -eq 'ready') { break }
             if ($state -eq 'failed') { break }
         } else {
@@ -695,11 +934,12 @@ function Invoke-DatabaseClause {
     $dbInfo = [ordered]@{
         ok = ($state -eq 'ready')
         state = $state
+        isolation = $isolation.Isolation
+        effectiveDir = $isolation.EffectiveDir
+        expectedDir = $expectedDbDir
+        dataDir = $dbDir
         waitedMs = $watch.ElapsedMilliseconds
     }
-    $dbDir = [string](Get-GateProp $last 'dataDir' '')
-    if ([string]::IsNullOrWhiteSpace($dbDir)) { $dbDir = [string]$script:DataDir }
-    $dbInfo['dataDir'] = $dbDir
     $dbPort = Get-GateProp $last 'port' $null
     if ($null -ne $dbPort) { $dbInfo['port'] = [int]$dbPort }
     $dbProcessId = Get-GateProp $last 'pid' $null
@@ -714,6 +954,7 @@ function Invoke-DatabaseClause {
     $script:Result.db = $dbInfo
 
     $detail = ('profile={0} state={1}' -f $Profile, $state)
+    if ($dbInfo.Contains('dataDir') -and -not [string]::IsNullOrWhiteSpace($dbInfo['dataDir'])) { $detail = $detail + ' dataDir=' + $dbInfo['dataDir'] }
     if ($dbInfo.Contains('port')) { $detail = $detail + ' port=' + $dbInfo['port'] }
     if ($dbInfo.Contains('pid')) { $detail = $detail + ' pid=' + $dbInfo['pid'] }
     if ($dbInfo.Contains('failureKind')) { $detail = $detail + ' failureKind=' + $dbInfo['failureKind'] }
@@ -1085,10 +1326,50 @@ try {
         Write-GateLine ('HOOK_RELOAD=' + $(if ($reloaded) { 'true' } else { 'false' }))
     }
 
+    # READINESS GATE (B3): a slow boot must not be mistaken for a DB wedge. The
+    # document must be a real, initialised webview (complete + not about:blank +
+    # __TAURI_INTERNALS__ + a body child) within GATE_BOOT_SETTLE_SECS (60).
+    $bootSettleSecs = Get-EnvPositiveNumber -Name 'GATE_BOOT_SETTLE_SECS' -Default 60.0
+    $documentReady = Wait-DocumentReady -Session $session -TimeoutSecs $bootSettleSecs -Deadline $deadline
+    $bootState = 'ready'
+    if (-not $documentReady.Ok) { $bootState = 'blank-document' }
+    Write-GateLine ('BOOT_SETTLE=' + $bootState + ' seconds=' + $documentReady.Seconds)
+    Write-GateLine ('BOOT_FRAME=' + (Get-DocumentFrameDetail $documentReady.Value))
+    if (-not $documentReady.Ok) {
+        # Existing id, instrument class: the frame never initialised. This is a
+        # re-drive, not a product verdict -- and never an attribution to a revert.
+        Add-GateError 'CDP_UNAVAILABLE' 'blank-document'
+        Write-GateLine ('DB_STATE=' + $runProfile + '=not-observed-blank-document')
+    }
+
     if ($wantStyled) { Invoke-StyledClause -Session $session -Floor 1 }
     if ($wantScreenshot) { Invoke-ScreenshotClause -Session $session -RunDir $logDir -Deadline $deadline }
-    if ($wantDatabase) { Invoke-DatabaseClause -Session $session -Profile $runProfile -Deadline $deadline -WantCompanion:$wantCompanion }
-    if ($wantCompanion) { Invoke-CompanionClause -Session $session -Profile $runProfile -Deadline $deadline }
+    if ($wantDatabase) {
+        if ($documentReady.Ok) {
+            Invoke-DatabaseClause -Session $session -Profile $runProfile -Deadline $deadline -WantCompanion:$wantCompanion
+        } else {
+            # SKIP the DB clause: a blank frame cannot report a product DB state.
+            $script:Result.db = [ordered]@{
+                ok = $false
+                state = 'not-observed-blank-document'
+                waitedMs = 0
+            }
+            Add-Check 'REQ-2.4' $false ('profile=' + $runProfile + ' state=not-observed-blank-document')
+        }
+    }
+    if ($wantCompanion) {
+        if (-not $documentReady.Ok) {
+            $script:Result.companion = [ordered]@{ ok = $false; route = 'none'; replyChars = 0; reason = 'not-observed-blank-document' }
+            Add-Check 'REQ-2.5' $false ('profile=' + $runProfile + ' state=not-observed-blank-document')
+        } elseif ($script:Refused) {
+            # A refused precondition (an effective-dir breach) owns the run; the
+            # companion turn cannot add evidence and must not burn its bound.
+            $script:Result.companion = [ordered]@{ ok = $false; route = 'none'; replyChars = 0; reason = 'not-observed-db-refused' }
+            Add-Check 'REQ-2.5' $false ('profile=' + $runProfile + ' state=not-observed-db-refused')
+        } else {
+            Invoke-CompanionClause -Session $session -Profile $runProfile -Deadline $deadline
+        }
+    }
 
     if ($wantSurfaceRect -and -not $wantScreenshot) {
         # A styled-only run still owes the live-receipt anchor: measure the
@@ -1125,6 +1406,10 @@ try {
     Write-CdpJson -RunDir $logDir
 }
 
+if ($script:Refused) {
+    Write-GateLine 'HOOK_RESULT=REFUSED'
+    exit 2
+}
 if ($script:ExitCode -eq 0) {
     Write-GateLine 'HOOK_RESULT=PASS'
 } else {

@@ -70,9 +70,28 @@
   and every hook clause derives its own bound from it. So the driver sizes it:
     * the companion clause runs -> -CompanionSecs + 30, clamped 1..900 (the probe
       clamp is being raised to 1..900 for exactly this reason; do not assume 300);
-    * otherwise -> max(-WaitSecs, -DbReadySecs + 30), clamped 1..300, so the DB
-      clause can actually reach its own -DbReadySecs bound instead of being
-      starved by the launch window.
+    * otherwise -> BootSettle(60) + -DbReadySecs(180) + 30 = 270, capped at 360,
+      so the readiness gate (60) and the DB bound (180) both fit inside the
+      launch window. The DB bound itself stays min(-DbReadySecs, available) and
+      is counted only from a READY document.
+
+  PROFILE ISOLATION + SETTLE. The probe sets the per-run product seams
+  (`FREDO_PG_DATA_DIR`, `FREDO_PG_LOCK_DIR`, `WEBVIEW2_USER_DATA_FOLDER`) and the
+  free OTLP port pair, then hands the hook `GATE_PG_DATA_DIR`,
+  `GATE_DB_READY_SECS` and `GATE_BOOT_SETTLE_SECS`. The hook proves the EFFECTIVE
+  cluster dir from the product's report (`pg_supervisor_status.dataDir`) and
+  emits `DB_ISOLATION=` / `DB_EFFECTIVE_DIR=<profile>=<path>`; a shared
+  `%APPDATA%` cluster or any mismatch is `GATE_REFUSED reason=db-isolation-*`
+  (exit 2), never `DB_NOT_READY`. After EACH launch the driver waits for that
+  probe's PID to disappear and the CDP port to close; a host that does not
+  settle is `GATE_REFUSED reason=host-not-settled` (exit 2). It never name-sweeps
+  `fredo`/`msedgewebview2`.
+
+  EVIDENCE ROOT IS FRESH OR REFUSED. The driver creates `-OutDir` (default a
+  `Get-Stamp` name), writes/deletes a probe file, and removes the stale run dirs
+  explicitly. An un-creatable/unwritable/undeletable root is
+  `GATE_REFUSED reason=outdir-unusable|outdir-locked` (exit 2) -- never a silent
+  reuse. Every run records `OUTDIR=`.
 
   -SkipCompanion omits REQ-2.5 entirely (the negative legs use it): the hook then
   runs `database,screenshot` only, and no REQ-2.5 CHECK line or receipt entry is
@@ -136,6 +155,9 @@
 
 .OUTPUT
   One machine-greppable line per fact (field names are binding, plan section K):
+    OUTDIR=<absolute evidence root>
+    SETTLE_fresh=ok seconds=<n> / SETTLE_dirty=ok seconds=<n>
+    DB_EFFECTIVE_DIR=<fresh|dirty>=<path> DB_ISOLATION=<isolated|shared|mismatch>
     GATE_INSTALLER=<path>
     EXTRACT_ROUTE=<route>
     CHECK REQ-2.1 PASS   EXTRACT_ROUTE=<route> EXTRACT_ROOT=<path>
@@ -219,6 +241,15 @@ $script:ModelFiles = @(
 # Ports asserted CLOSED while the release app runs (the release build ships no MCP
 # bridge). Deliberately disjoint from -CdpPort.
 $script:ProbePorts = @(9223, 16932, 19631)
+
+# The hook's document-readiness bound (B3). It is part of the launch window so a
+# slow webview boot cannot be mistaken for a DB wedge:
+#   HOOK_WINDOW_SECS = BootSettle(60) + DbReadySecs(180) + 30 = 270 (cap 360).
+$script:BootSettleSecs = 60
+
+# How long the post-launch settle may wait for the probe's app PID to disappear
+# and its CDP port to close (B4). A human dev instance is never name-swept.
+$script:SettleSecs = 30
 
 # ---- run state ---------------------------------------------------------------
 
@@ -496,6 +527,114 @@ function Test-TcpPortListening {
         return $false
     } finally {
         try { $client.Close() } catch { }
+    }
+}
+
+# B1: the evidence root is created FRESH or the run is refused -- never silently
+# reused. Creating the dir and writing/reading/deleting a probe file proves
+# writability; removing the stale run dirs proves they are not locked. A locked
+# tree (the round-3 dead-PID stderr.log handle) used to survive -Force silently
+# and could make "fresh" contain a stale cluster.
+function Test-OutDirUsable {
+    param([string]$OutRoot)
+
+    $result = [pscustomobject]@{ Ok = $false; Reason = ''; Detail = '' }
+
+    if (-not (Test-Path -LiteralPath $OutRoot -PathType Container)) {
+        try {
+            New-Item -ItemType Directory -Path $OutRoot -Force -ErrorAction Stop | Out-Null
+        } catch {
+            $result.Reason = 'outdir-unusable'
+            $result.Detail = ($OutRoot + ':' + $_.Exception.Message)
+            return $result
+        }
+    }
+    if (-not (Test-Path -LiteralPath $OutRoot -PathType Container)) {
+        $result.Reason = 'outdir-unusable'
+        $result.Detail = ($OutRoot + ':not a directory after create')
+        return $result
+    }
+
+    $probePath = Join-Path $OutRoot ('.gate-outdir-probe-' + [guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllText($probePath, 'probe', $script:GateLogEncoding)
+    } catch {
+        $result.Reason = 'outdir-unusable'
+        $result.Detail = ($probePath + ':' + $_.Exception.Message)
+        return $result
+    }
+    if (-not (Test-Path -LiteralPath $probePath -PathType Leaf)) {
+        $result.Reason = 'outdir-unusable'
+        $result.Detail = ($probePath + ':probe file not visible after write')
+        return $result
+    }
+    try {
+        [System.IO.File]::Delete($probePath)
+    } catch {
+        $result.Reason = 'outdir-locked'
+        $result.Detail = ($probePath + ':' + $_.Exception.Message)
+        return $result
+    }
+
+    foreach ($leaf in @('run-fresh', 'run-dirty')) {
+        $stale = Join-Path $OutRoot $leaf
+        if (-not (Test-Path -LiteralPath $stale)) { continue }
+        try {
+            Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction Stop
+        } catch {
+            $result.Reason = 'outdir-locked'
+            $result.Detail = ($stale + ':' + $_.Exception.Message)
+            return $result
+        }
+        if (Test-Path -LiteralPath $stale) {
+            $result.Reason = 'outdir-locked'
+            $result.Detail = ($stale + ':still present after remove')
+            return $result
+        }
+    }
+
+    $result.Ok = $true
+    return $result
+}
+
+# B4: the next launch must not race the previous instance's teardown. This
+# observes ONLY the pid the probe reported and the CDP port -- it never
+# name-sweeps fredo/msedgewebview2 (a human dev instance must survive).
+function Test-ProcessIdAlive {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        return ($null -ne $process)
+    } catch {
+        return $false
+    }
+}
+
+function Wait-LaunchSettled {
+    param(
+        [int]$ProcessId = 0,
+        [int]$CdpPort = 0,
+        [int]$TimeoutSecs = 30
+    )
+
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $pidGone = ($ProcessId -le 0)
+    $portClosed = $true
+    if ($CdpPort -gt 0) { $portClosed = (-not (Test-TcpPortListening -Port $CdpPort)) }
+    while ($watch.Elapsed.TotalSeconds -lt $TimeoutSecs) {
+        $pidGone = (-not (Test-ProcessIdAlive -ProcessId $ProcessId))
+        if ($CdpPort -gt 0) { $portClosed = (-not (Test-TcpPortListening -Port $CdpPort)) }
+        if ($pidGone -and $portClosed) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    return [pscustomobject]@{
+        Ok = ($pidGone -and $portClosed)
+        PidGone = $pidGone
+        PortClosed = $portClosed
+        Pid = $ProcessId
+        CdpPort = $CdpPort
+        Seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
     }
 }
 
@@ -937,6 +1076,40 @@ function Publish-HookVerdict {
         Emit ('SURFACE_RECT=' + $Verdict.SurfaceRect)
     }
 
+    # B2: the effective-dir proof reaches the DRIVER's own stdout/gate.log too.
+    # The hook's cdp.json carries the product-observed dir + its isolation verdict;
+    # the driver re-emits the same lines (never re-derives the comparison) and, if
+    # a breach arrives without its named error, refuses closed.
+    if ($null -ne $Verdict.Db) {
+        $dbEffective = ''
+        $dbExpected = ''
+        $dbIsolation = ''
+        if ($null -ne $Verdict.Db.PSObject.Properties['effectiveDir']) { $dbEffective = [string]$Verdict.Db.effectiveDir }
+        if ($null -ne $Verdict.Db.PSObject.Properties['expectedDir']) { $dbExpected = [string]$Verdict.Db.expectedDir }
+        if ($null -ne $Verdict.Db.PSObject.Properties['isolation']) { $dbIsolation = [string]$Verdict.Db.isolation }
+        if (-not [string]::IsNullOrWhiteSpace($dbEffective)) {
+            Emit ('DB_EFFECTIVE_DIR=' + $Profile + '=' + $dbEffective)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($dbIsolation)) {
+            Emit ('DB_ISOLATION=' + $dbIsolation)
+            if (($dbIsolation -eq 'shared') -or ($dbIsolation -eq 'mismatch')) {
+                $sawRefusal = $false
+                foreach ($errorEntry in $Verdict.Errors) {
+                    if ($errorEntry.id -eq 'GATE_REFUSED') { $sawRefusal = $true }
+                }
+                if (-not $sawRefusal) {
+                    if ($dbIsolation -eq 'shared') {
+                        Add-NamedError 'GATE_REFUSED' 'reason=db-isolation-shared'
+                    } else {
+                        $expectedText = $dbExpected
+                        if ([string]::IsNullOrWhiteSpace($expectedText)) { $expectedText = '<unset>' }
+                        Add-NamedError 'GATE_REFUSED' ('reason=db-isolation-mismatch expected=' + $expectedText + ' observed=' + $dbEffective)
+                    }
+                }
+            }
+        }
+    }
+
     return $Verdict
 }
 
@@ -1286,11 +1459,13 @@ function Get-CompanionWindowSecs {
 }
 
 function Get-PlainWindowSecs {
-    $window = $WaitSecs
-    $needed = $DbReadySecs + 30
-    if ($needed -gt $window) { $window = $needed }
+    # B3: the plain (non-companion) window is the boot settle + the DB-ready bound
+    # + a 30 s margin: 60 + 180 + 30 = 270, capped at 360. The probe forwards its
+    # own defaults (BootSettle 60 / DbReady 180) to the hook as
+    # GATE_BOOT_SETTLE_SECS / GATE_DB_READY_SECS.
+    $window = $script:BootSettleSecs + $DbReadySecs + 30
     if ($window -lt 1) { $window = 1 }
-    if ($window -gt 300) { $window = 300 }
+    if ($window -gt 360) { $window = 360 }
     return $window
 }
 
@@ -1419,6 +1594,35 @@ function Publish-PortClosure {
     return $portsOk
 }
 
+# B4: after each launch, wait for THAT probe's app PID to disappear and the CDP
+# port to close before the next profile starts. Never a name sweep: the per-run
+# WebView2 user-data folder (set by the probe) isolates a lingering browser, and
+# a human dev instance must survive. A host that does not settle is a refusal.
+function Publish-LaunchSettle {
+    param([string]$Label, $Probe, [int]$CdpPort = 0, [int]$TimeoutSecs = 30)
+
+    $settlePid = 0
+    if ($null -ne $Probe) {
+        $pidText = [string]$Probe.Pid
+        if (-not [string]::IsNullOrWhiteSpace($pidText)) {
+            $parsedPid = 0
+            if ([int]::TryParse($pidText, [ref]$parsedPid)) { $settlePid = $parsedPid }
+        }
+    }
+
+    $settle = Wait-LaunchSettled -ProcessId $settlePid -CdpPort $CdpPort -TimeoutSecs $TimeoutSecs
+    if ($settle.Ok) {
+        Emit ('SETTLE_{0}=ok seconds={1}' -f $Label, $settle.Seconds)
+        return $true
+    }
+
+    $cdpState = 'closed'
+    if (-not $settle.PortClosed) { $cdpState = 'open' }
+    Emit ('SETTLE_{0}=timeout pid={1} cdp={2} seconds={3}' -f $Label, $settle.Pid, $cdpState, $settle.Seconds)
+    Add-NamedError 'GATE_REFUSED' ('reason=host-not-settled label=' + $Label + ' pid=' + $settle.Pid + ' cdp=' + $cdpState)
+    return $false
+}
+
 function Invoke-GateMode {
     param([string]$OutRoot)
     Reset-RunState
@@ -1427,21 +1631,26 @@ function Invoke-GateMode {
         $OutRoot = Join-Path $script:RepoRoot (Join-Path '.opencode\tmp\release-gate' (Get-Stamp))
     }
     $OutRoot = [System.IO.Path]::GetFullPath($OutRoot)
-    if (-not (Test-Path -LiteralPath $OutRoot -PathType Container)) {
-        New-Item -ItemType Directory -Path $OutRoot -Force | Out-Null
-    }
     $script:GateLogPath = Join-Path $OutRoot 'gate.log'
-    [System.IO.File]::WriteAllText($script:GateLogPath, '', $script:GateLogEncoding)
 
-    # The driver OWNS these two run dirs: a leftover cluster in run-fresh would
-    # make the "fresh profile" clause a lie, and a leftover quarantine would make
-    # the dirty clause vacuous. They are re-created from scratch every run.
-    foreach ($leaf in @('run-fresh', 'run-dirty')) {
-        $stale = Join-Path $OutRoot $leaf
-        if (Test-Path -LiteralPath $stale) {
-            Remove-Item -LiteralPath $stale -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    # B1: the evidence root is FRESH or the run is refused. Creating the dir and
+    # writing/deleting a probe file proves it is usable; the stale run dirs must
+    # be removable (the round-3 dead-PID handle silently survived -Force). Never
+    # silently reuse an unusable or locked tree.
+    $outDirCheck = Test-OutDirUsable -OutRoot $OutRoot
+    if (-not $outDirCheck.Ok) {
+        try {
+            if (Test-Path -LiteralPath $OutRoot -PathType Container) {
+                [System.IO.File]::WriteAllText($script:GateLogPath, '', $script:GateLogEncoding)
+            }
+        } catch { }
+        Emit ('MODE=gate')
+        Emit ('OUTDIR=' + $OutRoot)
+        Add-NamedError 'GATE_REFUSED' ('reason=' + $outDirCheck.Reason + ' detail=' + $outDirCheck.Detail)
+        Emit ('VERDICT=' + (Get-VerdictText -Code 2))
+        return 2
     }
+    [System.IO.File]::WriteAllText($script:GateLogPath, '', $script:GateLogEncoding)
 
     Emit ('MODE=gate')
     Emit ('OUTDIR=' + $OutRoot)
@@ -1558,12 +1767,25 @@ function Invoke-GateMode {
     # ---- REQ-2.6: the app ports stay closed (probe -RequireClosed) -----------
     Publish-PortClosure -Probe $fresh.Probe | Out-Null
 
+    # ---- B4: settle the fresh instance before the dirty launch starts --------
+    if (-not (Publish-LaunchSettle -Label 'fresh' -Probe $fresh.Probe -CdpPort $CdpPort -TimeoutSecs $script:SettleSecs)) {
+        return (Complete-Run -OutRoot $OutRoot -Installers $installerFull -ChecksExpected $true)
+    }
+
     # ---- dirty profile ------------------------------------------------------
     $script:DirtyDir = Join-Path $OutRoot 'run-dirty'
     $dirtyWindow = Get-PlainWindowSecs
     $dirty = Invoke-LaunchProfile -Profile 'dirty' -ExePath $appExe -RunDir $script:DirtyDir -WindowSecs $dirtyWindow -Assertions 'database,screenshot' -WithHook
 
+    # ---- B4: settle the dirty instance too (the NEXT consumer is the evidence
+    # dir + a human re-drive; a still-open CDP port would be a stale listener).
+    $dirtySettled = Publish-LaunchSettle -Label 'dirty' -Probe $dirty.Probe -CdpPort $CdpPort -TimeoutSecs $script:SettleSecs
+
     $dbOk = Publish-DbCheck
+
+    if (-not $dirtySettled) {
+        return (Complete-Run -OutRoot $OutRoot -Installers $installerFull -ChecksExpected $true)
+    }
 
     if ($dbOk -and $null -ne $script:DbFacts['dirty'] -and $script:DbFacts['dirty'].Ok) {
         $quarantine = Test-QuarantineEvidence -DataDir $script:DirtyDir
@@ -2407,6 +2629,152 @@ exit 0
         $runnerOk = ($runnerChild.ExitCode -eq 0) -and (-not [string]::IsNullOrWhiteSpace($runnerToken)) -and ($runnerSeconds -le 5) -and $runnerAlive
         New-ControlLine 'CHILD-RUNNER-NO-INHERIT' 'the child runner returns with the grandchild still alive (no inherited handles)' $runnerOk "exit=$($runnerChild.ExitCode) seconds=$runnerSeconds alive=$runnerAlive token=[$runnerToken]"
         if (-not $runnerOk) { $failures++ }
+
+        # ---------- 26. OUTDIR-UNUSABLE (round 4 stream B) -----------------
+        # The evidence root is fresh or refused. Driven through the REAL
+        # Invoke-GateMode entry: (a) a root under a FILE cannot be created,
+        # (b) a stale run-fresh holding an open handle cannot be removed. Both are
+        # typed GATE_REFUSED refusals (exit 2), never a silent reuse.
+        $blockedRoot = Join-Path $rootTemp 'outdir-blocked'
+        [System.IO.File]::WriteAllText($blockedRoot, 'not-a-directory', $script:GateLogEncoding)
+        $runBlocked = Invoke-Captured {
+            Invoke-GateMode -OutRoot (Join-Path $blockedRoot 'evidence')
+        }
+        $lockedRoot = Join-Path $rootTemp 'outdir-locked'
+        $lockedRun = Join-Path $lockedRoot 'run-fresh'
+        New-Item -ItemType Directory -Path $lockedRun -Force | Out-Null
+        $lockedHoldPath = Join-Path $lockedRun 'stderr.log'
+        $lockedHold = [System.IO.File]::Open($lockedHoldPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        try {
+            $runLocked = Invoke-Captured {
+                Invoke-GateMode -OutRoot $lockedRoot
+            }
+        } finally {
+            if ($null -ne $lockedHold) { $lockedHold.Dispose() }
+        }
+        $ok = ($runBlocked.Code -eq 2) -and
+              ($runBlocked.Ids -contains 'GATE_REFUSED') -and
+              (Test-ContainsLine $runBlocked.Lines 'reason=outdir-unusable') -and
+              (Test-ContainsLine $runBlocked.Lines 'OUTDIR=') -and
+              ($runLocked.Code -eq 2) -and
+              ($runLocked.Ids -contains 'GATE_REFUSED') -and
+              (Test-ContainsLine $runLocked.Lines 'reason=outdir-locked')
+        New-ControlLine 'OUTDIR-UNUSABLE' 'an uncreatable or locked OutDir refuses (exit 2), never silently reuses' $ok ("blocked-exit=$($runBlocked.Code) blocked-ids=$($runBlocked.Ids -join ',') locked-exit=$($runLocked.Code) locked-ids=$($runLocked.Ids -join ',')")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 27. DB-ISOLATION-MISMATCH (round 4 stream B) -----------
+        # The effective-dir proof (G-449): the driver re-emits the hook's
+        # DB_EFFECTIVE_DIR/DB_ISOLATION and NEVER turns a proven isolation breach
+        # into DB_NOT_READY. Both refusal shapes are driven through the REAL
+        # Publish-HookVerdict (the entry-path publisher) over a cdp.json fixture.
+        $sharedDbDir = Join-Path $env:APPDATA 'com.fredo.app\postgres\cluster'
+        $isoDir = Join-Path $rootTemp 'cdp-db-isolation'
+        $null = New-CdpFixture -Dir $isoDir -Profile 'fresh' `
+            -Errors @(@{ id = 'GATE_REFUSED'; detail = 'reason=db-isolation-shared' }) `
+            -Checks @(@{ id = 'REQ-2.4'; ok = $false; detail = ('profile=fresh state=db-isolation-shared dataDir=' + $sharedDbDir) }) `
+            -Db @{ ok = $false; state = 'db-isolation-shared'; dataDir = $sharedDbDir; effectiveDir = $sharedDbDir; expectedDir = (Join-Path $rootTemp 'run-fresh\postgres\cluster'); isolation = 'shared' }
+        $runShared = Invoke-Captured {
+            $v = Get-HookVerdict -CdpJsonPath (Join-Path $isoDir 'cdp.json')
+            Publish-HookVerdict -Verdict $v -Profile 'fresh' | Out-Null
+            Publish-DbCheck | Out-Null
+            Get-FinalExitCode
+        }
+        $expectedIsoDir = Join-Path $rootTemp 'expected\postgres\cluster'
+        $observedIsoDir = Join-Path $rootTemp 'elsewhere\postgres\cluster'
+        $mismatchDir = Join-Path $rootTemp 'cdp-db-mismatch'
+        $null = New-CdpFixture -Dir $mismatchDir -Profile 'fresh' `
+            -Errors @(@{ id = 'GATE_REFUSED'; detail = ('reason=db-isolation-mismatch expected=' + $expectedIsoDir + ' observed=' + $observedIsoDir) }) `
+            -Checks @(@{ id = 'REQ-2.4'; ok = $false; detail = 'profile=fresh state=db-isolation-mismatch' }) `
+            -Db @{ ok = $false; state = 'db-isolation-mismatch'; dataDir = $observedIsoDir; effectiveDir = $observedIsoDir; expectedDir = $expectedIsoDir; isolation = 'mismatch' }
+        $runMismatch = Invoke-Captured {
+            $v = Get-HookVerdict -CdpJsonPath (Join-Path $mismatchDir 'cdp.json')
+            Publish-HookVerdict -Verdict $v -Profile 'fresh' | Out-Null
+            Publish-DbCheck | Out-Null
+            Get-FinalExitCode
+        }
+        $ok = ($runShared.Code -eq 2) -and
+              ($runShared.Ids -contains 'GATE_REFUSED') -and
+              (-not ($runShared.Ids -contains 'DB_NOT_READY')) -and
+              (Test-ContainsLine $runShared.Lines ('DB_EFFECTIVE_DIR=fresh=' + $sharedDbDir)) -and
+              (Test-ContainsLine $runShared.Lines 'DB_ISOLATION=shared') -and
+              ($runMismatch.Code -eq 2) -and
+              ($runMismatch.Ids -contains 'GATE_REFUSED') -and
+              (-not ($runMismatch.Ids -contains 'DB_NOT_READY')) -and
+              (Test-ContainsLine $runMismatch.Lines ('DB_EFFECTIVE_DIR=fresh=' + $observedIsoDir)) -and
+              (Test-ContainsLine $runMismatch.Lines 'DB_ISOLATION=mismatch')
+        New-ControlLine 'DB-ISOLATION-MISMATCH' 'a shared/mismatched effective DB dir refuses, never DB_NOT_READY (exit 2)' $ok ("shared-exit=$($runShared.Code) shared-ids=$($runShared.Ids -join ',') mismatch-exit=$($runMismatch.Code) mismatch-ids=$($runMismatch.Ids -join ',')")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 28. BLANK-FRAME-NOT-ATTRIBUTED (round 4 stream B) ------
+        # An about:blank frame is an instrument state: CDP_UNAVAILABLE:blank-document
+        # + db.state=not-observed-blank-document + the screenshot-frame readiness
+        # failure, and NO styled UNSTYLED or CSP_VIOLATION attribution. Driven
+        # through the REAL Publish-HookVerdict/Publish-DbCheck publishers.
+        $blankDir = Join-Path $rootTemp 'cdp-blank-frame'
+        $null = New-CdpFixture -Dir $blankDir -Profile 'dirty' `
+            -Errors @(
+                @{ id = 'CDP_UNAVAILABLE'; detail = 'blank-document' },
+                @{ id = 'UNSTYLED'; detail = 'screenshot-frame S1=false readyState=complete href=about:blank bodyChildren=0' }
+            ) `
+            -Checks @(
+                @{ id = 'REQ-2.3'; ok = $false; detail = 'frame=blank-document (not attributed)' },
+                @{ id = 'REQ-2.3-screenshot'; ok = $false; detail = 'S1=false S2=false S3=false S4=false S5=false S6=false' },
+                @{ id = 'REQ-2.4'; ok = $false; detail = 'profile=dirty state=not-observed-blank-document' }
+            ) `
+            -Db @{ ok = $false; state = 'not-observed-blank-document' } `
+            -Screenshot @{ criteria = @{ S1 = $false }; readyState = 'complete'; href = 'about:blank'; bodyChildren = 0 }
+        $runBlank = Invoke-Captured {
+            $v = Get-HookVerdict -CdpJsonPath (Join-Path $blankDir 'cdp.json')
+            Publish-HookVerdict -Verdict $v -Profile 'dirty' | Out-Null
+            Publish-DbCheck | Out-Null
+            Get-FinalExitCode
+        }
+        $blankUnstyled = @()
+        foreach ($blankLine in $runBlank.Lines) {
+            if ($blankLine.StartsWith('UNSTYLED:')) { $blankUnstyled += $blankLine }
+        }
+        $ok = ($runBlank.Code -eq 1) -and
+              ($runBlank.Ids -contains 'CDP_UNAVAILABLE') -and
+              (Test-ContainsLine $runBlank.Lines 'CDP_UNAVAILABLE:blank-document') -and
+              (-not ($runBlank.Ids -contains 'CSP_VIOLATION')) -and
+              (Test-ContainsLine $runBlank.Lines 'UNSTYLED:screenshot-frame S1=false') -and
+              ($blankUnstyled.Count -eq 1) -and
+              (Test-ContainsLine $runBlank.Lines 'state=not-observed-blank-document')
+        New-ControlLine 'BLANK-FRAME-NOT-ATTRIBUTED' 'a blank frame is CDP_UNAVAILABLE + screenshot-frame, never a styled/CSP attribution (exit 1)' $ok ("exit=$($runBlank.Code) ids=$($runBlank.Ids -join ',') styled-unstyled=$($blankUnstyled.Count)")
+        if (-not $ok) { $failures++ }
+
+        # ---------- 29. HOST-SETTLED (round 4 stream B) --------------------
+        # A launch is settled only when ITS pid is gone AND the CDP port is
+        # closed. Discriminates on both inputs, bounded far below the 30 s
+        # entry-path budget (the inline self-test has a 15 s bound).
+        $openListener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $openListener.Start()
+        $openPort = ([System.Net.IPEndPoint]$openListener.LocalEndpoint).Port
+        try {
+            $notSettled = Wait-LaunchSettled -ProcessId 0 -CdpPort $openPort -TimeoutSecs 1
+        } finally {
+            try { $openListener.Stop() } catch { }
+        }
+        $closedListener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $closedListener.Start()
+        $closedPort = ([System.Net.IPEndPoint]$closedListener.LocalEndpoint).Port
+        $closedListener.Stop()
+        $settled = Wait-LaunchSettled -ProcessId 0 -CdpPort $closedPort -TimeoutSecs 2
+
+        $sleepHost = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $sleepOut = Join-Path $rootTemp 'settle-child.stdout.log'
+        $sleepErr = Join-Path $rootTemp 'settle-child.stderr.log'
+        $sleepPid = Start-DetachedProcess -FilePath $sleepHost -ArgumentString '-NoProfile -Command "Start-Sleep -Seconds 10"' -StdOutPath $sleepOut -StdErrPath $sleepErr
+        try {
+            $busyPid = Wait-LaunchSettled -ProcessId ([int]$sleepPid) -CdpPort $closedPort -TimeoutSecs 1
+        } finally {
+            try { Stop-Process -Id $sleepPid -Force -ErrorAction SilentlyContinue } catch { }
+        }
+        $ok = ($settled.Ok -eq $true) -and ($settled.PidGone -eq $true) -and ($settled.PortClosed -eq $true) -and
+              ($notSettled.Ok -eq $false) -and ($notSettled.PortClosed -eq $false) -and
+              ($busyPid.Ok -eq $false) -and ($busyPid.PidGone -eq $false)
+        New-ControlLine 'HOST-SETTLED' 'settled only when the pid is gone AND the CDP port is closed' $ok ("settled=$($settled.Ok) open-port-ok=$($notSettled.Ok) live-pid-ok=$($busyPid.Ok)")
+        if (-not $ok) { $failures++ }
     } catch {
         Emit ('SELFTEST_EXCEPTION=' + $_.Exception.Message)
         $failures++
