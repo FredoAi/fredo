@@ -4976,6 +4976,13 @@ Test-Script "gate-release-artifact.ps1: the probe binds the real port list (no b
   if ($badText -notmatch 'RESULT=REFUSED') { throw "malformed-port: missing RESULT=REFUSED: $badText" }
   if ($badText -notmatch 'port is not an integer') { throw "malformed-port: the trailing token was not parsed (a first-port-only fix would pass): $badText" }
 
+  # Each probe child above exits 2 by design (the typed missing-exe / invalid-port
+  # refusal). Test-Script reads the leg's $LASTEXITCODE to decide PASS/FAIL, so the
+  # leaked child code from the LAST invocation must be reset to 0 before returning --
+  # otherwise this green leg reports "expected exit 0, got 2" (same reset the
+  # inspect-webview-config leg uses).
+  $global:LASTEXITCODE = 0
+
   return "probe binds 9223 and 9223,16932,19631 across -File (typed missing-exe refusal, no binder error); malformed trailing token is rejected"
 }
 
