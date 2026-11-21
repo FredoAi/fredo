@@ -81,6 +81,24 @@
     (`-SanitizePath -CompanionProbe -RemoveDll llama-common.dll`) is unchanged
     and is still the AC4 invocation.
 
+  CDP AND IN-WINDOW HOOK (Spec #3181 ST-2; additive, the base contract above is
+  unchanged):
+    * -CdpPort <n> (default 0/off) exports
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n> for the
+      launched child. The detachment helper passes lpEnvironment = NULL, so the
+      child inherits this process's environment and needs no new Win32 call. It
+      prints `CDP_PORT=<n>` and REFUSES (RESULT=REFUSED, exit 2,
+      ERROR=CDP_PORT_IN_USE) when the port is already listening, so a lingering
+      webview can never be attributed to this launch. The CDP port is never part
+      of -Ports.
+    * -CdpProbe <path> runs that hook script INSIDE the same bounded launch
+      window (the app process is still running; there is NO second launch
+      primitive) with the GATE_* environment: GATE_EXE, GATE_CDP_PORT,
+      GATE_DATA_DIR, GATE_LOG_DIR, GATE_WINDOW_SECS, GATE_ASSERTIONS. It prints
+      `WINDOW_HOOK_EXIT=<n>` and `WINDOW_HOOK_SECONDS=<s>`. A non-zero hook exit
+      folds into `FAILURE=window-hook:<n>`; a hook that outlives the bounded
+      window is killed and folds into `FAILURE=window-hook-timeout:<s>`.
+
   SELF-TEST (`-SelfTest`, hermetic -- no GUI artifact, no model, no ports):
       1 - DETACHED-LAUNCH  a deliberately long-lived child (`powershell.exe
                            -NoProfile -Command "Start-Sleep -Seconds 20"`, no
@@ -97,7 +115,13 @@
                            helper (and the source still spells the handle-list
                            mechanism), so a future edit cannot silently revert to
                            plain `Start-Process`.
-    `SELFTEST: PASS` + exit 0 when every control passes.
+      4 - CDP-HOOK         a hermetic hook prints a token, exits 0 and asserts
+                           GATE_CDP_PORT was passed; the runner reports
+                           `WINDOW_HOOK_EXIT=0` and `WINDOW_HOOK_SECONDS=`.
+      5 - CDP-HOOK-FAIL    a hermetic hook exits 1; the runner folds it into
+                           `FAILURE=window-hook:1` (the named failure the live
+                           path reports).
+     `SELFTEST: PASS` + exit 0 when every control passes.
 
   Windows-only (Win32 process enumeration). PowerShell 5.1-safe.
 
@@ -162,6 +186,21 @@
   assert without a launch. Additive: without it the script behaves exactly as
   before.
 
+.PARAMETER CdpPort
+  Optional WebView2 DevTools port. Default 0 (off). When set, the launched child
+  receives WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n>, and
+  the probe prints `CDP_PORT=<n>`. A port that is already listening is refused
+  (exit 2, ERROR=CDP_PORT_IN_USE). The CDP port is not a -Ports value.
+
+.PARAMETER CdpProbe
+  Optional path to a hook script run INSIDE the bounded launch window, while the
+  app is still running, with the GATE_* environment (GATE_EXE, GATE_CDP_PORT,
+  GATE_DATA_DIR, GATE_LOG_DIR, GATE_WINDOW_SECS, GATE_ASSERTIONS). Prints
+  `WINDOW_HOOK_EXIT=` and `WINDOW_HOOK_SECONDS=`; a non-zero exit becomes
+  `FAILURE=window-hook:<n>` and a timeout becomes
+  `FAILURE=window-hook-timeout:<s>`. Refused with -ProbeOnly (nothing is
+  launched to run the hook inside).
+
 .PARAMETER SelfTest
   Hermetic self-test of the detachment helper and the refusals (see the
   DESCRIPTION). Needs no artifact, no ports and no model. Exits 0 when every
@@ -195,7 +234,9 @@ param(
   [switch]$CompanionProbe,
   [string]$RemoveDll = '',
   [switch]$ProbeOnly,
-  [switch]$SelfTest
+  [switch]$SelfTest,
+  [int]$CdpPort = 0,
+  [string]$CdpProbe = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -223,6 +264,14 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 $probePorts = @()
 $exePath = ''
+
+# Assertion selection forwarded to the -CdpProbe hook via GATE_ASSERTIONS. A
+# caller (the release-artifact gate) may narrow it; the default is the full set
+# the hook understands.
+$gateAssertions = $env:GATE_ASSERTIONS
+if ([string]::IsNullOrWhiteSpace($gateAssertions)) {
+  $gateAssertions = 'styled,database,companion,screenshot'
+}
 
 # -SelfTest is hermetic: it needs no artifact, no ports and no model, so none of
 # the artifact preconditions below apply to it.
@@ -295,6 +344,26 @@ if (-not $SelfTest) {
       Write-Probe 'RESULT=REFUSED'
       exit 2
     }
+  }
+
+  if ($CdpPort -ne 0 -and ($CdpPort -lt 1 -or $CdpPort -gt 65535)) {
+    Write-Probe "ERROR: -CdpPort out of range (got $CdpPort)."
+    Write-Probe 'RESULT=REFUSED'
+    exit 2
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($CdpProbe)) {
+    if ($ProbeOnly) {
+      Write-Probe 'ERROR: -CdpProbe runs inside the bounded launch window, but -ProbeOnly launches nothing. Drop one of them.'
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    if (-not (Test-Path -LiteralPath $CdpProbe -PathType Leaf)) {
+      Write-Probe "ERROR: -CdpProbe hook script not found: $CdpProbe"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+    $CdpProbe = (Resolve-Path -LiteralPath $CdpProbe).Path
   }
 }
 
@@ -696,6 +765,114 @@ function Get-FirstOutputLine {
   return ([string]$lines[0]).Trim()
 }
 
+# Run the -CdpProbe hook INSIDE the bounded launch window, while the app process
+# is still running. The hook is a child PowerShell process so a hung hook can be
+# KILLED at the window bound -- a child launched through Start-DetachedProcess
+# would outlive the bound and defeat the "bounded window" contract. This is NOT a
+# GUI launch: the ONE GUI primitive remains Start-DetachedProcess above.
+function Invoke-WindowHook {
+  param(
+    [string]$HookPath,
+    [string]$ExePath,
+    [int]$CdpPort,
+    [string]$DataDir,
+    [string]$ProbeLogDir,
+    [int]$WindowSecs,
+    [string]$Assertions
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Assertions)) {
+    $Assertions = 'styled,database,companion,screenshot'
+  }
+
+  # Binding hook environment (Spec #3181, section A). The child inherits these.
+  $env:GATE_EXE = $ExePath
+  $env:GATE_CDP_PORT = [string]$CdpPort
+  $env:GATE_DATA_DIR = $DataDir
+  $env:GATE_LOG_DIR = $ProbeLogDir
+  $env:GATE_WINDOW_SECS = [string]$WindowSecs
+  $env:GATE_ASSERTIONS = $Assertions
+
+  $hookOut = Join-Path $ProbeLogDir 'window-hook-stdout.log'
+  $hookErr = Join-Path $ProbeLogDir 'window-hook-stderr.log'
+  $hookExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+  $exitCode = $null
+  $timedOut = $false
+  $seconds = 0.0
+  $stdoutText = ''
+  $stderrText = ''
+  $watch = [System.Diagnostics.Stopwatch]::StartNew()
+  $proc = $null
+  try {
+    # System.Diagnostics.Process (not Start-Process -PassThru): the latter closes
+    # the child handle when -Wait is absent, leaving ExitCode unreadable -- which
+    # would silently turn a failing hook into a pass. This keeps the handle, so
+    # the exit code IS the hook's own under the bounded wait.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $hookExe
+    $psi.Arguments = '-NoProfile -File "' + $HookPath + '"'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    $boundMs = $WindowSecs * 1000
+    if (-not $proc.WaitForExit($boundMs)) {
+      $timedOut = $true
+      try { $proc.Kill() } catch {}
+      try { $proc.WaitForExit(5000) | Out-Null } catch {}
+    }
+    # The int overload does not flush the redirected streams; the no-arg one does.
+    try { $proc.WaitForExit() } catch {}
+    try { $stdoutText = $outTask.Result } catch { $stdoutText = '' }
+    try { $stderrText = $errTask.Result } catch { $stderrText = '' }
+  } catch {
+    Write-Probe "ERROR: window hook launch failed: $($_.Exception.Message)"
+    $timedOut = $true
+  } finally {
+    $watch.Stop()
+    $seconds = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+  }
+
+  # Persist the hook transcript as evidence, beside the run logs.
+  try { [System.IO.File]::WriteAllText($hookOut, $stdoutText) } catch {}
+  try { [System.IO.File]::WriteAllText($hookErr, $stderrText) } catch {}
+
+  if (-not $timedOut -and $null -ne $proc -and $proc.HasExited) {
+    try { $exitCode = [int]$proc.ExitCode } catch { $exitCode = $null }
+  }
+  # Surface the hook's own stdout so a caller sees the token/line it printed.
+  foreach ($line in ($stdoutText -split "`r?`n")) {
+    if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Probe $line }
+  }
+
+  $exitText = if ($null -ne $exitCode) { [string]$exitCode } else { 'timeout' }
+  Write-Probe "WINDOW_HOOK_EXIT=$exitText"
+  Write-Probe "WINDOW_HOOK_SECONDS=$seconds"
+
+  $failureName = ''
+  if ($timedOut) {
+    $failureName = "window-hook-timeout:$seconds"
+  } elseif ($null -eq $exitCode) {
+    $failureName = 'window-hook:error'
+  } elseif ($exitCode -ne 0) {
+    $failureName = "window-hook:$exitCode"
+  }
+
+  return [pscustomobject]@{
+    Exit = $exitCode
+    Seconds = $seconds
+    TimedOut = $timedOut
+    StdOut = $stdoutText
+    FailureName = $failureName
+  }
+}
+
 # ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
 # Shared by the combined run and -ProbeOnly so ONE implementation emits the
 # VERSION_* / PROBE_* / CONTROL_* literals. Each phase announces itself: a
@@ -940,6 +1117,62 @@ if ($SelfTest) {
     } else {
       Write-Probe '  [PASS] the GUI launch site calls the detachment helper and the whitelist mechanism is intact'
     }
+
+    # ---- CONTROL 4 - CDP-HOOK -------------------------------------------
+    # The hook runs through the SAME runner the live path uses and receives the
+    # binding GATE_* environment. The hermetic hook asserts GATE_CDP_PORT and
+    # prints a token; a missing/mispassed value is a control failure.
+    Write-Probe 'CONTROL 4 - CDP-HOOK'
+    try {
+      $hookDir = Join-Path $selfTmp 'cdp-hook-ok'
+      New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
+      $hookOkPath = Join-Path $hookDir 'hook-ok.ps1'
+      $hookOkSource = @'
+param()
+if ($env:GATE_CDP_PORT -ne '9411') { Write-Output ("GATE_CDP_PORT_MISMATCH=" + $env:GATE_CDP_PORT); exit 4 }
+Write-Output 'CDP_HOOK_TOKEN=OK'
+Write-Output ("GATE_CDP_PORT_SEEN=" + $env:GATE_CDP_PORT)
+exit 0
+'@
+      [System.IO.File]::WriteAllText($hookOkPath, $hookOkSource, [System.Text.UTF8Encoding]::new($false))
+      $hookOk = Invoke-WindowHook -HookPath $hookOkPath -ExePath $childExe -CdpPort 9411 -DataDir $hookDir -ProbeLogDir $hookDir -WindowSecs 30 -Assertions 'styled'
+      $okToken = $hookOk.StdOut.Contains('CDP_HOOK_TOKEN=OK')
+      $okPort = $hookOk.StdOut.Contains('GATE_CDP_PORT_SEEN=9411')
+      if (($hookOk.Exit -eq 0) -and $okToken -and $okPort -and [string]::IsNullOrWhiteSpace($hookOk.FailureName)) {
+        Write-Probe '  [PASS] the hook ran with GATE_CDP_PORT=9411 and exited 0'
+      } else {
+        Write-Probe ("  [FAIL] exit={0} token={1} port={2} stdout={3}" -f $hookOk.Exit, $okToken, $okPort, $hookOk.StdOut)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] CDP hook control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
+
+    # ---- CONTROL 5 - CDP-HOOK-FAIL --------------------------------------
+    # A non-zero hook exit must fold into the named FAILURE=window-hook:<n>.
+    Write-Probe 'CONTROL 5 - CDP-HOOK-FAIL'
+    try {
+      $hookDirFail = Join-Path $selfTmp 'cdp-hook-fail'
+      New-Item -ItemType Directory -Path $hookDirFail -Force | Out-Null
+      $hookFailPath = Join-Path $hookDirFail 'hook-fail.ps1'
+      $hookFailSource = @'
+param()
+Write-Output 'CDP_HOOK_TOKEN=FAIL'
+exit 1
+'@
+      [System.IO.File]::WriteAllText($hookFailPath, $hookFailSource, [System.Text.UTF8Encoding]::new($false))
+      $hookFail = Invoke-WindowHook -HookPath $hookFailPath -ExePath $childExe -CdpPort 9411 -DataDir $hookDirFail -ProbeLogDir $hookDirFail -WindowSecs 30 -Assertions 'styled'
+      if (($hookFail.Exit -eq 1) -and ($hookFail.FailureName -eq 'window-hook:1')) {
+        Write-Probe '  [PASS] a hook exiting 1 folds into FAILURE=window-hook:1'
+      } else {
+        Write-Probe ("  [FAIL] exit={0} failure={1} stdout={2}" -f $hookFail.Exit, $hookFail.FailureName, $hookFail.StdOut)
+        $controlFailures++
+      }
+    } catch {
+      Write-Probe ("  [FAIL] CDP hook-fail control threw: {0}" -f $_.Exception.Message)
+      $controlFailures++
+    }
   } finally {
     if ($detachChildPid -gt 0) {
       # Deliberately NOT killed: the child must outlive this script, so a leaked
@@ -990,10 +1223,28 @@ if ($ProbeOnly) {
       exit 2
     }
   }
+
+  # The DevTools port must be free BEFORE the launch, so a lingering webview from
+  # a previous run can never be read as this artifact's CDP endpoint.
+  if ($CdpPort -ne 0) {
+    $cdpOpen = Test-TcpPortOpen -Port $CdpPort
+    Write-Probe ("PRECHECK_CDP_PORT_{0}={1}" -f $CdpPort, $(if ($cdpOpen) { 'open' } else { 'closed' }))
+    if ($cdpOpen) {
+      Write-Probe "ERROR=CDP_PORT_IN_USE port=$CdpPort"
+      Write-Probe 'RESULT=REFUSED'
+      exit 2
+    }
+  }
 }
 
 # ---- Environment --------------------------------------------------------------
 if (-not $ProbeOnly) { $env:FREDO_MCP_BASE_PORT = "$McpPort" }
+if ($CdpPort -ne 0) {
+  # The detachment helper passes lpEnvironment = NULL, so the launched child
+  # inherits this variable and WebView2 opens its DevTools endpoint on the port.
+  $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$CdpPort"
+  Write-Probe "CDP_PORT=$CdpPort"
+}
 if ($SanitizePath) {
   # Applied BEFORE the launch so the child inherits it; the child CLI legs below
   # inherit it too.
@@ -1059,6 +1310,7 @@ $descendants = @()
 $targetPg = @()
 $descendantsKilled = 0
 $postgresKilled = 0
+$windowHookFailure = ''
 
 try {
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1074,6 +1326,16 @@ try {
     throw
   }
   Write-Probe "PID=$($p.Id)"
+
+  # -CdpProbe: run the hook INSIDE the launch window, while the app is still
+  # running. A non-zero exit or a timeout becomes a FAILURE= line in the report.
+  if (-not [string]::IsNullOrWhiteSpace($CdpProbe)) {
+    Write-Phase 'window-hook'
+    $hookResult = Invoke-WindowHook -HookPath $CdpProbe -ExePath $exePath -CdpPort $CdpPort -DataDir $appDataDir -ProbeLogDir $LogDir -WindowSecs $WaitSecs -Assertions $gateAssertions
+    if (-not [string]::IsNullOrWhiteSpace($hookResult.FailureName)) {
+      $windowHookFailure = $hookResult.FailureName
+    }
+  }
 
   $deadline = (Get-Date).AddSeconds($WaitSecs)
   while ((Get-Date) -lt $deadline) {
@@ -1189,6 +1451,7 @@ if ($appAlive) { $orphans++ }
 $failures = New-Object System.Collections.ArrayList
 if ($null -ne $launchError) { [void]$failures.Add("probe-error: $launchError") }
 if ($appExited) { [void]$failures.Add('app-exited') }
+if (-not [string]::IsNullOrWhiteSpace($windowHookFailure)) { [void]$failures.Add($windowHookFailure) }
 
 # ---- AC4 CLI legs (--version / companion probe / remove-one-DLL control) ------
 # ONE implementation (Invoke-CliLegs), shared with -ProbeOnly, so the VERSION_* /

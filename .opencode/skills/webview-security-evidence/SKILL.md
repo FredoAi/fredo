@@ -84,9 +84,10 @@ the invocation the harness gates.
 - **`-SelfTest`** (hermetic: no artifact, no model, no ports) proves exactly that — it launches a
   20-second child through the same helper, asserts the helper returns in `<= 5 s`
   (`DETACH_RETURN_SECONDS=`) with the child still alive (not killed, so a leaked handle cannot
-  be masked), re-runs the three refusals as children (exit 2 + `RESULT=REFUSED`), and asserts
-  the GUI launch site still calls the helper. `SELFTEST: PASS` + exit 0; exit 3 on a control
-  failure. Run it first if you suspect the instrument: `powershell -File
+  be masked), re-runs the three refusals as children (exit 2 + `RESULT=REFUSED`), asserts
+  the GUI launch site still calls the helper, and runs the two CDP hook controls
+  (`CDP-HOOK`, `CDP-HOOK-FAIL`). `SELFTEST: PASS` + exit 0; exit 3 on a control failure. Run
+  it first if you suspect the instrument: `powershell -File
   .opencode/scripts/launch-artifact-probe.ps1 -SelfTest`.
 - **`-ProbeOnly`** skips the GUI launch, port precheck, bridge scan and teardown and runs only
   the CLI legs (`--version`, and `-CompanionProbe` / `-RemoveDll` when supplied). Use it to
@@ -100,6 +101,36 @@ the invocation the harness gates.
   seconds** — and the script prints
   `COMPANION_PROBE_HINT=full model load + one turn; expect minutes` immediately before it
   starts. A multi-minute wait after that hint is expected, never a hang.
+
+## CDP port and in-window hook (`-CdpPort` / `-CdpProbe`)
+
+A produced release build ships **no MCP bridge**, so WebView2 DevTools is the only remote
+inspection route into its webview. The probe exposes it through two **additive** parameters:
+the base launch contract above is unchanged, and `Start-DetachedProcess` remains the only GUI
+launch primitive.
+
+- **`-CdpPort <n>`** (default `0` / off) sets
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<n>` for the launched child
+  (the detachment helper passes `lpEnvironment = NULL`, so the child inherits this process's
+  environment — no new Win32 call) and prints `CDP_PORT=<n>`. The port is prechecked and
+  REFUSED when already listening: `RESULT=REFUSED`, exit `2`, `ERROR=CDP_PORT_IN_USE port=<n>`,
+  so a lingering webview can never be attributed to this launch. The CDP port is never a
+  `-Ports` value.
+- **`-CdpProbe <path>`** runs the hook script (`gate-artifact-window.ps1`) INSIDE the same
+  bounded launch window, while the app is still running — there is no second launcher. The
+  hook receives the binding environment `GATE_EXE`, `GATE_CDP_PORT`, `GATE_DATA_DIR`,
+  `GATE_LOG_DIR`, `GATE_WINDOW_SECS`, `GATE_ASSERTIONS`. The probe prints
+  `WINDOW_HOOK_EXIT=<n>` and `WINDOW_HOOK_SECONDS=<s>`; a non-zero hook exit folds into
+  `FAILURE=window-hook:<n>` and a hook that outlives the window is killed and folds into
+  `FAILURE=window-hook-timeout:<s>`. The hook's stdout/stderr are kept as
+  `window-hook-stdout.log` / `window-hook-stderr.log` beside the run logs. `-CdpProbe` is
+  refused together with `-ProbeOnly` (nothing is launched to run the hook inside), and a hook
+  path that does not exist is refused (exit `2`).
+
+The hermetic `-SelfTest` proves the mechanism without a GUI: controls 4 (`CDP-HOOK`) and 5
+(`CDP-HOOK-FAIL`) run hermetic hooks through the same runner — control 4 asserts
+`GATE_CDP_PORT` reached the hook and it exited `0`; control 5 asserts a hook exiting `1`
+folds into `FAILURE=window-hook:1`.
 
 ## Examples
 
@@ -149,6 +180,15 @@ SELFTEST: PASS
   that is the FAIL (bridge registered in release).
 - **Exit 1 / `FAILURE=bridge-log-line`** — the release build registered the bridge; a real
   FAIL (cfg regression).
+- **Exit 2 / `ERROR=CDP_PORT_IN_USE port=<n>`** — a lingering webview or dev instance already
+  listens on the `-CdpPort` value. Stop the owner and re-run; the probe never attributes a
+  pre-existing DevTools endpoint to this launch.
+- **Exit 1 / `FAILURE=window-hook:<n>`** — the `-CdpProbe` hook exited non-zero, so one of its
+  assertions failed. Read `window-hook-stdout.log` / `window-hook-stderr.log` in `LOG_DIR` for
+  the hook's own `CHECK`/token lines; this is a named failure, never a PASS.
+- **Exit 1 / `FAILURE=window-hook-timeout:<s>`** — the hook outlived the bounded launch window
+  and was killed. A bounded wait expiring is a named failure; treat it as an instrument/hook
+  problem, not a product PASS.
 - **Exit 3 / `ORPHANS_LEFT`** — a redirected-handle holder survived teardown. Kill the named
   PIDs (`ORPHAN_POSTGRES_PIDS` / `ORPHAN_DESCENDANT_PIDS`) and disclose.
 - **An inline invocation blocks after `RESULT=PASS`** — the launched GUI inherited the caller's
