@@ -35,7 +35,12 @@ export const DEFAULT_PG_LOG_VERBOSITY: PgLogVerbosity = 'info';
 export type PgPortMode = 'auto' | 'fixed';
 
 /** Additive failure classification on the existing `pg_supervisor_status`. */
-export type PgFailureKind = 'authMismatch' | 'portInUse' | 'dataDirNotEmpty' | 'unknown';
+export type PgFailureKind =
+  | 'authMismatch'
+  | 'portInUse'
+  | 'dataDirNotEmpty'
+  | 'dataDirPermissionDenied'
+  | 'unknown';
 
 /** Friendly display labels for the persisted `log_min_messages` strings. */
 export const PG_LOG_VERBOSITY_LABELS: Record<PgLogVerbosity, string> = {
@@ -135,6 +140,7 @@ function isFailureKind(value: unknown): value is PgFailureKind {
     value === 'authMismatch' ||
     value === 'portInUse' ||
     value === 'dataDirNotEmpty' ||
+    value === 'dataDirPermissionDenied' ||
     value === 'unknown'
   );
 }
