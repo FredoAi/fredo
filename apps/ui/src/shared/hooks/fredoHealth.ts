@@ -48,11 +48,18 @@ import {
 export type FredoHealthState = 'healthy' | 'degraded' | 'down';
 
 /**
- * Postgres failure cause (#3180 ST-3) — the camelCase subset of the backend
- * `PgFailureKind` the health surface renders (additive `dataDirNotEmpty`). A
- * `null`/absent kind is treated as `unknown`.
+ * Postgres failure cause (#3180 ST-3; extended by #3188 ST-3) — the camelCase
+ * subset of the backend `PgFailureKind` the health surface renders. The closed
+ * set is `authMismatch` | `portInUse` | `dataDirNotEmpty` |
+ * `dataDirPermissionDenied` | `unknown`. A `null`/absent kind is treated as
+ * `unknown`.
  */
-export type FredoPgFailureKind = 'authMismatch' | 'portInUse' | 'dataDirNotEmpty' | 'unknown';
+export type FredoPgFailureKind =
+  | 'authMismatch'
+  | 'portInUse'
+  | 'dataDirNotEmpty'
+  | 'dataDirPermissionDenied'
+  | 'unknown';
 
 /**
  * Per-subsystem health. `notSetUp` and `unknown` are NEUTRAL: neither by itself
@@ -198,18 +205,25 @@ function makeLine(
 }
 
 /**
- * Postgres failure copy (#3180 ST-3), authored from the typed causes. `cause`
- * is the row `detail`; `remedy` is the user's next step (R-5.1/R-5.3). No
- * SQLSTATE, stack trace or raw library string appears in the remedy — that
- * belongs in `technicalDetail` (`status.error`). The `dataDirNotEmpty` remedy
- * names the cluster folder and says move/rename — it NEVER tells the user to
- * delete data (R-2.2 — recovery is a rename, never a delete).
+ * Postgres failure copy (#3180 ST-3; extended by #3188 ST-3), authored from the
+ * typed causes. `cause` is the row `detail`; `remedy` is the user's next step
+ * (R-5.1/R-5.3). No SQLSTATE, stack trace or raw library string appears in the
+ * remedy — that belongs in `technicalDetail` (`status.error`). The
+ * `dataDirNotEmpty` remedy names the cluster folder and says move/rename; the
+ * `dataDirPermissionDenied` remedy names the modify-permission / writable-folder
+ * paths. NEITHER ever tells the user to delete data (R-2.2 — recovery is a
+ * rename, never a delete).
  */
 const PG_FAILURE_COPY: Record<FredoPgFailureKind, { cause: string; remedy: string }> = {
   dataDirNotEmpty: {
     cause: 'The database folder Fredo uses already contains files.',
     remedy:
       "Move or rename the PostgreSQL cluster folder (postgres/cluster in Fredo's app-data folder), then restart Fredo. Nothing is removed.",
+  },
+  dataDirPermissionDenied: {
+    cause: 'Windows is blocking Fredo from preparing the database folder.',
+    remedy:
+      "Grant your Windows user modify permission on the PostgreSQL cluster folder's parent, or choose a writable folder with FREDO_PG_DATA_DIR, then restart Fredo. Nothing is removed.",
   },
   portInUse: {
     cause: 'The database port Fredo needs is already in use.',

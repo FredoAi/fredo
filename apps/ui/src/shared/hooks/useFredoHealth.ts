@@ -213,6 +213,7 @@ const PG_FAILURE_KINDS: readonly FredoPgFailureKind[] = [
   'authMismatch',
   'portInUse',
   'dataDirNotEmpty',
+  'dataDirPermissionDenied',
   'unknown',
 ];
 

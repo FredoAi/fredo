@@ -88,6 +88,11 @@ pub enum PgFailureKind {
     /// cluster, and it could not be quarantined (Spec #3180 ST-1) — the
     /// "directory exists but is not empty" class, surfaced with its remedy.
     DataDirNotEmpty,
+    /// The cluster directory exists but its permissions could not be prepared
+    /// (the filesystem refused the permission change) and it could not be
+    /// vacated (Spec #3188 ST-2) — surfaced with an actionable, non-destructive
+    /// remedy. Additive: existing variants and wire values are unchanged.
+    DataDirPermissionDenied,
     /// Any other failure.
     Unknown,
 }
@@ -165,25 +170,37 @@ impl PgStatusView {
 }
 
 /// Classify a failed boot/restart outcome into the additive [`PgFailureKind`]
-/// (Spec #3022 ST-4, R-3.3; extended by Spec #3180 ST-1). A cluster-directory
-/// failure (a non-empty, non-cluster directory that could not be quarantined)
-/// maps to [`PgFailureKind::DataDirNotEmpty`] — detected by downcasting the
-/// concrete [`super::cluster_dir::ClusterDirError`] from the error CHAIN (the
-/// same decode-independent walk as the SQLSTATE check). A credential rejection on
-/// the boot/readiness leg maps to [`PgFailureKind::AuthMismatch`] — detected from
-/// the SQLSTATE (`28P01`/`28000`) via the error chain, which is
-/// decode-independent (the server may emit a non-UTF-8 placeholder message), with
-/// the text rule as a fallback. A `start`-stage bind failure maps to
-/// [`PgFailureKind::PortInUse`]; everything else is [`PgFailureKind::Unknown`].
-/// Pure over the error chain, so the mapping is unit-testable.
+/// (Spec #3022 ST-4, R-3.3; extended by Spec #3180 ST-1 and Spec #3188 ST-2). A
+/// cluster-directory failure maps by the typed
+/// [`super::cluster_dir::ClusterDirError`]'s state — detected by downcasting the
+/// concrete error from the error CHAIN (the same decode-independent walk as the
+/// SQLSTATE check): `Empty` (the filesystem refused the permission change,
+/// leaving the directory un-vacatable) -> [`PgFailureKind::DataDirPermissionDenied`];
+/// `Residue` (a non-empty, non-cluster directory that could not be quarantined)
+/// -> [`PgFailureKind::DataDirNotEmpty`] (unchanged). An `initdb` permission
+/// refusal carried only as text (no typed error) also maps to
+/// `DataDirPermissionDenied` via [`classify_failure_text`]'s exact-phrase branch.
+/// A credential rejection on the boot/readiness leg maps to
+/// [`PgFailureKind::AuthMismatch`] — detected from the SQLSTATE (`28P01`/`28000`)
+/// via the error chain, which is decode-independent (the server may emit a
+/// non-UTF-8 placeholder message), with the text rule as a fallback. A
+/// `start`-stage bind failure maps to [`PgFailureKind::PortInUse`]; everything
+/// else is [`PgFailureKind::Unknown`]. Pure over the error chain, so the mapping
+/// is unit-testable.
 pub fn classify_failure(stage: &str, error: &anyhow::Error) -> PgFailureKind {
-    // 0. The typed cluster-directory failure (Spec #3180 ST-1). Most specific:
-    //    it is a workspace problem, never a credential/port one, so it wins.
-    if error
-        .chain()
-        .any(|cause| cause.downcast_ref::<super::cluster_dir::ClusterDirError>().is_some())
-    {
-        return PgFailureKind::DataDirNotEmpty;
+    // 0. The typed cluster-directory failure (Spec #3180 ST-1; #3188 ST-2). Most
+    //    specific: it is a workspace problem, never a credential/port one, so it
+    //    wins. The wire kind follows the typed STATE.
+    for cause in error.chain() {
+        if let Some(cluster_error) = cause.downcast_ref::<super::cluster_dir::ClusterDirError>() {
+            return match cluster_error.state {
+                super::cluster_dir::ClusterDirState::Empty => {
+                    PgFailureKind::DataDirPermissionDenied
+                }
+                // `Residue` (and any future state) keeps the frozen not-empty kind.
+                _ => PgFailureKind::DataDirNotEmpty,
+            };
+        }
     }
     // 1. Decode-independent SQLSTATE check (the readiness error message may be a
     //    non-UTF-8 placeholder, so the text rule alone would fall to Unknown).
@@ -226,6 +243,14 @@ fn classify_failure_text(stage: &str, text: &str) -> PgFailureKind {
             || lower.contains("bind:"))
     {
         return PgFailureKind::PortInUse;
+    }
+    // 3. The `initdb` permission refusal (Spec #3188 ST-2, R-2b): EXACT-PHRASE
+    //    only, so a generic setup error still falls through to `Unknown` (no
+    //    catch-all). `initdb` prints these on a locked-down filesystem.
+    if text.contains("could not change permissions of directory")
+        || text.contains("fixing permissions on existing directory")
+    {
+        return PgFailureKind::DataDirPermissionDenied;
     }
     PgFailureKind::Unknown
 }
@@ -2129,6 +2154,83 @@ mod tests {
         assert_eq!(classify_failure("setup", &other), PgFailureKind::Unknown);
     }
 
+    /// #3188 ST-2: an `Empty`-state [`ClusterDirError`] (the filesystem refused
+    /// the permission change, so an existing-but-empty dir could not be vacated)
+    /// maps to `dataDirPermissionDenied` — at any stage and even wrapped with
+    /// context.
+    #[test]
+    fn classify_failure_maps_an_empty_cluster_dir_error_to_permission_denied() {
+        let direct = anyhow::Error::new(ClusterDirError {
+            path: PathBuf::from("D:/run-fresh/postgres/cluster"),
+            state: ClusterDirState::Empty,
+        });
+        assert_eq!(
+            classify_failure("setup", &direct),
+            PgFailureKind::DataDirPermissionDenied,
+            "an Empty ClusterDirError must classify as dataDirPermissionDenied"
+        );
+
+        let wrapped = anyhow::Error::new(ClusterDirError {
+            path: PathBuf::from("D:/run-fresh/postgres/cluster"),
+            state: ClusterDirState::Empty,
+        })
+        .context("preparing the PostgreSQL cluster directory");
+        assert_eq!(
+            classify_failure("setup", &wrapped),
+            PgFailureKind::DataDirPermissionDenied,
+            "the chain walk must find a wrapped Empty ClusterDirError too"
+        );
+    }
+
+    /// #3188 ST-2 / R-2b: a raw `initdb` permission refusal carried only as text
+    /// (no typed error) maps to `dataDirPermissionDenied` — plain and
+    /// context-wrapped, for both shipped phrases.
+    #[test]
+    fn classify_failure_maps_an_initdb_permission_message_to_permission_denied() {
+        let plain = anyhow::anyhow!(
+            "initdb: error: could not change permissions of directory \
+             \"D:/a/run-fresh/postgres/cluster\": Permission denied"
+        );
+        assert_eq!(
+            classify_failure("setup", &plain),
+            PgFailureKind::DataDirPermissionDenied,
+            "the initdb permission refusal must never fall through to Unknown"
+        );
+
+        let wrapped = plain.context("running initdb");
+        assert_eq!(
+            classify_failure("setup", &wrapped),
+            PgFailureKind::DataDirPermissionDenied,
+            "a context-wrapped permission message still classifies"
+        );
+
+        let fixing = anyhow::anyhow!(
+            "initdb: warning: fixing permissions on existing directory \
+             D:/a/run-fresh/postgres/cluster ... Permission denied"
+        );
+        assert_eq!(
+            classify_failure("setup", &fixing),
+            PgFailureKind::DataDirPermissionDenied,
+            "the 'fixing permissions on existing directory' phrase also classifies"
+        );
+    }
+
+    /// #3188 ST-2 / Q-6: the permission branch is EXACT-PHRASE only — a generic
+    /// setup error must still classify `Unknown` (no over-broad catch-all).
+    #[test]
+    fn classify_failure_text_keeps_unknown_for_a_non_permission_setup_error() {
+        assert_eq!(
+            classify_failure_text("setup", "initdb: error: could not create directory"),
+            PgFailureKind::Unknown,
+            "a non-permission setup error must still be Unknown"
+        );
+        assert_eq!(
+            classify_failure_text("setup", "could not prepare the database folder"),
+            PgFailureKind::Unknown,
+            "a generic preparation error must still be Unknown"
+        );
+    }
+
     /// ST-4 / R-3.3: `PgSupervisorState::fail` publishes the classified kind, and
     /// `failure_kind` is `None` on every non-Failed state.
     #[test]
@@ -2174,6 +2276,11 @@ mod tests {
             serde_json::to_value(PgFailureKind::DataDirNotEmpty).expect("serialize"),
             "dataDirNotEmpty",
             "#3180 ST-1: the additive typed cause serializes camelCase"
+        );
+        assert_eq!(
+            serde_json::to_value(PgFailureKind::DataDirPermissionDenied).expect("serialize"),
+            "dataDirPermissionDenied",
+            "#3188 ST-2: the new additive cause serializes camelCase"
         );
         assert_eq!(
             serde_json::to_value(PgFailureKind::Unknown).expect("serialize"),
