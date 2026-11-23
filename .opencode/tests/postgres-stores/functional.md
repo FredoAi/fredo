@@ -1,6 +1,6 @@
 # postgres-stores — Functional
 
-> **Withdrawn artifacts:** the spike PoC crates `spikes/2948-embedded-postgres/` and `spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
+> **Withdrawn artifacts:** the spike PoC crates `research/spikes/2948-embedded-postgres/` and `research/spikes/2964-postgres-migration/` (and the four `2964-postgres-migration-approach/*.md` section files) were deleted after the fact. Only the durable research records remain, as flat `research/spikes/<issue>-<slug>.md`. The crate paths cited in this suite record real `#2948`/`#2964` observations made while those artifacts existed; they are kept as evidence and are **not** a live dependency.
 
 Durable functional suite for the **storage engine seam + shared async PostgreSQL pool** feature
 domain (slice 2 of 6; builds on slice-1 `postgres-lifecycle` #2974 and spike #2964). One shared
@@ -11,7 +11,7 @@ extended by every following Postgres store slice.
 > **Evidence policy: LIVE.** The cross-engine parity, app-boot, and Mission Monitor rows are only
 > provable by observing a running artifact — their Evidence MUST reference `telemetry_spans` (or an
 > RTDB-row / `pg_stat_activity` live read) on the built app. The committed spike receipt
-> (`spikes/2964-postgres-migration/results/schema-translation.json`, 18/18) is corroboration ONLY,
+> (`research/spikes/2964-postgres-migration/results/schema-translation.json`, 18/18) is corroboration ONLY,
 > never the sole receipt. A static-only PASS is a FALSE PASS.
 
 > **G-263 SAFETY (named failure mode): the #2948 ~11 h `pg.stop()` hang.** Never run an unbounded
@@ -424,7 +424,7 @@ a plan/tooling gap, disclosed in the verdict.
   back → next patch → seq 3 (never reset).
 - **F-28 PASS (live):** 10-row `fredo emit` burst → 10 rows in PG, coalesced.
 - **F-33..F-36 PASS (disclosed):** BEFORE = recorded `#2948` SQLite baseline
-  (`git show b4079db:spikes/2948-embedded-postgres/results/measurements.json`) — the spike harness was deleted
+  (`git show b4079db:research/spikes/2948-embedded-postgres/results/measurements.json`) — the spike harness was deleted
   at the tip; AFTER = live store-level psql microbenchmark on the product's configured PG. Batch upsert
   +5.6% vs SQLite / 3.9× faster than the un-optimized spike PG; point read +2.3× / 14.3× faster; range read
   1.5× faster; data-dir +63.8 MiB.

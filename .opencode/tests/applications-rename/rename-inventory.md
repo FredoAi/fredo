@@ -43,7 +43,7 @@
 | `apps/tauri/src-tauri/src/features/**` | IN | 167 |
 | `apps/tauri/src-tauri/tests/**` | RETAIN (frozen-literal fixtures) | 154 |
 | `apps/tauri/src-tauri/src/infrastructure/**` rest | MIX (mostly OUT) | 112 |
-| `spikes/**` | OUT (non-product) | 95 |
+| `research/spikes/**` | OUT (non-product) | 95 |
 | `research/**` | OUT (non-product) | 88 |
 | `apps/ui/src/**` other (`index.ts`, app/) | IN | 80 |
 | `apps/tauri/src-tauri/src/infrastructure/storage/feature_store.rs` | IN | 69 |
@@ -57,7 +57,7 @@
 | `scripts/**` | OUT | 2 |
 
 **IN-scope product surface** (excluding `.opencode/**`, `docs/agentic-pipeline/**`,
-`docs/archive/**`, spikes/research, tools-mcp, tests fixtures) is roughly **4,700 occurrences
+`docs/archive/**`, research, tools-mcp, tests fixtures) is roughly **4,700 occurrences
 across ~300 files** — dominated by the frontend tree (3,299) and the Rust data layer (767).
 
 ## In-scope occurrences by directory (rename sizing)

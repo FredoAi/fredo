@@ -132,7 +132,7 @@
                          boundary control: a filter that over-reached would hide
                          it.
     (4) OUT-OF-ROOT      write the same probe at
-                         spikes/__nav_prose_probe_outside__.md (a sibling of
+                         research/spikes/__nav_prose_probe_outside__.md (a sibling of
                          both roots), assert it is NOT scanned, delete it in
                          try/finally -> root confinement.
     (5) IGNORED NON-SCAN write the same probe into a git-IGNORED directory and
@@ -327,7 +327,7 @@ $NegativeProbeRelPath = 'docs/__nav_prose_negative_probe__.md'
 # A probe inside an ALLOWLISTED path used by control 2's positive leg.
 $AllowlistedProbeRelPath = 'docs/adr/__nav_prose_probe_allowlisted__.md'
 # A synthetic hit OUTSIDE both scanned roots (control 4): root confinement.
-$OutOfRootRelPath = 'spikes/__nav_prose_probe_outside__.md'
+$OutOfRootRelPath = 'research/spikes/__nav_prose_probe_outside__.md'
 # A synthetic hit INSIDE a root but inside a git-IGNORED directory (control 5).
 # `tmp/` is an unanchored rule in .gitignore, so it matches at any depth - this
 # path is therefore both inside `.opencode/tests` AND git-ignored, which is what

@@ -6,7 +6,7 @@
   **fix round:** the real engine was **built from source at the pinned commit** and its HTTP/frame
   contract confirmed live ([`engine-build.md`](engine-build.md)); Freedoom IWAD pinned; engine HTTP
   contract captured.
-- **Decision doc (reviewable, AC5):** [`docs/doom-mode-acquisition.md`](../../docs/doom-mode-acquisition.md)
+- **Decision doc (reviewable, AC5):** [`docs/doom-mode-acquisition.md`](../../../docs/doom-mode-acquisition.md)
 
 This is a **record, not code**. It captures the raw upstream facts ST-1 was dispatched to obtain (or
 definitively refute), so every downstream Doom capsule builds against real engine facts rather than
@@ -61,6 +61,6 @@ the build-path grants were active, so the pinned fork was actually built and lau
 
 ## Note on layout
 
-`spikes/README.md` describes spikes as flat `<issue>-<slug>.md` files. This spike is a **directory**
-because the plan (`### Sub-issue Decomposition`, ST-1) mandates `spikes/2968-doom-runtime/` to hold
+`research/spikes/README.md` describes spikes as flat `<issue>-<slug>.md` files. This spike is a **directory**
+because the plan (`### Sub-issue Decomposition`, ST-1) mandates `research/spikes/2968-doom-runtime/` to hold
 the spike doc **and raw captures**. The decision doc lives at `docs/doom-mode-acquisition.md`.

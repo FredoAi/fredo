@@ -181,7 +181,7 @@
 
 ## Bounded budget + rate target (R-5 / AC5)
 
-- [x] F-28 (PASS 2026-10-04 #2969 r1 — steps capped at 600 (budgetExhausted); recorded target `DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S=40` derived from measured RTT 12.37 ms; measured stub cadence ~600 steps/s ≥ target; maxSteps override honored) (R-5, AC5) **Bounded budget + recorded cadence.** Run the scripted loop to completion; read `get_doom_autoplay_status` + `spikes/2969-doom-agent/action-vocabulary.md` (ST-1 measured per-step RTT).
+- [x] F-28 (PASS 2026-10-04 #2969 r1 — steps capped at 600 (budgetExhausted); recorded target `DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S=40` derived from measured RTT 12.37 ms; measured stub cadence ~600 steps/s ≥ target; maxSteps override honored) (R-5, AC5) **Bounded budget + recorded cadence.** Run the scripted loop to completion; read `get_doom_autoplay_status` + `research/spikes/2969-doom-agent/action-vocabulary.md` (ST-1 measured per-step RTT).
   - EXPECTED: `steps` ≤ `DOOM_AUTOPLAY_MAX_STEPS=600`; per-decision time ≤ `DOOM_AUTOPLAY_DECISION_TIMEOUT_S=30` s; the plan records a sustained decision-rate target (steps/sec) DERIVED from the engine's measured per-step RTT (ST-1), and the measured rate ≥ target; the rate is a decision cadence, never idle frame motion (G-316).
   - Edge: slow engine RTT lowers the achievable rate; timeout/backoff counted in cadence; a `FREDO_DOOM_AGENT_MAX_STEPS` override is honored.
 

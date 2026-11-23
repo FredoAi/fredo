@@ -106,7 +106,7 @@
     engine-selection symbols are absent from the crate; no shipped skill/script/doc/permission references
     SQLite as a LIVE store.
   - Edge: a denied token in a DENY-scope file IS flagged; `historic-narrative` (`references.md` guardrail
-    history, `spikes/**`, `docs/README.md`) is NOT flagged; `test-absence-fixtures` (`.opencode/tests/**`,
+    history, `research/spikes/**`, `docs/README.md`) is NOT flagged; `test-absence-fixtures` (`.opencode/tests/**`,
     `apps/**/tests/**` — suites that NAME the legacy store to assert its absence) is NOT flagged;
     `gate-self-reference` (the checker's own token table + probe) is NOT flagged;
     `ephemeral-pipeline-scratch` (`.opencode/tmp/**`, `.opencode/state/**`) is NOT flagged.

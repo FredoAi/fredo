@@ -34,7 +34,7 @@ Verification policy: **`static`** (see `functional.md`). Each probe drives the c
   `.gitignore` to produce the condition.
 - **E-5 — an interrupted run leaves nothing behind.** Re-run `-SelfTest` immediately after an
   interrupted run (Ctrl-C mid-control) and confirm **no** orphaned probe is left: `Test-Path` each of
-  `docs/__nav_prose_absence_probe__.md`, `spikes/__nav_prose_probe_outside__.md` and
+  `docs/__nav_prose_absence_probe__.md`, `research/spikes/__nav_prose_probe_outside__.md` and
   `.opencode/tmp/__nav_prose_probe_ignored__.md` → all `False`.
 
 ## Do not run

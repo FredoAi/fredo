@@ -16,7 +16,7 @@
 > §4 moderator rules), the **question set** (the protocol's §6, reproduced in §4.3 below), the
 > **cohort quotas** (the protocol's §3, reproduced in §3.1 below) and the **six gate lines** (the
 > protocol's §8, reproduced in §8 below) are reproduced **verbatim** from
-> `spikes/3115-navigation-engine/session-protocol.md` and remain in force. **That protocol file
+> `research/spikes/3115-navigation-engine/session-protocol.md` and remain in force. **That protocol file
 > is not edited by #3120.** Where this document and the protocol could differ on method,
 > questions, quotas or gate lines, **the protocol wins**; on the task script, **this document
 > wins**.
@@ -33,7 +33,7 @@
 | Gate outcome | **not computed** — the six lines are reproduced verbatim, unscored (§8) |
 | Session result | **none** — §11 carries the ONE empty outcome line with both options |
 | Filled by | The human facilitator, after the sessions |
-| Method source | `spikes/3115-navigation-engine/session-protocol.md` — method, verbatim questions, cohort quotas and six gate lines reused unchanged |
+| Method source | `research/spikes/3115-navigation-engine/session-protocol.md` — method, verbatim questions, cohort quotas and six gate lines reused unchanged |
 | Task-script source | §4 of this document — reworked for the bottom command bar, teleport composer, attributed undo and the details-panel Backspace fix |
 
 ## 2. This issue is the pilot gate
@@ -196,7 +196,7 @@ Gate H is **human-only**. No agent may run, simulate or fabricate a session, and
 writes into the input file.
 
 1. **Create the input file by copying the template.** The facilitator copies
-   `spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` to
+   `research/spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` to
    `.opencode/tmp/3115/sessions/participant-notes.md` (creating the directory if needed).
 2. **One block per completed participant**, using the template's field names exactly. A
    `completed_participant` is a participant with `consent_recorded: true` and `tasks_completed`
@@ -328,7 +328,7 @@ task ids are fixed and must not be renumbered or dropped.
 ## 8. The six gate lines — verbatim (protocol §8)
 
 These six lines are contractual and are reproduced **unchanged** from
-`spikes/3115-navigation-engine/session-protocol.md` §8 — same tokens, same operators, same
+`research/spikes/3115-navigation-engine/session-protocol.md` §8 — same tokens, same operators, same
 thresholds. Do not re-word them. The outcome is `GO` iff all six pass.
 
 ```
@@ -413,7 +413,7 @@ sessions were run in #3115 (`docs/UX_FLUENCY_RESEARCH.md:544`, `:550-552`, `:614
 |---|---|---|
 | Flat-key surface (qualitative baseline) | 36 simultaneous bindings, hidden mode set | `docs/UX_FLUENCY_RESEARCH.md:561-563` (§3 teardown, §8.1) |
 | P1 numeric participant baseline | **none** — P1 produced no participant rows | `docs/UX_FLUENCY_RESEARCH.md:544, 550-552, 614`; `docs/NAVIGATION_ENGINE.md:544` |
-| Thresholds applied to the pilot | the six gate lines in §8 | `spikes/3115-navigation-engine/session-protocol.md` §8 |
+| Thresholds applied to the pilot | the six gate lines in §8 | `research/spikes/3115-navigation-engine/session-protocol.md` §8 |
 
 **Do not invent a P1 numeric baseline.** Do not render a P1 column with a number, an estimated
 value or an interim percentage. The pilot's numbers stand on their own against the fixed

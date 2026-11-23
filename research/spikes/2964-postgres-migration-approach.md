@@ -5,9 +5,9 @@
 - **Method:** **BOTH** an executed, isolated PoC against a real embedded PostgreSQL **AND** a file-level written design (see §3)
 - **Time-box:** 3 working days, Windows-first — met (see §11)
 - **Production change:** **NONE.** No file under `apps/**` is edited; this document was the durable deliverable
-- **PoC artifact:** `spikes/2964-postgres-migration/` (standalone crate — **no longer committed**; the spike PoC was disposable). Its measured findings are cited inline below and summarised in §11
+- **PoC artifact:** `research/spikes/2964-postgres-migration/` (standalone crate — **no longer committed**; the spike PoC was disposable). Its measured findings are cited inline below and summarised in §11
 - **Section files:** `2964-postgres-migration-approach/{store,data,startup,packaging}-*.md` (ST-2, ST-4, ST-5, ST-6) — withdrawn with the PoC; their content is absorbed into this record
-- **Inputs:** [`spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md) (the NO-GO ADR and its measurements — the durable input; the raw `results/measurements.json` and `QUESTIONS.md` were withdrawn with that spike's PoC)
+- **Inputs:** [`research/spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md) (the NO-GO ADR and its measurements — the durable input; the raw `results/measurements.json` and `QUESTIONS.md` were withdrawn with that spike's PoC)
 
 > **How to read this document.** It is self-contained enough to satisfy AC1–AC5 on its own,
 > while referring to the four section files for full depth. Every `file:line` citation below
@@ -64,7 +64,7 @@ because every scope area below is designed around them.
 
 **Both were produced, deliberately:**
 
-- **The isolated PoC** at [`spikes/2964-postgres-migration/`](./)
+- **The isolated PoC** at [`research/spikes/2964-postgres-migration/`](./)
   is a standalone crate (never a Cargo workspace member, never referenced by `lib.rs`/`AppRuntime`,
   no dependency added to `apps/tauri/src-tauri/Cargo.toml`). It executes the riskiest paths against
   a **real embedded PostgreSQL 18.6.0** on Windows x86_64 (`postgresql_embedded` 0.21,
@@ -91,25 +91,25 @@ both removes the residual risk each leaves.
 | `results/lifecycle.json` | `supervisor` | `cargo run --release --bin supervisor` | 20/20 checks; start 985 ms · ready 128 ms · stop 398 ms · hard-kill 213 ms; no orphan (76 s run) |
 
    **No production code path changed.** The only added/changed files are under
-   `spikes/2964-postgres-migration/**` (this record, the section files, and the isolated PoC). The
+   `research/spikes/2964-postgres-migration/**` (this record, the section files, and the isolated PoC). The
 harness never opens the real `fredo.db`; every data directory is a throwaway path under
-`spikes/2964-postgres-migration/target/spike-tmp/`.
+`research/spikes/2964-postgres-migration/target/spike-tmp/`.
 
 ### 3.1 The plan's contracts C1–C4
 
 | Contract | What it binds | Where proven |
 |---|---|---|
-| **C1** — schema/collation translation | `TEXT→TEXT`, `INTEGER→BIGINT`, `REAL→DOUBLE PRECISION`, `BLOB→BYTEA`; `INTEGER PRIMARY KEY AUTOINCREMENT→BIGINT GENERATED ALWAYS AS IDENTITY`; `INSERT OR REPLACE→ON CONFLICT(<pk>) DO UPDATE … EXCLUDED`; `INSERT OR IGNORE→ON CONFLICT DO NOTHING`; `?n→$n`; composite PK 1:1 (`spikes/2964-postgres-migration/src/schema_defs.rs:12-22`) | `results/schema-translation.json` 18/18 |
-| **C2** — parity result contract | per-table row count + SHA-256 content checksum, marker values, rollback record (`spikes/2964-postgres-migration/src/parity.rs`) | `results/parity.json` |
-| **C3** — bind contract | ephemeral loopback (`settings.port = 0`) — no fixed-port collision with OTLP 4317/4318 or the MCP bridge 9223 (`spikes/2964-postgres-migration/src/harness.rs:228`) | `results/lifecycle.json`, `results/parity.json` |
-| **C4** — lifecycle contract with bounds | every blocking wait capped (`spikes/2964-postgres-migration/src/harness.rs:28-38`): control 180 s, setup 600 s, start 180 s, stop 30 s + hard-kill watchdog, connect 10 s, readiness 60 s; three teardown layers + orphan sweep | `results/lifecycle.json` 20/20 |
+| **C1** — schema/collation translation | `TEXT→TEXT`, `INTEGER→BIGINT`, `REAL→DOUBLE PRECISION`, `BLOB→BYTEA`; `INTEGER PRIMARY KEY AUTOINCREMENT→BIGINT GENERATED ALWAYS AS IDENTITY`; `INSERT OR REPLACE→ON CONFLICT(<pk>) DO UPDATE … EXCLUDED`; `INSERT OR IGNORE→ON CONFLICT DO NOTHING`; `?n→$n`; composite PK 1:1 (`research/spikes/2964-postgres-migration/src/schema_defs.rs:12-22`) | `results/schema-translation.json` 18/18 |
+| **C2** — parity result contract | per-table row count + SHA-256 content checksum, marker values, rollback record (`research/spikes/2964-postgres-migration/src/parity.rs`) | `results/parity.json` |
+| **C3** — bind contract | ephemeral loopback (`settings.port = 0`) — no fixed-port collision with OTLP 4317/4318 or the MCP bridge 9223 (`research/spikes/2964-postgres-migration/src/harness.rs:228`) | `results/lifecycle.json`, `results/parity.json` |
+| **C4** — lifecycle contract with bounds | every blocking wait capped (`research/spikes/2964-postgres-migration/src/harness.rs:28-38`): control 180 s, setup 600 s, start 180 s, stop 30 s + hard-kill watchdog, connect 10 s, readiness 60 s; three teardown layers + orphan sweep | `results/lifecycle.json` 20/20 |
 
 ---
 
 ## 4. Scope area (a) — Schema mapping: SQLite DDL → PostgreSQL DDL
 
 Every `fredo.db` store, its owner, and its translation. Type mapping is the **C1** rule
-(`spikes/2964-postgres-migration/src/schema_defs.rs:12-22`); it is verified against
+(`research/spikes/2964-postgres-migration/src/schema_defs.rs:12-22`); it is verified against
 `information_schema` for the representative `chat_rows`/`settings` pair (18/18 checks,
 `results/schema-translation.json`).
 
@@ -153,7 +153,7 @@ and `idx_chat_started` / `idx_chat_session_time` / `idx_chat_updated` are presen
 DDL/DML batches as strings; in PG a multi-statement string needs the simple-query protocol, so the
 design routes those through `sqlx::raw_sql` rather than the extended protocol. One non-obvious
 translation detail: PG `sum(bigint)` yields `numeric`, so the range read casts `::bigint` to keep
-the read shape identical to SQLite (`spikes/2964-postgres-migration/src/schema_defs.rs:175-176`).
+the read shape identical to SQLite (`research/spikes/2964-postgres-migration/src/schema_defs.rs:175-176`).
 
 **Chosen approach:** direct 1:1 DDL translation with the C1 type map, placeholder conversion, and
 the upsert re-expressions above; no schema tooling or extension is adopted. **No blocker.**
@@ -228,7 +228,7 @@ is **two independent comparisons per table, both must pass**: (1) row count `sql
 pg_rows`, and (2) a **SHA-256 content checksum** over a canonical row encoding both engines compute
 identically (ordered by PK; columns concatenated in declared order; `N` NULL sentinel; unit/record
 separators; integer→decimal, `REAL`/`double precision`→`{:.6}`, `BLOB`→lowercase hex). The rule is
-the shared `harness::encode_row`/`checksum_rows` (`spikes/2964-postgres-migration/src/harness.rs:169-197`),
+the shared `harness::encode_row`/`checksum_rows` (`research/spikes/2964-postgres-migration/src/harness.rs:169-197`),
 already validated by the `content_checksum_match` check, so the spikes cannot drift.
 
 | Store / table | Owning definition (`file:line`) | Parity leg |
@@ -304,7 +304,7 @@ already shipped for `llama-server`** — PID marker in the AppStore KV, startup 
 wrapper (`pg.stop()` under a hard timeout → hard-kill fallback). This directly owns the single
 strongest objection to the migration: the #2948 **~11 h `pg.stop()` hang**.
 
-**Bounded lifecycle (C4; bounds at `spikes/2964-postgres-migration/src/harness.rs:28-38`):**
+**Bounded lifecycle (C4; bounds at `research/spikes/2964-postgres-migration/src/harness.rs:28-38`):**
 
 | Wait | Bound | Measured (PoC) |
 |---|---:|---:|
@@ -430,7 +430,7 @@ by the parity check. **No blocker.**
 
 Every #2948 measured regression carries an explicit position with a one-line rationale; numbers
 reconcile with
-   [`spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md)
+   [`research/spikes/2948-embedded-postgres-spike.md`](./2948-embedded-postgres-spike.md)
    (the durable #2948 ADR; its raw `results/measurements.json` was withdrawn with that spike's PoC). Extra granularity is included
 (ST-1/ST-3/ST-6 measured findings) where it sharpens a position.
 
@@ -482,7 +482,7 @@ acquisition-mode question is called out first.
 - **Position:** `bundled` if offline-first is hard; otherwise `runtime-download` (already de-risked
   by #2948, no installer growth, one documented first-run download of 164,026,008 B).
 - **Is this input resolvable?** **It is a named open question, not resolvable within this spike** —
-     it is inherited backlog question **(a)**, a **human product decision** (`spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md:105-108`).
+     it is inherited backlog question **(a)**, a **human product decision** (`research/spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md:105-108`).
 - **Resolving evidence:** a PO/human answer to question (a). If "hard" → adopt `bundled`; if
   "soft"/not a constraint → keep `runtime-download`.
 
@@ -507,7 +507,7 @@ acquisition-mode question is called out first.
 
 - **Finding:** `settings.username` feeds the generated `url()` while `initdb` still creates the
   `postgres` superuser, so setting `username = "spike"` yields an authentication failure
-  (`spikes/2964-postgres-migration/README.md:150-157`,
+  (`research/spikes/2964-postgres-migration/README.md:150-157`,
   `src/harness.rs:231-237`). The password does come from `settings.password`.
 - **Why it blocks:** auth/role wiring blocks the pool and any least-privilege role (Q-2); the
   follow-up spec must configure the role explicitly, not via `settings.username`.
@@ -632,7 +632,7 @@ acquisition-mode question is called out first.
 ## 13. Explicit non-goal
 
 **Re-litigating whether to migrate is out of scope.** The migration is **mandated**; #2948's NO-GO
-   framing is superseded (`spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md`). A finding that a chosen
+   framing is superseded (`research/spikes/2948-embedded-postgres/2948-embedded-postgres-spike.md`). A finding that a chosen
 *approach or acquisition mode* is unviable must come with an alternative **embedded-PostgreSQL**
 approach, never a return to the migrate-or-not question. (This non-goal is a section of its own and
 is **not** one of the six AC1 scope areas.)
@@ -659,7 +659,7 @@ is **not** one of the six AC1 scope areas.)
 ## 15. Scope / verification
 
    - **No production file changed.** The changed set on `spec/2964` is exactly
-     `spikes/2964-postgres-migration/**`; nothing
+     `research/spikes/2964-postgres-migration/**`; nothing
   under `apps/**`. The PoC is a standalone package (not a workspace member), never referenced by
   `lib.rs`/`AppRuntime`, with no dependency added to `apps/tauri/src-tauri/Cargo.toml`. `Cargo.toml`
   was pre-declared by ST-1 with a `[[bin]]` per artifact.
@@ -667,8 +667,8 @@ is **not** one of the six AC1 scope areas.)
   every internal wait is bounded (C4), teardown is guaranteed on normal/timeout/panic paths, and the
   supervisor PoC left no orphan `postgres.exe` from the PIDs it started.
 - **Evidence hygiene.** Every quoted prior-spike number resolves to
-  `spikes/2948-embedded-postgres/results/measurements.json` or a committed
-  `spikes/2964-postgres-migration/results/*.json`; no evidence lives only in `.opencode/tmp/`.
+  `research/spikes/2948-embedded-postgres/results/measurements.json` or a committed
+  `research/spikes/2964-postgres-migration/results/*.json`; no evidence lives only in `.opencode/tmp/`.
 - **Citations.** Every `file:line` in this document and the section files resolves on `main`.
 
 *Authored by Developer (ST-7 assembly), issue #2964 — assembly + consolidation of the master

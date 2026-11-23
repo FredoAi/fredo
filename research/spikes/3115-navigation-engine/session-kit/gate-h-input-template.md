@@ -4,7 +4,7 @@
   HUMAN-ONLY INPUT FILE TEMPLATE. No agent may fill this in, and no value here may be
   invented. The facilitator copies this file to
   `.opencode/tmp/3115/sessions/participant-notes.md` and fills one completed-participant
-  block per person. See `spikes/3115-navigation-engine/session-protocol.md` for the normative
+  block per person. See `research/spikes/3115-navigation-engine/session-protocol.md` for the normative
   task script, question set, metric definitions and gate arithmetic.
 
   Rules:

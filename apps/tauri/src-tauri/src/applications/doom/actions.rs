@@ -9,7 +9,7 @@
 //! * `POST /api/step` `{ "tics": <1-350>, "actions": [<action objects>] }`
 //! * `POST /api/player/actions` `<action object>` (the same parser; 201/400)
 //!
-//! Probe record: `spikes/2969-doom-agent/action-vocabulary.md`.
+//! Probe record: `research/spikes/2969-doom-agent/action-vocabulary.md`.
 //! Source of truth: `src/doom/api_player_controller.c` (`API_PostPlayerAction`)
 //! and `src/doom/api.c` (`API_RouteRequest`), at the pinned commit.
 //!

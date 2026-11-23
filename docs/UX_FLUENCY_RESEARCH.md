@@ -30,7 +30,7 @@ Four workstreams, in order:
 |---|---|---|
 | A | Principle synthesis | §2 of this report — each principle with an external source and a Fredo-specific rule |
 | B | Current-state teardown + heuristic evaluation | §3 and §4 — a reproducible matrix over nine shipped surfaces, then repo-anchored findings |
-| C | Clickable prototype | §5 + a throwaway static prototype under `spikes/3115-navigation-engine/prototype/` |
+| C | Clickable prototype | §5 + a throwaway static prototype under `research/spikes/3115-navigation-engine/prototype/` |
 | D | Reusable session kit | §6–§10 — protocol, task script, question set, metric definitions and falsifiable hypotheses; the human evidence and the numeric gate are deferred to #3120 |
 
 **The gate is specified, not run here.** The six gate lines live verbatim in the session kit (§6.1,
@@ -297,7 +297,7 @@ product code was changed to make a claim true.
 | "Dev Mode" is a surface; plan adds it is "not launcher-reachable, so the bar only lists it in a dev surface the user cannot open" | Exists, `showable = false` (`DevModeFeature.tsx:11`), **but** the Konami handler opens the window (`Home.tsx:69-77`) | **Partly false**: not launcher-reachable, but user-openable via the easter egg, so its bar rows ARE reachable by a user who triggers it. Teardown scores it and states that caveat |
 | Only Dev Mode is hidden from the launcher | `showable = false` also on the retired infrastructure-diagram, feature-flags and work-items apps (all removed in P8) | **New correction**: four application surfaces are non-showable. The retired work-items app is still opened by `Home.tsx:191-196`; the retired diagram and feature-flags apps have no launcher route in the tree |
 | `wireframeActions.ts:27-28` cites `infrastructure/companion/wireframe_catalog.rs` | No such file (`infrastructure/companion/` has `skills.rs`, `surface_registry.rs`, …) | Stale comment (G-299); the Rust offer is generated from the published manifest (`manifest.ts:73-119`) |
-| `spikes/README.md:3` says spikes are "one flat file" | `spikes/2968-doom-runtime/`, `spikes/2969-doom-agent/`, `spikes/2972-doom-resume/` are directories | ST-1 amends the prose so a spike MAY be a directory when it ships artifacts (this report's spike is the directory form) |
+| `research/spikes/README.md:3` says spikes are "one flat file" | `research/spikes/2968-doom-runtime/`, `research/spikes/2969-doom-agent/`, `research/spikes/2972-doom-resume/` are directories | ST-1 amends the prose so a spike MAY be a directory when it ships artifacts (this report's spike is the directory form) |
 | `?` map / `/` ask keys | Grammar is `[a-z0-9](+[a-z0-9])?` (the retired element-key grammar (removed in P8)) | `?` and `/` are **not expressible today**; the prototype may bind them directly, but P2 needs a grammar extension or alternate keys (recorded in §11.1) |
 
 ## 4. Heuristic Evaluation
@@ -469,7 +469,7 @@ supports; (e) `n/a` concerns are stated, not silently omitted.
 ### 5.1 Prototype Overview
 
 The prototype is **delivered and committed** at
-`spikes/3115-navigation-engine/prototype/` — `index.html`, `prototype.css`, `prototype.js` and a
+`research/spikes/3115-navigation-engine/prototype/` — `index.html`, `prototype.css`, `prototype.js` and a
 `README.md`. It opens directly from `file://` (no server, no install) and is a low-fidelity greybox
 of the proposed place model. It covers:
 
@@ -509,7 +509,7 @@ It is explicitly **not** a #3115 condition and no such claim is made here.
 
 ### 5.3 Throwaway Boundary
 
-`spikes/3115-navigation-engine/prototype/` is **THROWAWAY** and is deleted whole at P8. It is a
+`research/spikes/3115-navigation-engine/prototype/` is **THROWAWAY** and is deleted whole at P8. It is a
 disposable stimulus, not product code: it imports nothing from `apps/`, uses no Fredo theme tokens,
 adds no build or workspace wiring, emits no telemetry, writes no file and makes no network call.
 Nothing in it is meant to survive the spike; the report and the session kit are the durable
@@ -520,7 +520,7 @@ artifacts.
 ### 6.1 Protocol Reference
 
 The **deliverable** is the committed protocol at
-`spikes/3115-navigation-engine/session-protocol.md` — the normative, ready-to-use instrument for
+`research/spikes/3115-navigation-engine/session-protocol.md` — the normative, ready-to-use instrument for
 #3120, not a pending step. It fixes, verbatim: consent and anonymisation, the recruitment quota,
 the moderator rules, the task script T1–T7, the question set (Q-WHERE, the two UMUX-Lite items,
 Q-TRUST, Q-SYS, Q-RECALL), the metric columns, the distractor, and the six gate lines GO-1…GO-4,
@@ -540,7 +540,7 @@ Consent, anonymisation and moderator rules are specified in the kit (§2 and §4
 committed, a participant without recorded consent contributes no row, recording is opt-in and
 defaults to no, and the moderator follows a fixed script without teaching. The blank
 per-participant input template is
-`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` — P1–P8 blocks with every
+`research/spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` — P1–P8 blocks with every
 field an empty placeholder and no example rows, ratings or quotes.
 
 ## 7. Metrics
@@ -548,7 +548,7 @@ field an empty placeholder and no example rows, ratings or quotes.
 ### 7.1 Metric Definitions
 
 The metric definitions (column names and domains) are **normative in
-`spikes/3115-navigation-engine/session-protocol.md` §7** and are not restated here. No metric data
+`research/spikes/3115-navigation-engine/session-protocol.md` §7** and are not restated here. No metric data
 exists in #3115 by design; results are deferred to #3120.
 
 ### 7.2 Aggregated Results
@@ -560,7 +560,7 @@ prefilled here.
 ### 7.3 Per-Participant Raw Data
 
 No per-participant rows exist in #3115 by design. #3120 fills
-`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` per participant; no row is
+`research/spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` per participant; no row is
 transcribed into this report at this stage.
 
 ## 8. Research Question Answers
@@ -603,7 +603,7 @@ instrument; they are not results.
 ### 9.1 Gate Lines
 
 The six gate lines (GO-1…GO-4, PRE-1, PRE-2) live **verbatim** in
-`spikes/3115-navigation-engine/session-protocol.md` §8 as the #3120 instrument. They are not
+`research/spikes/3115-navigation-engine/session-protocol.md` §8 as the #3120 instrument. They are not
 applied, scored or reproduced with an outcome in this report.
 
 ### 9.2 Verdict

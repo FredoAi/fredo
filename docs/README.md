@@ -58,18 +58,18 @@ purpose.
 
 ## Spikes
 
-Research that **is part of a spec**, filed as `spikes/<issue-number>-<slug>.md` — or as a
-`spikes/<issue-number>-<slug>/` directory when the spike ships several artifacts. These are
+Research that **is part of a spec**, filed as `research/spikes/<issue-number>-<slug>.md` — or as a
+`research/spikes/<issue-number>-<slug>/` directory when the spike ships several artifacts. These are
 **records, not code** — a spike's PoC crate and raw measurements are disposable; the decision and
-its rationale are what survive. Indexed at [`spikes/README.md`](../spikes/README.md).
+its rationale are what survive. Indexed at [`research/spikes/README.md`](../research/spikes/README.md).
 
 | Spike | Outcome |
 |-------|---------|
-| [#2948 — embedded PostgreSQL evaluation](../spikes/2948-embedded-postgres-spike.md) | Is `postgresql-embedded` viable for `fredo.db`? **NO-GO**. The measurements stand as design inputs, not a veto |
-| [#2964 — the migration approach](../spikes/2964-postgres-migration-approach.md) | The migration is **mandated** — so how? The full written approach, with the four section designs absorbed into it |
-| [#2897 — model-audio feasibility](../spikes/2897-model-audio-feasibility.md) | The ST-0 gating record for speech input. Model audio shipped; it is the only speech path |
-| [#2876 — local-first streaming STT engine](../spikes/2876-stt-engine-selection.md) | **SUPERSEDED** by #2914 — kept verbatim as the spike's historical record |
-| [#3115 — navigation fluency research](../spikes/3115-navigation-engine/README.md) | Does place-based navigation improve felt flow, connected conversation and trust in auto-apply? Stage 1 method + model; results pending Gate H |
+| [#2948 — embedded PostgreSQL evaluation](../research/spikes/2948-embedded-postgres-spike.md) | Is `postgresql-embedded` viable for `fredo.db`? **NO-GO**. The measurements stand as design inputs, not a veto |
+| [#2964 — the migration approach](../research/spikes/2964-postgres-migration-approach.md) | The migration is **mandated** — so how? The full written approach, with the four section designs absorbed into it |
+| [#2897 — model-audio feasibility](../research/spikes/2897-model-audio-feasibility.md) | The ST-0 gating record for speech input. Model audio shipped; it is the only speech path |
+| [#2876 — local-first streaming STT engine](../research/spikes/2876-stt-engine-selection.md) | **SUPERSEDED** by #2914 — kept verbatim as the spike's historical record |
+| [#3115 — navigation fluency research](../research/spikes/3115-navigation-engine/README.md) | Does place-based navigation improve felt flow, connected conversation and trust in auto-apply? Stage 1 method + model; results pending Gate H |
 
 ## Research
 

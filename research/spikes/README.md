@@ -18,11 +18,11 @@ explicitly rather than leaving a dead link.
 | [#2897 — model-audio feasibility](2897-model-audio-feasibility.md) | Local transcription vs. model audio for speech input? | The ST-0 gating record. **Shipped** — model audio on the managed `llama-server` is the only speech path |
 | [#2876 — local-first streaming STT engine](2876-stt-engine-selection.md) | Which local-first streaming STT engine? | **SUPERSEDED** by #2914, which removed the on-device engine. Kept verbatim as history |
 | [#2968 — RESTful-DOOM acquisition + contract](2968-doom-runtime/README.md) | Is there a trustworthy prebuilt RESTful-DOOM engine, and what is the exact engine contract? | **NO prebuilt asset** (source-only) → user-supplied engine + build recipe; Freedoom IWAD pinned; contract captured (a **directory** of raw captures, per the plan) |
-| [#3115 — navigation fluency research](3115-navigation-engine/README.md) | Does a place-based navigation model (place tree, contextual rail, `?` map, launcher conversation, attributed undo) improve felt flow, connected conversation and trust in auto-apply? | Stage 1 method + model shipped; 5–8 moderated sessions (Gate H) pending. Report: [`docs/UX_FLUENCY_RESEARCH.md`](../docs/UX_FLUENCY_RESEARCH.md) — a **directory** spike (protocol, prototype, evidence) |
+| [#3115 — navigation fluency research](3115-navigation-engine/README.md) | Does a place-based navigation model (place tree, contextual rail, `?` map, launcher conversation, attributed undo) improve felt flow, connected conversation and trust in auto-apply? | Stage 1 method + model shipped; 5–8 moderated sessions (Gate H) pending. Report: [`docs/UX_FLUENCY_RESEARCH.md`](../../docs/UX_FLUENCY_RESEARCH.md) — a **directory** spike (protocol, prototype, evidence) |
 
 ## Not spikes
 
-- [`../research/`](../research/) — the maintainer's own landscape research (external papers, vendor
+- [`../`](../) — the maintainer's own landscape research (external papers, vendor
   docs, community practice, OSS case studies). Not spec-scoped work.
-- [`../docs/`](../docs/) — product and architecture documentation. Indexed at
-  [`docs/README.md`](../docs/README.md).
+- [`../../docs/`](../../docs/) — product and architecture documentation. Indexed at
+  [`docs/README.md`](../../docs/README.md).

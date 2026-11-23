@@ -17,7 +17,7 @@
     - product docs docs/*.md  (except docs/agentic-pipeline/** and docs/README.md)
 
   Allowlist classes (by name; hits here are reported but do NOT fail):
-    - historic-narrative        : docs/agentic-pipeline/**, spikes/**, docs/README.md, git history
+    - historic-narrative        : docs/agentic-pipeline/**, research/spikes/**, docs/README.md, git history
     - test-absence-fixtures     : .opencode/tests/**, apps/**/tests/**
     - gate-self-reference       : this checker's token table + its self-test probe
     - ephemeral-pipeline-scratch: .opencode/tmp/**, .opencode/state/**
@@ -114,7 +114,7 @@ function Get-FileClass {
     $r = $Rel.ToLowerInvariant()
     if ($r -eq '.opencode/scripts/check-sqlite-retired.ps1') { return 'gate-self-reference' }
     if ($r.StartsWith('.opencode/tmp/') -or $r.StartsWith('.opencode/state/')) { return 'ephemeral-pipeline-scratch' }
-    if ($r.StartsWith('docs/agentic-pipeline/') -or $r.StartsWith('spikes/') -or $r -eq 'docs/readme.md') { return 'historic-narrative' }
+    if ($r.StartsWith('docs/agentic-pipeline/') -or $r.StartsWith('research/spikes/') -or $r -eq 'docs/readme.md') { return 'historic-narrative' }
     if ($r.StartsWith('.opencode/tests/')) { return 'test-absence-fixtures' }
     if ($r.StartsWith('apps/')) {
         if ($r -match '/tests/') { return 'test-absence-fixtures' }
@@ -156,7 +156,7 @@ $scanRoots = @(
     (Join-Path $Root '.opencode\tmp'),
     (Join-Path $Root '.opencode\state'),
     (Join-Path $Root 'docs'),
-    (Join-Path $Root 'spikes'),
+    (Join-Path $Root 'research\spikes'),
     (Join-Path $Root 'apps')
 )
 $files = New-Object System.Collections.Generic.List[string]
@@ -214,7 +214,7 @@ Write-Host '  - opencode.json'
 Write-Host '  - apps/**  (.rs/.ts/.tsx; apps/tauri/src-tauri/gen/schemas/** skipped)'
 Write-Host '  - docs/*.md  (except docs/agentic-pipeline/**, docs/README.md)'
 Write-Host 'Allowlist classes (by name):'
-Write-Host '  - historic-narrative        : docs/agentic-pipeline/**, spikes/**, docs/README.md, git history'
+Write-Host '  - historic-narrative        : docs/agentic-pipeline/**, research/spikes/**, docs/README.md, git history'
 Write-Host '  - test-absence-fixtures     : .opencode/tests/**, apps/**/tests/**'
 Write-Host '  - gate-self-reference       : this checker token table + its self-test probe'
 Write-Host '  - ephemeral-pipeline-scratch: .opencode/tmp/**, .opencode/state/**'

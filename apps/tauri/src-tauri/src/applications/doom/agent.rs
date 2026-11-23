@@ -40,7 +40,7 @@
 //! [`DOOM_AUTOPLAY_RATE_TARGET_STEPS_PER_S`] is DERIVED from ST-1's live-measured
 //! per-step engine cost (median [`DOOM_AGENT_ENGINE_STEP_RTT_MEDIAN_MS`]) — never a
 //! guessed round number and never an idle-frame rate (G-316). See
-//! `spikes/2969-doom-agent/action-vocabulary.md` §5.
+//! `research/spikes/2969-doom-agent/action-vocabulary.md` §5.
 //!
 //! ## Progress observable (ST-1 finding)
 //!
@@ -106,7 +106,7 @@ use super::save::DoomCampaign;
 /// ST-1's live-measured per-step engine cost in milliseconds (N=25 against the
 /// staged engine).
 ///
-/// Source: `spikes/2969-doom-agent/action-vocabulary.md` §5. This is the measured
+/// Source: `research/spikes/2969-doom-agent/action-vocabulary.md` §5. This is the measured
 /// engine cost the recorded rate target is derived from — never guessed (G-316).
 pub const DOOM_AGENT_ENGINE_STEP_RTT_MEDIAN_MS: f64 = 12.37;
 

@@ -75,7 +75,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **Chocolate Doom** - the GPL-2.0 accurate Doom source port the fork builds on; ships Windows binaries but has no HTTP API (not a substitute for the fork). (https://github.com/chocolate-doom/chocolate-doom)
 - **Freedoom** - libre (BSD-style) IWAD substitute; latest **0.13.0** (`freedoom-0.13.0.zip`, SHA-256 `3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59`, from its PGP-signed CHECKSUM asset); contains `freedoom1.wad` (Phase 1, Ultimate-Doom-compatible) and `freedoom2.wad` (Phase 2, Doom-II-compatible). (https://freedoom.github.io/download.html ; https://github.com/freedoom/freedoom/releases)
 - **chocpkg** - Chocolate Doom's shell-script dependency builder (Linux/macOS-oriented) used by the fork's `configure-and-build.sh`; on Windows the practical path is MSYS2 MinGW-w64 + autotools. (https://github.com/chocolate-doom/chocpkg)
-- **#2968 spike** - the full acquisition finding, exact engine contract, pins, and Windows build recipe live at `spikes/2968-doom-runtime/` + `docs/doom-mode-acquisition.md`.
+- **#2968 spike** - the full acquisition finding, exact engine contract, pins, and Windows build recipe live at `research/spikes/2968-doom-runtime/` + `docs/doom-mode-acquisition.md`.
 
 ---
 ## Known Failure Modes
@@ -1531,13 +1531,13 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 ### G-283: plan_pins_an_ac_fallback_asset_a_concurrent_main_commit_deletes
 - **activation_date:** 2026-10-01
-- **observed:** #2976 — the QA plan's pre-authorized AC5 BEFORE fallback named the spike result files under `spikes/2964-postgres-migration/results/`. Between planning and the testing round, the `main` tip advanced with a docs/spikes consolidation commit that DELETED those paths, so the fallback was unreachable from the tested tree; the tester substituted a different recorded baseline and disclosed it. The PRIMARY BEFORE leg (`dev-env -At <pre-change-tip>`, still reachable in spec history) remained valid, so no row failed.
+- **observed:** #2976 — the QA plan's pre-authorized AC5 BEFORE fallback named the spike result files under `research/spikes/2964-postgres-migration/results/`. Between planning and the testing round, the `main` tip advanced with a docs/spikes consolidation commit that DELETED those paths, so the fallback was unreachable from the tested tree; the tester substituted a different recorded baseline and disclosed it. The PRIMARY BEFORE leg (`dev-env -At <pre-change-tip>`, still reachable in spec history) remained valid, so no row failed.
 - **target_failure:** a plan pins an AC fallback (a recorded baseline, a fixture, an evidence asset) to a repo path that a concurrent `main` commit can move or delete, so the fallback is gone by the time the round runs and the tester must improvise — or the row ships UNVERIFIED.
 - **guardrail:** A plan's fallback for an AC must reference a path reachable from the SPEC BRANCH'S OWN HISTORY (pin the SHA and read it via `git show <sha>:<path>`) or an in-repo asset under `.opencode/tests/**`/`.opencode/tmp/<issue>/` that the branch controls — never a bare path on `main` that a later commit can delete. State the pinned SHA at convergence.
 - **home:** playbooks/qa-expert.md + playbooks/software-architect.md + playbooks/orchestrator.md (convergence) + references.md (this record)
 - **effectiveness:** Pending — created 2026-10-01 from the #2976 observation; the fallback was substituted and disclosed this round with no UNVERIFIED row. Re-validate on the next plan that names an AC fallback.
 - **re-validated:** 2026-10-02, #2977 — the plan pinned no AC fallback to a bare `main` path: the backlog's cited `docs/research/2964-*` paths and the spike PoC `results/` were withdrawn, and the fixture generator is in-repo under `.opencode/tmp/<issue>/`. No fallback was unreachable. Confirmed.
-- **re-validated:** 2026-10-02, #2979 — the backlog AGAIN cited withdrawn paths (`docs/research/2964-postgres-migration-approach.md`, `data-migration.md`, `spikes/2964-postgres-migration/results/parity.json`); the Orchestrator flagged them in the planner briefs and the plan pinned no fallback to them — the BEFORE leg used spec-branch history (`dev-env -At <pre-change-tip>`) and fixtures lived under `.opencode/tmp/2979/`. No fallback was unreachable. Confirmed.
+- **re-validated:** 2026-10-02, #2979 — the backlog AGAIN cited withdrawn paths (`docs/research/2964-postgres-migration-approach.md`, `data-migration.md`, `research/spikes/2964-postgres-migration/results/parity.json`); the Orchestrator flagged them in the planner briefs and the plan pinned no fallback to them — the BEFORE leg used spec-branch history (`dev-env -At <pre-change-tip>`) and fixtures lived under `.opencode/tmp/2979/`. No fallback was unreachable. Confirmed.
 
 ### G-284: sqlite_only_telemetry_read_lever_unrunnable_once_the_store_migrates
 - **activation_date:** 2026-10-01

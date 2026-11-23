@@ -2,9 +2,9 @@
 
 - **Issue:** #2948 (spike: SQLite → embedded-PostgreSQL evaluation)
 - **Date:** 2026-09-26
-- **PoC artifact:** `spikes/2948-embedded-postgres/` (standalone crate — **no longer committed**; the spike was a disposable PoC)
-- **Raw numbers:** `spikes/2948-embedded-postgres/results/measurements.json` (withdrawn with the crate; the findings it produced are summarised inline below)
-- **9-question set:** `spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate)
+- **PoC artifact:** `research/spikes/2948-embedded-postgres/` (standalone crate — **no longer committed**; the spike was a disposable PoC)
+- **Raw numbers:** `research/spikes/2948-embedded-postgres/results/measurements.json` (withdrawn with the crate; the findings it produced are summarised inline below)
+- **9-question set:** `research/spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate)
 
 **Status: NO-GO** (for migrating Fredo's local persistence to embedded PostgreSQL as evaluated).
 
@@ -57,7 +57,7 @@ The PoC also verified `raw_json` byte-equality on read-back, a non-ASCII round-t
 ## The 9 Questions
 
 Full answers (with evidence or `Unknown` + blocker) are in
-`spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate). Summary:
+`research/spikes/2948-embedded-postgres/QUESTIONS.md` (withdrawn with the crate). Summary:
 
 1. **Packaging/distribution** — runtime-download installs a 164,026,008 B PostgreSQL 18.6.0
    distribution and needs network on first run; `bundled` mode `Unknown` (not exercised).
@@ -160,14 +160,14 @@ Ordered by impact × likelihood. Each item has its impact and a mitigation or ac
 
 **No production migration occurred.** This spike changed **no file under `apps/tauri/**`** and did
 not touch `fredo.db`, the RTDB row-pipeline contract, or the observability `sqlx` dependency.
-`spikes/2948-embedded-postgres/` was a standalone package (not a workspace member; CI built it by
+`research/spikes/2948-embedded-postgres/` was a standalone package (not a workspace member; CI built it by
 explicit `--manifest-path`). It was a **disposable** PoC and is no longer committed — this record is
 the durable output. Both production gates were green at the time; the captured evidence lived in
-`spikes/2948-embedded-postgres/results/production-safety.txt` (withdrawn with the crate).
+`research/spikes/2948-embedded-postgres/results/production-safety.txt` (withdrawn with the crate).
 
 ## Reproduction Steps
 
-From `<repo>/spikes/2948-embedded-postgres` on Windows (network available for the first run):
+From `<repo>/research/spikes/2948-embedded-postgres` on Windows (network available for the first run):
 
 ```powershell
 cargo build --release --bins          # build PoC + benchmarks + harness
@@ -180,6 +180,6 @@ Full prerequisites/expected output were in the crate's `README.md` (withdrawn wi
 
 ## PoC Artifact Path
 
-`spikes/2948-embedded-postgres/` — source (`Cargo.toml`, `src/`), raw results
+`research/spikes/2948-embedded-postgres/` — source (`Cargo.toml`, `src/`), raw results
 (`results/measurements.json`), AC5 evidence (`results/production-safety.txt`), and the 9-question
 answer set (`QUESTIONS.md`).

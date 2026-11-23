@@ -15,7 +15,7 @@ verbs, a place rail with a breadcrumb, a `?` map, a launcher-centred conversatio
 auto-apply with undo) feels like one coherent system to people who are not its authors.
 
 - **Surface under test:** the throwaway static prototype only —
-  `spikes/3115-navigation-engine/prototype/index.html`, opened directly from `file://`. The
+  `research/spikes/3115-navigation-engine/prototype/index.html`, opened directly from `file://`. The
   sessions never touch the shipped Fredo app, and the prototype is deleted whole at P8.
 - **Session length:** **30–40 minutes** per participant, one participant per session.
 - **Method:** moderated usability sessions. Each participant attempts the same seven tasks in the
@@ -312,7 +312,7 @@ Gate H is **human-only**. No agent may run, simulate or fabricate a session, and
 writes into the input file.
 
 1. **Create the input file by copying the template.** The facilitator copies
-   `spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` to
+   `research/spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` to
    `.opencode/tmp/3115/sessions/participant-notes.md` (creating the directory if needed).
 2. **One block per participant**, using the template's field names exactly.
 3. **Every field above must be filled** — the mix fields, `consent_recorded`, `tasks_completed`,

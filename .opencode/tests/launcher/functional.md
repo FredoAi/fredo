@@ -2417,7 +2417,7 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
   **Expected:** the file exists at that exact path and is a HISTORICAL evaluation template (it sits
   on the absence guard's evidence allowlist). Its existence is asserted; its content is **not**
   re-adjudicated by this slice — no participant data is required and its absence is never a FAIL
-  (G-414). The spike it referenced (`spikes/3115-navigation-engine/**`) is outside the scanned roots
+  (G-414). The spike it referenced (`research/spikes/3115-navigation-engine/**`) is outside the scanned roots
   and out of scope.
   **Edge:** the file must not be deleted (deleting history to go green is a refusal of AC2).
   **Receipt:** E-STATIC exact-path read.

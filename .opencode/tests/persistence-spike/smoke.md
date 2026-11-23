@@ -25,7 +25,7 @@ restore the app-boot checks (S-1..S-5 boilerplate).
   **Expected:** both present and consistent. **FAIL:** missing file or steps that do not
   match the committed command.
   **Round 1 (2026-09-26) result: PASS.** `README.md:34-112` names the working dir
-  (`spikes/2948-embedded-postgres`) and the exact commands (`cargo build --release --bins`,
+  (`research/spikes/2948-embedded-postgres`) and the exact commands (`cargo build --release --bins`,
   `cargo run --release --bin poc`, `cargo run --release --bin measure`); all four bins are
   declared in `Cargo.toml:17-31` and present under `src/`.
 
@@ -42,7 +42,7 @@ restore the app-boot checks (S-1..S-5 boilerplate).
   **Expected:** all three present. **FAIL:** any missing or uncommitted (an artifact only
   under `.opencode/tmp/` does not count).
   **Round 1 (2026-09-26) result: PASS.** `results/measurements.json` (119 lines),
-  `QUESTIONS.md` (139 lines, Q1–Q9), `spikes/2948-embedded-postgres-spike.md`
+  `QUESTIONS.md` (139 lines, Q1–Q9), `research/spikes/2948-embedded-postgres-spike.md`
   (187 lines) all on `origin/spec/2948`.
 
 - [x] **S-6: no-app-runtime-wiring.** Grep `lib.rs` / `AppRuntime` / `apps/tauri/Cargo.toml`

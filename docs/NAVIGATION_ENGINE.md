@@ -1148,9 +1148,9 @@ label change + attributed undo, and clearing the details-panel Label field with 
 while the protocol's method, verbatim question set, cohort quotas and six gate lines stand
 unchanged. **The pipeline does not run Gate H**: the sessions, the data and the
 `Verdict: GO|NO-GO` are human-produced (Gate H handoff:
-`spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` →
+`research/spikes/3115-navigation-engine/session-kit/gate-h-input-template.md` →
 `.opencode/tmp/3115/sessions/participant-notes.md`), and
-`spikes/3115-navigation-engine/session-protocol.md` is reused verbatim for method/questions/
+`research/spikes/3115-navigation-engine/session-protocol.md` is reused verbatim for method/questions/
 quotas/gate lines and is not edited by this spec.
 
 **This document records no pilot verdict and no session result.** The P1 comparator is the

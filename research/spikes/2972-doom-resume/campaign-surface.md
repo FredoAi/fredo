@@ -201,8 +201,8 @@ by-image `taskkill /IM restful-doom.exe /T /F`. Every run reported `TEARDOWN rem
   quoted lines are verbatim probe output. Engine log:
   `.opencode/tmp/2972/engine-*.out.log` / `engine-*.err.log` (gitignored scratch).
 - Engine argv + API client contract: `apps/tauri/src-tauri/src/features/doom/{process.rs,client.rs,state.rs}`.
-- Observation shape: `spikes/2968-doom-runtime/engine-contract.md`; action vocabulary:
-  `spikes/2969-doom-agent/action-vocabulary.md`.
+- Observation shape: `research/spikes/2968-doom-runtime/engine-contract.md`; action vocabulary:
+  `research/spikes/2969-doom-agent/action-vocabulary.md`.
 - Terminal discriminator: `apps/tauri/src-tauri/src/features/doom/agent.rs:163-170`.
 - Pinned commit: `eded41b5597b7738ec1fa06d24f62b53db982c2c`.
 

@@ -63,14 +63,14 @@ names, line shapes or paths.
   data — printed leg count must equal the declared token count), **2 NEGATIVE** (allowlisted hit
   reported but not failing; the same hit moved outside fails), **3 SEEDED ROOT**
   (`docs/__nav_prose_absence_probe__.md`, untracked non-ignored, caught at that exact `path:line`,
-  removed in `try/finally`), **4 OUT-OF-ROOT** (`spikes/__nav_prose_probe_outside__.md` not
+  removed in `try/finally`), **4 OUT-OF-ROOT** (`research/spikes/__nav_prose_probe_outside__.md` not
   scanned), **5 IGNORED NON-SCAN** (`.opencode/tmp/__nav_prose_probe_ignored__.md` not scanned
   **after asking git for its own precondition**), **6 SELF-REFERENCE** (plain run clean while the
   script spells every token), **7 ALLOWLIST AUDIT** (exactly 8 entries; none matching a forbidden
   prefix except the named exception; no `apps/` entry).
   **Edge:** (a) Exit 0 with **fewer than seven** control lines = FAIL (G-430: record the lines, never
   only the exit code). (b) Post-conditions: `Test-Path docs/__nav_prose_absence_probe__.md` is
-  `False`, `Test-Path spikes/__nav_prose_probe_outside__.md` is `False`, `Test-Path
+  `False`, `Test-Path research/spikes/__nav_prose_probe_outside__.md` is `False`, `Test-Path
   .opencode/tmp/__nav_prose_probe_ignored__.md` is `False` — a leftover probe is a FAIL **even at
   exit 0**. (c) Control 5 must fail **loudly** if its ignore rule has gone, not silently pass.
   (d) Control 1's leg count ≠ declared token count is a FAIL by construction.
@@ -238,7 +238,7 @@ names, line shapes or paths.
   "Yes — entirely!" that still names all four tokens passes P-9 and is **false** — covered by P-12.
   (c) The surviving sentence "`>` is ordinary search text in the launcher command bar" **stays true**
   and may stay (the launcher's own query field survives; only the deleted three-surface bar goes).
-  (d) `docs/README.md:72`'s `spikes/3115-…` row is **outside** the scanned roots — not a row target,
+  (d) `docs/README.md:72`'s `research/spikes/3115-…` row is **outside** the scanned roots — not a row target,
   not a failure.
 
 ## NFR — the guard is actually run
