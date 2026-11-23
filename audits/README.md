@@ -13,4 +13,10 @@ This folder collects audits of Fredo — performance, architecture, security, re
 
 | Audit | Scope | Date |
 |---|---|---|
-| [Pipeline Performance Audit](./performance_audit.md) | Agentic pipeline cycle time, rework, tooling, and guardrail health | 2026-11-23 |
+| [Pipeline Performance Audit](./performance_audit_2026-11-23.md) | Agentic pipeline cycle time, rework, tooling, and guardrail health | 2026-11-23 |
+
+## Implementation plans
+
+| Plan | Tracks | Date |
+|---|---|---|
+| [Pipeline Performance Fixes](./implementation_plan_2026-11-23.md) | Implementation status for the performance audit fixes | 2026-11-23 |

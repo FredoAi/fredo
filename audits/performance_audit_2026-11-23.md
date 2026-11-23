@@ -1,4 +1,4 @@
-# Fredo Pipeline — Performance Audit
+# Fredo Pipeline — Performance Audit (2026-11-23)
 
 _Generated from the pipeline's own event store, docs, and instrumentation. Read-only research: no product or pipeline code was changed._
 _Verified 2026-11-23 against the raw event store, `pipeline-state.rs`, `references.md`, playbooks, and `opencode.json`. Every headline number below was re-derived from source; definitions and residual caveats are in "Measurement definitions & verification" at the bottom._
