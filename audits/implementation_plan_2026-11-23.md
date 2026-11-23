@@ -41,9 +41,9 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 
 ## P5 — Guardrail / instruction slimming — PARTIAL
 
-- [ ] **E1** Curate ledger (stubs/dups/stale) — needs a Curator pass (judgment, 1.2 MB store).
-- [ ] **E2** Progressive disclosure in playbooks — large rewrite.
-- [ ] **E3** Curator gating — blocked by the post-audit gate requiring a `pipeline.improvement` event (needs a principle decision).
+- [x] **E1** Stub headings renamed (30) to descriptive class slugs; duplicate ids resolved (G-080 stub → G-453, second G-103 → G-454, second G-104 → G-455). Stale-Pending retirement still needs a Curator judgment pass.
+- [x] **E2** Progressive-disclosure guidance added to `references.md` (grep by id/class; never read the whole store at wake).
+- [x] **E3** No-lesson success: the Curator records a `record-improvement` event without authoring a new `### G-` record; the success gate needs the event, not ledger growth.
 - [x] **E5** Class→Lever routing now states executable-first precedence (Toolsmith/Machinist before prose).
 
 ## P6 — Tooling library — NOT STARTED
@@ -56,9 +56,9 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 
 - [x] **D4** `software-architect` granted `telemetry-query` (via `set-permission`).
 - [~] **F4** Doc-level ownership routing (see P3b); no permission grant.
-- [ ] **B4** Parallel Curator variant (`principles.md`) — not done.
-- [ ] **H1/H2** Prune deprecated actions/labels/channels — not done.
-- [ ] **G3** Close abandoned #2694/#2711 — not done (needs a public-issue decision).
+- [x] **B4** Post-audit is mandatory for the SUCCESS exit only; a restart may proceed while curation runs concurrently (state machine + `principles.md`/`pipeline.json`/`state-machine.md`/`orchestrator.md`).
+- [ ] **H1/H2** Prune deprecated actions/labels/channels — deferred (removing `generate-work`/mock verbs breaks the harness contracts; needs its own migration spec).
+- [x] **G3** #2694/#2711 are already CLOSED; the SLA report now ignores terminal specs, so they no longer appear as overdue blockers.
 
 ## Deferred
 

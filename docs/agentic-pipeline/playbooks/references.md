@@ -10,6 +10,7 @@ Shared knowledge base for the agentic pipeline. **Every agent may add, edit, and
 - **Reference format:** `- **Title** - <description> (<URL>)`. Group under the right category; create a new category only when three or more entries need it.
 - **Before adding, grep for the URL** - reuse and extend an existing entry instead of creating a near-duplicate.
 - **Do not edit `### G-` guardrail blocks** in `Known Failure Modes` - those are Curator-owned (Recipe 6). Add non-guardrail facts elsewhere.
+- **Progressive disclosure (E2).** Do NOT read the whole `## Known Failure Modes` section at wake — it is a ~450-record, 1.2 MB store, and reading it whole spends attention on rules unrelated to your phase. Grep for the records your playbook names (by `G-NNN` id or by failure-class slug), read only those, and treat the store as an on-demand reference. Every playbook cites the ids it needs; load those, not the file.
 - You are granted edit access in `opencode.json`; if blocked, report the gap rather than working around it.
 
 ---
@@ -613,7 +614,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md + references.md (this record)
 - **effectiveness:** Pending
 
-### G-392: on_the_go_improvement
+### G-392: dev_environment_skill_corrected_and_extended_the_envvar
 - **activation_date:** 2026-10-21
 - **observed:** #3070 round 4
 - **target_failure:** (on-the-go pipeline improvement)
@@ -994,7 +995,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-10-13, #3048 — RECURRED: the first `Up` yielded an unresponsive/blank webview with orphaned OS sockets on `:9223`/`:4318` after a `Down`; recovery was `Down` → `Up` (the bridge auto-scanned to `:9224`, later back to `:9223`) plus a ~35 s boot wait, and the round completed live. Environment artifact, not a spec FAIL.
 - **re-validated:** 2026-10-13, #3049 — RECURRED: a dead PID's OS sockets held the legacy `:9223`/`:4318` across every `Down`/`Up`, so the bridge force-scanned to `:9224` → `:9225` and OTLP HTTP failed with `os error 10048`; recovery moved the round onto isolated slots (see G-336/G-338). Environment artifact, not a spec FAIL. The durable default-port guard remains the open follow-up.
 
-### G-348: on_the_go_improvement
+### G-348: live_evidence_guard_false_positive_issue_3026_tester
 - **activation_date:** 2026-10-11
 - **observed:** #3026 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -1766,7 +1767,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Partial (2026-11-18, #3158 — five rows in one plan asserted a literal tighter than the requirement; all five were disclosed by the tester and adjudicated by the auditor, none as a product FAIL, so the convergence check failed to fire and the cost moved into the round and the audit. Prior: Pending — derived at #2964 convergence (the count assertion was realigned before dispatch, so no round was burned).)
 - **extended (2026-11-18, #3158 — the same over-specification in four OTHER literal shapes, so the rule is about the AC and not about counts):** (a) a size FLOOR derived from the UNCOMPRESSED component sum (45,646,403 B) bound to a compressed installer of 18.8 MB — unsatisfiable by construction, which shows a floor can be as wrong as a count; (b) an expected collection LENGTH and element shape (a list of length 1 carrying one device type) where the shipped engine reports an empty list, while the AC's actual clause — "enumerates no Vulkan GPU" — is what the discriminating control measured; (c) a zero-occurrence ban on a literal token that necessarily survives once, in the prose comment recording the mechanism's deletion, while the property (no backup file, no conditional path) held; (d) a summary token the harness prints only on failure, so the zero-failure receipt is the totals line rather than `Failed: 0`; (e) a row that inferred a full build ABORT from a producer's named failure, an effect no instrument in the round observed. Rule broadened: **a row asserts the AC's OBSERVABLE; a literal the requirement does not state — a count, a size floor or ceiling, a collection's length or element shape, a token-occurrence ban, a tool's summary token, or an inferred side effect — is a plan over-specification realigned at convergence**, not a bar for the tester to clear and never a sign of a stronger proof: a stricter literal converts a compliant deliverable or a correct product into a disclosure, and it spends the round's and the audit's attention on adjudication instead of evidence. At convergence, check each row's literal against the requirement's own wording AND against the producing tool's actual output contract. Distinct from G-316 (a literal that misreads the SHIPPED CODE — re-derive it from source); this record covers a literal the source cannot make true because the requirement never asked for it. See G-320 for an artifact literal sourced from the wrong artifact.
 
-### G-270: on_the_go_improvement (consolidated into G-269)
+### G-270: retired_consolidated_into_G_269
 - **activation_date:** 2026-09-26
 - **observed:** #2949 round 2 — the auto-recorded on-the-go entry for the tester compound-command ordering fix; consolidated into G-269, which carries the full record and the correct homes.
 - **target_failure:** (see G-269)
@@ -1982,7 +1983,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md (suite teardown) + playbooks/tester.md (execute the teardown) + references.md
 - **effectiveness:** Applied (2026-09-25, #2940) — the tester ran the teardown twice (three records then zero, idempotent), restored the four settings keys it had overwritten, and the pre and post record sets matched with zero fixture-root rows in the store. Re-validated 2026-09-25 (#2942): the teardown ran twice (seven fixture-root records then zero, idempotent), restored the four settings keys, and left zero fixture-root rows with the pre-existing titles unchanged.
 
-### G-248: on_the_go_improvement
+### G-248: terminal_persistence_round_two_lessons_first_cli_whose
 - **activation_date:** 2026-09-24
 - **observed:** #2935 round 1
 - **target_failure:** (a) an external CLI's resume flags / session-listing surface are assumed from documentation because no agent may invoke the binary, so the plan's central mechanism is pinned by a guess; and (b) binding convergence adjudications are recorded only in the ephemeral A2A file, so the posted plan (seven template sections) never carries them and the implementers/tester never see the decisions.
@@ -1990,7 +1991,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** references.md (G-248)
 - **effectiveness:** Applied (2026-09-24, #2935) — the Phase-0 probe drove BOTH CLIs from product code and pinned OpenCode exact-id resume (via its json session list) versus Copilot last-session `--continue`, resolving the plan's one open fidelity question before any wiring; and the binding convergence adjudications were published as a Status comment plus inlined in every dispatch brief, because the plan assembler carries only the seven template sections. Re-validate on the next spec that integrates an un-shellable external CLI, or that resolves cross-planner conflicts at convergence. Re-validated 2026-09-25 (#2942): eight cross-planner conflicts were adjudicated at convergence, the binding decisions were published as a Status comment and inlined in every dispatch brief, and the seeded suites were realigned to them.
 
-### G-246: on_the_go_improvement
+### G-246: terminal_multi_session_rounds_red_the_required_validate
 - **activation_date:** 2026-09-24
 - **observed:** #2934 round 3
 - **target_failure:** a precondition check placed BEFORE the branch that decides the execution form gates configurations that never take the guarded path, so a capable host is refused; and durable test fixtures are assumed to ride the suite-persistence path even though that path persists only top-level markdown.
@@ -2006,7 +2007,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/software-architect.md (mechanism/contract design) + playbooks/developer.md (implementation placement) + playbooks/qa-expert.md (negative-row determinism) + references.md
 - **effectiveness:** Confirmed (2026-09-24, #2934 rounds 1→3) — after scoping, the native launch passed live on a pwsh-less host and the forced-prerequisite negative row stayed deterministic. Re-validate on the next spec that adds a platform-prerequisite gate.
 
-### G-243: on_the_go_improvement
+### G-243: copilot_cli_mechanism_verified_empirically_before_the_tester
 - **activation_date:** 2026-09-24
 - **observed:** #2933 round 2
 - **target_failure:** a plan locks a mechanism (transport, endpoint, attribute semantics) on an external tool's self-documented behaviour, and the documentation is self-contradictory or wrong for the installed build, so the assumption is only falsified mid-testing or ships as a silent gap.
@@ -2030,7 +2031,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/software-architect.md (domain model + mechanism decision) + playbooks/qa-expert.md (probe leg) + playbooks/orchestrator.md (plan review) + references.md
 - **effectiveness:** Applied (2026-09-24, #2933) — the probe confirmed the mechanism, the token semantics, and the content env name; the driver script is committed as reusable pipeline tooling.
 
-### G-241: on_the_go_improvement
+### G-241: guardrail_hardening_after_the_round_tester_attempted_out
 - **activation_date:** 2026-09-24
 - **observed:** #2932 round 2
 - **target_failure:** an out-of-repo path is left REACHABLE by a sandbox that names only one denied path — a permission category with no matching rule falls through to the platform default (`ask`, auto-approved in auto mode or after one approval) instead of a hard deny, so an agent's out-of-repo access surfaces as a prompt/approval rather than a block (G-009's fifth vector).
@@ -2145,7 +2146,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/qa-expert.md (oracle design + discrimination control) + playbooks/software-architect.md (fill/geometry contract) + playbooks/orchestrator.md (plan/convergence review + audit) + references.md (this record)
 - **effectiveness:** Confirmed (2026-09-21, #2922 round 2) — the corrected geometry-derived oracle separated a hollow body (about 63 percent of the authored mask) from the fixed tip (zero) on every measured leg, with all five controls green; the round-1 oracle could not.
 
-### G-230: on_the_go_improvement
+### G-230: fixed_the_stale_development_summary_comment_template_attributed
 - **activation_date:** 2026-09-21
 - **observed:** #2922 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2384,7 +2385,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/orchestrator.md (dispatch waves) + references.md (this record)
 - **effectiveness:** Partial (2026-09-19, #2903 round 1) — dispatches were staged in waves of at most two (planners; developers 2 then 1) and no quota-gate failure occurred across either wave; one spec is not enough to confirm the provider budget.
 
-### G-203: on_the_go_improvement
+### G-203: the_tests_commit_auto_persist_parser_required_the
 - **activation_date:** 2026-09-19
 - **observed:** #2897 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2392,7 +2393,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** references.md (G-203)
 - **effectiveness:** Pending
 
-### G-202: on_the_go_improvement
+### G-202: env_gated_seam_lever_was_unusable_the_documented
 - **activation_date:** 2026-09-19
 - **observed:** #2897 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2550,7 +2551,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (verification) + playbooks/orchestrator.md (dispatch review) + references.md (this record)
 - **effectiveness:** Pending
 
-### G-181: on_the_go_improvement
+### G-181: context_read_guard_false_positive_parallel_same_role
 - **activation_date:** 2026-09-18
 - **observed:** #2893 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2753,7 +2754,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/orchestrator.md (rework re-entry + dispatch review) + playbooks/qa-expert.md + references.md (this record)
 - **effectiveness:** Effective (2026-10-29, #3117 round 2) — the re-entry auto-persist was skipped as designed, the Orchestrator ran the suite persist by hand and verified the tightened case on main, and the audit read the tightened suite case from the merged main. Residual friction: the persistence ran AFTER the spec branch existed, so the branch kept the pre-tightening copies and the tester had to read the durable suites from main instead of the branch (a disclosure, not a failed case). The ordering clause above closes that gap.
 
-### G-159: on_the_go_improvement
+### G-159: rework_rescope_entry_longer_runs_tests_commit_from
 - **activation_date:** 2026-09-15
 - **observed:** #2878 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2773,7 +2774,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-09-17, #2883 — round 1's PASS-token did NOT survive independent judgement: the tester's verdict carried a decisive live defect (the bar field never shrank; a continuous short-content/typing-safety invariant violation) with a screenshot and an intrinsic-height oracle, so the Orchestrator audited it as a **FAIL** and drove a round-2 Fix Plan instead of accepting the token. Round 2 then verified the invariant live (empty field exactly 48 px, exact 108→48→108 churn) and the audit cleared it. The judge-the-rows rule is what stopped a false PASS from shipping.
 - **re-validated:** 2026-09-18, #2893 — the audit judged the round-3 verdict rows against the effective acceptance criteria rather than the PASS token: the two named-blocker rows (live ambiguity unreachable with one addressable app; no in-app open-failure lever) are environment/scope-limited with in-repo pins, and no AC row carried a confirmed reachable violation, so PASS was substantiated and nothing was escalated.
 
-### G-157: on_the_go_improvement
+### G-157: seeded_test_suites_were_silently_skipped_parse_feature
 - **activation_date:** 2026-09-15
 - **observed:** #2877 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2782,7 +2783,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** Confirmed (2026-09-15, #2877) — the rework re-entry (`testing -> implementation`) re-ran `persist_tests` against the blockquoted declaration and persisted all three suites with no manual step; the blockquoted regression is green in test-scripts.ps1 (100/100).
 
 
-### G-156: on_the_go_improvement
+### G-156: known_flaky_unrelated_test_has_sandbox_recovery_merge
 - **activation_date:** 2026-09-14
 - **observed:** #2876 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -2797,7 +2798,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-observed (2026-11-17, #3151 — AUTHORING face, two suites written in one slice):** the class returned in suites authored by the slice itself, both green locally and red on the runner. (a) A synchronous attribute read issued immediately after an awaited query returned `null` on CI because the value is settled by a LATER effect than the element's mount — the driver was fast enough locally that the effect had run. (b) A menu trigger re-clicked while the framework still held its own `open` state through the popup's close transition toggled the menu CLOSED, so the popup's rows never mounted; locally the transition finished first. Neither assertion was wrong and neither was weakened — both were turned into a bounded wait for the settle (assert through a wait-for-value, and wait for the previous popup's contents to unmount before re-opening it). The general rule for the authoring face: a read or an interaction that depends on state a later tick owns is a latent CI failure however green it is locally, because the local runner and the CI runner differ in scheduling, and "green locally" is not "green in CI". Sweep the slice's own new suites for the same two shapes before pushing.
 
 
-### G-155: on_the_go_improvement
+### G-155: dev_env_ps1_hardened_for_wedged_instance_recovery
 - **activation_date:** 2026-09-14
 - **observed:** #2876 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3036,7 +3037,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/software-architect.md (Domain Model / API contracts) + playbooks/orchestrator.md (plan review) + references.md (this record)
 - **effectiveness:** Pending
 
-### G-127: on_the_go_improvement
+### G-127: corrected_stale_frontend_design_skill_rule_that_documented
 - **activation_date:** 2026-09-11
 - **observed:** #2855 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3060,7 +3061,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **re-validated:** 2026-09-20, #2914 — a large removal changed contracts pinned by `tests/voice_invariants.rs` (16 rows) and ten UI test files. The Architect declared a per-assertion disposition table (keep / re-point / delete→replace) in the plan, each developer NAMED its re-pointed pins, and the final sweep added the UI-source legs the backend sub-task could not assert; the tester independently confirmed no assertion was deleted without a named replacement and none was disabled or skipped. No unowned or weakened test edit surfaced.
 - **re-observed (2026-10-31, #3120):** the changed contract was a VALUE, not a behaviour shape — the undo entry's attribution moved from the system to the requester. The plan named four requirement pins to refresh, but a unit test OUTSIDE the plan's file list also pinned the old attribution and only surfaced when it failed. The developer refreshed it with no weakening (the Orchestrator reviewed the diff). Rule tightened: a landing that changes a pinned contract VALUE sweeps by the OLD LITERAL across every test tree, not only the files the plan enumerates; the plan's grep must name the value, and a test that fails on the old value is a scoped refresh, never a reason to relax the assertion. **Effectiveness: Partial** — the refresh was clean, the sweep scope was not.
 
-### G-121: on_the_go_improvement
+### G-121: verdict_pass_parser_whole_line_contains_fail_misfires
 - **activation_date:** 2026-09-10
 - **observed:** #2850 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3230,7 +3231,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/tester.md (Test case authoring — evidence-path matches the allowed tool surface) + playbooks/orchestrator.md (loop review — PO-accepted-partial verdict discipline) + references.md (G-102)
 - **effectiveness:** Pending (re-validated 2026-09-05, #2810 — applied cleanly for a static-policy deletion slice whose AC5 named `cargo check`, not in the tester's sandbox allowlist: the tester substituted an allowed build command (`pnpm --filter @fredo/tauri build:webview`), reasoned no Rust source changed, and explicitly noted the CI `rust-validate` covers the Rust gate — NO fake-verify, NO defect mis-classification, evidence-path matched the allowed surface. Re-validated 2026-09-03, #2803 (admin-verb sibling case, same discipline). <2 specs since activation, so Pending per the effectiveness recipe.)
 
-### G-101: on_the_go_improvement
+### G-101: 099_hardened_live_policy_parser_now_tolerates_the
 - **activation_date:** 2026-09-03
 - **observed:** #2798 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3238,7 +3239,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** references.md (G-101)
 - **effectiveness:** Pending
 
-### G-100: on_the_go_improvement
+### G-100: close_dependabot_prs_author_filter_matched_graphql_normalized
 - **activation_date:** 2026-09-03
 - **observed:** #2798 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3268,7 +3269,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (definition of done — the gate's command set) + playbooks/orchestrator.md (review the receipt against the gate) + references.md (this record)
 - **effectiveness:** Partial (2026-11-20, #3180) — the class recurred after a long quiet period, and the playbook's definition of done did not carry the rule; it is now stated there and in this record. Recurrence is measured by whether a future Rust receipt omits the gate's clippy invocation. Prior: Confirmed (2026-09-02, #2788 round 6) — the round-6 developer receipts ran the full CI-parity set (check + test + clippy -D warnings) before push; rust-validate passed at the merge gate on the first post-fix CI run, closing the failure class that cost round 5. Re-validated (2026-09-11, #2855) — both developer dispatches ran the full local CI-parity set (`cargo check`/`test`/`clippy -D warnings` + UI build/tests) and reported exact output; `rust-validate` passed at the merge gate first-try after both the round-1 push and the round-2 fix. The tester sandbox lacks `cargo`, so CI remained the Rust gate — consistent with the local-parity rule (the developer ran it).
 
-### G-090: on_the_go_improvement
+### G-090: machine_fix_state_machine_machinist_domain_the_development
 - **activation_date:** 2026-09-02
 - **observed:** #2788 round 5
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3281,7 +3282,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 
 
-### G-089: on_the_go_improvement
+### G-089: docs_config_only_specs_must_not_gate_verification
 - **activation_date:** 2026-08-31
 - **observed:** #2773 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3289,19 +3290,19 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** references.md (G-089)
 - **effectiveness:** Confirmed (2026-08-31, #2773 rounds 1-2) — recorded mid-run and applied immediately: the QA plan was amended to docs-only validations (native-build legs removed, tester briefed to never run them) and the spec completed with zero further build-environment stalls. Re-validated (2026-09-03, #2797): a GitHub-config-only spec kept verification `static` (no `cargo`/`pnpm` gate; offline harness + GitHub-REST assertions + product-tree-untouched check) and merged cleanly without a build-environment stall — G-089 held.
 
-### G-080: on_the_go_improvement
+### G-453: transition_side_tests_commit_silently_swallowed_per_feature (renamed from duplicate G-080)
 - **activation_date:** 2026-08-29
 - **observed:** #2768 round 1
 - **target_failure:** (on-the-go pipeline improvement)
 - **guardrail:** Transition-side tests-commit silently swallowed per-feature failures (a missing QA-seeded suite vanished without a trace). The loop now surfaces a NOT-persisted note per failed feature so brief or QA gaps are visible at plan assembly instead of mid-testing round
-- **home:** references.md (G-080)
+- **home:** references.md (G-453)
 - **effectiveness:** Partial (2026-09-03, #2797) — the same class recurred but with a different trigger: the QA Expert named `**Feature tests:** pipeline-hygiene` but authored NO suite files (the brief didn't instruct seeding), so the transition's `tests-commit` silently persisted 0 files and NO NOT-persisted note surfaced (the G-080 signal fires for a missing/vanished suite, not a declared-but-never-authored one). Caught by the Orchestrator's directory check at plan review; the suite was seeded and committed. The declared-but-unseeded gap is now its own guardrail (G-098).
 
 
 
 
 
-### G-072: on_the_go_improvement
+### G-072: the_otlp_fixture_injector_burned_rounds_manufactured_success
 - **activation_date:** 2026-08-28
 - **observed:** #2762 round 7
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3310,7 +3311,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **effectiveness:** **Confirmed** (2026-08-28, #2762 round 7) — the post-fix injection persisted both spans with the exact printed hexes, session ids derived from the resource attributes, and two adjacent single-span receiver-log pairs; the QA-6 two-row gate passed on the next leg and the orphan-canvas assertions completed.
 
 
-### G-071: on_the_go_improvement
+### G-071: process_hygiene_ps1_orphan_kill_classified_the_live
 - **activation_date:** 2026-08-28
 - **observed:** #2762 round 7
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3418,7 +3419,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 
 
-### G-070: on_the_go_improvement
+### G-070: dev_env_ps1_was_unrunnable_under_windows_powershell
 - **activation_date:** 2026-08-27
 - **observed:** #2760 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3435,7 +3436,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 
 
-### G-067: on_the_go_improvement
+### G-067: recurring_tauri_driver_mcp_webview_staleness_resolveref_not
 - **activation_date:** 2026-08-27
 - **observed:** #2758 round 16
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3447,7 +3448,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 - **re-validated:** 2026-09-12, #2865 — the tester's first driver connect was missing the injected helper namespace (ref resolution absent); one clean driver stop/start re-injected it and the capture pass proceeded (no three-strike escalation, no partial capture).
 
-### G-066: on_the_go_improvement
+### G-066: 009_recurrence_orchestrator_dispatch_briefs_pointed_out_repo
 - **activation_date:** 2026-08-26
 - **observed:** #2758 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3591,7 +3592,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 - **home:** playbooks/developer.md (add no-binary-spelunking rule) + references.md (G-051)
 - **effectiveness:** Pending
 
-### G-045: on_the_go_improvement
+### G-045: hardened_the_state_machine_event_error_log_appenders
 - **activation_date:** 2026-08-16
 - **observed:** #2745 round 2
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3603,7 +3604,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 
 
-### G-044: on_the_go_improvement
+### G-044: rescope_leg_implementation_planning_now_legal
 - **activation_date:** 2026-08-15
 - **observed:** #2745 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -3614,7 +3615,7 @@ Shared research anchors for any voice-input spec (spike/implementation). Add ent
 
 
 
-### G-039: on_the_go_improvement
+### G-039: hardened_upsert_file_pipeline_state_with_bounded_retry
 - **activation_date:** 2026-08-15
 - **observed:** #2743 round 1
 - **target_failure:** (on-the-go pipeline improvement)
@@ -4187,7 +4188,7 @@ Continuation — re-validated TWICE in #2838 (2026-09-08): the spec branch forke
 - **re-observed:** 2026-10-29, #3099 — the audit bundle reported `Live telemetry evidence: true` while the round's actual span query returned ZERO spans: the field matched a TEXTUAL reference to the spans table in the plan/verdict, not a non-zero query result. Nothing false-cleared this round (the live-policy gate was independently satisfied by live webview receipts and uploaded frames, and the auditor disclosed the zero-span row as a G-343/G-375 caveat), but the signal still reports presence-of-mention rather than presence-of-result. The Auditor must therefore treat `live-telemetry-evidence` as a REFERENCE signal and corroborate it against the record's actual query output before crediting it; tightening the scan to require a non-zero result (and to ignore the plan/policy text) is routed to the Machinist — do not edit the script from a curation pass.
 - **re-observed (2026-10-30, #3118):** the bundle again reported the boolean `true` for a `live` plan that explicitly carries NO `telemetry_spans` leg ("No `telemetry_spans` leg by design"); the Auditor treated it as a mention signal and cleared the policy on webview receipts. Functionally harmless, but the measurement remains mention-based — the Machinist lever is still owed.
 
-### G-103: compat_surface_rewire_must_cover_write_path
+### G-454: compat_surface_rewire_must_cover_write_path (renamed from duplicate G-103)
 - **activation_date:** 2026-09-05
 - **observed:** #2807 round 1 — an implementation slice replaced the third-party `@maomaolabs/core` window engine with an own kernel. Sub-task ST-5 ("preserve feature-caller + toolbar compatibility") re-pointed the toolbar's `useWindows` read to the own kernel but did NOT re-point the launcher OPEN dispatch, which still went through the third-party `Toolbar`'s internal store (whose `WindowManager` had been unmounted). Result: clicking a launcher opened NO window (AC2 FAIL, the round-1 only failure). The tester diagnosed the third-party `Toolbar` **ignores an `openWindow` prop** and hard-wires launcher `onClick` to its own `openWindow`, so the only correct route was to intercept the click (an `onClickCapture` wrapper) or lift the own opener up to the caller and pass it down — which the Architect's fix plan did.
 - **target_failure:** a "compat surface" (or component-migration) sub-task that re-points a third-party component to an own kernel verifies only the data/read path and misses the WRITE/action path, so the migrated component silently dispatches through the third-party engine (whose host was unmounted) → the feature is unreachable and a live AC fails.
@@ -4195,7 +4196,7 @@ Continuation — re-validated TWICE in #2838 (2026-09-08): the spec branch forke
 - **home:** playbooks/software-architect.md (compat-surface decomposition — enumerate read + write paths) + playbooks/developer.md (verification — confirm the action reaches the own kernel) + references.md (this record)
 - **effectiveness:** Pending
 
-### G-104: theme_semantic_token_shadowed_by_default_config
+### G-455: theme_semantic_token_shadowed_by_default_config (renamed from duplicate G-104)
 - **activation_date:** 2026-09-05
 - **observed:** #2807 round 2 — the new window chrome header used `bg="bg.subtle"` and the icon tile used `bg="bg.muted"` (declared in `system.ts` to resolve to `var(--header-bg)` / `var(--card-hover-bg)`), but at runtime they resolved to Chakra `defaultConfig` built-ins (`#fafafa` / `#f4f4f5`) instead of the theme vars, making the light window title light-on-light / near-zero-contrast in BOTH theme presets (AC3 live FAIL). The surface bg (`bg.surface`), accent border (`accent.default`), and brand cap re-tinted correctly — the failure was isolated to exactly the two token keys that collide with Chakra built-ins. Root cause: `bg.subtle`/`bg.muted` are Chakra v3 `defaultConfig` built-in semantic tokens; a bare `{ value: 'var(..)' }` redefinition does not override a built-in that carries its own conditional definition. The whole rest of the app (~35 call sites) avoids this by referencing the theme CSS vars DIRECTLY (`var(--header-bg)`, `var(--card-hover-bg)`, `var(--border-color)`) — the established Fredo pattern.
 - **target_failure:** a new themed component uses a Chakra semantic-token shorthand (`bg.subtle`/`bg.muted`) that collides with `defaultConfig` built-ins, so it renders at the built-in value instead of the theme CSS var, producing a broken/unreadable surface that AC3's token-native contract rejects.

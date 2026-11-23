@@ -36,7 +36,7 @@
     "post-audit": {
       "order": 5,
       "label": "post-audit",
-      "exit_guard": "The post-audit ran: the Curator recorded the durable lesson (record-improvement — a `pipeline.improvement` event), the specialists' pipeline edits AND the product docs are synced through ONE SPEC MAINT PR (`maint-pr` — a `maint/<N>` branch force-merged with `--admin`), and (on the success exit only) that PR MERGED. A restart exit does not require the merge",
+      "exit_guard": "The post-audit ran: the Curator recorded the durable lesson (record-improvement — a `pipeline.improvement` event), the specialists' pipeline edits AND the product docs are synced through ONE SPEC MAINT PR (`maint-pr` — a `maint/<N>` branch force-merged with `--admin`), and (on the success exit only) that PR MERGED. A restart exit requires neither the lesson nor the merge — the Orchestrator may dispatch the rework immediately and run curation concurrently (B4)",
       "owner": "orchestrator"
     },
     "cleanup": {

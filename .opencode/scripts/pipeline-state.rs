@@ -3983,23 +3983,13 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             (has, if has { String::new() } else { "no audit verdict found".into() })
         }
         Phase::PostAudit => {
-            // The post-audit phase is where the pipeline's own self-improvement runs
-            // before teardown/rework: the Curator distills the durable lesson
-            // (`record-improvement` — a `pipeline.improvement` event + the
-            // `## Pipeline Improvement` comment), and the specialists'
-            // pipeline edits (Curator playbooks/references, Machinist machine/config,
-            // Toolsmith scripts/skills) + the product docs are synced through ONE
-            // **SPEC MAINT PR** (`maint-pr` — a `maint/<N>` branch force-merged with
-            // `--admin`). The
-            // deterministic anchor the machine can verify HERE is the Curator's
-            // recorded improvement — without it the post-audit did not run. The
-            // SUCCESS exit (`post-audit → cleanup`) ADDITIONALLY requires the merged
-            // SPEC MAINT PR, enforced at the transition site (`maint_pr_merged`); a
-            // restart exit (`post-audit → <phase>`) does not require it.
-            let recorded = read_issue_events(issue)
-                .iter()
-                .any(|e| e.event_name == "pipeline.improvement");
-            (recorded, if recorded { String::new() } else { "no Curator improvement recorded — the post-audit (record-improvement + the SPEC MAINT PR) has not run".into() })
+            // B4: a RESTART exit no longer waits for the Curator — the Orchestrator
+            // may dispatch the rework developer immediately and run the curation pass
+            // concurrently (curation lands via the SPEC MAINT PR before the next
+            // success gate). The SUCCESS exit (`post-audit → cleanup`) still requires
+            // the recorded improvement AND a merged SPEC MAINT PR; that is enforced at
+            // the transition site, for the success leg only.
+            (true, String::new())
         }
         Phase::Cleanup => {
             // Teardown-only phase: exit requires the teardown to be complete
@@ -5183,6 +5173,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // merged. Enforced here (not in `exit_guard_passes`) because only this
             // leg is the success path.
             if phase == Phase::PostAudit && to == Phase::Cleanup {
+                // B4: the SUCCESS exit is the only one that still requires the
+                // Curator's recorded lesson. A restart exit does not (curation may run
+                // concurrently with the rework).
+                let recorded = read_issue_events(issue)
+                    .iter()
+                    .any(|e| e.event_name == "pipeline.improvement");
+                if !recorded {
+                    let reason = "no Curator improvement recorded — the success exit (post-audit → cleanup) requires record-improvement".to_string();
+                    append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
+                    println!("BLOCKED: {}", reason);
+                    return Ok(());
+                }
                 if let Err(e) = maint_pr_merged(issue) {
                     let reason = e.to_string();
                     append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
@@ -7594,7 +7596,16 @@ fn health_report(json: bool) -> anyhow::Result<()> {
         }
     }
     let mut overdue: Vec<(String, i64)> = Vec::new();
+    // G3: a spec with a terminal event (close-issue or a passing audit) is not an
+    // ACTIVE blocker, even when its last `block` was never followed by `unblock`.
+    // Without this filter, long-closed specs dominate the "SLA-overdue" list.
+    let terminal_ids: std::collections::BTreeSet<String> = spec_events.iter()
+        .filter(|e| e.event_name == "close-issue"
+            || (e.event_name == "audit.verdict" && e.outcome == "passed"))
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
+        .collect();
     for (id, ts) in &last_block {
+        if terminal_ids.contains(id) { continue; }
         if let Some(un) = last_unblock.get(id) {
             if un > ts { continue; }
         }
