@@ -2012,6 +2012,8 @@ Test-Script "Retry rework posts compact Fix Plan, not the full Triage Plan" {
   try {
     New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
     $fullPlan = @"
+Root cause class: defect
+
 ## Software Architect
 ### Domain Model
 Full domain model body that should NOT be re-posted on retry.

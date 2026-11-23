@@ -79,7 +79,8 @@
                 "doom_loop": "allow",
                 "skill": {
                     "*": "deny",
-                    "pipeline-state": "allow"
+                    "pipeline-state": "allow",
+                    "telemetry-query": "allow"
                 },
                 "bash": {
                     "*": "deny",

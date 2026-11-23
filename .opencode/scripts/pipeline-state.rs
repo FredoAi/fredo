@@ -223,16 +223,63 @@ impl Phase {
 
 // ── GitHub reads/writes (via `gh` CLI) ───────────────────────────────────────
 
+/// Upper bound for a spawned `gh`/`git` command. A hung command must fail with a
+/// typed error instead of stalling the whole action forever (audit fix F1).
+/// Override with `FREDO_CMD_TIMEOUT_SECS` in unusually slow environments.
+fn command_timeout() -> std::time::Duration {
+    let secs = std::env::var("FREDO_CMD_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(120);
+    std::time::Duration::from_secs(secs)
+}
+
+/// Run a prepared command with a bounded timeout, capturing stdout. The child is
+/// killed on timeout so no action can hang forever on `gh`/`git` (F1). Reader
+/// threads drain the pipes concurrently, so a large stdout cannot deadlock.
+fn run_with_timeout(mut cmd: std::process::Command, label: &str) -> anyhow::Result<String> {
+    use std::io::Read;
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("{} spawn failed: {}", label, e))?;
+    let mut stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("{} stdout unavailable", label))?;
+    let mut stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("{} stderr unavailable", label))?;
+    let out_reader = std::thread::spawn(move || { let mut b = Vec::new(); let _ = stdout.read_to_end(&mut b); b });
+    let err_reader = std::thread::spawn(move || { let mut b = Vec::new(); let _ = stderr.read_to_end(&mut b); b });
+    let started = std::time::Instant::now();
+    let timeout = command_timeout();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = out_reader.join().unwrap_or_default();
+                let err = err_reader.join().unwrap_or_default();
+                if !status.success() {
+                    anyhow::bail!("{} failed: {}", label, String::from_utf8_lossy(&err).trim());
+                }
+                return Ok(String::from_utf8_lossy(&out).trim().to_string());
+            }
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    anyhow::bail!("{} timed out after {}s", label, timeout.as_secs());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => anyhow::bail!("{} wait failed: {}", label, e),
+        }
+    }
+}
+
 fn run_gh(args: &[&str]) -> anyhow::Result<String> {
     if mock_mode() {
         return mock_gh(args);
     }
-    let out = Command::new("gh").args(args).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("gh {} failed: {}", args.join(" "), stderr);
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let mut cmd = Command::new("gh");
+    cmd.args(args);
+    run_with_timeout(cmd, &format!("gh {}", args.join(" ")))
 }
 
 /// Run an arbitrary local command (e.g. `git`) and return stdout.
@@ -240,12 +287,9 @@ fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
     if mock_mode() && bin == "git" {
         return mock_git(args);
     }
-    let out = Command::new(bin).args(args).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("{} {} failed: {}", bin, args.join(" "), stderr);
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    run_with_timeout(cmd, &format!("{} {}", bin, args.join(" ")))
 }
 
 /// Robust worktree removal. Plain `git worktree remove` refuses a worktree that
@@ -1933,6 +1977,11 @@ fn surface_adhoc_scripts(issue: u32, actor: &str, phase: &str) {
     } else {
         println!("AD-HOC SCRIPTS ({}): {}", scripts.len(), scripts.join(", "));
     }
+    // G5: the inventory is surfaced at cleanup AND again at close; record it ONCE
+    // per issue — a second event double-counted every ad-hoc script in the metrics.
+    if read_issue_events(issue).iter().any(|e| e.event_name == "ad-hoc-scripts") {
+        return;
+    }
     let count = scripts.len().to_string();
     let paths = scripts.join(",");
     let message = format!("{} ad-hoc script(s) under .opencode/tmp/{}", scripts.len(), issue);
@@ -2699,14 +2748,22 @@ fn derive_fix_plan_body(full: &str) -> String {
     );
     let mut has_content = false;
 
-    // Sub-issue decomposition checklist lines (`- [ ] STx - ...`).
+    // Sub-issue decomposition checklist lines. B3: accept the canonical template
+    // label (`- [ ] Sub-task 1: ...`) as well as the legacy `ST` prefix and a bare
+    // numeric item — the old `ST`-only filter made a template-conformant plan derive
+    // an EMPTY Fix Plan.
     let checklist: Vec<&str> = full
         .lines()
         .filter(|line| {
             let t = line.trim_start();
-            (t.starts_with("- [ ]") || t.starts_with("- [x]"))
-                && t.len() > 6
-                && t[6..].trim_start().starts_with("ST")
+            if !(t.starts_with("- [ ]") || t.starts_with("- [x]")) || t.len() <= 6 {
+                return false;
+            }
+            let rest = t[6..].trim_start();
+            let lower = rest.to_lowercase();
+            lower.starts_with("st")
+                || lower.starts_with("sub-task")
+                || rest.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
         })
         .collect();
     if !checklist.is_empty() {
@@ -3012,13 +3069,19 @@ fn latest_evidence_comment(issue: u32, plan: Option<u32>) -> Option<(String, u32
         flag_untrusted_comments(id, &flagged);
         for c in comments {
             let body = c.get("body").and_then(|b| b.as_str()).unwrap_or("");
-            let t = body.trim_start();
-            if t.starts_with("## Tests Runs") {
+            // ONE header parser (audit fix C3): match the `## Tests Runs` header on
+            // ANY line, BOM- and leading-whitespace tolerant — mirroring the flush's
+            // already-headed check. Requiring the header at the very start made a
+            // posted verdict invisible to the reader while the flush considered it
+            // headed, which deadlocked the round-advance on #3152.
+            let header = body.lines().find(|l| {
+                l.trim_start_matches('\u{feff}').trim_start().starts_with("## Tests Runs")
+            });
+            if let Some(header) = header {
                 // `## Tests Runs (round N)` → round N; anything else → 1.
-                let round = t.lines().next().and_then(|h| {
-                    h.split("round").nth(1)
-                        .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
-                }).unwrap_or(1);
+                let round = header.split("round").nth(1)
+                    .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+                    .unwrap_or(1);
                 let ts = c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 items.push((ts, body.to_string(), round));
             }
@@ -3458,12 +3521,22 @@ fn check_env_evidence(issue: u32) -> EnvEvidenceCheck {
 
     // Intended environment: the per-issue lease, else the derived default.
     let lease = read_env_lease(issue);
-    let intended_env_id = lease
+    let lease_env_id = lease
         .as_ref()
         .map(|l| l.env_id.clone())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| format!("spec{}", issue));
-    if !ev.env_id.eq_ignore_ascii_case(&intended_env_id) {
+        .filter(|s| !s.trim().is_empty());
+    let intended_env_id = lease_env_id.clone().unwrap_or_else(|| format!("spec{}", issue));
+    // C5: with no lease, accept the documented per-round ids (`spec<N>`, `wf<N>-a`,
+    // `qa<N>-a`) instead of only the derived `spec<N>`. An id-shape mismatch blocked
+    // green testing rounds purely on the identifier.
+    let env_id_ok = ev.env_id.eq_ignore_ascii_case(&intended_env_id)
+        || (lease_env_id.is_none() && {
+            let id = ev.env_id.to_lowercase();
+            id.starts_with(&format!("spec{}", issue))
+                || id.starts_with(&format!("wf{}", issue))
+                || id.starts_with(&format!("qa{}", issue))
+        });
+    if !env_id_ok {
         return EnvEvidenceCheck { present: true, valid: false, reason: format!("env id mismatch: evidence '{}' != intended '{}'", ev.env_id, intended_env_id), path: display };
     }
 
@@ -3568,6 +3641,19 @@ fn tests_runs_content_refusal(body: &str) -> Option<(&'static str, &'static str,
     if has_dead_image_ref {
         return Some(("G-104", "tests_runs_evidence_renderability", "unviewable_evidence",
             "tests-runs draft refused: image reference without https:// (unviewable evidence)"));
+    }
+    // C2: a consumed draft is not durable evidence. A verdict citing a
+    // `.opencode/tmp/<issue>/<draft>.md` path points at a file the transition
+    // consumes, so the record would describe something that no longer exists
+    // (G-415). Refuse it — cite the telemetry/webview receipt instead.
+    const DRAFT_NAMES: [&str; 5] = ["triage-plan.md", "tests-runs.md", "fix-plan.md", "dev-summary.md", "dev-verify-"];
+    let has_draft_ref = body.lines().any(|l| {
+        let t = l.to_lowercase();
+        t.contains(".opencode/tmp/") && DRAFT_NAMES.iter().any(|n| t.contains(n))
+    });
+    if has_draft_ref {
+        return Some(("G-415", "tests_runs_consumed_draft_evidence", "consumed_draft_as_evidence",
+            "tests-runs draft refused: a `.opencode/tmp/` draft is not durable evidence — cite the telemetry/webview receipt (the draft is consumed at post)"));
     }
     None
 }
@@ -3738,11 +3824,33 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
             || t.contains("tauri_webview_")
             || t.contains("getboundingclientrect")
     });
-    let ok = has_evidence && round_ok && verdict_pass && (policy_static || live_evidence);
+    // B5: a verdict may stamp the commit it tested (`Tested commit: <sha>`). When
+    // present it must match the intended served commit, so a PASS written against a
+    // superseded head cannot advance (G-434). Legacy verdicts without the stamp fall
+    // back to the round guard only.
+    let tested_commit = latest.lines().find_map(|l| {
+        let t = l.trim().trim_start_matches('\u{feff}').trim_start_matches('>').trim()
+            .trim_start_matches('*').trim().to_lowercase();
+        t.strip_prefix("tested commit:").map(|r| r.trim().trim_matches('*').trim().to_string())
+    });
+    let intended_commit = intended_served_commit(issue);
+    let sha_ok = match tested_commit.as_deref() {
+        None | Some("") => true,
+        Some(sha) => {
+            let sha = sha.trim();
+            !intended_commit.is_empty()
+                && (intended_commit.eq_ignore_ascii_case(sha)
+                    || intended_commit.starts_with(sha)
+                    || sha.starts_with(&intended_commit))
+        }
+    };
+    let ok = has_evidence && round_ok && sha_ok && verdict_pass && (policy_static || live_evidence);
     let reason = if !has_evidence {
         "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
     } else if !round_ok {
         format!("evidence is from round {} but the issue is on round {} — the tester must post fresh `## Tests Runs (round {})` evidence for the current round", evidence_round, current_round, current_round)
+    } else if !sha_ok {
+        format!("the verdict's `Tested commit:` ({}) is not the intended served commit ({}) — re-test at the current head and stamp the verdict", tested_commit.as_deref().unwrap_or(""), short_sha(&intended_commit))
     } else if !verdict_pass {
         "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
@@ -3751,6 +3859,23 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         String::new()
     };
     (has_evidence, verdict_pass, policy, live_evidence, ok, reason)
+}
+
+/// A1: parse the plan's canonical `- **Effort:** N story points` line from text
+/// (the A2A plan draft) for the planning size cap. Tolerates the bold marker
+/// anywhere on the line and a trailing parenthetical.
+fn parse_effort_points(text: &str) -> Option<u32> {
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(pos) = t.find("**Effort:**").or_else(|| t.find("Effort:")) else { continue };
+        let rest = &t[pos..];
+        let digits: String = rest.chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = digits.parse::<u32>() { return Some(n); }
+    }
+    None
 }
 
 fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
@@ -3794,6 +3919,15 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                     format!("the implementation plan lacks section(s): {}", missing.join(", "))
                 };
                 return (false, format!("planning not converged — {}", why));
+            }
+            // A1 size cap (audit A1): a plan over ~15 story points is the strongest
+            // predictor of rework. Require a split, or an explicit PO
+            // `## Scope Override` section acknowledging the size. Ships with A3
+            // (drivability census) — size alone is confounded by difficulty.
+            if let Some(pts) = parse_effort_points(&a2a) {
+                if pts > 15 && !a2a.contains("## Scope Override") {
+                    return (false, format!("plan is {} story points (>15) — split the scope, or add a PO `## Scope Override` section justifying the size (A1)", pts));
+                }
             }
             (true, String::new())
         }
@@ -3960,6 +4094,9 @@ fn append_event_attrs(
         message: message.into(),
     };
     let line = serde_json::to_string(&event)?;
+    // Validate-on-append (G5): never write a line the reader cannot parse back.
+    serde_json::from_str::<serde_json::Value>(&line)
+        .map_err(|e| anyhow::anyhow!("refusing to append an unparseable event line: {}", e))?;
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(event_log_path(issue)?)?;
     // Single-buffer append: `writeln!` here issues TWO write syscalls (content,
@@ -4067,8 +4204,7 @@ const TRIAGE_A2A_HEADER: &str = "\
 /// exists on the issue. Makes the retry-compaction idempotent so a manual
 /// `post-comments` flush (or any repeated flush) never posts a SECOND fallback
 /// Fix Plan for a round whose Fix Plan was already authored + posted (G-344).
-fn fix_plan_round_posted(issue: u32) -> bool {
-    let round = prior_phase_entries(issue, "implementation") + 1;
+fn fix_plan_round_posted(issue: u32, round: u32) -> bool {
     let needle = format!("## Fix Plan (round {})", round);
     get_issue_comments(issue).iter().any(|b| b.trim_start().starts_with(&needle))
 }
@@ -4118,7 +4254,7 @@ fn recover_missing_triage_plan(issue: u32, actor: &str, phase: &str) {
         Ok(b) => b,
         Err(_) => return,
     };
-    match post_one_timeline_comment(issue, actor, phase, &draft, "Triage Plan", &body) {
+    match post_one_timeline_comment(issue, actor, phase, &draft, "Triage Plan", &body, 0) {
         Ok(()) => println!("RECOVERY: re-posted the missing `## Triage Plan` comment on #{}", issue),
         Err(e) => println!("WARNING: could not re-post the missing Triage Plan on #{}: {}", issue, e),
     }
@@ -4177,11 +4313,15 @@ fn dev_verify_posted(issue: u32, title: &str) -> bool {
         .any(|b| b.lines().any(|l| l.trim_start().starts_with(&needle)))
 }
 
-fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>) -> anyhow::Result<()> {
+fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str>, dest: Option<&str>) -> anyhow::Result<()> {
     let dir = project_root()?.join(".opencode").join("tmp").join(issue.to_string());
     if !dir.is_dir() {
         return Ok(());
     }
+    // ONE round authority (audit fix B1): `round_authority` derives both the ending
+    // round (Tests Runs) and the entering round (Fix Plan + Development Summary)
+    // from a single event-log read, so the artifacts can never disagree (G-427).
+    let (ending_round, entering_round) = round_authority(issue);
     // The flush work list: the static phase drafts in fixed order, with the
     // per-developer verification drafts (`dev-verify-<ST-id>.md`, discovered
     // dynamically — the `<ST-id>` varies) inserted BEFORE the assembled roll-up so
@@ -4258,8 +4398,13 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
         // too — the fix plan authored during the post-audit is posted on the
         // post-audit → implementation transition. A manual flush (`from == None`)
         // or the `audit-record` flush keeps the prior-implementation heuristic.
+        // B2: when the source phase is known (a transition flush), require the
+        // DESTINATION to be implementation — a `testing -> audit` PASS leg shares
+        // `from == testing` and must not post a stray Fix Plan (G-095/G-339). A
+        // manual / audit-record flush (`from == None`) keeps the prior-implementation
+        // heuristic.
         let is_rework_reentry = match from {
-            Some(src) => src == "testing" || src == "post-audit",
+            Some(src) => dest == Some("implementation") && (src == "testing" || src == "post-audit"),
             None => prior_phase_entries(issue, "implementation") > 0, // manual flush / audit-record flush
         };
         let authored_fix_plan = dir.join("fix-plan.md").exists();
@@ -4286,9 +4431,9 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                         &[("rootCause", class)])?;
                 }
             }
-            (format!("Fix Plan (round {})", prior_phase_entries(issue, "implementation") + 1), body)
+            (format!("Fix Plan (round {})", entering_round), body)
         } else if fname == "triage-plan.md" {
-            if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue)) {
+            if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue, entering_round)) {
                 // The Architect-authored Fix Plan replaces the derived compaction —
                 // consume the plan draft so it is never double-posted later. This is
                 // ALSO idempotent against a round whose Fix Plan was ALREADY posted (e.g.
@@ -4299,16 +4444,36 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
                 println!("SKIPPED: triage-plan.md compaction — a Fix Plan for this round is already authored/posted");
                 continue;
             }
-            let prior_impl = prior_phase_entries(issue, "implementation");
             if is_rework_reentry {
-                (format!("Fix Plan (round {})", prior_impl + 1), derive_fix_plan_body(&body))
+                // B3: the derived fallback must ALSO be classified (the authored path
+                // already is) — otherwise the round escapes the rework-cause metric.
+                match parse_root_cause_class(&body) {
+                    Some(class) => {
+                        append_event_attrs(issue, "rework.rootcause", actor, phase, "success",
+                            &format!("derived fix plan classifies this round's root cause as {}", class),
+                            &[("rootCause", class)])?;
+                    }
+                    None => {
+                        let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "derived fix plan refused: missing/invalid 'Root cause class:' line", &[("guardId", "fix_plan_unclassified"), ("guardKey", "fix_plan_root_cause_class"), ("failureClass", "unclassified_rework_round"), ("site", "post-comments")]);
+                        println!("WARNING: triage-plan.md compaction lacks a valid 'Root cause class: defect|technique|environment|scope' line — not posting. The Architect must author fix-plan.md with the classification; fix the draft, then re-run.");
+                        continue;
+                    }
+                }
+                (format!("Fix Plan (round {})", entering_round), derive_fix_plan_body(&body))
             } else {
                 (title.to_string(), body)
             }
         } else {
             (title.to_string(), body)
         };
-        match post_one_timeline_comment(issue, actor, phase, &p, &post_title, &post_body) {
+        let stamp_round = if post_title == "Tests Runs" {
+            ending_round
+        } else if post_title == "Development Summary" {
+            entering_round
+        } else {
+            0
+        };
+        match post_one_timeline_comment(issue, actor, phase, &p, &post_title, &post_body, stamp_round) {
             Ok(()) => {}
             Err(e) => {
                 // A failed timeline post must be OBSERVABLE, not silent: a lost
@@ -4334,7 +4499,7 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
 /// Summary stamps the round whose testing entry is being created (count + 1);
 /// Tests Runs stamps the round that is ending. Triage Plan is a round-1-only
 /// artifact and stays untagged.
-fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str) -> anyhow::Result<()> {
+fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path::Path, title: &str, body: &str, round: u32) -> anyhow::Result<()> {
     const ROUND_TAGGED: &[&str] = &["Development Summary", "Tests Runs"];
     // G-020 on the timeline path (audit fix): the `comment` action refuses a second
     // verdict-carrying comment per round, but this path bypassed it — two
@@ -4342,7 +4507,6 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     // `## Tests Runs` post is refused when the round already has one (the draft is
     // KEPT so the tester can reconcile, mirroring the other draft-refusal guards).
     if title == "Tests Runs" && has_verdict_line(body) {
-        let (round, _) = retry_state(issue);
         if count_verdict_comments_in_round(issue, round) > 0 {
             append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "G-020 timeline dedup: refusing a second verdict-carrying ## Tests Runs post in this round", &[("guardId", "G-020"), ("guardKey", "timeline_dedup"), ("failureClass", "tester_duplicate_verdict_posting"), ("site", "post-comments")])?;
             println!("WARNING: a verdict-carrying ## Tests Runs comment already exists for round {} — not posting (G-020). Reconcile into the existing verdict, then re-run.", round);
@@ -4350,25 +4514,10 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
         }
     }
     let header = if ROUND_TAGGED.contains(&title) {
-        // Round-stamp derivation (#2788 audit fix): Tests Runs documents the
-        // testing round that is ENDING — the raw count of testing
-        // `phase.started` entries at post time is correct for it. The
-        // Development Summary documents the fix round whose testing entry this
-        // transition is ABOUT to create (drafts flush BEFORE the destination
-        // `phase.started` append), so its stamp is count + 1 — otherwise every
-        // rework round's summary is stamped one low (observed #2788: the
-        // round-3/4/5 summaries posted as "(round 2)/(3)/(4)").
-        if title == "Development Summary" {
-            let dev_round = read_issue_events(issue)
-                .into_iter()
-                .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
-                .count() as u32
-                + 1;
-            format!("{} (round {})", title, dev_round)
-        } else {
-            let (round, _) = retry_state(issue);
-            format!("{} (round {})", title, round)
-        }
+        // The round is supplied by the caller (ONE round authority, B1) — never
+        // re-derived here. Tests Runs receives the ending round; Development Summary
+        // receives the round being entered.
+        format!("{} (round {})", title, round)
     } else {
         title.to_string()
     };
@@ -4388,6 +4537,36 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     println!("COMMENTED: {} on #{}", header, issue);
     append_event(issue, "comment", actor, phase, "success", &format!("posted {} comment", header))?;
     Ok(())
+}
+
+/// G2 housekeeping: cap `.opencode/logs` (a runaway stdout once reached 2.87 GB and
+/// dominated disk/scan cost). Deletes `.log` files older than 7 days or larger than
+/// 200 MB. Best-effort — pruning is hygiene, never a gate.
+fn prune_logs() {
+    let Ok(root) = project_root() else { return; };
+    let logs = root.join(".opencode").join("logs");
+    let Ok(entries) = std::fs::read_dir(&logs) else { return; };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(7 * 24 * 3600));
+    const MAX_LOG_BYTES: u64 = 200 * 1024 * 1024;
+    let mut removed = 0u32;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let Ok(md) = entry.metadata() else { continue };
+        if !md.is_file() { continue; }
+        let is_log = p.extension().map(|e| e.eq_ignore_ascii_case("log")).unwrap_or(false);
+        if !is_log { continue; }
+        let old = match (md.modified(), cutoff) {
+            (Ok(m), Some(c)) => m < c,
+            _ => false,
+        };
+        if old || md.len() > MAX_LOG_BYTES {
+            if std::fs::remove_file(&p).is_ok() { removed += 1; }
+        }
+    }
+    if removed > 0 {
+        println!("PRUNED LOGS: {} file(s) (older than 7d or >200MB)", removed);
+    }
 }
 
 fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
@@ -4706,7 +4885,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // draft into a spurious `## Fix Plan` with no governing plan to fix
             // (G-259 family; observed on #3036). Idempotent and non-fatal.
             recover_missing_triage_plan(issue, &a.actor, &phase);
-            post_pending_comments(issue, &a.actor, &phase, None)?;
+            post_pending_comments(issue, &a.actor, &phase, None, None)?;
         }
         "reconcile-verdict" => {
             // SANCTIONED SUPERSEDE (#3152). The record can reach a state where a
@@ -4936,7 +5115,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // `post-comments` step — and its duplicate-Fix-Plan hazard — from the
             // retry/PASS workflow (G-344).
             if phase == Phase::Testing {
-                let _ = post_pending_comments(issue, &a.actor, phase.as_str(), Some(phase.as_str()));
+                let _ = post_pending_comments(issue, &a.actor, phase.as_str(), Some(phase.as_str()), Some(to.as_str()));
                 // FAIL CLOSED on a refused verdict draft (#3152). The flush above
                 // REFUSES a `tests-runs.md` draft that fails the verdict content gate
                 // and keeps it on disk. Completing this transition anyway would advance
@@ -5116,7 +5295,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // (bug observed on #2694). Re-entries (rework) still see the prior
             // round's phase.started in the log, so they correctly get the compact
             // Fix Plan.
-            post_pending_comments(issue, &a.actor, to.as_str(), Some(phase.as_str()))?;
+            post_pending_comments(issue, &a.actor, to.as_str(), Some(phase.as_str()), Some(to.as_str()))?;
             append_event_attrs(issue, "phase.started", &a.actor, to.as_str(), "success", &format!("started {}", to.as_str()), &[("phase", to.as_str()), ("from", phase.as_str())])?;
         }
         "block" => {
@@ -5438,6 +5617,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: actor {} not allowed to prune", a.actor);
                 return Ok(());
             }
+            prune_logs();
             // Refresh remote-tracking so the remote head set is current.
             let _ = run_cmd("git", &["fetch", "--prune", "origin"]);
             // One network call: the current remote head set.
@@ -5715,7 +5895,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // `## Fix Plan (round N)`; flushing AFTER the destination entry
             // double-counted it and stamped an off-by-one round (#2974). Mirror the
             // `transition` handler's ordering.
-            post_pending_comments(issue, &a.actor, "audit", None)?;
+            post_pending_comments(issue, &a.actor, "audit", None, None)?;
             // The verdict IS the decision — drive the audit → post-audit handoff.
             // The post-audit phase is where the pipeline's self-improvement + the gate
             // merge run: the Curator records the durable lesson (record-improvement),
@@ -6818,25 +6998,36 @@ fn context_read_streak(issue: u32, actor: &str) -> usize {
 /// first pass and increments by one per failed verdict (so a restart after one failed
 /// audit is round 2). `last_failure` is the reason recorded with the most recent
 /// failed verdict — the missed-AC context the restarted agents must complete.
+/// ONE round authority (audit fix B1): derive the ending round (the round whose
+/// verdict is being posted) and the entering round (the round being started) from a
+/// SINGLE event-log read. Fix Plan + Development Summary read `entering`; Tests Runs
+/// reads `ending`. This replaces the four independent formulas that diverged
+/// (G-427; #3120's Fix Plans skipped round 5).
+fn round_authority(issue: u32) -> (u32, u32) {
+    let events = read_issue_events(issue);
+    let testing_entries = events.iter()
+        .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
+        .count() as u32;
+    let rework_re_entries = events.iter()
+        .filter(|e| e.event_name == "phase.started" && e.phase == "implementation"
+            && matches!(e.attributes.get("from").map(|s| s.as_str()), Some("testing") | Some("post-audit")))
+        .count() as u32;
+    let impl_entries = events.iter()
+        .filter(|e| e.event_name == "phase.started" && e.phase == "implementation")
+        .count() as u32;
+    let ending = testing_entries.max(rework_re_entries + 1).max(1);
+    let entering = (impl_entries + 1).max(testing_entries + 1).max(1);
+    (ending, entering)
+}
+
 fn retry_state(issue: u32) -> (u32, String) {
-    // Round = the number of times the issue has ENTERED testing (each
-    // `phase.started` for `testing` = one test round), advanced EARLY when the
-    // issue is mid-rework. A tester-FAIL rework (or an audit restart) re-enters
-    // `implementation` BEFORE the next `testing` entry, so while an agent is
-    // dispatched ONTO the rework the testing count alone still reads the
-    // PREVIOUS round and the RETRY marker was missing for the common rework path
-    // (observed #2940: the fix-round developer saw "round 1" during the round-2
-    // rework). Counting re-entries (implementation `phase.started` whose `from`
-    // is `testing` or `post-audit` — an audit restart now routes `audit →
-    // post-audit → implementation`) and taking the max keeps a first pass at round 1
-    // and stays stable once the next testing entry lands.
-    // PO feedback (#2688): previous rounds showed "round 1" across many iterations.
-    let testing_entries = read_issue_events(issue)
-        .into_iter()
+    // F2: ONE event-log read. `retry_state` used to re-read the whole file three
+    // times per call, and the context/health paths call it repeatedly.
+    let events = read_issue_events(issue);
+    let testing_entries = events.iter()
         .filter(|e| e.event_name == "phase.started" && e.phase == "testing")
         .count();
-    let rework_re_entries = read_issue_events(issue)
-        .into_iter()
+    let rework_re_entries = events.iter()
         .filter(|e| {
             e.event_name == "phase.started"
                 && e.phase == "implementation"
@@ -6847,16 +7038,11 @@ fn retry_state(issue: u32) -> (u32, String) {
         })
         .count();
     let round = testing_entries.max(rework_re_entries + 1).max(1) as u32;
-    let failed: Vec<(String, String)> = read_issue_events(issue)
-        .into_iter()
-        .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
-        .map(|e| (e.message.clone(), e.ts))
-        .collect();
     // Most recent failed verdict = the one with the latest timestamp.
-    let last_failure = failed
-        .iter()
-        .max_by_key(|(_, ts)| ts.clone())
-        .map(|(msg, _)| msg.clone())
+    let last_failure = events.iter()
+        .filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed")
+        .max_by_key(|e| e.ts.clone())
+        .map(|e| e.message.clone())
         .unwrap_or_default();
     (round, last_failure)
 }
@@ -7049,6 +7235,12 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fixture/harness issue ids that must never enter aggregate metrics. #633 is the
+/// offline harness fixture (a real create-issue chain), #0 the self-improver hardening
+/// log — neither is a spec (G1).
+fn is_fixture_issue(id: &str) -> bool {
+    matches!(id, "0" | "633")
+}
 fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     let root = project_root()?;
     let dir = root.join(".opencode").join("state").join("issues");
@@ -7064,12 +7256,30 @@ fn metrics_aggregate(json: bool) -> anyhow::Result<()> {
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
     let issues = all.iter().filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
         .collect::<std::collections::BTreeSet<_>>().len();
-    let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
-    let rework = all.iter().filter(|e| is_rework(e)).count();
-    let failures = all.iter().filter(|e| e.outcome == "failure").count();
+    // G1: headline counts and the agent/phase mix are computed over REAL specs only
+    // (issues the machine created via `create-issue`). Harness/fixture logs (#0,
+    // #633, temp fixtures) have no create-issue event and otherwise dominate
+    // phase=unknown and the actor counts. Fall back to all events when the store
+    // carries no create-issue record yet (fresh/test store).
+    let spec_issues: std::collections::BTreeSet<String> = all.iter()
+        .filter(|e| e.event_name == "create-issue")
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
+        .filter(|id| !is_fixture_issue(id))
+        .collect();
+    let specs: Vec<&ReadEvent> = if spec_issues.is_empty() {
+        all.iter().collect()
+    } else {
+        all.iter().filter(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref())
+                .map(|id| spec_issues.contains(id)).unwrap_or(false)
+        }).collect()
+    };
+    let blocked = specs.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
+    let rework = specs.iter().filter(|e| is_rework(e)).count();
+    let failures = specs.iter().filter(|e| e.outcome == "failure").count();
     let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
-    for e in &all {
+    for e in &specs {
         *by_agent.entry(e.actor.clone()).or_insert(0) += 1;
         *by_phase.entry(e.phase.clone()).or_insert(0) += 1;
     }
@@ -7290,7 +7500,9 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     }
     if all.is_empty() { println!("No metrics recorded yet."); return Ok(()); }
     let issues: std::collections::BTreeSet<String> = all.iter()
-        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
+        .filter(|id| !is_fixture_issue(id))
+        .collect();
     // Spec-only hygiene filter: a "spec" is an issue the machine created via
     // `create-issue` (the productive work). Orchestrator/harness logs (#0, #633,
     // temp fixtures) have no create-issue event and pollute every headline
@@ -7298,17 +7510,29 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     // quality numbers are computed over specs only; the `issues` count keeps all.
     let spec_issues: std::collections::BTreeSet<String> = all.iter()
         .filter(|e| e.event_name == "create-issue")
-        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
-    let spec_rework = all.iter().filter(|e| is_rework(e) && e.entity.as_ref().and_then(|x| x.issue_id.as_ref()).map(|id| spec_issues.contains(id)).unwrap_or(false)).count();
-    let block_actions = all.iter().filter(|e| e.event_name == "block").count();
-    let guard_refusals = all.iter().filter(|e| e.outcome == "blocked" && e.event_name != "block").count();
-    let blocked = all.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
-    let rework = all.iter().filter(|e| is_rework(e)).count();
-    let audit_pass = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "passed").count();
-    let audit_fail = all.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed").count();
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
+        .filter(|id| !is_fixture_issue(id))
+        .collect();
+    // G1: every headline and the agent/phase mix run over REAL spec events only
+    // (fixtures like #633 have no create-issue event). Fall back to all when empty.
+    let spec_events: Vec<&ReadEvent> = if spec_issues.is_empty() {
+        all.iter().collect()
+    } else {
+        all.iter().filter(|e| {
+            e.entity.as_ref().and_then(|x| x.issue_id.as_ref())
+                .map(|id| spec_issues.contains(id)).unwrap_or(false)
+        }).collect()
+    };
+    let spec_rework = spec_events.iter().filter(|e| is_rework(e)).count();
+    let block_actions = spec_events.iter().filter(|e| e.event_name == "block").count();
+    let guard_refusals = spec_events.iter().filter(|e| e.outcome == "blocked" && e.event_name != "block").count();
+    let blocked = spec_events.iter().filter(|e| e.outcome == "blocked" || e.event_name == "block").count();
+    let rework = spec_events.iter().filter(|e| is_rework(e)).count();
+    let audit_pass = spec_events.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "passed").count();
+    let audit_fail = spec_events.iter().filter(|e| e.event_name == "audit.verdict" && e.outcome == "failed").count();
     let mut by_agent: BTreeMap<String, usize> = BTreeMap::new();
     let mut by_phase: BTreeMap<String, usize> = BTreeMap::new();
-    for e in &all {
+    for e in &spec_events {
         *by_agent.entry(e.actor.clone()).or_insert(0) += 1;
         *by_phase.entry(e.phase.clone()).or_insert(0) += 1;
     }
@@ -7317,7 +7541,7 @@ fn health_report(json: bool) -> anyhow::Result<()> {
     let now = chrono::Utc::now().timestamp();
     let mut last_block: BTreeMap<String, i64> = BTreeMap::new();
     let mut last_unblock: BTreeMap<String, i64> = BTreeMap::new();
-    for e in &all {
+    for e in &spec_events {
         let ts = chrono::DateTime::parse_from_rfc3339(&e.ts).map(|t| t.timestamp()).unwrap_or(0);
         let id = e.entity.as_ref().and_then(|x| x.issue_id.clone()).unwrap_or_default();
         match e.event_name.as_str() {
@@ -7543,7 +7767,9 @@ fn improvement_report(json: bool) -> anyhow::Result<()> {
     // orchestrator/harness logs that pollute raw counts.
     let spec_issues: std::collections::BTreeSet<String> = all.iter()
         .filter(|e| e.event_name == "create-issue")
-        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone())).collect();
+        .filter_map(|e| e.entity.as_ref().and_then(|x| x.issue_id.clone()))
+        .filter(|id| !is_fixture_issue(id))
+        .collect();
 
     // A spec is REVISED if any later spec declares `feature.revised{revises == id}`.
     // This is the revealed rejection signal; the link lives forward on the follow-up.

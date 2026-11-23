@@ -2,14 +2,15 @@
 
 > Drafted by the **Tester** as `.opencode/tmp/<issue>/tests-runs.md`, auto-posted by the testing → audit transition (or via `post-comments`). The verification gate reads `## Tests Runs` for the verdict + `telemetry_spans` evidence. This is the only verdict path — the `--prefix Evidence` alias was removed.
 
-<!-- V1 — verdict line MUST be the first content line: "Verdict: **PASS**" or "Verdict: **FAIL**" -->
-<!-- Do NOT add a `## Tests Runs` heading below the verdict line. The machine prepends and
-     round-stamps that heading; a heading written lower in the body is posted verbatim and the
-     verdict reader — which reads the comment's LEADING line — never finds it, blocking the
-     exit gate ("no tester Evidence / Tests Runs comment found"). Write no heading, or make it
-     the very first line (G-013). -->
+<!-- V1 — the verdict `Verdict:` line MUST be present ("Verdict: **PASS**" / "Verdict: **FAIL**"). -->
+<!-- The machine prepends and round-stamps the `## Tests Runs` heading, and the verdict reader
+     now accepts that header on ANY line (BOM/leading-whitespace tolerant — C3). Prefer writing
+     no heading; a heading written lower in the body is tolerated, but the `Verdict:` line is
+     still mandatory. Stamp `Tested commit:` with the merged spec tip you actually tested so the
+     machine can reject a verdict written against a superseded head (B5). -->
 
 Verdict: **PASS** (N/N ACs)
+Tested commit: <sha of the spec tip you tested — full or 7-char>
 
 ## Per-AC results
 
