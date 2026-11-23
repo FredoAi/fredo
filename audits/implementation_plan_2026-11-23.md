@@ -39,12 +39,12 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 - [x] **F2** `retry_state` reads the event log once (was 3×); rounds shared via `round_authority`.
 - [x] **G4** `metrics --issue` now reports the rework root-cause mix and the ad-hoc script count (retrospective inputs).
 
-## P5 — Guardrail / instruction slimming — NOT STARTED
+## P5 — Guardrail / instruction slimming — PARTIAL
 
-- [ ] **E1** Curate ledger (stubs/dups/stale).
-- [ ] **E2** Progressive disclosure in playbooks.
+- [ ] **E1** Curate ledger (stubs/dups/stale) — needs a Curator pass (judgment, 1.2 MB store).
+- [ ] **E2** Progressive disclosure in playbooks — large rewrite.
 - [ ] **E3** Curator gating — blocked by the post-audit gate requiring a `pipeline.improvement` event (needs a principle decision).
-- [ ] **E5** Class→Lever routing.
+- [x] **E5** Class→Lever routing now states executable-first precedence (Toolsmith/Machinist before prose).
 
 ## P6 — Tooling library — NOT STARTED
 

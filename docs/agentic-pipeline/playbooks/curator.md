@@ -35,6 +35,8 @@ The Curator owns the pipeline's **durable lessons (text)** — its guardrails an
 
 Pick the lever from the recorded class — never from habit. This is the Curator's text-lever subset; script/machine/permission/identity levers route to their owning role or the human.
 
+**Executable-first precedence (E5).** Before choosing a text lever, ask whether a committed script / test / harness check could prevent the failure deterministically. If it can, the primary lever is the **Toolsmith** (script + skill + test pin) or the **Machinist** (state machine), and the playbook edit is the secondary reinforcement — not the reverse. The guardrail corpus is ~71% prose-only precisely because this precedence was inverted; a lesson that becomes a test stops recurring, while a lesson that becomes another paragraph does not.
+
 | Recorded class | Primary lever (home) | Secondary |
 |---|---|---|
 | `defect` | Workflow playbook (architect/developer) or a convergence guardrail | pipeline doc |
