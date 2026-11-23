@@ -3552,8 +3552,19 @@ fn check_env_evidence(issue: u32) -> EnvEvidenceCheck {
     }
 
     let intended_commit = intended_served_commit(issue);
-    if intended_commit.is_empty() || !ev.served_commit.eq_ignore_ascii_case(&intended_commit) {
-        return EnvEvidenceCheck { present: true, valid: false, reason: format!("served commit mismatch: evidence '{}' != intended '{}'", short_sha(&ev.served_commit), short_sha(&intended_commit)), path: display };
+    let commit_matches = !intended_commit.is_empty() && ev.served_commit.eq_ignore_ascii_case(&intended_commit);
+    // C1: a docs/pipeline-only commit after the serve does not invalidate PRODUCT
+    // evidence. Accept a served commit whose product subtree (apps + manifests) is
+    // byte-identical to the intended tip; a product change still requires a re-serve.
+    let product_unchanged = || -> bool {
+        if ev.served_commit.trim().is_empty() || intended_commit.trim().is_empty() { return false; }
+        run_cmd("git", &[
+            "diff", "--quiet", ev.served_commit.as_str(), intended_commit.as_str(), "--",
+            "apps", "package.json", "pnpm-lock.yaml", "apps/tauri/src-tauri/Cargo.toml", "Cargo.lock",
+        ]).is_ok()
+    };
+    if !commit_matches && !product_unchanged() {
+        return EnvEvidenceCheck { present: true, valid: false, reason: format!("served commit mismatch: evidence '{}' != intended '{}' (product subtree changed — re-serve)", short_sha(&ev.served_commit), short_sha(&intended_commit)), path: display };
     }
 
     EnvEvidenceCheck { present: true, valid: true, reason: "env evidence matches the intended environment".to_string(), path: display }
@@ -3927,6 +3938,16 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             if let Some(pts) = parse_effort_points(&a2a) {
                 if pts > 15 && !a2a.contains("## Scope Override") {
                     return (false, format!("plan is {} story points (>15) — split the scope, or add a PO `## Scope Override` section justifying the size (A1)", pts));
+                }
+            }
+            // A3 drivability v1: obvious placeholders in the QA section mean the row
+            // cannot be driven, so it would burn a testing round — refuse before
+            // implementation. (The full per-row executor/evidence census is the
+            // follow-up tool; this catches the unambiguous cases.)
+            let qa = section(&a2a, "## QA Expert").to_lowercase();
+            for marker in ["<executor>", "<evidence>", "<how>", "tbd", "todo", "upload-pending"] {
+                if qa.contains(marker) {
+                    return (false, format!("planning QA section carries the undrivable placeholder '{}' — name the executor + evidence path for every AC (A3)", marker));
                 }
             }
             (true, String::new())
@@ -7210,12 +7231,28 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
             durations.insert(p.clone(), (en - s) as f64 / 60.0);
         }
     }
+    // G4 retrospective fields: per-spec rework-cause mix + ad-hoc script load.
+    let mut rework_causes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut adhoc = 0usize;
+    for e in &events {
+        if e.event_name == "rework.rootcause" {
+            if let Some(rc) = e.attributes.get("rootCause") {
+                *rework_causes.entry(rc.clone()).or_insert(0) += 1;
+            }
+        }
+        if e.event_name == "ad-hoc-scripts" {
+            if let Some(c) = e.attributes.get("count").and_then(|c| c.parse::<usize>().ok()) {
+                adhoc = adhoc.max(c);
+            }
+        }
+    }
     let (current_round, _) = retry_state(issue);
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "issue": issue, "events": events.len(), "agent_calls": calls,
             "phase_durations_min": durations, "rework_loops": rework,
             "blocked_count": blocked, "failures": failures, "round": current_round,
+            "rework_root_causes": rework_causes, "ad_hoc_scripts": adhoc,
             "transitions": transitions,
         }))?);
         return Ok(());
@@ -7226,6 +7263,12 @@ fn metrics_per_issue(issue: u32, json: bool) -> anyhow::Result<()> {
     println!("Phase durations (minutes):");
     for (k, v) in &durations { println!("  {} : {}", k, v); }
     println!("Rework loops (testing->implementation): {}", rework);
+    println!("Rework root causes: {}", if rework_causes.is_empty() {
+        "none".to_string()
+    } else {
+        rework_causes.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(", ")
+    });
+    println!("Ad-hoc scripts: {}", adhoc);
     println!("Blocked count: {}", blocked);
     println!("Failures: {}", failures);
     if !transitions.is_empty() {

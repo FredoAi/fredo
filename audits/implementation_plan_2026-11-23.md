@@ -24,7 +24,7 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 ## P3a — Planning discipline — PARTIAL
 
 - [x] **A1** Plan size cap: >15 SP blocks `planning → implementation` unless a PO `## Scope Override` section exists.
-- [ ] **A3** Plan-time drivability census script + skill — **not done**.
+- [~] **A3** Machine-side drivability v1: the QA section is refused if it carries undrivable placeholders (`<executor>`, `<evidence>`, `<how>`, `tbd`, `todo`, `upload-pending`). Full per-row executor/evidence census tool remains.
 
 ## P3b — Evidence mechanics — PARTIAL
 
@@ -32,12 +32,12 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 - [x] **C5** Env-id tolerance: no-lease accepts `spec<N>` / `wf<N>-a` / `qa<N>-a`.
 - [x] **D3** Covered by the existing `upload-evidence` existence check.
 - [~] **F4** Architect playbook now routes sibling-owned fix-scope items to the owner (doc fix); machine pre-check not added.
-- [ ] **C1** Product-subtree diff (re-serve only when product changed) — **not done**.
+- [x] **C1** Product-subtree tolerance: a docs/pipeline-only commit after the serve is accepted when `apps`+manifests are byte-identical; a product change still requires a re-serve.
 
 ## P4 — Throughput instrumentation — PARTIAL
 
 - [x] **F2** `retry_state` reads the event log once (was 3×); rounds shared via `round_authority`.
-- [ ] **G4** Retrospective instrument (per-spec rounds/rework/cycle/ad-hoc) — **not done**.
+- [x] **G4** `metrics --issue` now reports the rework root-cause mix and the ad-hoc script count (retrospective inputs).
 
 ## P5 — Guardrail / instruction slimming — NOT STARTED
 
