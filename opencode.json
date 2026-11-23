@@ -80,7 +80,8 @@
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
-                    "telemetry-query": "allow"
+                    "telemetry-query": "allow",
+                    "pipeline-checks": "allow"
                 },
                 "bash": {
                     "*": "deny",
@@ -185,7 +186,8 @@
                 "skill": {
                     "*": "deny",
                     "pipeline-state": "allow",
-                    "spec-test-gen": "allow"
+                    "spec-test-gen": "allow",
+                    "pipeline-checks": "allow"
                 },
                 "bash": {
                     "*": "deny",
@@ -238,7 +240,8 @@
                     "frontend-design": "allow",
                     "dev-environment": "allow",
                     "telemetry-query": "allow",
-                    "threejs": "allow"
+                    "threejs": "allow",
+                    "pipeline-checks": "allow"
                 },
                 "bash": {
                     "*": "deny",
@@ -382,7 +385,8 @@
                     "dev-environment": "allow",
                     "fredo-cli-events": "allow",
                     "telemetry-query": "allow",
-                    "spec-test-gen": "allow"
+                    "spec-test-gen": "allow",
+                    "pipeline-checks": "allow"
                 },
                 "bash": {
                     "*": "deny",
@@ -738,7 +742,8 @@
                     "pipeline-state": "allow",
                     "retro-analysis": "allow",
                     "dev-environment": "allow",
-                    "doc-sync": "allow"
+                    "doc-sync": "allow",
+                    "pipeline-checks": "allow"
                 },
                 "bash": {
                     "*": "deny",

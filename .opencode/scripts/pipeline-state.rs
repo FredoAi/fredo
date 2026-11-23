@@ -1387,7 +1387,7 @@ fn gh_api_raw_opt(args: &[String]) -> anyhow::Result<Option<String>> {
 /// these phase labels; `temp:` harness issues (which also may carry a label) are
 /// excluded by title, never by this set.
 const PIPELINE_ISSUE_LABELS: &[&str] = &[
-    "backlog", "planning", "ready-for-dev", "in-progress-dev", "ready-for-test",
+    "backlog", "planning", "ready-for-dev",
     "testing", "audit", "post-audit", "cleanup", "done",
 ];
 
@@ -1723,25 +1723,21 @@ fn flag_untrusted_comments(issue: u32, flagged: &[serde_json::Value]) {
     }
 }
 
-/// Guard for `create-worktree`: the sub-issue must be actionable
-/// (labeled `ready-for-dev` or `in-progress-dev`). Assignment is not required —
-/// this is a single-developer pipeline, so routing value is nil.
+/// Guard for `create-worktree`: the issue must be actionable
+/// (labeled `ready-for-dev`, or `testing` for the CI-fix path). Assignment is not
+/// required — this is a single-developer pipeline, so routing value is nil.
 fn branch_guard(issue: u32) -> anyhow::Result<(bool, String)> {
     let issue_data = match get_issue(issue)? {
         Some(i) => i,
         None => return Ok((false, format!("issue #{} not found", issue))),
     };
     let labels: Vec<String> = issue_data.labels.iter().map(|l| l.name.clone()).collect();
-    // The developer works directly on the FEATURE issue in the implementation
-    // phase (sub-issues were removed) — its phase label is `ready-for-test`; the
-    // legacy dev labels remain accepted too. `testing` is accepted for the
-    // CI-fix path (G-164): when a check goes red on the open spec PR the remedy
-    // is a scoped fix landed on the spec branch while the feature is in
-    // `testing`, so a developer MUST be able to obtain a worktree then — a
-    // blocked `create-worktree` previously forced an ad-hoc, unreported worktree.
-    let actionable = labels.iter().any(|l| {
-        l == "ready-for-dev" || l == "in-progress-dev" || l == "ready-for-test" || l == "testing"
-    });
+    // H1: the legacy `in-progress-dev` / `ready-for-test` labels were pruned; the
+    // implementation phase label is `ready-for-dev`. `testing` is accepted for the
+    // CI-fix path (G-164): when a check goes red on the open spec PR the remedy is a
+    // scoped fix landed on the spec branch while the feature is in `testing`, so a
+    // developer MUST be able to obtain a worktree then.
+    let actionable = labels.iter().any(|l| l == "ready-for-dev" || l == "testing");
     if !actionable {
         return Ok((false, format!("issue #{} is not actionable (labels: {})", issue, labels.join(", "))));
     }
@@ -2735,66 +2731,6 @@ fn prior_phase_entries(issue: u32, phase: &str) -> u32 {
         .count() as u32
 }
 
-/// Fallback compact retry-round replacement for the full plan comment (PO feedback,
-/// #2688): used ONLY when the Software Architect did not author a
-/// `.opencode/tmp/<issue>/fix-plan.md` draft for this rework re-entry. A rework
-/// re-entry does NOT re-post the full `## Triage Plan` — it posts only the
-/// actionable sub-issue checklist + the risks/mitigations section (where the
-/// Architect records root-cause + fix scope) + a pointer to the full plan. Preserves
-/// the `*Authored by*` footer so the anti-spoofing gate passes.
-fn derive_fix_plan_body(full: &str) -> String {
-    let mut out = String::from(
-        "This is the retry-round fix scope. The full plan is unchanged (posted once as `## Triage Plan`); only the actionable work and root-cause context are repeated here.\n\n",
-    );
-    let mut has_content = false;
-
-    // Sub-issue decomposition checklist lines. B3: accept the canonical template
-    // label (`- [ ] Sub-task 1: ...`) as well as the legacy `ST` prefix and a bare
-    // numeric item — the old `ST`-only filter made a template-conformant plan derive
-    // an EMPTY Fix Plan.
-    let checklist: Vec<&str> = full
-        .lines()
-        .filter(|line| {
-            let t = line.trim_start();
-            if !(t.starts_with("- [ ]") || t.starts_with("- [x]")) || t.len() <= 6 {
-                return false;
-            }
-            let rest = t[6..].trim_start();
-            let lower = rest.to_lowercase();
-            lower.starts_with("st")
-                || lower.starts_with("sub-task")
-                || rest.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-        })
-        .collect();
-    if !checklist.is_empty() {
-        out.push_str("### Sub-issue Decomposition (this round)\n\n");
-        for c in checklist {
-            out.push_str(c);
-            out.push('\n');
-        }
-        out.push('\n');
-        has_content = true;
-    }
-
-    let risks = section(full, "## Risks & Mitigations");
-    if !risks.trim().is_empty() {
-        out.push_str("## Risks & Mitigations (root-cause context)\n\n");
-        out.push_str(risks.trim());
-        out.push_str("\n\n");
-        has_content = true;
-    }
-
-    if !has_content {
-        out.push_str("(No actionable sub-issues or risk notes extracted — see the full `## Triage Plan` comment.)\n\n");
-    }
-
-    // Preserve the anti-spoofing footer from the source draft.
-    if let Some(footer) = full.lines().rev().find(|l| l.trim().contains("*Authored by")) {
-        out.push_str(footer.trim());
-        out.push('\n');
-    }
-    out
-}
 
 /// GitHub project (v2) Status sync (PO feedback, #2688): alongside the phase labels,
 /// mirror the issue's phase onto the configured project's Status single-select field
@@ -4025,7 +3961,7 @@ fn entry_ok(_phase: Phase, issue: u32) -> anyhow::Result<(bool, String)> {
     if issue_data.labels.iter().any(|l| l.name == "blocked") {
         return Ok((false, "issue is blocked — see the Status comment for the reason".to_string()));
     }
-    if issue_data.labels.iter().any(|l| l.name == "ready-for-dev" || l.name == "in-progress-dev") {
+    if issue_data.labels.iter().any(|l| l.name == "ready-for-dev") {
         return branch_guard(issue);
     }
     Ok((true, "ok".to_string()))
@@ -4444,36 +4380,20 @@ fn post_pending_comments(issue: u32, actor: &str, phase: &str, from: Option<&str
             }
             (format!("Fix Plan (round {})", entering_round), body)
         } else if fname == "triage-plan.md" {
-            if is_rework_reentry && (authored_fix_plan || fix_plan_round_posted(issue, entering_round)) {
-                // The Architect-authored Fix Plan replaces the derived compaction —
-                // consume the plan draft so it is never double-posted later. This is
-                // ALSO idempotent against a round whose Fix Plan was ALREADY posted (e.g.
-                // the authored draft was consumed by a manual `post-comments` flush):
-                // re-drafting the triage plan on the rework re-entry must not emit a
-                // SECOND fallback Fix Plan for the same round (G-344).
-                let _ = std::fs::remove_file(&p);
-                println!("SKIPPED: triage-plan.md compaction — a Fix Plan for this round is already authored/posted");
+            if is_rework_reentry {
+                // H2: ONE fix-plan channel. A rework round's scope must be the
+                // Architect-authored `fix-plan.md`; the machine no longer derives a
+                // Fix Plan from the plan draft. Consume the stale plan draft when the
+                // authored Fix Plan exists; otherwise keep it and warn.
+                if authored_fix_plan || fix_plan_round_posted(issue, entering_round) {
+                    let _ = std::fs::remove_file(&p);
+                    println!("SKIPPED: triage-plan.md compaction — the authored Fix Plan replaces it");
+                } else {
+                    println!("WARNING: triage-plan.md present on a rework re-entry — not posting. The Software Architect must author `.opencode/tmp/{}/fix-plan.md` (root-cause classified) for round {} (H2: fallback compaction removed).", issue, entering_round);
+                }
                 continue;
             }
-            if is_rework_reentry {
-                // B3: the derived fallback must ALSO be classified (the authored path
-                // already is) — otherwise the round escapes the rework-cause metric.
-                match parse_root_cause_class(&body) {
-                    Some(class) => {
-                        append_event_attrs(issue, "rework.rootcause", actor, phase, "success",
-                            &format!("derived fix plan classifies this round's root cause as {}", class),
-                            &[("rootCause", class)])?;
-                    }
-                    None => {
-                        let _ = append_event_attrs(issue, "guard.fired", actor, phase, "blocked", "derived fix plan refused: missing/invalid 'Root cause class:' line", &[("guardId", "fix_plan_unclassified"), ("guardKey", "fix_plan_root_cause_class"), ("failureClass", "unclassified_rework_round"), ("site", "post-comments")]);
-                        println!("WARNING: triage-plan.md compaction lacks a valid 'Root cause class: defect|technique|environment|scope' line — not posting. The Architect must author fix-plan.md with the classification; fix the draft, then re-run.");
-                        continue;
-                    }
-                }
-                (format!("Fix Plan (round {})", entering_round), derive_fix_plan_body(&body))
-            } else {
-                (title.to_string(), body)
-            }
+            (title.to_string(), body)
         } else {
             (title.to_string(), body)
         };
@@ -5537,15 +5457,6 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     anyhow::bail!("remove-worktree failed: {}", e);
                 }
             }
-        }
-        "generate-work" => {
-            // Deprecated: sub-issues and the consolidated tester issue were removed
-            // (PO decision), and the plan is a `## Triage Plan` comment on the
-            // feature issue (single-issue model). All work is tracked directly on
-            // the feature issue + the spec branch. This action is kept only to fail
-            // with a clear message instead of a mystery.
-            println!("GENERATE-WORK REMOVED: sub-issues + tester issue were dropped — work happens directly on the feature issue (`--issue <feature>`) and the spec branch; the tester posts the `## Tests Runs` verdict on the feature issue");
-            append_event(req_issue(a).unwrap_or(0), "generate-work", &a.actor, "implementation", "blocked", "generate-work removed — no sub-issues; work tracked on the feature + spec branch")?;
         }
         "update-plan" => {
             // Single-issue model: the plan is the `## Triage Plan` timeline draft
@@ -8066,7 +7977,14 @@ fn parse_args() -> ActionArgs {
 fn main() {
     let raw = env::args().any(|a| a == "--raw");
     let a = parse_args();
-    let result = match a.action.as_str() {
+    // H1: the mock-repo passthrough verbs are test-harness plumbing, not a
+    // production surface. They are accepted ONLY under FREDO_MOCK_GH=1; otherwise
+    // they are unknown actions (removed from the shipped action set).
+    let is_mock_verb = matches!(a.action.as_str(), "mock-gh" | "mock-git" | "mock-commit");
+    let result = if is_mock_verb && !mock_mode() {
+        Err(anyhow::anyhow!("unknown action: {}", a.action))
+    } else {
+        match a.action.as_str() {
         "context" => {
             match a.issue {
                 Some(i) => {
@@ -8137,7 +8055,8 @@ If you are blocked on missing context, report the gap instead of re-reading.",
                 None => Err(anyhow::anyhow!("mock-commit requires --branch")),
             }
         }
-        _ => run_action(&a),
+            _ => run_action(&a),
+        }
     };
     if let Err(e) = result {
         // Fold-in of pipeline-log.rs: record the failure for observability AND as

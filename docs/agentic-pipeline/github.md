@@ -47,8 +47,6 @@ The label set models the workflow state. An issue's label is its pipeline state;
 | `backlog` | Backlog issue created (backlog phase) | Product Owner | `planning` |
 | `planning` | Implementation Plan being produced (planning phase — the plan deliverable in `.opencode/tmp/<issue>/triage.md` must converge before leaving) | Orchestrator | `ready-for-dev` |
 | `ready-for-dev` | **Feature** — implementation phase; the developer works directly on the feature's `spec/<N>` branch | Orchestrator | `testing`, or back to `planning` (backward rescope — the "loop back to Phase 2 (Architect)" scope-redesign leg; the forward commit gate does not apply) |
-| `in-progress-dev` | Legacy dev-work label (accepted for `create-worktree`) | — (reserved; no action sets it today) | — |
-| `ready-for-test` | Legacy implementation-phase label (accepted for `create-worktree`) | — (legacy) | — |
 | `testing` | **Feature** — testing phase; the tester posts its `## Tests Runs` verdict on the **feature issue** | Orchestrator | `audit` or back to `implementation` |
 | `audit` | Auditor is auditing the issue | Auditor | `cleanup` (success) or restart |
 | `cleanup` | Teardown-only phase — Orchestrator removes worktrees, prunes stale branches (spec/* kept), cleans scratch, retains evidence | Auditor (auto via `audit-record --verdict success`) | `done` (via `close-issue`) |
