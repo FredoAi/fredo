@@ -12,7 +12,7 @@
 4. **Affirmative over negation.** "Do X / when Y, do Z" outperforms "never / don't" (+36.4% correctness in the 26-Principles eval).
 5. **Verification conditions are the #1 lever.** A check the agent can run (build, tests, screenshot) outperforms prose about quality.
 6. **Front-load critical rules.** "Lost in the middle": models follow start and end of context best. Repeat top constraints near the end.
-7. **Enforce in permissions, not prose.** Tool/file access is declarative (`permission:` allow/ask/deny + globs); the prompt doesn't plead for scope discipline.
+7. **Enforce in permissions, not prose.** Tool/file access is declarative (V2 `permissions` ordered `{ action, resource, effect }` rules); the prompt doesn't plead for scope discipline.
 8. **Model behavior as states.** Explicit step/state structure (plan → implement → verify → report) beats free-text behavior narration (Codified FSM papers).
 9. **Structured sections beat prose.** Consistent headers/delimiters; fixed section order; important rules first.
 10. **Iterate like code.** Ablate one rule at a time against a fixed small eval set; log failures; A/B from fresh sessions. Don't ship unmeasured prompt changes.
@@ -31,10 +31,10 @@ The industry converged on **Markdown with YAML frontmatter**: frontmatter = mach
 | `mode` | `primary` (human-facing entry) vs `subagent` (invoked via `task`) vs `all`. |
 | `model` | Provider/model per role: cheap+fast for high-volume (developer), capable for reasoning (architect/QA). |
 | `temperature` / `top_p` | **Only effective when thinking is disabled** on reasoning models (see §5 DeepSeek). |
-| `permission` | Declarative least-privilege: `read`/`edit`/`bash`/`task`/`skill`/`external_directory`, `allow`/`ask`/`deny`, glob patterns, **last matching rule wins** (put `"*"` first, specifics after). `deny` on a subagent's `task` removes it from the tool list entirely. |
+| `permissions` | Declarative least-privilege (V2): an ordered array of `{ action, resource, effect }`; actions include `read`/`edit`/`shell`/`subagent`/`skill`/`external_directory`, effects `allow`/`ask`/`deny`, **last matching rule wins** (put the catch-all `*` deny first, specifics after). `deny` on a subagent's `subagent` action removes it from the tool list entirely. |
 | `steps` | Max agentic iterations; forces a text summary when exhausted — bounds cost on unattended agents. |
 
-**This pipeline's minimal agent files use only `description` + `mode`.** The `permission` field above is a general platform feature, but this pipeline does **not** declare permissions in the agent file — they live in `opencode.json` (per-agent `bash` allow/deny rules, tool access, and role gating), and `model`/`temperature` are set per role there as well. Keep the frontmatter to `description` + `mode` so the config that enforces access stays in one authoritative place.
+**This pipeline's minimal agent files use only `description` + `mode`.** The `permission` field above is a general platform feature, but this pipeline does **not** declare permissions in the agent file — they live in `opencode.json` (per-agent `agents.<role>.permissions` ordered `shell`/`edit`/`subagent`/`skill` rules, tool access, and role gating), and `model` is set per role there as well (sampling options belong on a model variant in V2). Keep the frontmatter to `description` + `mode` so the config that enforces access stays in one authoritative place.
 
 ### Body section order (fixed)
 
@@ -106,7 +106,7 @@ The single most repeated "what works" across all sources:
 
 - Anthropic: teams "spent more time optimizing our tools than the overall prompt". SWE-agent: a custom prompt+tool interface (ACI) raised SWE-bench pass@1 from ~4.8% → 12.5% — interface design, not model, drove it.
 - Write tool definitions "like a great docstring for a junior developer" — example usage, edge cases, clear boundaries from similar tools.
-- Scope control is layered and deterministic: `permission` allow/ask/deny + globs, `ask`-mode UI for risky operations, `external_directory` gating. Don't write "only read files" — declare it.
+- Scope control is layered and deterministic: V2 `permissions` ordered `{ action, resource, effect }` rules, `ask`-mode UI for risky operations, `external_directory` gating. Don't write "only read files" — declare it.
 
 ### 3.8 Security / prompt-injection guardrails
 

@@ -1,20 +1,22 @@
 # Agent Permissions & Tool Access
 
 Every pipeline agent runs under a **deny-by-default sandbox** (`opencode.json` per-agent
-`permission` blocks): only the allowlisted commands and edit paths work; everything else is
-**DENIED**. If you attempt something outside your allowlist the sandbox blocks it and you
-stall. **Do not retry a denied command** - read this page (and your playbook), use what you
-have, and report the gap to the orchestrator in your final report (see the required
+`agents.<role>.permissions` ordered rule arrays): only the allowlisted actions/resources work;
+everything else is **DENIED**. Each agent's array starts with a catch-all
+`{ "action": "*", "resource": "*", "effect": "deny" }`, so an unlisted tool is denied rather
+than left at V2's default `ask`. If you attempt something outside your allowlist the sandbox
+blocks it and you stall. **Do not retry a denied command** - read this page (and your playbook),
+use what you have, and report the gap to the orchestrator in your final report (see the required
 `Issues & tool-access gaps` section below).
 
-The `opencode.json` per-agent blocks are the authoritative source; this page is the readable
-summary. If you find a mismatch, report it - do not work around the sandbox.
+The `opencode.json` per-agent `permissions` arrays are the authoritative source; this page is the
+readable summary. If you find a mismatch, report it - do not work around the sandbox.
 
 ## Shared baseline (all agents)
 
 - **edit:** `.opencode/tmp/**` + `docs/agentic-pipeline/playbooks/references.md` (the
   agent-editable knowledge base).
-- **bash:** deny-by-default. Everyone gets read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
+- **shell:** deny-by-default. Everyone gets read-only `gh` (`gh issue view/list`, `gh pr view/list/checks`)
   + `rust-script .opencode/scripts/pipeline-state.rs*` (your state-machine reads).
   **Read-only `git` (`git log/status/diff/branch/show/fetch/remote`) exists ONLY for
   `developer`/`tester`/`orchestrator`** — the three triage planners (`software-architect`,
@@ -22,34 +24,34 @@ summary. If you find a mismatch, report it - do not work around the sandbox.
   see [Loop mitigation](#loop-mitigation)). A planner never needs git — it edits its A2A section and
   reads repo files.
 - **Command chaining is DENIED for everyone** - `&&`, `;`, `|` never work. Run one command
-  per line. **Known machine residual (#3098, Machinist-flagged):** `set-permission` appends new
-  allow rules *after* the chain-deny block and opencode evaluates rules last-match-wins, so an
-  appended allow prefix (`git rm*`, `git clone*`, `git apply*`, `Test-Path*`, and since #3098
-  `git worktree add*` / `git worktree remove*`) can be matched ahead of a chain deny on a
-  compound command. The action refuses to re-add or reorder the chain denies; the durable fix is
-  script logic in the state machine (see `playbooks/references.md` § Pipeline Mechanics). Until
-  then the chain rule is belt-and-braces — still issue one command per call.
+  per line. **Known machine residual (#3098, Machinist-flagged, V2 shape):** `set-permission`
+  appends a new rule at the END of `agents.<role>.permissions`, and V2 evaluates rules
+  last-match-wins, so an appended `shell` allow prefix (`git rm*`, `git clone*`, `git apply*`,
+  `Test-Path*`, `git worktree add*` / `git worktree remove*`) is matched after the chain-deny
+  rules and can re-allow a compound command. The action does not re-append or reorder the chain
+  denies; the durable fix is script logic in the state machine (see `playbooks/references.md` §
+  Pipeline Mechanics). Until then the chain rule is belt-and-braces — still issue one command
+  per call.
 - **Denied for all:** `gh issue create/edit/close`, `gh pr create/edit/merge/close`,
   force-push, `git push` to `main`/`master`, and edits outside your edit allowlist.
   No agent ever calls `gh`/`git` to write (single-writer rule) - draft content and request
   the state-machine action instead.
-- **Out-of-repo access is DENY-by-default (`external_directory`).** Each agent's block also
-  carries an `external_directory` map. opencode defaults that category to `ask` — which is NOT a
-  hard block (it auto-approves in `--auto`, and a single "always" approval re-opens the path for
-  the whole session), so an agent can reach out-of-repo files unless a rule DENIES them. The
-  sanctioned out-of-repo paths are the **app-data directory** (`%APPDATA%\com.fredo.app`, or
-  `%LOCALAPPDATA%` on non-roaming installs — it holds the embedded PostgreSQL cluster), the
-  **installed-plugin path** (`~/.config/opencode/plugins/`), and — for `software-architect`,
-  `developer`, and `tester` only — the **local Cargo registry source tree**
-  (`~/.cargo/registry/src/**`) so an agent can read a pinned dependency's actual source during
-  research/implementation; everything else must be denied. **An explicit deny for one path
-  is not repo-scoping** (G-009 default-deny variant): the map must deny by default and re-allow
-  only those documented paths. The Machinist owns this map via
-  `set-permission --tool external_directory`.
-  A flat `read: "allow"` is unscoped and the action refuses flat categories, so
-  `external_directory` is the lever that scopes reads to the repo. **`external_directory` has no
-  read/write split** — a path rule re-allows the whole path, not one verb — so the Cargo entry is
-  a *path*-scoped re-allow (the registry source tree only), not a verb-scoped read-only exception.
+- **Out-of-repo access is DENY-by-default (`external_directory`).** V2 now ALLOWS
+  `external_directory` by default, so each agent's ordered rules must carry an explicit
+  `{ "action": "external_directory", "resource": "*", "effect": "deny" }` and then re-allow
+  ONLY the sanctioned paths (last-match-wins). The sanctioned out-of-repo paths are the
+  **app-data directory** (`%APPDATA%\com.fredo.app`, or `%LOCALAPPDATA%` on non-roaming installs —
+  it holds the embedded PostgreSQL cluster), the **installed-plugin path**
+  (`~/.config/opencode/plugins/`), and — for `software-architect`, `developer`, and `tester` only —
+  the **local Cargo registry source tree** (`~/.cargo/registry/src/**`) so an agent can read a
+  pinned dependency's actual source during research/implementation; everything else must be
+  denied. **An explicit deny for one path is not repo-scoping** (G-009 default-deny variant): the
+  rule set must deny by default and re-allow only those documented paths. The Machinist owns this
+  via `set-permission --tool external_directory`. `external_directory` is the lever that scopes
+  reads to the repo; in V2 a `read` rule is
+  `{ "action": "read", "resource": "*", "effect": ... }`. **`external_directory` has no read/write
+  split** — a path rule re-allows the whole path, not one verb — so the Cargo entry is a
+  *path*-scoped re-allow (the registry source tree only), not a verb-scoped read-only exception.
   Keep it that narrow: never widen it to `~/.cargo/**`, and grant it to no role outside the three
   named here.
 
@@ -61,46 +63,48 @@ the state machine's `set-permission` action:
 
 ```
 rust-script .opencode/scripts/pipeline-state.rs --agent machinist --action set-permission \
-  --role <agent> --tool <category> [--pattern "<glob>"] --decision allow|ask|deny|remove
+  --role <agent> --tool <action> [--pattern "<resource>"] --decision allow|ask|deny|remove
 ```
 
-- Scope is **agent `permission` blocks only** — the action refuses anything else and refuses
-  a role/category that does not exist. It is text-surgical and order-preserving, because
-  opencode evaluates permission rules **last-match-wins**; a new rule is appended (so an
-  `allow` beats the preceding catch-all `deny`), and the document is re-validated before write.
-- `--pattern` is **optional**: with it, the rule inside the per-pattern map `permission.<tool>` is
-  set (`allow`/`ask`/`deny`) or deleted (`remove`, order-preserving); **without it, the top-level
-  `permission.<tool>` member itself is set/replaced (flat) or deleted** — the way a flat
-  tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the corrected key, then
-  `--decision remove` the dead one. A flat category is refused only when `--pattern` is given.
+- Scope is the **`agents.<role>.permissions` array only** — the action refuses anything else,
+  refuses a role that does not exist, and refuses a V1-shaped config. It is text-surgical and
+  order-preserving, because V2 evaluates permission rules **last-match-wins**; a new rule is
+  appended (so an `allow` beats the preceding catch-all `deny`), and the document is re-validated
+  before write.
+- `--tool` is the V2 **action** name (`shell`, `edit`, `read`, `skill`, `subagent`,
+  `external_directory`, an MCP action such as `chakra_ui_*`, ...). V1 aliases `bash` → `shell`,
+  `task` → `subagent`, `write`/`patch` → `edit`, and `chakra-ui_*` → `chakra_ui_*` are accepted.
+  `doom_loop` is refused — V2 has no such action.
+- `--pattern` is the V2 **resource**. With it, the exact `(action, resource)` rule is set or
+  removed; **without it, a set uses resource `*`** and `remove` deletes every rule for that
+  action (the V1 "remove the whole category" behaviour).
 - The rest of `opencode.json` (models, MCP servers, tool wiring, top-level settings) and
   `AGENTS.md` remain **human-owned**. A change there is proposed to the human, not applied.
 - Runtime note: `opencode.json` is read at startup, so a permission change takes effect on the
   next opencode restart. Record that in the `Status` note when you apply one.
 
-## Loop mitigation (why deny-by-default + opencode's `doom_loop`)
+## Loop mitigation (deny-by-default + pipeline guards)
 
 Subagents (especially `deepseek-v4-flash` planners) can fall into **tool-call loops**: emitting the
 same tool call (or close variants) repeatedly instead of integrating the result and acting — the
 #2694 triage spun 177 state-machine context reads and minutes of repeated `git log` with no plan
-written. Four layers stop a loop; keep all four enabled:
+written. These layers stop a loop; keep them enabled:
 
-1. **opencode `doom_loop` (built-in — MUST be `allow`, never `deny`).** opencode detects "the same
-   tool call repeats 3 times with identical input" and injects a **recovery prompt** telling the
-   agent it is stuck. The Fredo config had `doom_loop: deny` on every agent, which **disabled this
-   recovery entirely** — nothing ever told a looping agent to stop. Pipeline agents run
-   `doom_loop: allow` so the recovery prompt auto-injects. **When you see that prompt, STOP repeating
-   the tool call and follow it** (switch to a text summary + a different action) — see common-rules.
+1. **Runtime loop detection (verify on V2).** V2 has no `doom_loop` permission action, so the V1
+   `doom_loop: allow` knob no longer exists. If the V2 runtime still injects its recovery prompt
+   when a tool call repeats with identical input, follow it: **STOP repeating the tool call** and
+   switch to a text summary + a different action (see common-rules). If V2 does not, layers 2–4 are
+   the whole guard — add a plugin-side repeat detector if this regresses.
 2. **Deny-by-default breaks the attractor.** An ALLOWED command returns identical output every run,
    giving a looping model nothing novel — the loop can run forever. A DENIED command returns an
    error (a novel signal), which breaks the repetition and forces a tactic change. That is why the
    triage planners have no git commands, and why you must **never retry a denied command**: the
    denial is the signal to change approach, not to retry (common-rules: *Know and respect your
    sandbox*).
-3. **`steps` cap + low `temperature` (recommended config).** An agent `steps` cap forces a text
-   summary after N agentic iterations (bounds any loop that doom_loop misses — e.g. variant probes
-   with different inputs); `temperature` ≈ 0.1–0.3 keeps planning deterministic. Set both on the
-   triage planners in `opencode.json`.
+3. **`steps` cap (recommended config).** V2 supports an agent `steps` cap: it forces a text
+   summary after N agentic iterations, bounding a loop that runtime detection misses (e.g. variant
+   probes with different inputs). Set it on the triage planners in `opencode.json`. Sampling
+   options such as `temperature` belong on a model variant, not the agent entry, in V2.
 4. **Pipeline-level guards (state machine).** The `context` action refuses a streak of ≥ 8
    consecutive context reads with no intervening action; the `comment` action refuses the A2A
    triage file as a body. Documented in `state-machine.md`.
@@ -108,7 +112,7 @@ written. Four layers stop a loop; keep all four enabled:
 
 ## Per-agent
 
-| Agent | edit | extra bash (beyond baseline) | gotchas / what is DENIED |
+| Agent | edit | extra shell (beyond baseline) | gotchas / what is DENIED |
 |-------|------|-----------------------------|--------------------------|
 | `product-owner` | tmp + refs | (baseline only) | GitHub output: `create-issue` + `Status` comments (PO amendments, #2734); never gate artifacts. |
 | `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |

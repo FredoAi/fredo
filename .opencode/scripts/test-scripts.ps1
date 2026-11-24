@@ -1575,47 +1575,54 @@ function Test-WildcardMatch {
   $esc = Get-WildcardEscaped $Pattern
   return [regex]::IsMatch($Command.Replace('\','/'), '^' + $esc + '$')
 }
-function Get-BashEffect {
-  param([string]$Agent, [string]$Command)
+function Get-PermissionEffect {
+  param([string]$Agent, [string]$Action, [string]$Resource)
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
-  $bash = $config.agent.$Agent.permission.bash
-  if (-not $bash) { return "deny" }  # no rules = deny in whitelist posture
+  $agentConfig = $config.agents.$Agent
+  if ($null -eq $agentConfig -or $null -eq $agentConfig.permissions) { return "deny" }
   $last = $null
-  foreach ($p in $bash.PSObject.Properties.Name) {
-    if (Test-WildcardMatch $Command $p) { $last = $p }
+  foreach ($rule in @($agentConfig.permissions)) {
+    if ((Test-WildcardMatch $Action $rule.action) -and (Test-WildcardMatch $Resource $rule.resource)) {
+      $last = $rule.effect
+    }
   }
   if ($null -eq $last) { return "deny" }
-  return $bash.$last
+  return $last
+}
+function Get-ShellEffect {
+  param([string]$Agent, [string]$Command)
+  return Get-PermissionEffect $Agent "shell" $Command
 }
 
 # Commands every agent must be able to run (single commands)
 Test-Script "State machine + reads allowed for all agents" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
-  $agents = $config.agent.PSObject.Properties.Name
+  $agents = $config.agents.PSObject.Properties.Name
   $failures = @()
   foreach ($agent in $agents) {
     foreach ($cmd in @(
       "rust-script .opencode/scripts/pipeline-state.rs --action comment --issue 5",
       "gh issue view 5"
     )) {
-      if ((Get-BashEffect $agent $cmd) -ne "allow") { $failures += "${agent}: '$cmd' not allowed" }
+      if ((Get-ShellEffect $agent $cmd) -ne "allow") { $failures += "${agent}: '$cmd' not allowed" }
     }
   }
   if ($failures.Count -gt 0) { throw "Access gaps: $($failures -join '; ')" }
   return "state machine + reads allowed for $($agents.Count) agents"
 }
 
-# Principle 9 hard gate: every agent must carry permission.skill with the state
-# machine allowed and a wildcard deny (no skill may run without an explicit rule).
+# Principle 9 hard gate: every agent must carry an ordered V2 skill rule set with
+# the state machine allowed and a wildcard deny (no skill may run without an
+# explicit rule).
 Test-Script "permission.skill hard-gate (pipeline-state allow, * deny)" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
-  $agents = $config.agent.PSObject.Properties.Name
+  $agents = $config.agents.PSObject.Properties.Name
   $failures = @()
   foreach ($agent in $agents) {
-    $skill = $config.agent.$agent.permission.skill
-    if ($null -eq $skill) { $failures += "${agent}: permission.skill missing"; continue }
-    if ($skill.'pipeline-state' -ne "allow") { $failures += "${agent}: permission.skill.pipeline-state != allow" }
-    if ($skill.'*' -ne "deny") { $failures += "${agent}: permission.skill.* != deny" }
+    $skillRules = @($config.agents.$agent.permissions | Where-Object { $_.action -eq "skill" })
+    if ($skillRules.Count -eq 0) { $failures += "${agent}: no skill permission rules"; continue }
+    if ((Get-PermissionEffect $agent "skill" "pipeline-state") -ne "allow") { $failures += "${agent}: skill:pipeline-state != allow" }
+    if ((Get-PermissionEffect $agent "skill" "*") -ne "deny") { $failures += "${agent}: skill:* != deny" }
   }
   if ($failures.Count -gt 0) { throw "permission.skill gaps: $($failures -join '; ')" }
   return "permission.skill hard-gate present for $($agents.Count) agents"
@@ -1624,7 +1631,7 @@ Test-Script "permission.skill hard-gate (pipeline-state allow, * deny)" {
 # Direct write commands must be denied for every agent
 Test-Script "Direct GitHub writes denied for all agents" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
-  $agents = $config.agent.PSObject.Properties.Name
+  $agents = $config.agents.PSObject.Properties.Name
   $writeCmds = @(
     "gh issue edit 5 --add-label blocked",
     "gh issue close 5",
@@ -1635,7 +1642,7 @@ Test-Script "Direct GitHub writes denied for all agents" {
   $failures = @()
   foreach ($agent in $agents) {
     foreach ($cmd in $writeCmds) {
-      if ((Get-BashEffect $agent $cmd) -ne "deny") { $failures += "${agent}: '$cmd' NOT denied" }
+      if ((Get-ShellEffect $agent $cmd) -ne "deny") { $failures += "${agent}: '$cmd' NOT denied" }
     }
   }
   if ($failures.Count -gt 0) { throw "Write-denial gaps: $($failures -join '; ')" }
@@ -1646,7 +1653,7 @@ Test-Script "Direct GitHub writes denied for all agents" {
 # spaced AND no-space forms)
 Test-Script "Compound-command smuggling denied" {
   $config = Get-Content "opencode.json" -Raw | ConvertFrom-Json
-  $agents = $config.agent.PSObject.Properties.Name
+  $agents = $config.agents.PSObject.Properties.Name
   $smuggleCmds = @(
     "git status && gh pr merge 5",
     "cargo build && git push origin main",
@@ -1660,7 +1667,7 @@ Test-Script "Compound-command smuggling denied" {
   $failures = @()
   foreach ($agent in $agents) {
     foreach ($cmd in $smuggleCmds) {
-      if ((Get-BashEffect $agent $cmd) -ne "deny") { $failures += "${agent}: '$cmd' NOT denied" }
+      if ((Get-ShellEffect $agent $cmd) -ne "deny") { $failures += "${agent}: '$cmd' NOT denied" }
     }
   }
   if ($failures.Count -gt 0) { throw "Compound-command gaps: $($failures -join '; ')" }
@@ -1671,9 +1678,9 @@ Test-Script "Compound-command smuggling denied" {
 # multi-refspec / flag smuggling on the spec push denied (the HEAD:spec/* allow
 # must not swallow an extra `main` refspec or a force flag)
 Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
-  $ok = (Get-BashEffect "developer" "git push origin HEAD:spec/633") -eq "allow"
-  $blockedMain = (Get-BashEffect "developer" "git push origin main") -eq "deny"
-  $blockedHead = (Get-BashEffect "developer" "git push origin HEAD:main") -eq "deny"
+  $ok = (Get-ShellEffect "developer" "git push origin HEAD:spec/633") -eq "allow"
+  $blockedMain = (Get-ShellEffect "developer" "git push origin main") -eq "deny"
+  $blockedHead = (Get-ShellEffect "developer" "git push origin HEAD:main") -eq "deny"
   $smuggle = @(
     "git push origin HEAD:spec/633 main",
     "git push origin HEAD:spec/633 master",
@@ -1682,7 +1689,7 @@ Test-Script "Developer push scoping (HEAD:spec allowed, main denied)" {
     "git push --force origin HEAD:spec/633"
   )
   $smuggleBlocked = $true
-  foreach ($c in $smuggle) { if ((Get-BashEffect "developer" $c) -ne "deny") { $smuggleBlocked = $false } }
+  foreach ($c in $smuggle) { if ((Get-ShellEffect "developer" $c) -ne "deny") { $smuggleBlocked = $false } }
   if (-not $ok -or -not $blockedMain -or -not $blockedHead -or -not $smuggleBlocked) { throw "developer push scoping broken: HEAD:spec-allow=$ok main-deny=$blockedMain HEAD:main-deny=$blockedHead smuggle-blocked=$smuggleBlocked" }
   return "developer push: HEAD:spec allowed, main/HEAD:main + refspec/flag smuggle denied"
 }
@@ -1699,29 +1706,29 @@ Test-Script "Guard-evidence roles can run the retirement/prose guards they must 
   $failures = @()
   # developer: direct + wrapper (both required — it authors the guard and needs the receipt).
   foreach ($cmd in @($direct, $viaWrapper)) {
-    if ((Get-BashEffect "developer" $cmd) -ne "allow") { $failures += "developer cannot run '$cmd'" }
+    if ((Get-ShellEffect "developer" $cmd) -ne "allow") { $failures += "developer cannot run '$cmd'" }
   }
   # tester: the wrapper route its rows are written in (direct access is deliberately not needed).
-  if ((Get-BashEffect "tester" $viaWrapper) -ne "allow") { $failures += "tester cannot drive the guard through run-exitcode" }
+  if ((Get-ShellEffect "tester" $viaWrapper) -ne "allow") { $failures += "tester cannot drive the guard through run-exitcode" }
   # Negatives: the grant must not generalise to other scripts, and the read-only
   # auditor stays denied by deliberate decision (it judges the record, not the tree).
   foreach ($cmd in @(
     "powershell -File .opencode/scripts/dev-env.ps1 -Action Status",
     "powershell -File .opencode/scripts/check-another-retired.ps1"
   )) {
-    if ((Get-BashEffect "developer" $cmd) -ne "deny") { $failures += "developer grant over-broad: '$cmd' NOT denied" }
+    if ((Get-ShellEffect "developer" $cmd) -ne "deny") { $failures += "developer grant over-broad: '$cmd' NOT denied" }
   }
-  if ((Get-BashEffect "auditor" $direct) -ne "deny") { $failures += "auditor guard-execution must stay denied (judges the record, not the tree)" }
+  if ((Get-ShellEffect "auditor" $direct) -ne "deny") { $failures += "auditor guard-execution must stay denied (judges the record, not the tree)" }
   if ($failures.Count -gt 0) { throw "Guard-evidence gap: $($failures -join '; ')" }
   return "developer: $guard direct + via run-exitcode; tester: via run-exitcode; grant narrow, auditor denied"
 }
 
 # Orchestrator may merge a FEATURE branch but never main/master (incl. --ff-only)
 Test-Script "SI git merge: feature allowed, main/master denied" {
-  $feature = (Get-BashEffect "orchestrator" "git merge spec/633") -eq "allow"
-  $mainDeny = (Get-BashEffect "orchestrator" "git merge main") -eq "deny"
-  $ffDeny = (Get-BashEffect "orchestrator" "git merge --ff-only main") -eq "deny"
-  $masterDeny = (Get-BashEffect "orchestrator" "git merge --ff-only master") -eq "deny"
+  $feature = (Get-ShellEffect "orchestrator" "git merge spec/633") -eq "allow"
+  $mainDeny = (Get-ShellEffect "orchestrator" "git merge main") -eq "deny"
+  $ffDeny = (Get-ShellEffect "orchestrator" "git merge --ff-only main") -eq "deny"
+  $masterDeny = (Get-ShellEffect "orchestrator" "git merge --ff-only master") -eq "deny"
   if (-not $feature -or -not $mainDeny -or -not $ffDeny -or -not $masterDeny) { throw "SI merge scoping broken: feature=$feature main=$mainDeny ff-only=$ffDeny master=$masterDeny" }
   return "SI merge: spec/633 allowed, main/master/--ff-only denied"
 }
@@ -1759,7 +1766,10 @@ Test-Script "remove-worktree role-gates" {
 # EOLs preserved, document still parses, real config byte-identical, idempotent.
 function New-PermScratch {
   $p = Join-Path $env:TEMP ("oc-perm-" + [Guid]::NewGuid().ToString("N") + ".json")
-  [System.IO.File]::WriteAllText($p, (Get-Content "opencode.json" -Raw), [System.Text.UTF8Encoding]::new($false))
+  # Normalize to CRLF so the EOL-preservation assertion is deterministic
+  # regardless of the checkout's line endings.
+  $raw = (Get-Content "opencode.json" -Raw) -replace "`r?`n", "`r`n"
+  [System.IO.File]::WriteAllText($p, $raw, [System.Text.UTF8Encoding]::new($false))
   return $p
 }
 
@@ -1767,7 +1777,7 @@ Test-Script "set-permission appends, preserves order/EOL, never touches the real
   $real = Get-Content "opencode.json" -Raw
   $beforeCrlf = ([regex]::Matches($real, "`r`n")).Count
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($outStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $outStr" }
   if ((Get-Content "opencode.json" -Raw) -ne $real) { throw "real opencode.json was modified" }
@@ -1780,7 +1790,7 @@ Test-Script "set-permission appends, preserves order/EOL, never touches the real
   $afterLf = ([regex]::Matches($edited, "(?<!`r)`n")).Count
   if ($afterLf -ne 0) { throw "EOL mixed: $afterLf LF-only line(s) introduced" }
   if (([regex]::Matches($edited, "`r`n")).Count -le $beforeCrlf) { throw "no line added" }
-  $out2 = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
+  $out2 = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-perm-harness*" --decision allow --config-file $scratch 2>&1
   $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
   if ($out2Str -notmatch "NO-OP") { throw "expected NO-OP on re-run, got: $out2Str" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
@@ -1789,7 +1799,7 @@ Test-Script "set-permission appends, preserves order/EOL, never touches the real
 
 Test-Script "set-permission is machinist only" {
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent developer --action set-permission --role developer --tool bash --pattern "git rm*" --decision allow --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent developer --action set-permission --role developer --tool shell --pattern "git rm*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
   if ($outStr -notmatch "not allowed to set-permission") { throw "Expected role-gate block, got: $outStr" }
@@ -1798,20 +1808,31 @@ Test-Script "set-permission is machinist only" {
 
 Test-Script "set-permission refuses an unknown agent" {
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent machinist --action set-permission --role nobody --tool bash --pattern "x*" --decision allow --config-file $scratch 2>&1
+  $out = & rust-script $ps --agent machinist --action set-permission --role nobody --tool shell --pattern "x*" --decision allow --config-file $scratch 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
   if ($outStr -notmatch "no agent 'nobody'") { throw "unknown role not refused, got: $outStr" }
   return "unknown-agent refusal verified"
 } -ExpectedExitCode 1
 
-Test-Script "set-permission refuses a flat-action category" {
+Test-Script "set-permission refuses a V1-shaped config and doom_loop" {
   $scratch = New-PermScratch
-  $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool edit --pattern "x" --decision deny --config-file $scratch 2>&1
-  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
-  if ($outStr -notmatch "flat action") { throw "flat action not refused, got: $outStr" }
-  return "flat-action refusal verified"
+  try {
+    $v1 = '{"agent":{"developer":{"permission":{"bash":{"*":"deny"}}}}}'
+    [System.IO.File]::WriteAllText($scratch, $v1, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "x*" --decision allow --config-file $scratch 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "V1-shaped") { throw "V1-shaped config not refused, got: $outStr" }
+
+    $scratch2 = New-PermScratch
+    $out2 = & rust-script $ps --agent machinist --action set-permission --role developer --tool doom_loop --decision allow --config-file $scratch2 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    Remove-Item -LiteralPath $scratch2 -Force -ErrorAction SilentlyContinue
+    if ($out2Str -notmatch "no doom_loop") { throw "doom_loop not refused, got: $out2Str" }
+    return "V1-shape + doom_loop refusals verified"
+  } finally {
+    Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+  }
 } -ExpectedExitCode 1
 
 # remove-worktree pre-cleans gitignored build artifacts before removal — the
@@ -4230,16 +4251,16 @@ Write-Host "set-permission remove:" -ForegroundColor Cyan
 Test-Script "set-permission remove deletes a per-pattern rule (order-preserving, NO-OP absent)" {
   $scratch = New-PermScratch
   try {
-    $addA = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision allow --config-file $scratch 2>&1
+    $addA = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-remove-a*" --decision allow --config-file $scratch 2>&1
     $addAStr = if ($addA -is [array]) { $addA -join "`n" } else { "$addA" }
     if ($addAStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-a, got: $addAStr" }
-    $addB = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-b*" --decision allow --config-file $scratch 2>&1
+    $addB = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-remove-b*" --decision allow --config-file $scratch 2>&1
     $addBStr = if ($addB -is [array]) { $addB -join "`n" } else { "$addB" }
     if ($addBStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET for zz-remove-b, got: $addBStr" }
     $withRules = Get-Content $scratch -Raw
     if ($withRules.IndexOf('"zz-remove-a*"') -lt 0 -or $withRules.IndexOf('"zz-remove-b*"') -lt 0) { throw "rules not added" }
     # Remove A — order-preserving: B survives and the document still parses.
-    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
     $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
     if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
     $after = Get-Content $scratch -Raw
@@ -4248,7 +4269,7 @@ Test-Script "set-permission remove deletes a per-pattern rule (order-preserving,
     $null = $after | ConvertFrom-Json
     if ($after.IndexOf('"* | *"') -lt 0) { throw "the trailing deny rules vanished" }
     # Removing an absent rule is a NO-OP.
-    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool bash --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
+    $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool shell --pattern "zz-remove-a*" --decision remove --config-file $scratch 2>&1
     $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
     if ($againStr -notmatch "NO-OP") { throw "expected NO-OP on absent remove, got: $againStr" }
     return "per-pattern remove: deleted + order-preserving + NO-OP absent"
@@ -4258,28 +4279,28 @@ Test-Script "set-permission remove deletes a per-pattern rule (order-preserving,
   }
 }
 
-Test-Script "set-permission pattern-less add/remove edits a top-level flat key" {
+Test-Script "set-permission pattern-less add/remove edits the action's resource-* rule" {
   $scratch = New-PermScratch
   try {
-    # Add a flat top-level key (no --pattern).
+    # Add an action rule with the default resource `*` (no --pattern).
     $add = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision deny --config-file $scratch 2>&1
     $addStr = if ($add -is [array]) { $add -join "`n" } else { "$add" }
     if ($addStr -notmatch "PERMISSION SET") { throw "expected PERMISSION SET, got: $addStr" }
     $edited = Get-Content $scratch -Raw
-    if ($edited -notmatch '"zzflatkey"\s*:\s*"deny"') { throw "flat key not added" }
+    if ($edited -notmatch '"action":\s*"zzflatkey".*"resource":\s*"\*".*"effect":\s*"deny"') { throw "resource-* rule not added" }
     $null = $edited | ConvertFrom-Json
-    # Remove the flat key (no --pattern).
+    # Remove the action's rules (no --pattern).
     $rem = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
     $remStr = if ($rem -is [array]) { $rem -join "`n" } else { "$rem" }
     if ($remStr -notmatch "PERMISSION REMOVED") { throw "expected PERMISSION REMOVED, got: $remStr" }
     $edited2 = Get-Content $scratch -Raw
-    if ($edited2 -match '"zzflatkey"') { throw "flat key not removed" }
+    if ($edited2 -match '"zzflatkey"') { throw "action rules not removed" }
     $null = $edited2 | ConvertFrom-Json
     # A second remove is a NO-OP.
     $again = & rust-script $ps --agent machinist --action set-permission --role developer --tool zzflatkey --decision remove --config-file $scratch 2>&1
     $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
     if ($againStr -notmatch "NO-OP") { throw "expected NO-OP, got: $againStr" }
-    return "pattern-less: flat key added then removed + NO-OP"
+    return "pattern-less: resource-* rule added then removed + NO-OP"
   } finally {
     Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
     $global:LASTEXITCODE = 0

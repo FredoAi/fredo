@@ -4148,11 +4148,13 @@ struct ActionArgs {
     /// `set-permission` target agent (the role whose sandbox is edited). Distinct
     /// from `--agent` (the calling actor) — the SI edits another agent's rules.
     role: Option<String>,
-    /// `set-permission` permission category (`bash`, `edit`, `skill`, ...).
+    /// `set-permission` V2 permission action (`shell`, `edit`, `skill`,
+    /// `subagent`, ...). V1 aliases `bash`/`task`/`write` are accepted.
     tool: Option<String>,
-    /// `set-permission` rule pattern (the key inside a per-pattern category map).
+    /// `set-permission` V2 rule resource (the value matched by the action). With
+    /// no pattern, a set uses `*` and a remove drops every rule for the action.
     pattern: Option<String>,
-    /// `set-permission` decision (`allow` | `ask` | `deny`).
+    /// `set-permission` decision (`allow` | `ask` | `deny` | `remove`).
     decision: Option<String>,
     /// `set-permission` override for the config path (tests/bootstrap target a
     /// scratch copy); defaults to `<repo>/opencode.json`.
@@ -6122,20 +6124,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 &format!("closed {}, skipped {}, failed {}", closed, skipped, failed))?;
         }
         "set-permission" => {
-            // The SI-owned writer for `opencode.json` agent permission blocks
-            // (the rest of the config stays human-owned). Grants/revokes one
-            // rule for one role, text-surgically, order-preserving. No issue is
-            // required — a sandbox gap is pipeline infrastructure, not spec work.
+            // The SI-owned writer for `opencode.json` agent permission rules in
+            // the V2 ordered `agents.<role>.permissions` array (the rest of the
+            // config stays human-owned). Grants/revokes one rule for one role,
+            // text-surgically, order-preserving (V2 is last-match-wins). No issue
+            // is required — a sandbox gap is pipeline infrastructure, not spec work.
             if !actor_allowed(a.action.as_str(), &a.actor) {
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
             let role = a.role.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --role <agent>"))?;
-            let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <category>"))?;
-            // `--pattern` is optional: with it, the rule inside the per-pattern map
-            // `permission.<tool>` is edited; without it, the top-level
-            // `permission.<tool>` member itself is added/replaced/removed (used to
-            // rename a flat tool-namespace glob like `chakra_ui_*`).
+            let tool = a.tool.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --tool <action>"))?;
+            // `--pattern` is the V2 rule resource. With it, the exact
+            // `(action, resource)` rule is set/removed; without it, a set uses
+            // resource `*` and a remove drops every rule for that action.
             let pattern = a.pattern.as_deref();
             let decision = a.decision.as_deref().ok_or_else(|| anyhow::anyhow!("set-permission requires --decision allow|ask|deny|remove"))?;
             let path = match a.config_file.as_deref() {
@@ -6224,9 +6226,9 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         "remove-worktree" => actor == "developer",
         "update-plan" => actor == "orchestrator",
         "triage-init" => actor == "orchestrator",
-        // The ONLY sanctioned writer of `opencode.json` agent `permission` blocks:
-        // the SI grants a missing allowlist verb to a role instead of routing a
-        // sandbox change to the human (G-142). Scoped to permission blocks by
+        // The ONLY sanctioned writer of `opencode.json` agent `agents.<role>.permissions`
+        // rule arrays: the SI grants a missing allowlist verb to a role instead of
+        // routing a sandbox change to the human (G-142). Scoped to those arrays by
         // construction — the editor refuses everything else.
         "set-permission" => actor == "machinist",
         "tests-commit" => matches!(actor, "tester" | "orchestrator"),
@@ -6255,12 +6257,12 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
 
 // ── opencode.json agent-permission editor (`set-permission`) ─────────────────
 //
-// `opencode.json` is human-owned EXCEPT the per-agent `permission` blocks, which
-// the Machinist owns through this action: the sandbox is code, so an agent
-// that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the Machinist
-// grant it instead of routing a config change to the human. The editor is
+// `opencode.json` is human-owned EXCEPT the per-agent `agents.<role>.permissions`
+// arrays, which the Machinist owns through this action: the sandbox is code, so an
+// agent that hits a missing allowlist verb (e.g. a deletion verb, G-142) has the
+// Machinist grant it instead of routing a config change to the human. The editor is
 // TEXT-SURGICAL and never re-serializes the document: opencode evaluates
-// permission rules LAST-match-wins, so member ORDER is semantics — a serde_json
+// permission rules LAST-match-wins, so rule ORDER is semantics — a serde_json
 // round-trip (alphabetical maps) would silently reorder rules and invert a
 // sandbox. The edited document is re-parsed before it is written, so the config
 // can never be left invalid.
@@ -6415,89 +6417,6 @@ fn json_object_append_member(t: &str, obj_start: usize, obj_end: usize, member: 
     }
 }
 
-/// Remove member `key` from the JSON object spanning `t[obj_start..obj_end]`,
-/// order-preserving. Returns the new document text, or `None` when the key is
-/// absent. A multi-line object loses the member's whole line; a trailing member
-/// also consumes the preceding comma so the object stays valid.
-fn json_object_remove_member(t: &str, obj_start: usize, obj_end: usize, key: &str) -> anyhow::Result<Option<String>> {
-    let bytes = t.as_bytes();
-    // Locate the member (key start .. value end).
-    let mut i = json_skip_ws(bytes, obj_start);
-    if bytes.get(i) != Some(&b'{') {
-        anyhow::bail!("expected '{{' at byte {}", i);
-    }
-    i += 1;
-    let mut span: Option<(usize, usize)> = None;
-    loop {
-        i = json_skip_ws(bytes, i);
-        match bytes.get(i) {
-            Some(b'}') | None => break,
-            Some(b'"') => {
-                let ks = i;
-                let ke = json_skip_string(bytes, i)?;
-                let found = std::str::from_utf8(&bytes[i + 1..ke - 1]).ok() == Some(key);
-                i = json_skip_ws(bytes, ke);
-                if bytes.get(i) != Some(&b':') {
-                    anyhow::bail!("expected ':' at byte {}", i);
-                }
-                i = json_skip_ws(bytes, i + 1);
-                let ve = json_skip_value(bytes, i)?;
-                if found {
-                    span = Some((ks, ve));
-                    break;
-                }
-                i = json_skip_ws(bytes, ve);
-                match bytes.get(i) {
-                    Some(b',') => i += 1,
-                    Some(b'}') | None => break,
-                    _ => anyhow::bail!("expected ',' or '}}' at byte {}", i),
-                }
-            }
-            _ => anyhow::bail!("expected a member key at byte {}", i),
-        }
-    }
-    let (ks, ve) = match span {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    // Inline (single-line) object: drop the member plus one adjacent comma.
-    if !t[obj_start + 1..obj_end - 1].contains('\n') {
-        let after = json_skip_ws(bytes, ve);
-        if bytes.get(after) == Some(&b',') {
-            let mut end = after + 1;
-            while end < obj_end && matches!(bytes[end], b' ' | b'\t') {
-                end += 1;
-            }
-            return Ok(Some(format!("{}{}", &t[..ks], &t[end..])));
-        }
-        let mut j = ks;
-        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t') {
-            j -= 1;
-        }
-        let start = if j > obj_start + 1 && bytes[j - 1] == b',' { j - 1 } else { ks };
-        return Ok(Some(format!("{}{}", &t[..start], &t[ve..])));
-    }
-    // Multi-line object: the member owns its line.
-    let line_start = t[..ks].rfind('\n').map(|p| p + 1).unwrap_or(obj_start + 1);
-    let after = json_skip_ws(bytes, ve);
-    if bytes.get(after) == Some(&b',') {
-        let nl = t[after..].find('\n').map(|p| after + p + 1).unwrap_or(ve);
-        Ok(Some(format!("{}{}", &t[..line_start], &t[nl..])))
-    } else {
-        // Last member: also consume the preceding comma (if any) so no dangling
-        // comma is left before the closing brace.
-        let mut j = ks;
-        while j > obj_start + 1 && matches!(bytes[j - 1], b' ' | b'\t' | b'\r' | b'\n') {
-            j -= 1;
-        }
-        if j > obj_start + 1 && bytes[j - 1] == b',' {
-            Ok(Some(format!("{}{}", &t[..j - 1], &t[ve..])))
-        } else {
-            Ok(Some(format!("{}{}", &t[..ks], &t[ve..])))
-        }
-    }
-}
-
 fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -6514,19 +6433,17 @@ fn permission_token_ok(s: &str) -> bool {
         })
 }
 
-/// Rewrite one agent permission rule in `opencode.json` and return a summary of
-/// the change (or `NO-OP: ...` when the rule already holds the requested value).
+/// Rewrite one agent permission rule in the V2 `opencode.json` shape and return
+/// a summary (or `NO-OP: ...` when the rule already holds the requested value).
 ///
-/// Two shapes are supported:
-/// - `pattern = Some(p)` edits the rule inside the per-pattern map
-///   `permission.<tool>.<p>`; `decision = "remove"` deletes that rule
-///   (order-preserving). A flat `permission.<tool>` string is refused.
-/// - `pattern = None` operates on the top-level `permission.<tool>` member itself:
-///   `allow|ask|deny` sets/replaces a FLAT `"<tool>": "<decision>"` member (an
-///   existing per-pattern map is refused — no accidental clobbering), and
-///   `remove` deletes the whole member (flat or map). This is how a flat
-///   tool-namespace glob (e.g. a mis-spelled `chakra_ui_*`) is renamed: add the
-///   corrected key, then remove the dead one.
+/// V2 stores permissions as an ordered `agents.<role>.permissions` array of
+/// `{ action, resource, effect }` rules. Rules are evaluated last-match-wins, so
+/// a new rule is appended; an existing exact `(action, resource)` rule is updated
+/// in place; `remove` deletes it. With no `--pattern`, the resource defaults to
+/// `*` for a set, and `remove` deletes EVERY rule for that action (the V1
+/// "remove the whole category" behaviour). V1 action names `bash`, `task`,
+/// `write`/`patch`, and `chakra-ui_*` are accepted as aliases for `shell`,
+/// `subagent`, `edit`, and `chakra_ui_*`.
 fn set_agent_permission(
     path: &Path,
     role: &str,
@@ -6548,125 +6465,168 @@ fn set_agent_permission(
     if !matches!(decision, "allow" | "ask" | "deny" | "remove") {
         anyhow::bail!("set-permission: --decision must be allow|ask|deny|remove (got '{}')", decision);
     }
+    let action = match tool {
+        "bash" => "shell",
+        "task" => "subagent",
+        "write" | "patch" => "edit",
+        "chakra-ui_*" => "chakra_ui_*",
+        _ => tool,
+    };
+    if action == "doom_loop" {
+        anyhow::bail!(
+            "set-permission: V2 has no doom_loop permission action; remove the rule instead of editing it"
+        );
+    }
     let removing = decision == "remove";
+    let resource = pattern.unwrap_or("*");
+
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("set-permission: cannot read {}: {}", path.display(), e))?;
-    let text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
-    // Validate BEFORE editing so a corrupt config is never compounded.
+    let mut text = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+
+    // Validate before editing so a corrupt config is never compounded.
     let parsed: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("set-permission: {} is not valid JSON: {}", path.display(), e))?;
+    if parsed.get("agents").is_none() {
+        if parsed.get("agent").is_some() {
+            anyhow::bail!(
+                "set-permission: {} is V1-shaped (agent.<role>.permission); migrate it to V2 agents.<role>.permissions first",
+                path.display()
+            );
+        }
+        anyhow::bail!("set-permission: no 'agents' section in {}", path.display());
+    }
     parsed
-        .get("agent")
+        .get("agents")
         .and_then(|a| a.get(role))
-        .map(|_| ())
         .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}' in {}", role, path.display()))?;
-    parsed
-        .get("agent")
-        .and_then(|a| a.get(role))
-        .and_then(|r| r.get("permission"))
-        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
 
-    let bytes = text.as_bytes();
-    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let (as_, _) = json_find_member(bytes, 0, "agent")?
-        .ok_or_else(|| anyhow::anyhow!("set-permission: no 'agent' section"))?;
-    let (rs, _) = json_find_member(bytes, as_, role)?
+    // Locate agents.<role>. Create the empty permissions array when absent.
+    let (as_, _) = json_find_member(text.as_bytes(), 0, "agents")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no 'agents' section"))?;
+    let (rs, re) = json_find_member(text.as_bytes(), as_, role)?
         .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}'", role))?;
-    let (ps, pe) = json_find_member(bytes, rs, "permission")?
-        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permission block", role))?;
-    if bytes[ps] != b'{' {
-        anyhow::bail!("set-permission: agent '{}' permission is not an object", role);
+    if text.as_bytes()[rs] != b'{' {
+        anyhow::bail!("set-permission: agent '{}' is not an object", role);
+    }
+    if json_find_member(text.as_bytes(), rs, "permissions")?.is_none() {
+        text = json_object_append_member(&text, rs, re, "\"permissions\": []", eol);
     }
 
-    let (label, verb, new_text) = match pattern {
-        // ── per-pattern rule inside `permission.<tool>` ────────────────────────
-        Some(p) => {
-            let label = format!("agent '{}'.{}['{}']", role, tool, p);
-            let new_text = match json_find_member(bytes, ps, tool)? {
-                Some((vs, _)) if bytes[vs] == b'"' => {
-                    anyhow::bail!(
-                        "set-permission: '{}.{}' is a flat action — only per-pattern maps can be edited; \
-                         pass --tool '{}' with no --pattern to change the whole category",
-                        role, tool, tool
-                    );
+    let (as_, _) = json_find_member(text.as_bytes(), 0, "agents")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no 'agents' section"))?;
+    let (rs, re) = json_find_member(text.as_bytes(), as_, role)?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: no agent '{}'", role))?;
+    let (ps, pe) = json_find_member(text.as_bytes(), rs, "permissions")?
+        .ok_or_else(|| anyhow::anyhow!("set-permission: agent '{}' has no permissions array", role))?;
+    if text.as_bytes()[ps] != b'[' {
+        anyhow::bail!("set-permission: agent '{}' permissions is not an array", role);
+    }
+    let mut rules: Vec<serde_json::Value> = serde_json::from_str(&text[ps..pe])
+        .map_err(|e| anyhow::anyhow!("set-permission: cannot parse the permissions array: {}", e))?;
+
+    let matching_indices = |rules: &[serde_json::Value]| -> Vec<usize> {
+        rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                if r.get("action").and_then(|v| v.as_str()) != Some(action) {
+                    return false;
                 }
-                Some((vs, ve)) if bytes[vs] == b'{' => match json_find_member(bytes, vs, p)? {
-                    Some((pvs, pve)) => {
-                        if removing {
-                            json_object_remove_member(&text, vs, ve, p)?.ok_or_else(|| {
-                                anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
-                            })?
-                        } else {
-                            let current: String = serde_json::from_str(&text[pvs..pve]).unwrap_or_default();
-                            if current == decision {
-                                return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
-                            }
-                            format!("{}\"{}\"{}", &text[..pvs], decision, &text[pve..])
-                        }
-                    }
-                    None => {
-                        if removing {
-                            return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
-                        }
-                        let member = format!("\"{}\": \"{}\"", json_escape(p), decision);
-                        json_object_append_member(&text, vs, ve, &member, eol)
-                    }
-                },
-                Some(_) => anyhow::bail!("set-permission: '{}.{}' value is not an object or string", role, tool),
-                None => {
-                    if removing {
-                        return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
-                    }
-                    let unit = json_member_indent_unit(bytes, ps, pe);
-                    let close_line_start = text[..pe - 1].rfind('\n').map(|q| q + 1).unwrap_or(0);
-                    let close_indent = &text[close_line_start..pe - 1];
-                    let inner_indent = format!("{}{}", close_indent, unit);
-                    let obj = if text[ps + 1..pe - 1].contains('\n') {
-                        format!("{{{e0}{inner_indent}\"{}\": \"{}\"{e0}{close_indent}}}", json_escape(p), decision, e0 = eol)
-                    } else {
-                        format!("{{ \"{}\": \"{}\" }}", json_escape(p), decision)
-                    };
-                    let member = format!("\"{}\": {}", json_escape(tool), obj);
-                    json_object_append_member(&text, ps, pe, &member, eol)
+                if pattern.is_none() && removing {
+                    return true;
                 }
-            };
-            (label, if removing { "REMOVED" } else { "SET" }, new_text)
-        }
-        // ── the top-level `permission.<tool>` member itself ────────────────────
-        None => {
-            let label = format!("agent '{}'.{}", role, tool);
-            let new_text = match json_find_member(bytes, ps, tool)? {
-                Some((_, _)) if removing => json_object_remove_member(&text, ps, pe, tool)?.ok_or_else(|| {
-                    anyhow::anyhow!("set-permission: '{}.{}' vanished mid-edit", role, tool)
-                })?,
-                Some((vs, ve)) if bytes[vs] == b'"' => {
-                    let current: String = serde_json::from_str(&text[vs..ve]).unwrap_or_default();
-                    if current == decision {
-                        return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
-                    }
-                    format!("{}\"{}\"{}", &text[..vs], decision, &text[ve..])
-                }
-                Some(_) => anyhow::bail!(
-                    "set-permission: '{}.{}' is a per-pattern map — pass --pattern to edit a rule inside it",
-                    role, tool
-                ),
-                None if removing => return Ok(format!("NO-OP: {} not present in {}", label, path.display())),
-                None => {
-                    let member = format!("\"{}\": \"{}\"", json_escape(tool), decision);
-                    json_object_append_member(&text, ps, pe, &member, eol)
-                }
-            };
-            (label, if removing { "REMOVED" } else { "SET" }, new_text)
-        }
+                r.get("resource").and_then(|v| v.as_str()) == Some(resource)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let found = matching_indices(&rules);
+    let verb = if removing { "REMOVED" } else { "SET" };
+    let label = if pattern.is_none() && removing {
+        format!("agent '{}' action '{}' (all resources)", role, action)
+    } else {
+        format!("agent '{}' rule {}:{}", role, action, resource)
     };
 
-    // Re-parse the edited document before writing — a config that fails to load
-    // would break every agent's startup, so validity is a hard precondition.
-    serde_json::from_str::<serde_json::Value>(&new_text)
+    if removing {
+        if found.is_empty() {
+            return Ok(format!("NO-OP: {} not present in {}", label, path.display()));
+        }
+        rules = rules
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !found.contains(i))
+            .map(|(_, r)| r)
+            .collect();
+    } else if found.is_empty() {
+        rules.push(serde_json::json!({
+            "action": action,
+            "resource": resource,
+            "effect": decision,
+        }));
+    } else {
+        let mut changed = false;
+        for i in found {
+            let current = rules[i].get("effect").and_then(|v| v.as_str());
+            if current != Some(decision) {
+                rules[i]["effect"] = serde_json::Value::String(decision.to_string());
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(format!("NO-OP: {} = '{}' already in {}", label, decision, path.display()));
+        }
+    }
+
+    // Re-render only the permissions array; the rest of the document is untouched.
+    let key_line_start = text[..ps].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let key_indent: String = text[key_line_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let unit = json_member_indent_unit(text.as_bytes(), rs, re);
+    let elem_indent = format!("{}{}", key_indent, unit);
+    let array = format_permission_array(&rules, &elem_indent, &key_indent, eol);
+    text.replace_range(ps..pe, &array);
+
+    serde_json::from_str::<serde_json::Value>(&text)
         .map_err(|e| anyhow::anyhow!("set-permission: edit produced invalid JSON, NOT written: {}", e))?;
-    std::fs::write(path, new_text.as_bytes())
+    std::fs::write(path, text.as_bytes())
         .map_err(|e| anyhow::anyhow!("set-permission: cannot write {}: {}", path.display(), e))?;
     Ok(format!("PERMISSION {}: {} = '{}' in {}", verb, label, decision, path.display()))
+}
+
+/// Render a V2 permissions array with one compact rule per line.
+fn format_permission_array(
+    rules: &[serde_json::Value],
+    elem_indent: &str,
+    close_indent: &str,
+    eol: &str,
+) -> String {
+    if rules.is_empty() {
+        return "[]".to_string();
+    }
+    let body = rules
+        .iter()
+        .map(|r| format!("{}{}", elem_indent, format_permission_rule(r)))
+        .collect::<Vec<_>>()
+        .join(&format!(",{}", eol));
+    format!("[{}{}{}{}]", eol, body, eol, close_indent)
+}
+
+/// One V2 permission rule as a compact JSON object (`action`, `resource`, `effect`).
+fn format_permission_rule(rule: &serde_json::Value) -> String {
+    let action = rule.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let resource = rule.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    let effect = rule.get("effect").and_then(|v| v.as_str()).unwrap_or("");
+    format!(
+        "{{ \"action\": \"{}\", \"resource\": \"{}\", \"effect\": \"{}\" }}",
+        json_escape(action),
+        json_escape(resource),
+        json_escape(effect)
+    )
 }
 
 // ── Context block ────────────────────────────────────────────────────────────

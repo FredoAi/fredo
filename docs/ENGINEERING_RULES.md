@@ -21,8 +21,8 @@ here (and in `docs/README.md`) rather than changed by the rename of the app conc
 - **`AGENTS.md`** — the human/agent operating guide. `opencode.json` injects it into every
   agent session; its content is the human's to maintain.
 - **`opencode.json`** — the agent/session configuration (instructions, permissions, model).
-  Only the agent `permission` blocks are machine-editable (via the pipeline `set-permission`
-  action); everything else is human-owned.
+  Only the per-agent `agents.<role>.permissions` rule arrays are machine-editable (via the
+  pipeline `set-permission` action); everything else is human-owned.
 
 When a rename or refactor reaches a reference to `AGENTS.md` or `opencode.json`, update the
 reference in documentation and leave the two files themselves for the human.

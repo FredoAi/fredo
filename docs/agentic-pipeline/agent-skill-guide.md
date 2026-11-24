@@ -13,7 +13,7 @@
 5. **Skills are for vertical, explicitly-triggered workflows — not always-needed knowledge.** Vercel measured: an 8KB compressed index in AGENTS.md hit 100% vs 79% for skills-with-instructions. If it must be true every turn, put it in AGENTS.md, not a skill. "A rule the model only meets after it decides to load a skill file is a rule it meets too late."
 6. **Concrete contracts beat prose.** Structured, contract-like skills (when-to-use / inputs / outputs / failure modes) outperform free-form prose (measured: −22.8% tokens, −14.5% calls). Include invocation templates and examples, not descriptions of the skill.
 7. **Match instruction rigidity to task fragility ("degrees of freedom").** Fragile operations (releases, migrations) → exact scripts + "do not modify"; judgment tasks (review) → brief directional principles. Reason-based instructions (`Do X because Y`) beat rigid absolutes (`ALWAYS X`).
-8. **Skills are privileged instructions — security is first-class.** Malicious skills are a studied attack vector (prompt injection + tool abuse). Scope `permission.skill` narrowly; audit third-party skills; never expose an open skill catalog.
+8. **Skills are privileged instructions — security is first-class.** Malicious skills are a studied attack vector (prompt injection + tool abuse). Scope the V2 `skill` permission action narrowly; audit third-party skills; never expose an open skill catalog.
 9. **Skills are a narrow, measured intervention.** SWE-Skills-Bench: 39 of 49 real SWE skills gave zero improvement. Build evals (3 scenarios) before writing; measure with/without; cut skills that don't move the metric. Instrument which skills actually load and prune ~zero-invocation ones.
 10. **The format is a de facto open standard.** `SKILL.md` + YAML frontmatter (`name` + `description` required), kebab-case name matching the directory, 1–1024-char description. Same file works across opencode, Claude Code, Cline, Codex, Gemini CLI, Copilot.
 11. **Skills are the interface to scripts.** Every pipeline script is invoked through a skill, and the skill documents the script's usage (principle 9 of [principles.md](principles.md)). The agent loads the skill and reads it before running any script — never from raw script-name knowledge. A script with no skill documenting it is unreachable.
@@ -102,7 +102,7 @@
 ### 3.7 Security
 
 - Skills are **privileged code and instructions** — a prompt-injection/tool-abuse attack surface (multiple 2025–26 papers).
-- Scope `permission.skill` narrowly (`allow`/`ask`/`deny`, `internal-*` wildcards). Audit third-party skills. Never expose an open skill catalog to end users.
+- Scope the V2 `skill` permission action narrowly (`{ "action": "skill", "resource": "<id>", "effect": ... }` rules; `internal-*` wildcards). Audit third-party skills. Never expose an open skill catalog to end users.
 - The `description` itself is an attack surface (tool-poisoning embeds malicious claims inside descriptions).
 
 ---
