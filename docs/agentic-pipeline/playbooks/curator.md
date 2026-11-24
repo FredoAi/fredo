@@ -83,6 +83,7 @@ Boundary: a **script/machine** lever is the Machinist's; a **skill/script** leve
 - **One improvement comment per run (timeline hygiene).** `record-improvement` is called ONCE per curation pass and posts ONE `## Pipeline Improvement` comment covering every guardrail touched (Class / Root cause / Lever / Guardrails / Effectiveness). Never call it once per guardrail — N separate improvement comments on one issue's timeline read as spam and bury the signal.
 - **Record-anchored.** Derive the lesson from the record (the audit verdict, the fix plan, the event log, the observations log) — never from memory of the round.
 - **Never touch the record.** The event log, verdicts, and error log are append-only; the Curator reads them and never rewrites, edits, or backdates them.
+- **Name your body file on every `comment` call.** `--prefix Status` with no `--body-file` posts whatever sits at `.opencode/tmp/<issue>/status.md` — a draft another role left there, including a retracted one. Always pass `--body-file` with a file you have just written, and read the file immediately before the call if you did not author it in this pass (observed #3198: a curator pass re-posted a withdrawn AC2 amendment from the default path as a live `## Status`; the timeline is append-only, so the repair is a correction comment, not a deletion).
 
 ## References
 

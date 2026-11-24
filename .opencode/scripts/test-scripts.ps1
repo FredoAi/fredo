@@ -4945,6 +4945,7 @@ Test-Script "post-audit->implementation post-merge reseeds the stale ref onto ma
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
   "dev-env.ps1",
+  "setup-version-shim.ps1",
   "pre-commit.ps1",
   "wait-telemetry.ps1",
   "process-hygiene.ps1",
@@ -4971,6 +4972,89 @@ if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
+}
+
+# --- The fixture `opencode` PATH lever SHADOWS the host runtime (Spec #3198, L-1) ---
+# The product probes `opencode.exe` FIRST and `where.exe` scans the WHOLE PATH per
+# candidate (`infrastructure/opencode_version.rs` `resolve_opencode_binary()`), so a
+# prepended dir holding only `opencode.cmd` loses to an installed binary further
+# down. `-ShimDir` must therefore DROP every PATH entry that resolves an
+# `opencode.*` and prove it with the SHADOWED=/RESOLVED= receipt.
+#
+# Hermetic: the CLI is faked by a `fredo.cmd` (not every host has `fredo`
+# installed), and the "installed runtime" is a 0-byte `opencode.exe`/`bun.exe` —
+# the lever only stats those names (`where` + Test-Path), it never executes them.
+# The bridge lands under a private `-Spec` so the cleanup is exact.
+Write-Host "PATH shim (Spec #3198 L-1):" -ForegroundColor Cyan
+Test-Script "shim: -ShimDir shadowing drops the host opencode (fixture wins)" {
+  $scratch = Join-Path $env:TEMP ("fredo-pathshim-" + [Guid]::NewGuid().ToString("N"))
+  $fakeBin = Join-Path $scratch "fakebin"
+  $fakeHost = Join-Path $scratch "fakehost"
+  $shimDir = Join-Path $scratch "shim"
+  $specId = "999999"
+  $bridgeDir = ".opencode/tmp/$specId/pathbridge"
+  $savedPath = $env:PATH
+  $psHomeExe = Join-Path $PSHOME "powershell.exe"
+  try {
+    foreach ($d in @($fakeBin, $fakeHost, $shimDir)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $fakeBin "fredo.cmd"), "@echo off`r`necho FREDO_STUB %*`r`nexit /b 0", [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $shimDir "opencode.cmd"), "@echo off`r`necho OpenCode 1.15.5`r`nexit /b 0", [System.Text.Encoding]::ASCII)
+    # The installed runtime the product would prefer, plus a build tool sharing
+    # its directory (round 1 dropped the whole `.bun\bin` and broke the build).
+    [System.IO.File]::WriteAllText((Join-Path $fakeHost "opencode.exe"), "", [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $fakeHost "bun.exe"), "", [System.Text.Encoding]::ASCII)
+
+    $env:PATH = $fakeBin + ';' + $fakeHost + ';' + $env:SystemRoot + '\System32;' + $env:SystemRoot
+    $out = & $psHomeExe -NoProfile -File ".opencode/scripts/setup-version-shim.ps1" -Mode Cli -ShimDir $shimDir -Spec $specId -Args "--version" 2>&1
+    $code = $LASTEXITCODE
+    $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($code -ne 0) { throw "forwarder failed (exit ${code}): $text" }
+    if ($text -notmatch ("(?m)^SHADOWED=" + [regex]::Escape($fakeHost) + "\s*$")) { throw "the installed opencode's directory was NOT shadowed: $text" }
+    if ($text -notmatch ("(?m)^RESOLVED=" + [regex]::Escape((Join-Path $shimDir "opencode.cmd")) + "\s*$")) { throw "the resolver did not land on the fixture: $text" }
+    if ($text -match "(?m)^RESOLVED=.*fakehost") { throw "the resolver still lands on the installed runtime: $text" }
+    $bridgeAbs = ''
+    if (Test-Path -LiteralPath ".opencode/tmp/$specId/pathbridge") {
+      $bridgeAbs = (Resolve-Path -LiteralPath ".opencode/tmp/$specId/pathbridge").Path
+    }
+    if ([string]::IsNullOrWhiteSpace($bridgeAbs)) { throw "no bridge directory was created for the shadowed build tool" }
+    if ($text -notmatch ("(?m)^BRIDGED=" + [regex]::Escape($bridgeAbs) + " <- bun\.exe\s*$")) { throw "the shadowed entry's build tool was not bridged: $text" }
+    if (-not (Test-Path -LiteralPath (Join-Path $bridgeDir "bun.exe"))) { throw "bridged bun.exe missing from $bridgeDir" }
+    if (Test-Path -LiteralPath (Join-Path $bridgeDir "opencode.exe")) { throw "an opencode binary was bridged back - the leak the shadowing exists to prevent" }
+    if ($text -notmatch "FREDO_STUB setup --version") { throw "the CLI child did not run: $text" }
+    return "shadowed the installed opencode, resolved the fixture, bridged bun"
+  } finally {
+    $env:PATH = $savedPath
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ".opencode/tmp/$specId" -Recurse -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "shim: no installed opencode -> SHADOWED=none (no false shadow)" {
+  $scratch = Join-Path $env:TEMP ("fredo-pathshim-" + [Guid]::NewGuid().ToString("N"))
+  $fakeBin = Join-Path $scratch "fakebin"
+  $shimDir = Join-Path $scratch "shim"
+  $savedPath = $env:PATH
+  $psHomeExe = Join-Path $PSHOME "powershell.exe"
+  try {
+    foreach ($d in @($fakeBin, $shimDir)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $fakeBin "fredo.cmd"), "@echo off`r`necho FREDO_STUB %*`r`nexit /b 0", [System.Text.Encoding]::ASCII)
+    [System.IO.File]::WriteAllText((Join-Path $shimDir "opencode.cmd"), "@echo off`r`necho OpenCode 1.15.5`r`nexit /b 0", [System.Text.Encoding]::ASCII)
+
+    $env:PATH = $fakeBin + ';' + $env:SystemRoot + '\System32;' + $env:SystemRoot
+    $out = & $psHomeExe -NoProfile -File ".opencode/scripts/setup-version-shim.ps1" -Mode Cli -ShimDir $shimDir -Args "--version" 2>&1
+    $code = $LASTEXITCODE
+    $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($code -ne 0) { throw "forwarder failed (exit ${code}): $text" }
+    if ($text -notmatch "(?m)^SHADOWED=none\s*$") { throw "expected SHADOWED=none on a host without an opencode: $text" }
+    if ($text -notmatch ("(?m)^RESOLVED=" + [regex]::Escape((Join-Path $shimDir "opencode.cmd")) + "\s*$")) { throw "the resolver did not land on the fixture: $text" }
+    if ($text -notmatch "(?m)^BRIDGED=none\s*$") { throw "expected BRIDGED=none when nothing was shadowed: $text" }
+    return "SHADOWED=none, fixture still resolved"
+  } finally {
+    $env:PATH = $savedPath
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
 }
 
 # --- Pipeline checks (P6: plan drivability + product-subtree diff) ---
@@ -5477,6 +5561,342 @@ Test-Script "modules: fredo-cdp.psm1 and gate-artifact-negative.psm1 parse clean
     }
   }
   return "both release-gate modules parse cleanly (0 errors); fredo-cdp exports >=1 function, gate-artifact-negative exports Invoke-NegativeLeg"
+}
+
+# --- Spec-branch ⇄ trunk sync + close-guard fallback (machine fixes from #3197/#3198) ---
+Write-Host "Spec-branch sync + close guard (#3197/#3198):" -ForegroundColor Cyan
+
+# Drives an `audit`-labeled scratch issue to the `cleanup` phase with a stamped
+# `Tested commit:` verdict, exercising the real gate order (audit-record →
+# post-audit → curation → SPEC MAINT PR → cleanup). Returns the spec PR number.
+function Mock-DriveToCleanup([int]$IssueNum, [string]$TestedCommit) {
+  $draftDir = ".opencode/tmp/$IssueNum"
+  New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+  [System.IO.File]::WriteAllText("$draftDir/tests-runs.md",
+    "Verdict: PASS`nTested commit: $TestedCommit`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*",
+    [System.Text.UTF8Encoding]::new($false))
+  & rust-script $ps --issue $IssueNum --agent tester --action post-comments 2>&1 | Out-Null
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$IssueNum" 2>&1 | Out-Null
+  $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$IssueNum --title t --body b" 2>&1
+  $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+  $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+  if (-not $prNum) { throw "no spec PR number from mock create: $prStr" }
+  $ar = & rust-script $ps --issue $IssueNum --agent auditor --action audit-record --verdict success --reason "harness: close-guard scratch" 2>&1
+  $arStr = if ($ar -is [array]) { $ar -join "`n" } else { "$ar" }
+  if ($arStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "audit-record did not reach post-audit: $arStr" }
+  & rust-script $ps --issue $IssueNum --agent curator --action record-improvement --reason "harness: close-guard scratch lesson" 2>&1 | Out-Null
+  New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force | Out-Null
+  $mp = & rust-script $ps --issue $IssueNum --agent orchestrator --action maint-pr 2>&1
+  $mpStr = if ($mp -is [array]) { $mp -join "`n" } else { "$mp" }
+  if ($mpStr -notmatch "SPEC MAINT PR MERGED") { throw "maint-pr did not merge: $mpStr" }
+  $pout = & rust-script $ps --issue $IssueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+  $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+  if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "post-audit -> cleanup failed: $poutStr" }
+  return $prNum
+}
+
+# #3197 LIVE DEFECT: cleanup order is `prune --remote` (teardown) THEN
+# `close-issue --to-phase done`, but the close guard re-resolved the "intended
+# served commit" from the LOCAL `spec/<N>` ref that `prune` had just deleted (its
+# remote counterpart was gone after the squash merge). The verdict was compared
+# against the empty string (`… is not the intended served commit ()`) and a fully
+# merged spec could not close. The guard now falls back to the MERGED spec PR's
+# recorded head oid (gh's durable record of the last published tip).
+Test-Script "close-issue done after prune: a merged spec closes (head read from the merged PR)" {
+  $url = Mock-IssueCreate "temp: prune-then-close" "prune-then-close scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    $prNum = Mock-DriveToCleanup $issueNum "mock-sha"
+    # The REAL sequence: the squash merge deletes the remote head, and `prune` then
+    # deletes the local ref whose upstream is gone.
+    & rust-script $ps --action mock-gh --ghargs "pr merge $prNum --squash" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    $prune = & rust-script $ps --agent orchestrator --action prune 2>&1
+    $pruneStr = if ($prune -is [array]) { $prune -join "`n" } else { "$prune" }
+    if ($pruneStr -notmatch "PRUNED:") { throw "prune did not report PRUNED: $pruneStr" }
+    if (Test-Path (Mock-StorePath "local-refs\spec\$issueNum")) { throw "precondition: prune must delete the local spec ref (upstream gone)" }
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -match "served commit \(\)") { throw "the guard compared the verdict against an EMPTY intended commit: $closeStr" }
+    if ($LASTEXITCODE -ne 0) { throw "close after prune must succeed, got exit ${LASTEXITCODE}: $closeStr" }
+    if ($closeStr -notmatch "labeled done") { throw "expected 'labeled done', got: $closeStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "done") { throw "expected the done label, got: $($st.Labels)" }
+    return "prune-then-close succeeds on a merged spec (#$issueNum); merged-PR head used as the anchor"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The real check must NOT weaken: a verdict stamped for a head that is not the head
+# the MERGED PR recorded is a genuinely superseded head and must still fail — with a
+# message that names the merged head, never an empty pair of parens.
+Test-Script "close-issue done after prune: a superseded-head verdict still fails" {
+  $url = Mock-IssueCreate "temp: superseded head" "superseded-head scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    # The merged PR records a DIFFERENT tip (aaaa…) than the one the verdict tested
+    # (mock-sha): the round's work landed from a head the tester never validated.
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "pr-head-sha") -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $env:FREDO_MOCK_STORE "pr-head-sha"), "aaaa1111bbbb2222cccc3333dddd4444eeee5555", [System.Text.UTF8Encoding]::new($false))
+    $prNum = Mock-DriveToCleanup $issueNum "mock-sha"
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "pr-head-sha") -Force -ErrorAction SilentlyContinue
+    & rust-script $ps --action mock-gh --ghargs "pr merge $prNum --squash" 2>&1 | Out-Null
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --agent orchestrator --action prune 2>&1 | Out-Null
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -match "served commit \(\)") { throw "the empty `()` comparison is back: $closeStr" }
+    if ($closeStr -notmatch "MERGED spec PR") { throw "expected the merged-head refusal, got: $closeStr" }
+    if ($closeStr -notmatch "aaaa1111") { throw "the refusal must name the merged head it compared against, got: $closeStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -contains "done") { throw "a superseded-head verdict must NOT close as done" }
+    return "superseded-head verdict still fails at close; the merged head is named (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "pr-head-sha") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# An unresolvable intended commit must produce a DISTINGUISHABLE refusal that says so
+# (never a silent comparison against ""). Here neither a spec ref nor a merged PR
+# records the tip at all.
+Test-Script "close-issue done: an unresolvable intended commit refuses distinguishably" {
+  $url = Mock-IssueCreate "temp: unresolvable head" "unresolvable-head scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    $prNum = Mock-DriveToCleanup $issueNum "mock-sha"
+    # Drop EVERY record of the spec tip: the merged PR, the remote ref, the local ref.
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json") -Force -ErrorAction SilentlyContinue
+    & rust-script $ps --action mock-git --gitargs "push origin --delete spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --agent orchestrator --action prune 2>&1 | Out-Null
+    $close = & rust-script $ps --issue $issueNum --agent orchestrator --action close-issue --to-phase done 2>&1
+    $closeStr = if ($close -is [array]) { $close -join "`n" } else { "$close" }
+    if ($closeStr -match "served commit \(\)") { throw "the empty `()` comparison is back: $closeStr" }
+    if ($closeStr -notmatch "cannot resolve the intended served commit") { throw "expected the distinguishable 'cannot resolve' refusal, got: $closeStr" }
+    return "unresolvable intended commit refuses distinguishably (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "maint-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3198: `sync-spec-branch` — the machine merges the trunk into the live spec branch
+# because no agent holds a usable `git merge` (developer: denied; orchestrator: no
+# checkout/merge; grants are restart-inert). Clean merge: recorded `spec-branch.synced`.
+Test-Script "sync-spec-branch: clean merge records spec-branch.synced" {
+  $url = Mock-IssueCreate "temp: sync clean" "sync clean scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$issueNum --title t --body b" 2>&1
+    $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+    if ($prStr -notmatch "pull/\d+") { throw "no spec PR from mock create: $prStr" }
+    # The trunk advanced under the branch (the #3198 shape).
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action sync-spec-branch 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "clean sync must pass, got exit ${LASTEXITCODE}: $outStr" }
+    if ($outStr -notmatch "SPEC BRANCH SYNCED") { throw "expected SPEC BRANCH SYNCED, got: $outStr" }
+    if ($outStr -notmatch "re-serve the root") { throw "the sync must instruct a re-serve (G-032), got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "spec-branch.synced" } | Select-Object -Last 1
+    if (-not $ev) { throw "no spec-branch.synced event recorded" }
+    if ($ev.attributes.branch -ne "spec/$issueNum") { throw "spec-branch.synced branch attr wrong: $($ev.attributes.branch)" }
+    if ([string]::IsNullOrEmpty($ev.attributes.main)) { throw "spec-branch.synced must record the merged main SHA" }
+    if ([string]::IsNullOrEmpty($ev.attributes.tip)) { throw "spec-branch.synced must record the resulting tip" }
+    return "clean sync merged the trunk, recorded spec-branch.synced, and asked for a re-serve (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A conflicting merge must ABORT, leave the published branch untouched, and fail
+# loudly naming the conflicted paths — the machine never invents a resolution.
+Test-Script "sync-spec-branch: a conflicting merge aborts, restores the tip, names the paths" {
+  $url = Mock-IssueCreate "temp: sync conflict" "sync conflict scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-merge-conflict") -Force | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action sync-spec-branch 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a conflicting sync must fail, got exit 0: $outStr" }
+    if ($outStr -notmatch "sync ABORTED") { throw "expected the abort refusal, got: $outStr" }
+    if ($outStr -notmatch "docs/SETUP\.md" -or $outStr -notmatch "FAQ\.md") { throw "the refusal must NAME the conflicted paths, got: $outStr" }
+    if ($outStr -notmatch "unchanged") { throw "the refusal must state the branch is unchanged, got: $outStr" }
+    if (-not (Test-Path (Mock-StorePath "refs\spec\$issueNum"))) { throw "the published branch must still exist after an aborted merge" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "spec-branch.synced" }
+    if ($ev) { throw "an aborted sync must NOT record spec-branch.synced" }
+    return "conflicting sync aborted, branch intact, conflicted paths named (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-merge-conflict") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Phase gate: a sync outside implementation/testing is refused (never on `done`).
+Test-Script "sync-spec-branch: a wrong-phase call is refused" {
+  $url = Mock-IssueCreate "temp: sync wrong phase" "sync wrong-phase scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action sync-spec-branch 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a sync in the audit phase must be refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "only valid while the issue is in implementation or testing") { throw "expected the phase refusal, got: $outStr" }
+    return "wrong-phase sync refused (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# G-421 descent RE-CHECK: `implementation → testing` must refuse a branch that no
+# longer descends from the trunk (the CONFLICTING-PR case), pointing at the machine
+# action that fixes it instead of burning a test round.
+Test-Script "implementation->testing refuses a non-descendant spec branch (points at sync-spec-branch)" {
+  $url = Mock-IssueCreate "temp: stale spec branch" "stale branch scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 2 2>&1 | Out-Null
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a non-descendant branch must not enter testing, got exit 0: $outStr" }
+    if ($outStr -notmatch "does not descend from") { throw "expected the descent refusal, got: $outStr" }
+    if ($outStr -notmatch "sync-spec-branch") { throw "the refusal must point at sync-spec-branch, got: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "ready-for-dev") { throw "the issue must stay in implementation (label ready-for-dev), got: $($st.Labels)" }
+    if ($st.Labels -contains "testing") { throw "the testing label must not be applied, got: $($st.Labels)" }
+    return "stale spec branch refused at implementation->testing with a sync-spec-branch pointer (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3197: `persist_tests` used to persist only TOP-LEVEL `*.md`, so a QA suite's
+# executable levers (`scripts/*.ps1`) and fixtures (`fixtures/**`) never reached
+# `main` — silently. The whole feature directory is persisted now.
+Test-Script "tests-commit persists the WHOLE feature dir (scripts + fixtures, not just *.md)" {
+  $url = Mock-IssueCreate "temp: tests whole dir" "tests whole-dir scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $feat = "scratchdeep-$issueNum"
+  $dir = ".opencode/tests/$feat"
+  try {
+    New-Item -ItemType Directory -Path "$dir/scripts" -Force | Out-Null
+    New-Item -ItemType Directory -Path "$dir/fixtures" -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: nested-suite case`n", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/scripts/lever.ps1", "Write-Output 'lever'`n", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText("$dir/fixtures/sample.json", "{`"k`":1}`n", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action tests-commit --feature $feat 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "3 file\(s\)") { throw "expected 3 files persisted (md + script + fixture), got: $outStr" }
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
+    foreach ($rel in @("functional.md", "scripts\lever.ps1", "fixtures\sample.json")) {
+      if (-not (Test-Path (Join-Path $mainTree $rel))) { throw "missing from the persisted main tree: $rel" }
+    }
+    return "whole feature dir persisted: markdown + scripts/lever.ps1 + fixtures/sample.json"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Silence is the defect: a suite path that cannot be persisted must ABORT the
+# command naming every unpersisted path (here: a file held with an exclusive lock).
+Test-Script "tests-commit refuses loudly, naming the unpersisted suite paths" {
+  $url = Mock-IssueCreate "temp: tests refuse" "tests refuse scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $feat = "scratchlock-$issueNum"
+  $dir = ".opencode/tests/$feat"
+  $locked = $null
+  try {
+    New-Item -ItemType Directory -Path "$dir/scripts" -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/functional.md", "- [ ] F-1: lock case`n", [System.Text.UTF8Encoding]::new($false))
+    $blocked = Join-Path (Resolve-Path $dir).Path "scripts\blocked.ps1"
+    [System.IO.File]::WriteAllText($blocked, "Write-Output 'blocked'`n", [System.Text.UTF8Encoding]::new($false))
+    # Exclusive handle: the child process cannot read the file.
+    $locked = [System.IO.File]::Open($blocked, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action tests-commit --feature $feat 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "an unpersistable suite path must fail the command, got exit 0: $outStr" }
+    if ($outStr -notmatch "NOT persisted to main") { throw "expected the loud refusal, got: $outStr" }
+    if ($outStr -notmatch "blocked\.ps1") { throw "the refusal must NAME the unpersisted path, got: $outStr" }
+    return "unpersistable suite path refused loudly with the path named"
+  } finally {
+    if ($locked) { $locked.Dispose() }
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
 }
 
 # Remove the mock-repo scratch dir (it lives in %TEMP%, gitignored by default).
