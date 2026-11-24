@@ -28,16 +28,22 @@
 
 ## Spec #3197 additions (OpenCode 2 / V2 port — nothing below may change)
 
-- [ ] R-16: `apps/tauri/src-tauri/src/infrastructure/rtdb/attrs.rs` is **byte-identical to `main`** —
+- [x] R-16: `apps/tauri/src-tauri/src/infrastructure/rtdb/attrs.rs` is **byte-identical to `main`** —
   `scripts/verify-contract-immutable.ps1` prints `PATH=attrs.rs STATUS=IDENTICAL`.
-- [ ] R-17: `apps/tauri/src-tauri/src/infrastructure/rtdb/ingest.rs` is **byte-identical to `main`** —
+  Round 3 (`spec/3197@7ad6ba2` vs `origin/main@696f5a6`): IDENTICAL, SHA256 `41172B10…29BB`.
+- [x] R-17: `apps/tauri/src-tauri/src/infrastructure/rtdb/ingest.rs` is **byte-identical to `main`** —
   same script prints `PATH=ingest.rs STATUS=IDENTICAL` and `CONTRACT-DIFF-EMPTY: true`.
-- [ ] R-18: Mission Monitor is untouched and renders the ported rows unchanged — no `apps/ui/` file
+  Round 3: IDENTICAL, SHA256 `F2487FA3…9BFB`, `CONTRACT-DIFF-EMPTY: true`, `EXITCODE=0`.
+- [x] R-18: Mission Monitor is untouched and renders the ported rows unchanged — no `apps/ui/` file
   appears in the spec diff, and the F-31 render of a live V2 session succeeds with the panel's
   existing list/chat/tool/token surfaces.
-- [ ] R-19: the classifier's mapping is unchanged — operation-name-driven classification
+  Round 3: rendered the live V2 Terminal session (`ses_df4476173ffeQMnLX7JtSY2Jht`) — token bar,
+  USER/TOOLS/RESPONSE sections and 4 linear nodes; console clean (no errors).
+- [x] R-19: the classifier's mapping is unchanged — operation-name-driven classification
   (`run_agent`/`chat`/`execute_tool`), session identity precedence, parent precedence
   (link → `session.parent_id`), payload projection and the drop rule for unclassifiable spans.
+  Round 3: 0 NULL-op spans across 15 spans of the Terminal session; every op ∈ the three values;
+  child attribution resolved through `session.parent_id`.
 - [ ] R-20: the emitted contract vocabulary is unchanged — V1 key set (`fredo.session` / `fredo.llm` /
   `fredo.tool.<name>` span names; `gen_ai.operation.name`/`provider.name`/`request.model`/
   `input.messages`/`output.messages`/`usage.*`/`tool.*`; the flat Fredo-native attributes; the nine
