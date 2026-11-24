@@ -1075,6 +1075,145 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
 > (recipe below), and restore the keys. All 10+ shell/CLI sessions for the geometry legs must be
 > rooted in `.opencode\tests\terminal\fixtures\*` so C-5 removes their records.
 
+## #3198 — the shared capture point, the isolation branch, and the argv contract
+
+> Seeded at triage for Spec #3198 (`## QA Expert` R-3a..R-4c). The Terminal launch path is
+> unchanged on the default path (it already sets no `OPENCODE_*`/`OTEL_*` key —
+> `commands.rs:903-905`); what changes is (a) setup no longer persists a receiver address,
+> and (b) an isolated env pins the child's endpoint to its own receiver and launches
+> `--standalone` **iff** OpenCode 2 accepts the flag.
+>
+> **Verification policy: live** for F-90/F-93/F-94/F-95 (a real session + `telemetry_spans`);
+> **static** (committed unit pin) for the negative env/argv halves of F-89/F-91/F-95, which
+> are prove-a-negatives over the shipped spawn construction.
+>
+> **Environment premise for the DEFAULT path (G-452).** The default path requires
+> `isolation_required() == false`: `FREDO_REQUIRE_ENV_ISOLATION` unset/blank/false AND
+> `OPENCODE_OTLP_ENDPOINT` absent or equal to **this instance's own** ingest endpoint
+> (`EnvConfig.ingest_grpc_port`, i.e. the env's `ports.otlpGrpc`, or `4317` legacy). ⚠
+> `dev-env.ps1:743-745` always injects a NON-default ambient endpoint in env mode
+> (`:1509` allocates `16xxx`), so a literal `:4317` comparison would classify EVERY env-mode
+> instance as isolated and make F-89/F-90/F-95 undrivable. The plan's Discussion asks the
+> Architect to bind the predicate to the instance's own port; if the literal comparison
+> ships, the default-path legs must be driven on a LEGACY instance (`-Action Up -Spec 3198`
+> with no `-EnvId`/`-EnvSlot`) and the tester must say so — never fake the default path on
+> the isolation branch.
+>
+> **Isolation arms the product flag explicitly.** `-RequireIsolation` arms only dev-env's own
+> guard (`dev-env.ps1:1397-1404` reads the process env, it does not export it), so the
+> AC4 legs pass `-EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"` as well.
+>
+> **`--standalone` is a probe result, not an assumption.** ST-1 records the literal
+> `opencode --help` output in the POSTED `## Developer <ST-id> — verification` comment. The
+> rows below assert the CONTRACT (isolation env ⇒ standalone launch) and RECORD the probe;
+> when the flag is absent the argv element is a recorded-inert disposition with a PO
+> amendment request, never a fabricated PASS on a flag the runtime rejects.
+
+## AC3 — Fredo Terminal uses the capture point
+
+- [ ] **F-89 (R-3a / AC3 — the default path adds NO wiring; runnable pre-#3197 for the
+  static half).** Static: `cargo test` the ST-4 negative pin that the default-path child env
+  is exactly `TERM`/`COLORTERM`/`TERM_PROGRAM` and contains **no** key starting
+  `OPENCODE_`/`OTEL_`; quote it with file:line. Live corroboration: launch a default-path
+  session, then `powershell -File .opencode/scripts/process-hygiene.ps1 -List` and read the
+  spawned `opencode` CommandLine.
+  **Expected:** no `OPENCODE_*`/`OTEL_*` key set by Fredo on the child (unit pin + the
+  source quote of `spawn_and_wire:903-905`); the CommandLine carries **no** receiver-address
+  argument and **no** `--standalone`.
+  - **Edge:** ambient variables inherited from the parent are NOT Fredo's wiring — record the
+    ambient set separately and do not count it against the row.
+
+- [ ] **F-90 (R-3b / AC3 — a Terminal session is captured through the shared service;
+  NAMED BLOCKER until #3197).** Default path (F-89's premise). Launch a session, send one
+  bounded turn `write_pty_input{sessionId, data:"Reply with exactly: FREDO_QA_3198_TERM\r"}`,
+  record the app `session_id`, then
+  `powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Manifest
+  .opencode/tmp/envs/spec3198/manifest.json -Query "SELECT session_id, span_name, provider,
+  transport, count(*) AS n FROM telemetry_spans GROUP BY 1,2,3,4"`.
+  **Expected:** ≥1 span row for that session in the instance's own store (`ports.pg`), i.e.
+  the session reached the app's OTLP receiver with no per-session receiver wiring.
+  - **Edge:** if the store is empty for a session that clearly ran, first check the
+    #3197 precondition (the installed plugin is the V2 bundle, hash-equal to `dist/index.js`)
+    before declaring a product FAIL; a `too many clients` psql refusal → use the named
+    app-pool fallback and disclose (G-307).
+
+- [ ] **F-91 (R-3c / AC3 — listing / attach / continue are byte-identical; runnable
+  pre-#3197).** Static: the shipped argv pins — `opencode session list --format json`
+  (`commands.rs:747`), `--session <id>` / `--continue` (`resume.rs:94-97`) — plus ST-4's new
+  pins. Live: list (`list_opencode_sessions`), attach (resume a record → `--session <id>` in
+  the CommandLine), continue (a fresh `--continue` leg).
+  **Expected:** the three argv forms are byte-identical to the pre-change strings (no added
+  flag, no reordering); list returns the CLI's JSON; attach/continue still start a session in
+  the record's dir.
+  - **Edge:** the `--format json` capture timeout is unchanged (`CAPTURE_TIMEOUT_MS`); a
+    resume that prints "no session" still surfaces the shipped blocked state (#2935 rows
+    F-24..F-32).
+
+- [ ] **F-92 (R-3d / AC3 — a refused launch names cause + remedy, NOT the not-found string;
+  runnable pre-#3197).** In the `terminal` window:
+  `__TAURI__.core.invoke('spawn_terminal_session', { cli:'opencode', workDir:'C:\\Code\\fredo',
+  testOverride:{ binary:'C:\\Code\\fredo\\apps\\tauri\\src-tauri\\Cargo.toml' } })`
+  (an existing NON-executable in-repo file — resolution succeeds, the spawn fails).
+  **Expected:** the in-window message is the rendered `TERMINAL_OPENCODE_BLOCKED_MSG`
+  (cause + "reopen Terminal") and is **NOT** `not_found_message` (which contains
+  `` `opencode` not found in PATH `` / "Install OpenCode"); a terminal state within 10 s.
+  - **Edge:** a genuinely MISSING binary still uses `not_found_message` (regression R-8 in the
+    setup suite); an invalid work dir keeps its own "Working directory not found" copy.
+
+## AC4 — isolation still isolates
+
+- [ ] **F-93 (R-4a / AC4 — isolation launches standalone + pins the env receiver).**
+  `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3198 -EnvId spec3198-iso
+  -EnvSlot <n> -RequireIsolation -EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"`; launch a session;
+  `process-hygiene.ps1 -List`; and `Get-Content .opencode/tmp/envs/spec3198-iso/manifest.json`
+  for `ports.otlpGrpc`.
+  **Expected, recording the probe:** if ST-1's `opencode --help` record shows the flag, the
+  child's CommandLine contains `--standalone`; if it does not, `--standalone` is ABSENT and
+  the receipt records the inert disposition naming the missing flag (never a PASS on an
+  argv the runtime rejects). In both branches the endpoint pin is asserted by ST-4's unit
+  test (child env = `OPENCODE_ENABLE_TELEMETRY=1`, `OPENCODE_OTLP_PROTOCOL=grpc`,
+  `OPENCODE_OTLP_ENDPOINT=http://localhost:{ingest_grpc_port}`) and by the capture landing in
+  that receiver (F-94).
+  - **Edge:** the ambient `OPENCODE_OTLP_ENDPOINT` is deliberately a DIFFERENT port (a decoy)
+    — the pin must win; a stale User-level value must not shadow it.
+
+- [ ] **F-94 (R-4b / AC4 — spans land in the env receiver and NOT in the shared store;
+  NAMED BLOCKER until #3197).** Ordered, ONE instance at a time (the store identity is the
+  discriminator):
+  1. In the default-path instance (F-90) record the session `SID_S` and
+     `SELECT count(*) AS n FROM telemetry_spans WHERE session_id = '<SID_S>'` → `N_S`.
+  2. `dev-env.ps1 -Action Down -EnvId spec3198`; boot the isolated instance (F-93; same
+     `-EnvSlot` if you want the same ports — record the choice) and launch a session; record
+     `SID_I`.
+  3. Query the ISO store's own manifest: `WHERE session_id = '<SID_I>'` → **≥1** row (the
+     env receiver received them despite the decoy ambient endpoint).
+  4. `dev-env.ps1 -Action Down -EnvId spec3198-iso`; re-`Up` the SHARED instance
+     (`-EnvId spec3198`, same slot); query it: `WHERE session_id = '<SID_S>'` → still `N_S`
+     (proves it is the SAME store — the non-vacuous control), and `WHERE session_id =
+     '<SID_I>'` → **0** rows.
+  **Expected:** the isolated session's spans exist in exactly one store — the env's — and the
+  shared store (identity-verified by the retained `N_S`) holds zero rows for `SID_I`.
+  - **Edge:** two slots may not run concurrently in this round — the sequence above is the
+    authored order, not a tester improvisation. If re-`Up` yields a different store (the
+    `N_S` control fails), the row is a FAILED DRIVE with that cause, not a product FAIL.
+
+- [ ] **F-95 (R-4c / AC4 — the negative control: neither signal ⇒ the default path).**
+  Boot with NO `FREDO_REQUIRE_ENV_ISOLATION` and the endpoint absent or equal to the
+  instance's own ingest endpoint (see the environment premise); launch a session.
+  **Expected:** identical to F-89 — no `--standalone` in the CommandLine, no endpoint pin
+  (unit pin + source quote), and the session still captures (F-90). This row is what protects
+  the default path from an always-on isolation branch.
+  - **Edge:** `FREDO_REQUIRE_ENV_ISOLATION=` (blank) and `=0`/`=false` must read as UNSET
+    (byte-mirror of `dev-env.ps1:1399-1402`); a non-default endpoint IS a signal.
+
+- [ ] **F-96 (non-functional — no orphans, console clean, bounded launch).** After F-89..F-95,
+  close the window and read `process-hygiene.ps1 -List` + both windows' console.
+  **Expected:** 0 Fredo-spawned `opencode`/`node` processes; no `Error:`/`Uncaught`/
+  `Maximum update depth exceeded`; every launch reaches a state within the shipped bounds
+  (no hang on the isolation path).
+  - **Edge:** an isolation launch where the env receiver is not yet listening — the session
+    must still start (the plugin retries/queues), never wedge the pane.
+
 ## Round notes
 
 > (Tester appends per-round results here — keep `- [ ]` on FAIL/UNVERIFIED, mark PASS with
