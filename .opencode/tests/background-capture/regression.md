@@ -17,14 +17,20 @@ this feature edits.
   (commands list + `exit_code_for_parse_error`) unchanged apart from the absence of any new item.
   **Edge:** `--background --help` (two args) is a clap parse error, not a background launch.
 
-- [ ] **RT-2 (`ingest_autostart_get` stays READ-ONLY).** Open Settings → Background capture, change
-  nothing, close it; `registry-entry.ps1 -Read` before and after.
-  **Expected:** `RAW_SHA256` identical (and `ENTRY` identical). The KV mirror
-  `ingest.autostart` is still written (`"true"`/`"false"`) — unchanged contract.
+- [ ] **RT-2 (`ingest_autostart_get` stays READ-ONLY).** Seed a PRESENT value first
+  (`registry-entry.ps1 -SeedForeign`, or the pane's own ON), then open Settings → Background capture,
+  change nothing, close it; `registry-entry.ps1 -Read` before and after.
+  **Expected:** `ENTRY=Present` on BOTH reads and `RAW_SHA256` identical and NOT `(absent)` — the
+  pair must be two non-empty digests of the same subject (two `(absent)` readings are equal and prove
+  nothing, G-469). The KV mirror `ingest.autostart` is still written (`"true"`/`"false"`) — unchanged
+  contract. Finish with `-Restore`.
 
 - [ ] **RT-3 (foreground cold launch still shows `main`, geometry unchanged).**
-  `dev-env.ps1 -Action Up`; read the native handle and the window list.
-  **Expected:** `MainWindowHandle != 0` after `Ready`; the window entry matches
+  `dev-env.ps1 -Action Up`; read the native window enumeration
+  (`launch-background.ps1 -Action Windows -ManifestPath <manifest>`) and the window list.
+  **Expected:** `VISIBLE_PRODUCT_WINDOW=True` with a `VISIBLE_NON_CONSOLE_WINDOW_TITLE` after
+  `Ready` (the predicate excludes the debug `ConsoleWindowClass` window; `MAIN_WINDOW_HANDLE` alone
+  is not the witness); the window entry matches
   `label=main`, `index.html`, 1400×900 / min 900×600 / maximized; the config drift guard test
   (`app_lifecycle` parsing `tauri.conf.json` via `include_str!`) passes with the new
   `visible` key asserted against `MAIN_WINDOW_VISIBLE_BY_CONFIG`;

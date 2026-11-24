@@ -47,11 +47,27 @@ row.
 
   `registry-entry.ps1` prints the RESOLVED value path, `ENTRY=Present|Absent`, `RAW=` verbatim,
   `RAW_LENGTH`, `RAW_SHA256`, a per-token breakdown, and the expected owned string with a byte
-  equality verdict. It exits **2** (instrument failure) on an absent/unreadable input — a missing
-  exe, a dead `-AppPid`, a missing backup, a .NET-vs-`reg.exe` disagreement, or a post-write
-  mismatch — and **1** only when the reading contradicts its `-Expect`.
-  `launch-background.ps1` starts `<exe> --background` with the env's `FREDO_*` seams injected and
-  prints `START_PID`, readiness/port-owner facts and the NATIVE window reading.
+  equality verdict. **An ABSENT value is a normal reading**: `-Read` prints `ENTRY=Absent`,
+  `RAW_SHA256=(absent)`, `VALUE_KIND=(none: the value does not exist)` and exits **0**; with
+  `-Expect Absent` it also prints `EXPECTATION_MET=True`. It exits **2** (instrument failure) only
+  on an absent/unreadable INPUT — a `-Exe` path not on disk, a dead `-AppPid`, a missing backup, a
+  `reg.exe` exit outside {0,1}, a .NET-vs-`reg.exe` disagreement, or a post-write mismatch — and
+  **1** only when the reading contradicts its `-Expect`. `-Clear` is **idempotent and says so**:
+  clearing an already-absent value prints `CLEAR_WAS_ALREADY_ABSENT=True` +
+  `DELETE_VERIFIED=Absent` and exits 0 (an absent TARGET is a reading, never an absent input).
+  `launch-background.ps1` starts `<exe> --background` with the env's FULL Names-Block injected
+  (`FREDO_ENV_ID`, `FREDO_ENV_ROOT`, `FREDO_ENV_MANIFEST`, `FREDO_DATA_DIR`, **`FREDO_PG_DATA_DIR`**,
+  `FREDO_PG_LOCK_DIR`, `FREDO_DBCLIENT_STATE_DIR`, `FREDO_CLI_PIPE`, `FREDO_MCP_BASE_PORT`,
+  `FREDO_VITE_PORT`, `FREDO_WEBVIEW_PROFILE_DIR`/`WEBVIEW2_USER_DATA_FOLDER`,
+  `FREDO_LLAMA_SERVER_COMPANION_DIR`, `FREDO_INGEST_GRPC_PORT`/`FREDO_INGEST_HTTP_PORT`,
+  `OPENCODE_ENABLE_TELEMETRY`/`OPENCODE_OTLP_ENDPOINT`/`OPENCODE_OTLP_PROTOCOL`), re-derived from the
+  manifest plus the documented `<env-root>/postgres|lock|dbclient|companion` layout. It **fails
+  closed (exit 2, nothing spawned)** when the manifest is missing/unreadable, `servingCheckout` is
+  absent, or the derived cluster dir does not exist / is not inside the env root — so it cannot
+  attach the child to the machine-global shared cluster. It prints `START_PID`, readiness/port-owner
+  facts, the Names-Block receipt, and the NATIVE window enumeration.
+  **`-DryRun`** (`-Action Launch -DryRun`) prints the resolved env block, exe and exact argv and
+  exits 0 without spawning — run it FIRST and paste it as the isolation receipt.
 
 - **`<exe>`** = the env's own binary as the product sees it, normally
   `apps/tauri/src-tauri/target/debug/fredo.exe` (the `pnpm tauri dev` build; `current_exe()` of the
@@ -62,11 +78,20 @@ row.
   feature declares `app.windows[0].visible = false`, so `main` EXISTS from launch while nothing is
   shown: `app_lifecycle_status.mainWindowOpen` is existence-only
   (`infrastructure/tray.rs:342-347`) and `tauri_manage_window action="list"` lists a hidden window
-  (the resident-shell suite's N-1 says so). The discriminating readings are
-  `Get-Process.MainWindowHandle` (0 = no VISIBLE top-level window) +
-  `tasklist /FI "IMAGENAME eq fredo.exe" /FO LIST` → `Window Title`. A listed-but-hidden `main`
-  entry is **NOT** a FAIL. Paste the raw `tauri_manage_window action="list"` output beside them; if
-  that record carries a visibility field it must read `false`, and if it carries none, say so.
+  (the resident-shell suite's N-1 says so). **The discriminating reading is the predicate
+  "no VISIBLE top-level window owned by the app PID, excluding class `ConsoleWindowClass`"**, which
+  `launch-background.ps1` evaluates from `EnumWindows` + `IsWindowVisible` + `GetClassName` and
+  prints as `VISIBLE_PRODUCT_WINDOW=<True|False>` with the whole per-PID `WINDOW_LIST` (each entry
+  carries `visible`, `class`, `title`), `CONSOLE_WINDOW_COUNT`, and
+  `VISIBLE_NON_CONSOLE_WINDOW_TITLES`. `ConsoleWindowClass` is excluded BY CLASS because a debug
+  build's console is a visible top-level window titled with the exe path — the QAs own build
+  artifact, not a product surface. **`MAIN_WINDOW_HANDLE` is a DIAGNOSTIC, never the predicate**: it
+  is `Get-Process.MainWindowHandle`, which reports the first visible titled window and can be the
+  console (this is exactly why the round-1 `MAIN_WINDOW_HANDLE=0` literal was unattainable).
+  A listed-but-hidden `main` entry is **NOT** a FAIL. Paste the raw
+  `tauri_manage_window action="list"` output beside them; if that record carries a visibility field
+  it must read `false`, and if it carries none, say so. `DESKTOP_WINDOW_COUNT=0` means the
+  enumerator itself failed — an instrument failure (exit 2), never "no window".
 
 - **Tray `Open`** has no drivable physical click (resident-shell QA-3 named blocker). Per #3192 AC2
   the tray item, the `open_main_window` command and a second launch all call the SAME
@@ -98,36 +123,53 @@ row.
 
 ## F-1 (R-1 / AC1) — `--background` is resident with no window shown, and capture is active
 
-- [ ] **F-1a — the launch is resident, owns its ports, and shows NO window.**
+- [ ] **F-1a — the launch is resident, owns its ports, and shows NO visible product window.**
   Bring the env up once (`dev-env.ps1 -Action Up`, bounded) so the manifest exists and the build is
   current, then stop it CLEANLY with `dev-env.ps1 -Action Down` — the background instance needs the
   env's PG data-dir lock and its OTLP/MCP ports, which the foreground app holds. (Do NOT just kill
-  the app: the `tauri dev` launcher owns it and would race you.) Then run
+  the app: the `tauri dev` launcher owns it and would race you.) Run
+  `launch-background.ps1 -Action Launch -DryRun -ManifestPath <manifest>` ONCE and paste it (the
+  isolation receipt: the child's exact env), then
   `launch-background.ps1 -Action Launch -ManifestPath <manifest> -Exe <exe>`.
   **Expected:** `RESULT=PASS`, `ALIVE=True`, `NEW_FREDO_PIDS` contains `START_PID`,
   `OTLP_GRPC_READY=True`, `OTLP_HTTP_READY=True`, `MCP_READY=True` and
   `PORT_OWNERS_SAME_PID=True` (one process owns both OTLP binds and the bridge);
-  **`MAIN_WINDOW_HANDLE=0`** and `MAIN_WINDOW_TITLE=` empty, corroborated by
-  `tasklist /FI "IMAGENAME eq fredo.exe" /FO LIST` showing `Window Title: N/A` for `START_PID`;
-  the pasted `tauri_manage_window(action="list")` contains no *visible* main window (see the
-  instrument rule above — a hidden `main` entry is not a failure).
+  **`VISIBLE_PRODUCT_WINDOW=False`** with `VISIBLE_NON_CONSOLE_WINDOW_COUNT=0` and
+  `VISIBLE_NON_CONSOLE_WINDOW_TITLES=` empty, judged on the printed `WINDOW_LIST` (a visible
+  `ConsoleWindowClass` entry is EXCLUDED by class and is NOT a failure; `MAIN_WINDOW_HANDLE` may be
+  non-zero and is a diagnostic only);
+  **isolation:** the pasted block's `FREDO_PG_DATA_DIR` is `<env-root>/postgres` with
+  `FREDO_PG_DATA_DIR_UNDER_ENV_ROOT=True` and `FREDO_PG_DATA_DIR_EXISTS=True`, and
+  `ENV_POSTMASTER_PIDS` is NON-EMPTY with `PG_POSTMASTER_PIDFILE_PID` matching one of them — i.e.
+  the child started the ENV's cluster, not the machine-global shared one. A child that attached
+  anywhere else is a FAIL of this row (it also makes F-1b unreadable).
+  **Corroboration (record, not a gate):** `tauri_manage_window(action="list")` contains no *visible*
+  main window (a hidden `main` entry is not a failure), and `tasklist /FI "IMAGENAME eq fredo.exe"
+  /FO LIST` for `START_PID` may show either a console entry or none.
   **Environment caveat (disclosed, not a FAIL):** `dev-env Down` also stops the env's Vite
   dev-server, so this instance's webview has no `devUrl` to load. AC1's observables (resident
   process, owned ports, no shown window, a persisted span) do not depend on it; the pane legs
   (F-2 onward) bring the env back up with `dev-env.ps1 -Action Up`.
   **Edge:** a port already bound by a stray process (readiness never reached ⇒ the row FAILs on the
   port-owner clause, never as a silent skip); a leftover `fredo.exe` must not absorb `START_PID`'s
-  ports (the census pins the owner PID).
+  ports (the census pins the owner PID); `DESKTOP_WINDOW_COUNT=0` or any `ERROR:` line with exit 2
+  from the launcher is an INSTRUMENT failure to fix, never a product FAIL.
 
 - [ ] **F-1b — ingestion is ACTIVE with no window (the decisive live leg).**
-  With F-1a's process running, note the wall clock `T0` (`Get-Date -Format o`), inject ONE span
-  (`--prefix e2e-bg3193-<guid8>`), then read `telemetry_spans` by that prefix.
+  With F-1a's process running (the one whose printed block carries this env's
+  `FREDO_PG_DATA_DIR`), note the wall clock `T0` (`Get-Date -Format o`), inject ONE span
+  (`--prefix e2e-bg3193-<guid8>`) into the env's `ports.otlpGrpc`, then read `telemetry_spans`
+  by that prefix.
   **Expected:** exactly ONE row; `end_time_ns IS NOT NULL`; `ingested_at` LATER than `T0`; the
-  injector's `CONFIRM` line (with `trace_id` and `span_id` hex) pasted verbatim.
+  injector's `CONFIRM` line (with `trace_id` and `span_id` hex) pasted verbatim. The read must be
+  served by the ENV's cluster (`ENV_POSTMASTER_PIDS` from F-1a prints the cluster's PID;
+  `telemetry-query.ps1 -Manifest <manifest>` targets the same env) — a receipt that cannot be read
+  because the child wrote somewhere else is a FAIL of F-1a's isolation clause, not a skip.
   **Corroboration (record, do not gate):** try `tauri_webview_execute_js` against `main`. If it
   answers, paste `1+1` → 2 and `document.visibilityState`/`document.hidden`. If it cannot attach,
   record `NO_WEBVIEW_AT_BACKGROUND_LAUNCH` — the strongest available form of "no window shown" —
-  and rely on F-1a's native handle as the binding proof. Never substitute a screenshot for the span.
+  and rely on F-1a's `VISIBLE_PRODUCT_WINDOW=False` as the binding proof. Never substitute a
+  screenshot for the span.
   **Edge:** G-375 auth failure ⇒ `db_query_execute` fallback, disclosed; an injection into a
   second resident env must not qualify (prefix match is per run).
 
@@ -138,16 +180,19 @@ row.
   `CliCommand::OpenMainWindow`, the SAME `ensure_main_window` the tray item dispatches. Then re-read
   `launch-background.ps1 -Action Windows -ManifestPath <manifest>`, `tasklist`, and
   `tauri_manage_window(action="list")`.
-  **Expected:** **`MAIN_WINDOW_HANDLE` is now NON-ZERO** and `MAIN_WINDOW_TITLE` is the per-env
-  title `Fredo [<envId>]` (legacy `Fredo` on slot 0), corroborated by `tasklist` `Window Title`; the
-  background PID is UNCHANGED (`TARGET_PID == START_PID`); `SECOND_EXITED=True`,
-  `NEW_FREDO_PIDS=` EMPTY and `POSTMASTER_BEFORE`/`AFTER` identical **and non-empty**; the window
-  list now carries a VISIBLE `main`; and — only when the env's Vite is serving (see F-1a's caveat) —
-  the console has no `Error:`/`Uncaught`/`Maximum update depth exceeded`. A failed page load in the
-  no-Vite state is an ENVIRONMENT artifact: record it, do not FAIL AC1 on it.
+  **Expected:** **`VISIBLE_PRODUCT_WINDOW=True`** with `VISIBLE_NON_CONSOLE_WINDOW_COUNT>=1` and
+  `VISIBLE_NON_CONSOLE_WINDOW_TITLES` carrying the per-env title `Fredo [<envId>]` (legacy `Fredo`
+  on slot 0), corroborated by `tasklist` `Window Title`; the background PID is UNCHANGED
+  (`TARGET_PID == START_PID`); `SECOND_EXITED=True`, `NEW_FREDO_PIDS=` EMPTY and
+  `POSTMASTER_BEFORE`/`AFTER` identical **and non-empty**; the window list now carries a VISIBLE
+  `main`; and — only when the env's Vite is serving (see F-1a's caveat) — the console has no
+  `Error:`/`Uncaught`/`Maximum update depth exceeded`. A failed page load in the no-Vite state is an
+  ENVIRONMENT artifact: record it, do not FAIL AC1 on it.
   **Record which build route was taken (NOT a pass/fail literal):** a shown hidden window vs a
   window built on demand are both AC1-compliant (`triage.md` §8(a)/(b) are UNVERIFIED). A FAIL is a
-  changed PID, a still-zero handle, or a SECOND `main`.
+  changed PID, a still-`False` `VISIBLE_PRODUCT_WINDOW`, or a SECOND `main`. (`MAIN_WINDOW_HANDLE`
+  may already be non-zero before the `Open` because of the debug console — it is never the
+  witness here.)
   **Edge:** run the second launch twice (second is a no-op; still one `main`).
 
 - [ ] **F-1d — the in-app `open_main_window` command is idempotent once the window exists.**
@@ -182,12 +227,17 @@ row.
 
 - [ ] **F-2b — disabling removes it, and a disable with nothing installed succeeds.**
   Click the toggle OFF; wait for `Background capture: Off`; read with `-Expect Absent`.
-  **Expected:** `ENTRY=Absent`, `EXPECTATION_MET=True`, exit code 0; the orphaned `RAW=` line is
-  empty; the surface shows `DETAIL_OFF_JUST_SET` (`The login item is removed. This session keeps
-  capturing until you quit Fredo.`) and no error line. Then run `-Clear` again and click OFF once
-  more: the call succeeds (no error text, switch stays off, `EXPECTATION_MET=True`).
+  **Expected:** `ENTRY=Absent`, `EXPECTATION_MET=True`, `ACTUAL_ENTRY=Absent`, exit code **0**;
+  `RAW=` empty, `RAW_SHA256=(absent)`, `VALUE_KIND=(none: the value does not exist)`,
+  `REG_EXE_QUERY_CODE=1`; the surface shows `DETAIL_OFF_JUST_SET` (`The login item is removed. This
+  session keeps capturing until you quit Fredo.`) and no error line. Then run `-Clear` again — it
+  prints `CLEAR_WAS_ALREADY_ABSENT=True` + `DELETE_VERIFIED=Absent` and exits 0 (an already-absent
+  target is a NO-OP, not an error) — and click OFF once more: the call succeeds (no error text,
+  switch stays off, `EXPECTATION_MET=True`).
   **Edge:** disable twice; disable while the registry was removed out-of-band (the UI must settle
   on Off from the read-back, not from its optimistic state).
+  **Instrument note:** an `ERROR:` line with exit 2 here is the INSTRUMENT being wrong (it must
+  never exit 2 on an absent value) — report it, do not FAIL AC2 on it.
 
 ## F-3 (R-3 / AC3) — a legacy `"<exe>" ingest` value is migrated; a value we do not own is untouched
 
@@ -420,18 +470,21 @@ row.
   F-1c) and on `app-settings` (after F-6): no `Error:` / `Uncaught` / `Maximum update depth exceeded`.
 - [ ] **N-5 (theme).** the pane renders correctly in BOTH the light and dark presets (no hardcoded
   hex; the disabled switch's reduced opacity is legible in both). Screenshot bonus only.
-- [ ] **N-6 (no window flash at login — disclosed method).** `launch-background.ps1`'s
-  `MAIN_WINDOW_HANDLE` is read after readiness; a sub-100 ms flash between process start and that
-  read is not observable with the provisioned tools — DISCLOSE it, do not claim it proven.
+- [ ] **N-6 (no window flash at login — disclosed method).** `launch-background.ps1` reads the window
+  enumeration (`VISIBLE_PRODUCT_WINDOW`) after readiness; a sub-100 ms flash between process start
+  and that read is not observable with the provisioned tools — DISCLOSE it, do not claim it proven.
 
 ## Suite-level pass/fail
 
 PASS = F-1a…F-8 green (F-7's live leg recorded as its named blocker and its pin green) **and**
-N-1…N-6 hold. FAIL = a background launch that shows a window (`MAIN_WINDOW_HANDLE != 0` before
-`Open`); a tray `Open` that changes the PID or starts a second postmaster; a login value that is not
-byte-identical to `"<exe>" --background`; a migrated value that passes through Absent; a foreign
-value that is rewritten or deleted by startup/disable; a second `fredo.exe`/postmaster around a
-toggle; a span that cannot be shown to bracket the toggle; a rendered retired string; a
+N-1…N-6 hold. FAIL = a background launch that shows a visible product window
+(`VISIBLE_PRODUCT_WINDOW=True` before `Open`, i.e. a visible top-level window of the app PID whose
+class is NOT `ConsoleWindowClass`); a background launch whose child did not use the env's own
+cluster (`FREDO_PG_DATA_DIR` outside `<env-root>/postgres`, or no env postmaster while the product
+is capturing); a tray `Open` that changes the PID or starts a second postmaster; a login value that
+is not byte-identical to `"<exe>" --background`; a migrated value that passes through Absent; a
+foreign value that is rewritten or deleted by startup/disable; a second `fredo.exe`/postmaster
+around a toggle; a span that cannot be shown to bracket the toggle; a rendered retired string; a
 `settings-ingest-daemon-status` assertion; or a static-only receipt for any LIVE row.
 UNVERIFIED requires a NAMED, actionable blocker (G-053) — never a silent drop.
 
@@ -442,11 +495,15 @@ UNVERIFIED requires a NAMED, actionable blocker (G-053) — never a silent drop.
   `apps/tauri/src-tauri/target/debug/fredo.exe` (in-repo build output of that env's checkout).
 - **New committed instruments (QA-authored, this folder):** `registry-entry.ps1`
   (`-Read/-SeedLegacy/-SeedForeign/-Clear/-Backup/-Restore`), `launch-background.ps1`
-  (`-Action Launch/Windows/Kill`). Both hard-fail on an absent input; both print `KEY=value` lines.
-  **First-green precondition (G-406):** neither instrument has been executed at authoring time (the
-  QA role has no PowerShell execution grant), so smoke `S-4`/`S-5` ARE the instruments' first-green
-  check. An `ERROR:` line with exit 2 from either means the INSTRUMENT is wrong — the round's rows
-  are UNVERIFIED pending an instrument fix by the QA Expert, never product FAILs.
+  (`-Action Launch/Windows/Kill`, plus `-DryRun`). Both hard-fail on an absent INPUT; an absent
+  VALUE/TARGET is a reading (`ENTRY=Absent`, `CLEAR_WAS_ALREADY_ABSENT=True`). Both print
+  `KEY=value` lines.
+  **First-green status:** both instruments were EXECUTED in round 1 and their failures were
+  instrument defects (an absent-value exit 2 on `-Read`, a `$backup`/`[switch]$Backup` name
+  collision on `-Restore`, and a missing Names-Block that attached the child to the machine-global
+  shared cluster). All three are repaired in this round; the first executable role must still drive
+  them once and paste the output. An `ERROR:` line with exit 2 from either is the INSTRUMENT being
+  wrong — record it as such (never a product FAIL), stop, and report it.
 - Reused committed levers: `.opencode/scripts/run-exitcode.ps1`, `.opencode/scripts/process-hygiene.ps1
   -List`, `.opencode/scripts/dev-env.ps1`, `.opencode/scripts/inject-otlp-fixture.ts`,
   `.opencode/skills/telemetry-query/telemetry-query.ps1`,
@@ -463,9 +520,10 @@ UNVERIFIED requires a NAMED, actionable blocker (G-053) — never a silent drop.
   committed path (these suite files, the two instruments), or a `user-attachments` URL (G-415).
   Never a `.opencode/tmp/3193/` timeline draft.
 - `upload-evidence` has failed on this host for seven consecutive rounds (SAML): the DEFAULT
-  evidence is verbatim instrument output (`RAW=`, `RAW_SHA256=`, `MAIN_WINDOW_HANDLE=`,
-  `POSTMASTER_PIDS=`), the SQL result table, a DOM-snapshot excerpt, and the raw
-  `tauri_manage_window(action="list")` paste. A screenshot is a bonus, never the only record (G-104).
+  evidence is verbatim instrument output (`RAW=`, `RAW_SHA256=`, `VISIBLE_PRODUCT_WINDOW=`,
+  `WINDOW_LIST`, `ENV_BLOCK`, `POSTMASTER_PIDS=`), the SQL result table, a DOM-snapshot excerpt, and
+  the raw `tauri_manage_window(action="list")` paste. A screenshot is a bonus, never the only record
+  (G-104).
 - Verdict line: `Verdict: **PASS**` (bare token first). `Tested commit:` a bare SHA ALONE on its
   line; state the served branch/commit and the tree condition (served tree at that commit) on the
   NEXT line (G-052/G-443).

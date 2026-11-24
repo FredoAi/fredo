@@ -32,6 +32,23 @@
   A reading that merely contradicts the caller's `-Expect` is a TEST signal, not an instrument
   failure: that exits 1.
 
+  INPUT vs TARGET (the contract, stated so no tester has to infer it):
+    * An absent INPUT fails closed (exit 2): a named executable that is not on disk, a dead PID,
+      a `-SeedLegacy` with no executable, a `-Restore` with no backup file.
+    * An absent TARGET is a READING, never a failure: `FredoIngest` not being present is the most
+      common state this instrument must report, so `-Read` prints `ENTRY=Absent` and exits 0, and
+      `-Clear` on an already-absent value is a documented NO-OP (`CLEAR_WAS_ALREADY_ABSENT=True`,
+      `DELETE_VERIFIED=Absent`, exit 0) - clearing is idempotent, its postcondition is "absent".
+
+  PS 5.1 STERNNESS (#3193 round 1 defect, fixed here). The script-wide
+  `$ErrorActionPreference = "Stop"` plus a `2>&1` merge on `reg.exe query` converted the absent-value
+  case into a TERMINATING `NativeCommandError`, so the instrument could not report the state it was
+  written for. `reg.exe` is now called with a SCOPED `Continue` preference, its stderr is DISCARDED
+  (never merged into the parsed success stream), and its exit code is the reading: 0 = Present,
+  1 = Absent, anything else = `ERROR:` exit 2. Note the same PowerShell rule for PARAMETER names:
+  parameters live in the script scope with case-insensitive names, so a local `$backup` IS the
+  `[switch]$Backup` parameter - locals are named `$restoreRecord` and friends instead.
+
   SAFETY. The per-user Run key is real machine state: a developer may have a genuine
   `FredoIngest` entry. Every MUTATING mode (-SeedLegacy / -SeedForeign / -Clear) auto-creates a
   backup of the CURRENT value first (unless a backup already exists at -BackupPath, which is then
@@ -47,13 +64,15 @@
 .MODES (exactly one required)
   -Read          Print the resolved value path, Present|Absent, the raw data verbatim, its SHA-256,
                  the token breakdown, and (when an executable is resolvable) the expected owned
-                 string with a byte-equality verdict.
+                 string with a byte-equality verdict. Both states exit 0; only a genuinely absent
+                 INPUT (a named exe not on disk, a dead -AppPid) exits 2.
   -SeedLegacy    Write `"<exe>" ingest` (the pre-#3193 login command shape) and verify it.
   -SeedForeign   Write a value this product does NOT own and verify it. Default data is a
                  legacy-SHAPED command naming another executable
                  (`"C:\Program Files\Contoso\contoso.exe" ingest`), so a predicate that matches only
                  the `ingest` tail is caught. Override with -ForeignCommand.
-  -Clear         Remove the value (and verify it is absent).
+  -Clear         Remove the value (and verify it is absent). Idempotent: when the value is already
+                 absent this is a printed NO-OP (`CLEAR_WAS_ALREADY_ABSENT=True`), exit 0.
   -Backup        Write the current value (or its absence) to -BackupPath.
   -Restore       Put the backed-up value back (or remove it when the backup recorded absence) and
                  verify byte equality.
@@ -197,33 +216,60 @@ function Read-Entry {
   } catch {
     Write-Fail ("cannot open HKCU\" + $RunSubKey + ": " + $_.Exception.Message)
   }
+  $readError = ""
   if ($null -ne $key) {
     $state.KeyPresent = $true
     try {
-      $kind = $key.GetValueKind($ValueName)
-      $state.Present = $true
-      $state.Kind = [string]$kind
-      $raw = $key.GetValue($ValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-      if ($null -eq $raw) { $state.Data = "" } else { $state.Data = [string]$raw }
+      # Presence comes from the key's OWN value-name list. The previous version asked
+      # GetValueKind first and treated ANY exception as "Absent", which made a real read failure
+      # indistinguishable from a missing value. A missing value is now a computed fact, and a
+      # genuine read error is lifted out of the try and reported as an instrument failure.
+      $found = $false
+      foreach ($name in @($key.GetValueNames())) {
+        if ($name -eq $ValueName) { $found = $true }
+      }
+      if ($found) {
+        $state.Present = $true
+        $kind = $key.GetValueKind($ValueName)
+        $state.Kind = [string]$kind
+        $raw = $key.GetValue($ValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -eq $raw) { $state.Data = "" } else { $state.Data = [string]$raw }
+      }
     } catch {
-      # A missing value raises here; the key itself was readable, so this IS the "off" state.
-      $state.Present = $false
+      $readError = $_.Exception.Message
     } finally {
-      $key.Close()
+      try { $key.Close() } catch { }
     }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($readError)) {
+    Write-Fail ("reading HKCU\" + $RunSubKey + "\" + $ValueName + " failed: " + $readError + " (an unreadable value is NOT the reading 'Absent')")
   }
 
   # Independent corroboration: the same reg.exe surface the product reads through.
+  # #3193 ROUND 1 DEFECT: `& reg.exe query ... 2>&1` under the script-wide
+  # $ErrorActionPreference='Stop' turns reg.exe's stderr record into a TERMINATING error, so an
+  # ABSENT value - the state this instrument most often reports - killed the run before it could
+  # print "Absent". Fixed by scoping the preference to Continue for this call only, DISCARDING
+  # stderr instead of merging it into the parsed output, and reading the exit code as the fact:
+  # 0 = Present, 1 = Absent, ANY other code = hard instrument failure (never swallowed).
   $regOutput = @()
   $regCode = -1
+  $previousPreference = $ErrorActionPreference
   try {
-    $regOutput = @(& reg.exe query $RunKey /v $ValueName 2>&1)
-    $regCode = [int]$LASTEXITCODE
+    $ErrorActionPreference = "Continue"
+    $regOutput = @(& reg.exe query $RunKey /v $ValueName 2>$null)
+    # `[int]$null` is 0 (= "Present"), so an UNSET automatic variable must never be coerced into a
+    # reading: it is mapped to a code no run can produce, which fails the 0/1 gate below.
+    $regExit = $LASTEXITCODE
+    if ($null -eq $regExit) { $regCode = -999 } else { $regCode = [int]$regExit }
   } catch {
-    Write-Fail ("reg.exe query could not be run: " + $_.Exception.Message)
+    $regError = $_.Exception.Message
+    $ErrorActionPreference = $previousPreference
+    Write-Fail ("reg.exe query could not be run: " + $regError)
   }
-  if (-not ($regCode -eq 0 -or $regCode -eq 1)) {
-    Write-Fail ("reg.exe query exited " + $regCode + " (expected 0=present or 1=absent): " + (@($regOutput) -join " | "))
+  $ErrorActionPreference = $previousPreference
+  if ($regCode -ne 0 -and $regCode -ne 1) {
+    Write-Fail ("reg.exe query exited " + $regCode + " (only 0=Present and 1=Absent are readings; any other code is an instrument failure): " + (@($regOutput) -join " | "))
   }
   $state.RegExeCode = $regCode
   $state.RegExePresent = ($regCode -eq 0)
@@ -234,6 +280,16 @@ function Read-Entry {
   }
   return $state
 }
+
+# A digest is only printed for a value that EXISTS: SHA-256 of the empty string looks like a real
+# digest of a real value and would let an absent reading compare "equal" to another absent one.
+function Get-StateDigest {
+  param($State)
+  if ($null -eq $State) { return "(absent)" }
+  if ($State.Present) { return (Get-Sha256Hex -Text $State.Data) }
+  return "(absent)"
+}
+
 
 # ---- Token breakdown (the AC's wording, not a reconstructed literal) -----------
 function Get-TokenBreakdown {
@@ -366,17 +422,18 @@ function Write-BackupFile {
   Write-Output ("BACKUP_PATH=" + $BackupPath)
   Write-Output ("BACKUP_PRESENT=" + $payload.present)
   Write-Output ("BACKUP_RAW=" + $payload.data)
-  Write-Output ("BACKUP_RAW_SHA256=" + (Get-Sha256Hex -Text $payload.data))
+  Write-Output ("BACKUP_RAW_SHA256=" + (Get-StateDigest -State $current))
 }
 
 function Ensure-BackupBeforeMutation {
   $existing = Read-Backup
   if ($null -ne $existing) {
+    $existingState = [pscustomobject]@{ Present = [bool]$existing.present; Data = [string]$existing.data }
     Write-Output ("BACKUP_EXISTING=True")
     Write-Output ("BACKUP_PATH=" + $BackupPath)
     Write-Output ("BACKUP_PRESENT=" + $existing.present)
     Write-Output ("BACKUP_RAW=" + [string]$existing.data)
-    Write-Output ("BACKUP_RAW_SHA256=" + (Get-Sha256Hex -Text ([string]$existing.data)))
+    Write-Output ("BACKUP_RAW_SHA256=" + (Get-StateDigest -State $existingState))
     return
   }
   Write-Output "BACKUP_CREATED=auto"
@@ -418,7 +475,7 @@ if ($mode -eq "Backup") {
   Write-Output ("RUN_KEY_EXISTS=" + $state.KeyPresent)
   if ($state.Present) { Write-Output "ENTRY=Present" } else { Write-Output "ENTRY=Absent" }
   Write-Output ("RAW=" + $state.Data)
-  Write-Output ("RAW_SHA256=" + (Get-Sha256Hex -Text $state.Data))
+  Write-Output ("RAW_SHA256=" + (Get-StateDigest -State $state))
   Write-Output ("REG_EXE_QUERY_CODE=" + $state.RegExeCode)
   Write-Output ("REG_EXE_QUERY=" + $state.RegExeOutput)
   Write-Output ("BACKUP_EXISTING=" + (Test-Path -LiteralPath $BackupPath))
@@ -433,15 +490,19 @@ if ($mode -eq "Backup") {
 }
 
 if ($mode -eq "Restore") {
-  $backup = Read-Backup
-  if ($null -eq $backup) {
+  # #3193 ROUND 1 DEFECT: this local was named `$backup`. PowerShell parameter names live in the
+  # script scope and are CASE-INSENSITIVE, so `$backup` IS the `[switch]$Backup` parameter and
+  # assigning a parsed record to it threw "Cannot convert ... to SwitchParameter" - disabling an
+  # entire evidence path. The public surface stays `-Backup`; the local is `$restoreRecord`.
+  $restoreRecord = Read-Backup
+  if ($null -eq $restoreRecord) {
     Write-Fail ("no backup to restore at " + $BackupPath + " - run -Backup (or a -Seed* mode, which backs up automatically) before mutating")
   }
-  if ([string]$backup.valuePath -ne $ValuePath) {
-    Write-Fail ("backup names a different value path (" + [string]$backup.valuePath + ") than this instrument owns (" + $ValuePath + ")")
+  if ([string]$restoreRecord.valuePath -ne $ValuePath) {
+    Write-Fail ("backup names a different value path (" + [string]$restoreRecord.valuePath + ") than this instrument owns (" + $ValuePath + ")")
   }
-  $recordedData = [string]$backup.data
-  $recordedPresent = [bool]$backup.present
+  $recordedData = [string]$restoreRecord.data
+  $recordedPresent = [bool]$restoreRecord.present
   Write-Output ("RESTORE_FROM=" + $BackupPath)
   Write-Output ("RESTORE_RECORDED_PRESENT=" + $recordedPresent)
   Write-Output ("RESTORE_RECORDED_RAW=" + $recordedData)
@@ -460,7 +521,7 @@ if ($mode -eq "Restore") {
   if (-not $match) {
     Write-Fail ("restore did not reproduce the backed-up state: RECORDED_PRESENT=" + $recordedPresent + " NOW_PRESENT=" + $final.Present + " RECORDED_RAW=" + $recordedData + " NOW_RAW=" + $final.Data)
   }
-  Write-Output ("POST_RESTORE_RAW_SHA256=" + (Get-Sha256Hex -Text $final.Data))
+  Write-Output ("POST_RESTORE_RAW_SHA256=" + (Get-StateDigest -State $final))
   Write-Output "RESULT=OK"
   exit 0
 }
@@ -492,6 +553,20 @@ if ($mode -eq "SeedForeign") {
 
 if ($mode -eq "Clear") {
   Ensure-BackupBeforeMutation
+  $clearState = Read-Entry
+  if (-not $clearState.Present) {
+    # DOCUMENTED -Clear CONTRACT (so the tester needs no inference): clearing an ALREADY-ABSENT
+    # value is a NO-OP that says so and exits 0. `-Clear`'s postcondition is "absent", not
+    # "absent because this run removed it", so an already-clear key is SUCCESS - it is an absent
+    # TARGET (a reading), not an absent INPUT (which would be exit 2). The backup taken just above
+    # still proves the invocation ran against a real hive, and nothing was written or deleted.
+    Write-Output "CLEAR_WAS_ALREADY_ABSENT=True"
+    Write-Output "DELETE_VERIFIED=Absent"
+    Write-Output "RESULT=OK"
+    exit 0
+  }
+  Write-Output "CLEAR_WAS_ALREADY_ABSENT=False"
+  Write-Output ("CLEAR_REMOVED_RAW=" + $clearState.Data)
   Remove-Entry -Why "clear"
   Write-Output "RESULT=OK"
   exit 0
@@ -503,8 +578,8 @@ Write-Output ("RUN_KEY_EXISTS=" + $state.KeyPresent)
 if ($state.Present) { Write-Output "ENTRY=Present" } else { Write-Output "ENTRY=Absent" }
 Write-Output ("RAW=" + $state.Data)
 Write-Output ("RAW_LENGTH=" + $state.Data.Length)
-Write-Output ("RAW_SHA256=" + (Get-Sha256Hex -Text $state.Data))
-Write-Output ("VALUE_KIND=" + $state.Kind)
+Write-Output ("RAW_SHA256=" + (Get-StateDigest -State $state))
+if ($state.Present) { Write-Output ("VALUE_KIND=" + $state.Kind) } else { Write-Output "VALUE_KIND=(none: the value does not exist)" }
 Write-Output ("REG_EXE_QUERY_CODE=" + $state.RegExeCode)
 Write-Output ("REG_EXE_QUERY=" + $state.RegExeOutput)
 
@@ -544,6 +619,11 @@ if ($state.Present) {
     Write-Output ("EXPECTED_OWNED_RAW=" + $expected)
     Write-Output ("EXPECTED_OWNED_LENGTH=" + $expected.Length)
     Write-Output ("RAW_EQUALS_EXPECTED=" + ($state.Data -ceq $expected))
+  } else {
+    # The value exists but no executable was resolvable, so no owned-string comparison exists.
+    # Printed explicitly (never omitted) so a row grepping EXE_MATCH_CURRENT sees the reason.
+    Write-Output "EXE_MATCH_CURRENT=(unresolved; pass -Exe or -AppPid)"
+    Write-Output "RAW_EQUALS_EXPECTED=(unresolved; pass -Exe or -AppPid)"
   }
 } else {
   Write-Output "QUOTE_COUNT=0"
