@@ -1,13 +1,41 @@
 /**
- * handlers/session.ts — Session lifecycle handlers for the Fredo OpenCode plugin.
+ * handlers/session.ts — session lifecycle handlers (Spec #3197 ST-2).
  *
- * Handles session.created, session.idle, session.error, and session.status events.
- * Creates session spans, emits log events, and manages session totals.
+ * Events: `session.created`, `session.inbox.enqueued`, `session.execution.*`,
+ * `session.idle`. Everything is a port of the V1 behaviour on `main`
+ * (`handlers/session.ts`) onto the V2 event stream — the emitted contract
+ * (span names, flat Fredo attributes, `gen_ai.*` registry keys, metric names,
+ * log bodies) is reproduced verbatim, because the Rust ingest classifier is
+ * attribute-driven and must not change.
+ *
+ * Payload contract (verified against the installed typings, not guessed):
+ *   node_modules/@opencode/client/dist/promise/generated/types.d.ts
+ *     · SessionCreated              :3333  (data.sessionID :3347, data.parentID :3351,
+ *                                           data.agent :3354, data.model :3355, data.title :3353)
+ *     · SessionInboxEnqueued        :3886  (data.sessionID, data.item: SessionInboxItem :3726
+ *                                           → type "user" ⇒ payload.text :1575)
+ *     · SessionExecutionStarted     :1860  (data.sessionID)
+ *     · SessionExecutionSucceeded   :1877  (data.sessionID)
+ *     · SessionExecutionFailed      :1894  (data.sessionID, data.error: SessionStructuredError :160)
+ *     · SessionExecutionInterrupted :1912  (data.sessionID, data.reason:
+ *                                           "user"|"shutdown"|"superseded"|"inactivity")
+ *     · SessionIdle                 :2893  (data.sessionID)
+ *
+ * ONE SPAN PER SESSION. `sessionSpans` is keyed by `session.id` for BOTH roles:
+ * a child opens its span at `session.created` (with the child→parent link), a
+ * primary session opens it on its first user prompt and refreshes it per turn.
+ * That is the difference from V1 (which keyed primary turn roots by user message
+ * id and never closed the ones before the last), and it is what makes the
+ * `sweepSession` invariant provable: exactly one open session span per session,
+ * ended by exactly one close path, so an interruption can never orphan one.
+ *
+ * Bounded maps (NFR-5): every map written here goes through `setBoundedMap`
+ * (oldest-first eviction at `MAX_PENDING` / `MAX_CHILD_COMPLETIONS`).
  */
 
 import { SeverityNumber } from "@opentelemetry/api-logs";
-import { SpanStatusCode, trace } from "@opentelemetry/api";
-import type { SpanContext } from "@opentelemetry/api";
+import { SpanStatusCode } from "@opentelemetry/api";
+import type { Span, SpanContext } from "@opentelemetry/api";
 import {
   ATTR_SESSION_ID,
   ATTR_AGENT_TYPE,
@@ -16,38 +44,73 @@ import {
   ATTR_TOTAL_TOKENS,
   ATTR_TOTAL_COST,
   ATTR_TOTAL_MESSAGES,
-  ATTR_DURATION_MS,
+  ATTR_MODEL,
+  ATTR_PROMPT_LENGTH,
   LOG_SESSION_CREATED,
   LOG_SESSION_IDLE,
   LOG_SESSION_ERROR,
+  LOG_USER_PROMPT,
 } from "../telemetry-constants";
 import {
   agentAttrs,
-  errorSummary,
-  getSessionAgentMeta,
-  setBoundedMap,
   childCompletionAttrs,
+  getSessionAgentMeta,
   resolveSessionTraceContext,
+  setBoundedMap,
+  setBoundedSet,
 } from "../util";
 import {
-  createParentSpanLink,
-  genAiOpNameAttr,
-  genAiConversationAttr,
-  genAiAgentNameAttr,
-  genAiExceptionAttrs,
   ATTR_OP_NAME,
+  EXCEPTION_MESSAGE,
   GEN_AI_AGENT_NAME,
   GEN_AI_ERROR_TYPE,
   GEN_AI_EVENT_EXCEPTION,
-  EXCEPTION_MESSAGE,
   OP_NAME_SESSION,
+  createParentSpanLink,
+  genAiAgentNameAttr,
+  genAiConversationAttr,
+  genAiExceptionEventAttrs,
+  genAiOpNameAttr,
+  genAiPromptAttr,
 } from "../genai-conventions";
 import { MAX_CHILD_COMPLETIONS } from "../types";
-import type { HandlerContext, PendingChildCompletion, SessionAgentType } from "../types";
+import type {
+  HandlerContext,
+  PendingChildCompletion,
+  SessionTotals,
+  V2EventOf,
+} from "../types";
+
+/** Message-part map keys are prefixed with the session id (mirrors `message.ts`). */
+function messageKeyPrefix(sessionID: string): string {
+  return `${sessionID}:`;
+}
 
 /**
- * Resolves the parent span's SpanContext from maps, used for building span links
- * from child session spans to parent session spans (REQ-1).
+ * Human-readable text for a V2 `SessionStructuredError` (:160 — `{ type, message }`).
+ *
+ * V1 received `{ name, data }` and summarised it as `${name}: ${message}`; the
+ * V2 shape carries the message directly, so the same `type: message` form is
+ * produced without inventing a `data` envelope.
+ */
+function structuredErrorText(err: { type: string; message: string }): string {
+  return err.message ? `${err.type}: ${err.message}` : err.type;
+}
+
+/** Concatenated assistant text accumulated for a session (all completed+open steps). */
+function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
+  const prefix = messageKeyPrefix(sessionID);
+  let output = "";
+  for (const [key, text] of ctx.messageOutputs) {
+    if (key.startsWith(prefix)) output += text;
+  }
+  return output;
+}
+
+/**
+ * Resolves the parent session span's `SpanContext` for the child→parent span
+ * link: the live parent session span, its retained context, then the parent's
+ * run span (kept for parity with the V1 resolution order).
  */
 function resolveParentSpanContext(
   parentSessionId: string,
@@ -67,16 +130,13 @@ function resolveParentSpanContext(
 }
 
 /**
- * Spec #2768 ST-1: resolves the parent session id for SELF-CARRIED routing
- * stamping — `totals.parentId` when already known, else the pending-task scan
- * (`resolveParentSessionId`). Returns undefined when the
- * FREDO_SUPPRESS_PARENT_ROUTING test seam is active: suppression happens at
- * the ORIGIN so child spans arrive genuinely legacy-shaped (no
- * `session.parent_id` attr → the Rust adapter's attr→field mapping no-ops and
- * the ECE's self-carried registration path is exercised in its ABSENCE,
- * letting the legacy inference paths be verified in isolation). The Hook
- * transport's `properties.info.parentID` is NOT suppressed — legacy inference
- * depends on it.
+ * Seam-guarded parent routing for the self-carried `session.parent_id`
+ * attribute (Spec #2768 ST-1, preserved by #3197).
+ *
+ * When `FREDO_SUPPRESS_PARENT_ROUTING=1` is set in the plugin host environment
+ * the plugin NEVER stamps the routing attribute, so child spans arrive genuinely
+ * legacy-shaped and the Rust adapter's attr→field mapping no-ops (the legacy
+ * inference paths can then be verified in isolation). Test affordance only.
  */
 export function routingParentSessionId(
   sessionID: string,
@@ -86,272 +146,634 @@ export function routingParentSessionId(
   return resolveParentSessionId(sessionID, ctx);
 }
 
-/** Starts or refreshes the root run span for a single user turn, keyed by the user message ID. */
-export function handleRunStarted(
-  runID: string,
-  sessionID: string,
-  agent: string,
-  promptText: string,
-  model: string,
-  startTime: number,
-  ctx: HandlerContext,
-) {
-  ctx.activeRuns.set(sessionID, runID);
-  ctx.pendingRuns.delete(sessionID);
-  if (promptText) setBoundedMap(ctx.runInputs, runID, promptText);
-  const existing = ctx.runSpans.get(runID);
-  if (existing) {
-    existing.setAttributes({
-      ...genAiOpNameAttr(OP_NAME_SESSION),
-      // GA-4: gen_ai.conversation.id / gen_ai.agent.name (agent only when known).
-      ...genAiConversationAttr(sessionID),
-      ...genAiAgentNameAttr(agent),
-      agent,
-      ...(promptText ? { prompt: promptText } : {}),
-      model,
-    });
-    return;
-  }
-
-  const runSpan = ctx.tracer.startSpan(
-    `${ctx.tracePrefix}session`,
-    {
-      startTime,
-      attributes: {
-        ...genAiOpNameAttr(OP_NAME_SESSION),
-        // GA-4: gen_ai.conversation.id / gen_ai.agent.name (agent only when known).
-        ...genAiConversationAttr(sessionID),
-        ...genAiAgentNameAttr(agent),
-        [ATTR_SESSION_ID]: sessionID,
-        agent,
-        [ATTR_AGENT_TYPE]: "primary",
-        [ATTR_IS_SUBAGENT]: false,
-        ...(promptText ? { prompt: promptText } : {}),
-        model,
-      },
-    },
-    ctx.rootContext(),
-  );
-  ctx.runSpans.set(runID, runSpan);
-  setBoundedMap(ctx.runSpanContexts, runID, runSpan.spanContext());
+/** Registers (or refreshes) the session span in the bounded span maps. */
+function storeSessionSpan(sessionID: string, span: Span, ctx: HandlerContext): void {
+  setBoundedMap(ctx.sessionSpans, sessionID, span);
+  setBoundedMap(ctx.sessionSpanContexts, sessionID, span.spanContext());
 }
 
-/** Increments the session counter, starts the root session span, and emits a session.created log event. */
-export function handleSessionCreated(
-  e: { properties: { info: { id: string; time: { created: number }; parentID?: string } } },
+/**
+ * The identity a session's first observed event carries (Spec #3197 round 2, F-3).
+ *
+ * Every field except the id is optional: the bootstrap seeds whatever the payload
+ * knows and later events repair the rest (`setSessionAgent` from
+ * `session.step.started`, the turn model from `sessionTurns`).
+ */
+export type SessionSeed = {
+  sessionID: string;
+  /** `event.created` of the first observed event — the session's start time. */
+  createdAt: number;
+  agent?: string;
+  /** `"<providerID>/<modelID>"` — the V1 `model` attribute form. */
+  model?: string;
+  parentID?: string;
+};
+
+/**
+ * THE one created-time registration (Spec #3197 round 2, F-3): seeds the session
+ * totals, counts the session, remembers the session's model, and emits the
+ * `session.created` log body — exactly once per session.
+ *
+ * `session.created` is never delivered on this host's `run` path (0 occurrences
+ * across three real captures), and `sessionTotals` is what every other created-
+ * time effect reads: the close path's `total_tokens` / `total_cost_usd` /
+ * `total_messages` and the duration / inference-call / tool-call metrics, plus
+ * the turn root's `model`. So this function is called from `handleV2Event` for
+ * EVERY `session.*` event as well as from `handleSessionCreated`; the
+ * `registeredSessions` set is the exactly-once guard (a close deletes the
+ * totals, so the totals alone cannot carry it), which means a host that DOES
+ * deliver `session.created` produces the identical single registration.
+ */
+export function ensureSessionRegistered(
+  seed: SessionSeed,
   ctx: HandlerContext,
-) {
-  const { id: sessionID, time, parentID: eventParentID } = e.properties.info;
-  const createdAt = time.created;
+): SessionTotals | undefined {
+  const sessionID = seed.sessionID;
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (existing) return existing;
+  // Already registered once: its totals were deleted by the close path, so a
+  // later event of the same session must NOT emit a second `session.created`
+  // body nor count the session twice (one session ⇒ one registration).
+  if (ctx.registeredSessions.has(sessionID)) return undefined;
+  setBoundedSet(ctx.registeredSessions, sessionID);
 
-  // Fallback: opencode's session.created intermittently omits parentID (AC-4).
-  // When missing, scan pending tool spans for a running 'task' tool — its
-  // sessionID is the parent session that spawned this subagent session.
-  // Spec #2768 ST-1 TEST SEAM: the scan is skipped when
-  // FREDO_SUPPRESS_PARENT_ROUTING is active (origin suppression — no
-  // self-carried parent resolution, legacy-shaped spans).
-  let parentID: string | undefined = eventParentID;
-  if (!parentID && !ctx.suppressParentRouting) {
-    // #2770 round 4 (temporal-origin guard): scan MOST-RECENT-first and accept a
-    // candidate only when its dispatch started at or before this session's
-    // creation time. Insertion-order first-match provably picked the OLDEST
-    // valid-looking pending dispatch (the root's first task) as a depth-≥2
-    // grandchild's parent; recency + the guard picks the innermost VALID
-    // dispatch — the true parent. A dispatch started AFTER this session's
-    // creation dispatched some other session, never this one.
-    for (const [, pending] of [...ctx.pendingToolSpans].reverse()) {
-      if (
-        pending.tool === "task" &&
-        pending.sessionID !== sessionID &&
-        pending.startMs <= createdAt
-      ) {
-        parentID = pending.sessionID;
-        break;
-      }
-    }
-    if (parentID) {
-      ctx.log("debug", "otel: parentID resolved from pending task tool span", { sessionID, parentID });
-    }
+  let totals: SessionTotals = {
+    startMs: seed.createdAt,
+    tokens: 0,
+    cost: 0,
+    messages: 0,
+    agent: seed.agent ?? "unknown",
+    agentType: seed.parentID ? "subagent" : "primary",
+    inferenceCalls: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
+    ...(seed.parentID ? { parentId: seed.parentID } : {}),
+  };
+  setBoundedMap(ctx.sessionTotals, sessionID, totals);
+
+  // `session.created` carries the session's model; remember it so the prompt log
+  // and the turn-root span can name it before the first step resolves one.
+  if (seed.model) {
+    const previousTurn = ctx.sessionTurns.get(sessionID);
+    setBoundedMap(ctx.sessionTurns, sessionID, {
+      ...(previousTurn?.prompt ? { prompt: previousTurn.prompt } : {}),
+      model: seed.model,
+    });
   }
 
-  const isSubagent = !!parentID;
-  const agentType: SessionAgentType = isSubagent ? "subagent" : "primary";
+  // A session first observed AFTER its creation can still resolve a parent
+  // through the retained V1 pending-`task` scan. That scan's temporal-origin
+  // guard reads this session's start time, so it needs the totals to exist
+  // first; the seam (`FREDO_SUPPRESS_PARENT_ROUTING`) is honoured inside.
+  if (!seed.parentID) {
+    const resolvedParent = routingParentSessionId(sessionID, ctx);
+    if (resolvedParent) totals = ctx.sessionTotals.get(sessionID) ?? totals;
+  }
 
-  ctx.instruments.sessionCounter.add(1, { [ATTR_SESSION_ID]: sessionID, [ATTR_IS_SUBAGENT]: isSubagent });
-
-  const existingTotals = ctx.sessionTotals.get(sessionID);
-  setBoundedMap(ctx.sessionTotals, sessionID, {
-    startMs: createdAt,
-    tokens: existingTotals?.tokens ?? 0,
-    cost: existingTotals?.cost ?? 0,
-    messages: existingTotals?.messages ?? 0,
-    agent: existingTotals?.agent ?? "unknown",
-    agentType,
-    ...(parentID ? { parentId: parentID } : {}),
-    // EARS-9 counters — carried through this field-by-field reconstruction so a
-    // session.created after partial chat activity never silently resets them.
-    inferenceCalls: existingTotals?.inferenceCalls ?? 0,
-    toolCalls: existingTotals?.toolCalls ?? 0,
-    // Per-family token breakdown (SubagentNode five-way row).
-    inputTokens: existingTotals?.inputTokens ?? 0,
-    cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
-    cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
-    reasoningTokens: existingTotals?.reasoningTokens ?? 0,
-    outputTokens: existingTotals?.outputTokens ?? 0,
+  const isSubagent = totals.agentType === "subagent";
+  ctx.instruments.sessionCounter.add(1, {
+    [ATTR_SESSION_ID]: sessionID,
+    [ATTR_IS_SUBAGENT]: isSubagent,
   });
-
-  if (parentID) {
-    // REQ-1: Resolve parent span context and create span link from child to parent
-    const parentSpanContext = resolveParentSpanContext(parentID, ctx);
-    const spanLink = parentSpanContext
-      ? createParentSpanLink(parentSpanContext, parentID)
-      : undefined;
-
-    const sessionSpan = ctx.tracer.startSpan(
-      `${ctx.tracePrefix}session`,
-      {
-        startTime: createdAt,
-        attributes: {
-          ...genAiOpNameAttr(OP_NAME_SESSION),
-          // GA-4: gen_ai.conversation.id on session span creation. The subagent
-          // agent name is unresolved here ("unknown") — gen_ai.agent.name is set
-          // at session idle / error once the agent resolves.
-          ...genAiConversationAttr(sessionID),
-          [ATTR_SESSION_ID]: sessionID,
-          // Spec #2768 ST-1: the self-carried `session.parent_id` routing
-          // attribute. Suppressed under the FREDO_SUPPRESS_PARENT_ROUTING
-          // test seam (origin suppression — legacy-shaped spans).
-          ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: parentID }),
-          agent: "unknown",
-          [ATTR_AGENT_TYPE]: agentType,
-          [ATTR_IS_SUBAGENT]: isSubagent,
-        },
-        ...(spanLink ? { links: [spanLink] } : {}),
-      },
-      resolveSessionTraceContext(parentID, ctx),
-    );
-
-    // Look up pending instruction for this subagent from message.part.updated
-    // subtask events. We do NOT consume it here — startMessageSpan needs it to
-    // set the prompt attribute on the LLM span, which the Rust adapter reads for
-    // subagent instruction extraction into the delivery payload. Consuming it
-    // here would leave startMessageSpan with nothing (Bug #633 cycle 2).
-    // Instead, store it in sessionTotals.instruction so startMessageSpan can
-    // reliably find it via the sessionID-keyed sessionTotals entry — pending-
-    // SubagentInstructions is keyed by parent session ID, which startMessageSpan
-    // may not be able to resolve if parentId isn't in sessionTotals yet.
-    const instruction = ctx.pendingSubagentInstructions.get(parentID);
-    if (instruction) {
-      ctx.log("debug", "otel: subagent instruction found in pending store", {
-        sessionID,
-        parentID,
-        instructionLength: instruction.length,
-      });
-      const totals = ctx.sessionTotals.get(sessionID);
-      if (totals) {
-        totals.instruction = instruction;
-      }
-      // AC-6 (Spec #633): Set instruction as a span attribute on the session span
-      // so the adapter can extract it from OTLP attributes even when the fredo.llm
-      // span is never created (non-streaming subagent messages skip startMessageSpan).
-      sessionSpan.setAttribute('instruction', instruction);
-    }
-
-    ctx.sessionSpans.set(sessionID, sessionSpan);
-    setBoundedMap(ctx.sessionSpanContexts, sessionID, sessionSpan.spanContext());
-  }
 
   ctx.emitLog({
     severityNumber: SeverityNumber.INFO,
     severityText: "INFO",
-    timestamp: createdAt,
+    timestamp: seed.createdAt,
     observedTimestamp: Date.now(),
     body: LOG_SESSION_CREATED,
     attributes: {
       "event.name": LOG_SESSION_CREATED,
       [ATTR_SESSION_ID]: sessionID,
       [ATTR_IS_SUBAGENT]: isSubagent,
-      ...agentAttrs("unknown", agentType),
+      ...agentAttrs(totals.agent, totals.agentType),
     },
   });
-  return ctx.log("info", "otel: session.created", { sessionID, createdAt, isSubagent });
+  ctx.log("info", "otel: session.created", { sessionID, createdAt: seed.createdAt, isSubagent });
+  return totals;
 }
 
-function sweepSession(sessionID: string, ctx: HandlerContext) {
+/**
+ * `session.created` — registers session identity (delegated to
+ * `ensureSessionRegistered`) and, for a CHILD session, opens its `fredo.session`
+ * span with the child→parent link. A primary session's span opens at its first
+ * prompt.
+ */
+export function handleSessionCreated(
+  event: V2EventOf<"session.created">,
+  ctx: HandlerContext,
+): void {
+  const data = event.data;
+  const sessionID = data.sessionID;
+
+  // R-1.4: V2 carries the parent DIRECTLY on the payload (types.d.ts:3351). The
+  // V1 pending-`task` scan is only the fallback for a payload that omits it (and
+  // is skipped entirely under the FREDO_SUPPRESS_PARENT_ROUTING seam) — both
+  // live in `ensureSessionRegistered`, so the bootstrap path gets the same rule.
+  const totals = ensureSessionRegistered(
+    {
+      sessionID,
+      createdAt: event.created,
+      ...(data.agent ? { agent: data.agent } : {}),
+      ...(data.model ? { model: `${data.model.providerID}/${data.model.id}` } : {}),
+      ...(data.parentID ? { parentID: data.parentID } : {}),
+    },
+    ctx,
+  );
+  if (!totals) return;
+
+  const parentID = totals.parentId;
+  if (!parentID) return;
+  // One span per session: a session whose span already opened on an earlier
+  // event must never get a second one when its creation event arrives late.
+  if (ctx.sessionSpans.has(sessionID)) return;
+
+  const agentType = totals.agentType;
+  const isSubagent = agentType === "subagent";
+  const parentSpanContext = resolveParentSpanContext(parentID, ctx);
+  const spanLink = parentSpanContext
+    ? createParentSpanLink(parentSpanContext, parentID)
+    : undefined;
+
+  const sessionSpan = ctx.tracer.startSpan(
+    `${ctx.tracePrefix}session`,
+    {
+      startTime: totals.startMs,
+      attributes: {
+        ...genAiOpNameAttr(OP_NAME_SESSION),
+        ...genAiConversationAttr(sessionID),
+        ...genAiAgentNameAttr(totals.agent),
+        [ATTR_SESSION_ID]: sessionID,
+        // Seam-guarded self-carried routing (FREDO_SUPPRESS_PARENT_ROUTING).
+        ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: parentID }),
+        agent: totals.agent,
+        [ATTR_AGENT_TYPE]: agentType,
+        [ATTR_IS_SUBAGENT]: isSubagent,
+      },
+      ...(spanLink ? { links: [spanLink] } : {}),
+    },
+    resolveSessionTraceContext(parentID, ctx),
+  );
+  storeSessionSpan(sessionID, sessionSpan, ctx);
+}
+
+/**
+ * `session.inbox.enqueued` — the user prompt (R-1.1).
+ *
+ * A `user` inbox item is the turn's prompt: it emits the `user_prompt` log record
+ * and starts/refreshes the session's `fredo.session` span with the prompt text,
+ * `gen_ai.input.messages`, the conversation id, the agent and the model.
+ *
+ * `synthetic` / `compaction` / `move` items are NOT user prompts — they emit
+ * nothing (never fabricate a prompt from a system item).
+ */
+export function handleSessionInboxEnqueued(
+  event: V2EventOf<"session.inbox.enqueued">,
+  ctx: HandlerContext,
+): void {
+  const { sessionID, item } = event.data;
+  if (item.type !== "user") return;
+  const promptText = item.payload.text ?? "";
+  const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
+  const model = ctx.sessionTurns.get(sessionID)?.model ?? "unknown";
+
+  // Never persist the `unknown` PLACEHOLDER as the turn's model: a session
+  // bootstrapped from `session.inbox.enqueued` has no model yet, and writing
+  // "unknown" here would mask the real one the first `session.step.started`
+  // carries (Spec #3197 round 2, F-3).
+  setBoundedMap(ctx.sessionTurns, sessionID, {
+    prompt: promptText,
+    ...(model !== "unknown" ? { model } : {}),
+  });
+
+  const existing = ctx.sessionSpans.get(sessionID);
+  const promptAttrs = {
+    ...genAiOpNameAttr(OP_NAME_SESSION),
+    ...genAiConversationAttr(sessionID),
+    ...genAiAgentNameAttr(agentName),
+    ...genAiPromptAttr(promptText),
+    [ATTR_SESSION_ID]: sessionID,
+    agent: agentName,
+    ...(promptText ? { prompt: promptText } : {}),
+    [ATTR_MODEL]: model,
+  };
+
+  if (existing) {
+    // Refresh the live session span (child sessions open theirs at creation; a
+    // primary session refreshes its turn root on every prompt).
+    const parentSessionId = routingParentSessionId(sessionID, ctx);
+    existing.setAttributes({
+      ...promptAttrs,
+      [ATTR_AGENT_TYPE]: agentType,
+      [ATTR_IS_SUBAGENT]: agentType === "subagent",
+      ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
+    });
+  } else {
+    // R-1.1 turn root: a primary session's first `fredo.session` span.
+    const parentSessionId = routingParentSessionId(sessionID, ctx);
+    const spanLink =
+      parentSessionId && !ctx.suppressParentRouting
+        ? (() => {
+            const parentSpanContext = resolveParentSpanContext(parentSessionId, ctx);
+            return parentSpanContext
+              ? createParentSpanLink(parentSpanContext, parentSessionId)
+              : undefined;
+          })()
+        : undefined;
+    const sessionSpan = ctx.tracer.startSpan(
+      `${ctx.tracePrefix}session`,
+      {
+        startTime: event.created,
+        attributes: {
+          ...promptAttrs,
+          [ATTR_AGENT_TYPE]: agentType === "unknown" ? "primary" : agentType,
+          [ATTR_IS_SUBAGENT]: agentType === "subagent",
+          ...(parentSessionId ? { [ATTR_PARENT_SESSION_ID]: parentSessionId } : {}),
+        },
+        ...(spanLink ? { links: [spanLink] } : {}),
+      },
+      resolveSessionTraceContext(sessionID, ctx),
+    );
+    storeSessionSpan(sessionID, sessionSpan, ctx);
+  }
+
+  ctx.emitLog({
+    severityNumber: SeverityNumber.INFO,
+    severityText: "INFO",
+    timestamp: event.created,
+    observedTimestamp: Date.now(),
+    body: LOG_USER_PROMPT,
+    attributes: {
+      "event.name": LOG_USER_PROMPT,
+      [ATTR_SESSION_ID]: sessionID,
+      ...agentAttrs(agentName, agentType),
+      [ATTR_PROMPT_LENGTH]: promptText.length,
+      [ATTR_MODEL]: model,
+    },
+  });
+  ctx.log("debug", "otel: user_prompt", {
+    sessionID,
+    promptLength: promptText.length,
+    model,
+  });
+}
+
+/**
+ * `session.execution.started` — no emission.
+ *
+ * V1 had no equivalent event (a run began at `chat.message`); everything the
+ * session needs at this point was already recorded at `session.created` /
+ * `session.inbox.enqueued`. Kept as a named handler so the dispatch table is
+ * complete and a future signal has a home.
+ */
+export function handleExecutionStarted(
+  event: V2EventOf<"session.execution.started">,
+  ctx: HandlerContext,
+): void {
+  ctx.log("debug", "otel: session.execution.started", { sessionID: event.data.sessionID });
+}
+
+/** `session.execution.succeeded` — closes the session span OK + totals/metrics + `session.idle` log. */
+export function handleExecutionSucceeded(
+  event: V2EventOf<"session.execution.succeeded">,
+  ctx: HandlerContext,
+): void {
+  closeSession(event.data.sessionID, ctx, {
+    status: "ok",
+    timestamp: event.created,
+    emitIdleLog: true,
+    sweepMessage: "session ended before tool/message completed",
+  });
+}
+
+/** `session.execution.failed` — closes the session span ERROR with the exception event + `session.error` log. */
+export function handleExecutionFailed(
+  event: V2EventOf<"session.execution.failed">,
+  ctx: HandlerContext,
+): void {
+  const errorText = structuredErrorText(event.data.error);
+  closeSession(event.data.sessionID, ctx, {
+    status: "error",
+    timestamp: event.created,
+    errorText,
+    error: event.data.error,
+    metricErrorType: event.data.error.type,
+    sweepMessage: "session failed before tool/message completed",
+  });
+}
+
+/**
+ * `session.execution.interrupted` — R-4.2.
+ *
+ * Closes the session span ERROR with a `status_message` naming the interruption
+ * and SWEEPS every still-open tool/LLM span of the session to ERROR (the
+ * `sweepSession` invariant: an interruption never leaves an open span behind).
+ */
+export function handleExecutionInterrupted(
+  event: V2EventOf<"session.execution.interrupted">,
+  ctx: HandlerContext,
+): void {
+  const interruption = `interrupted: ${event.data.reason}`;
+  closeSession(event.data.sessionID, ctx, {
+    status: "error",
+    timestamp: event.created,
+    errorText: interruption,
+    sweepMessage: interruption,
+  });
+}
+
+/**
+ * The ONE exporter-flush seam (Spec #3197 round 2, F-2 — NFR-6, one rule).
+ *
+ * Fire-and-forget by construction: the caller is a session handler on the user's
+ * event loop, so a failed or hung export may never delay or fail the session
+ * (NFR-1). Rejections are swallowed; the promise is never awaited here.
+ */
+function flushExporters(ctx: HandlerContext): void {
+  try {
+    const flushed = ctx.onExporterFlush?.();
+    if (flushed && typeof (flushed as Promise<void>).catch === "function") {
+      (flushed as Promise<void>).catch(() => {
+        // A failing flush must never surface (NFR-1).
+      });
+    }
+  } catch {
+    // Never let the flush seam break the event loop (NFR-1).
+  }
+}
+
+/**
+ * `session.idle` — closes anything still open, then flushes.
+ *
+ * The flush itself is NOT bound to this event: this host never delivers
+ * `session.idle` on its `run` path, so every terminal close flushes (see
+ * `closeSession`). Keeping the call here too costs nothing — a close with
+ * nothing open is a no-op and the flush is idempotent.
+ */
+export function handleSessionIdle(
+  event: V2EventOf<"session.idle">,
+  ctx: HandlerContext,
+): void {
+  // A session that already closed at execution.* has no totals/span left, so
+  // this is a no-op for it; a session whose execution event was missed (or a
+  // stream that just went idle) is closed here without emitting a second
+  // `session.idle` log.
+  closeSession(event.data.sessionID, ctx, {
+    status: "ok",
+    timestamp: event.created,
+    emitIdleLog: false,
+    sweepMessage: "session idled before tool/message completed",
+  });
+
+  ctx.log("debug", "otel: session.idle", { sessionID: event.data.sessionID });
+}
+
+/** Close options for `closeSession`. */
+type CloseOptions = {
+  status: "ok" | "error";
+  timestamp: number;
+  errorText?: string;
+  error?: { type: string; message: string };
+  metricErrorType?: string;
+  emitIdleLog?: boolean;
+  sweepMessage?: string;
+};
+
+/**
+ * THE single close path for a session (succeeded / failed / interrupted / idle).
+ *
+ * Order matters and is load-bearing:
+ *   1. read the accumulated output + record the child-completion snapshot BEFORE
+ *      the maps/totals are cleared (a child's snapshot is keyed by its parent);
+ *   2. sweep still-open tool/message spans (never orphan one);
+ *   3. record the session metrics exactly once (guarded by the totals delete);
+ *   4. stamp the final attribute set, status, exception event, then `.end()`;
+ *   5. emit the terminal log record;
+ *   6. flush the exporters — the deterministic batch-tail flush (F-2) that runs
+ *      on the events this host DOES deliver (`session.execution.succeeded` /
+ *      `.failed` / `.interrupted`), never only on the `session.idle` event.
+ */
+function closeSession(sessionID: string, ctx: HandlerContext, options: CloseOptions): void {
+  closeSessionEmission(sessionID, ctx, options);
+  flushExporters(ctx);
+}
+
+/** The emission half of `closeSession` — every branch before the exporter flush. */
+function closeSessionEmission(
+  sessionID: string,
+  ctx: HandlerContext,
+  options: CloseOptions,
+): void {
+  const totals = ctx.sessionTotals.get(sessionID);
+  const liveSessionSpan = ctx.sessionSpans.get(sessionID);
+  const sessionOutput = collectSessionOutput(sessionID, ctx);
+
+  // Child completion FIRST (needs totals + accumulated output). It may resolve a
+  // parent late and PROMOTE this session to `subagent`, so every value read below
+  // comes from the totals AFTER this call.
+  const childCompletion = recordChildCompletion(sessionID, ctx);
+  if (childCompletion) {
+    const parentId = resolveParentSessionId(sessionID, ctx);
+    if (parentId) attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
+  }
+
+  const latest = ctx.sessionTotals.get(sessionID) ?? totals;
+  const agentName = latest?.agent ?? "unknown";
+  const agentType = latest?.agentType ?? "unknown";
+  // Only a session that knows its parent stamps the self-carried routing
+  // attribute — a root session never guesses one (seam-guarded).
+  const stampedParentId = latest?.parentId;
+  ctx.sessionTotals.delete(sessionID);
+  sweepSession(sessionID, ctx, options.sweepMessage);
+
+  // Already closed (e.g. a duplicated durable terminal event, or an idle after
+  // `session.execution.succeeded`): nothing live is left, so nothing may be
+  // emitted a second time. The sweep above still ran (defensive).
+  if (!totals && !liveSessionSpan) {
+    ctx.log("debug", "otel: session close with nothing open", { sessionID });
+    return;
+  }
+
+  if (totals) {
+    const duration_ms = Math.max(0, options.timestamp - totals.startMs);
+    const agent = totals.agent !== "unknown" ? totals.agent : undefined;
+    ctx.instruments.toolDurationHistogram.record(duration_ms, {
+      [ATTR_SESSION_ID]: sessionID,
+    });
+    // gen_ai registry metrics, values in SECONDS (gen-ai-metrics.md).
+    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      ...(options.metricErrorType ? { [GEN_AI_ERROR_TYPE]: options.metricErrorType } : {}),
+    });
+    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
+      [ATTR_OP_NAME]: OP_NAME_SESSION,
+      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      ...(options.metricErrorType ? { [GEN_AI_ERROR_TYPE]: options.metricErrorType } : {}),
+    });
+    // Only positive counts are recorded — never a zero placeholder row.
+    if (totals.inferenceCalls > 0) {
+      ctx.instruments.genAiInferenceCalls.record(totals.inferenceCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
+    if (totals.toolCalls > 0) {
+      ctx.instruments.genAiToolCalls.record(totals.toolCalls, {
+        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
+      });
+    }
+  }
+
+  const sessionSpan = liveSessionSpan;
+  if (sessionSpan) {
+    if (totals) {
+      // The turn model is authoritative once a step resolved it: a session whose
+      // `session.created` never arrived opened its turn root with `model=unknown`
+      // and this is where it becomes the real `<provider>/<model>` (F-3).
+      const turnModel = ctx.sessionTurns.get(sessionID)?.model;
+      sessionSpan.setAttributes({
+        ...genAiAgentNameAttr(totals.agent),
+        agent: totals.agent,
+        [ATTR_AGENT_TYPE]: totals.agentType,
+        ...(turnModel ? { [ATTR_MODEL]: turnModel } : {}),
+        [ATTR_TOTAL_TOKENS]: totals.tokens,
+        [ATTR_TOTAL_COST]: totals.cost,
+        [ATTR_TOTAL_MESSAGES]: totals.messages,
+        ...(stampedParentId ? { [ATTR_PARENT_SESSION_ID]: stampedParentId } : {}),
+      });
+    }
+    if (sessionOutput) {
+      sessionSpan.setAttributes({ output: sessionOutput, response_text: sessionOutput });
+    }
+    if (options.status === "error") {
+      const message = options.errorText ?? "session error";
+      if (options.error) {
+        sessionSpan.addEvent(
+          GEN_AI_EVENT_EXCEPTION,
+          {
+            [ATTR_SESSION_ID]: sessionID,
+            ...genAiOpNameAttr(OP_NAME_SESSION),
+            ...genAiExceptionEventAttrs({
+              type: options.error.type,
+              message: options.error.message,
+            }),
+            [EXCEPTION_MESSAGE]: message,
+          },
+          options.timestamp,
+        );
+      }
+      sessionSpan.setStatus({ code: SpanStatusCode.ERROR, message });
+      sessionSpan.setAttribute("error", message);
+    } else {
+      sessionSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+    sessionSpan.end(options.timestamp);
+    ctx.sessionSpans.delete(sessionID);
+    ctx.sessionSpanContexts.delete(sessionID);
+  }
+
+  if (options.emitIdleLog) {
+    ctx.emitLog({
+      severityNumber: SeverityNumber.INFO,
+      severityText: "INFO",
+      timestamp: options.timestamp,
+      observedTimestamp: Date.now(),
+      body: LOG_SESSION_IDLE,
+      attributes: {
+        "event.name": LOG_SESSION_IDLE,
+        [ATTR_SESSION_ID]: sessionID,
+        [ATTR_TOTAL_TOKENS]: totals?.tokens ?? 0,
+        [ATTR_TOTAL_COST]: totals?.cost ?? 0,
+        [ATTR_TOTAL_MESSAGES]: totals?.messages ?? 0,
+        ...agentAttrs(agentName, agentType),
+      },
+    });
+  }
+
+  if (options.status === "error") {
+    const errorText = options.errorText ?? "session error";
+    ctx.emitLog({
+      severityNumber: SeverityNumber.ERROR,
+      severityText: "ERROR",
+      timestamp: options.timestamp,
+      observedTimestamp: Date.now(),
+      body: LOG_SESSION_ERROR,
+      attributes: {
+        "event.name": LOG_SESSION_ERROR,
+        [ATTR_SESSION_ID]: sessionID,
+        error: errorText,
+        ...agentAttrs(agentName, agentType),
+      },
+    });
+    ctx.log("error", "otel: session.error", { sessionID, error: errorText });
+    return;
+  }
+
+  ctx.log("debug", "otel: session closed", {
+    sessionID,
+    duration_ms: totals ? Math.max(0, options.timestamp - totals.startMs) : undefined,
+    total_tokens: totals?.tokens,
+    total_cost_usd: totals?.cost,
+    total_messages: totals?.messages,
+  });
+}
+
+/**
+ * Closes every still-open child span of a session with ERROR and clears its
+ * in-flight state. Port of the V1 `sweepSession` (handlers/session.ts:280-309).
+ *
+ * A span is `.end()`ed BEFORE its map entry is deleted — deleting first would
+ * orphan the span and the BatchSpanProcessor would never export it.
+ */
+function sweepSession(sessionID: string, ctx: HandlerContext, message?: string): void {
+  const statusMessage = message ?? "session ended before completion";
+
   for (const [id, perm] of ctx.pendingPermissions) {
     if (perm.sessionID === sessionID) ctx.pendingPermissions.delete(id);
   }
-  for (const [key, span] of ctx.pendingToolSpans) {
-    if (span.sessionID === sessionID) {
-      span.span?.setStatus({ code: SpanStatusCode.ERROR, message: "session ended before tool completed" });
-      span.span?.end();
+  for (const [key, pending] of ctx.pendingToolSpans) {
+    if (pending.sessionID === sessionID) {
+      pending.span?.setStatus({ code: SpanStatusCode.ERROR, message: statusMessage });
+      pending.span?.end();
       ctx.pendingToolSpans.delete(key);
     }
   }
+  for (const key of ctx.pendingToolInputs.keys()) {
+    if (key.startsWith(messageKeyPrefix(sessionID))) ctx.pendingToolInputs.delete(key);
+  }
   ctx.pendingRuns.delete(sessionID);
-  const msgPrefix = `${sessionID}:`;
+
+  const prefix = messageKeyPrefix(sessionID);
   for (const [key, span] of ctx.messageSpans) {
-    if (key.startsWith(msgPrefix)) {
-      span.setStatus({ code: SpanStatusCode.ERROR, message: "session ended before message completed" });
+    if (key.startsWith(prefix)) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: statusMessage });
       span.end();
       ctx.messageSpans.delete(key);
     }
   }
-  for (const key of ctx.messageOutputs.keys()) {
-    if (key.startsWith(msgPrefix)) ctx.messageOutputs.delete(key);
-  }
-  for (const key of ctx.messageThinking.keys()) {
-    if (key.startsWith(msgPrefix)) ctx.messageThinking.delete(key);
-  }
-  for (const key of ctx.messageMeta.keys()) {
-    if (key.startsWith(msgPrefix)) ctx.messageMeta.delete(key);
-  }
-}
-
-/** Collect all accumulated message outputs for a session and return concatenated text. */
-function collectSessionOutput(sessionID: string, ctx: HandlerContext): string {
-  const msgPrefix = `${sessionID}:`;
-  let output = '';
-  for (const [key, text] of ctx.messageOutputs) {
-    if (key.startsWith(msgPrefix)) {
-      output += text;
+  for (const map of [ctx.messageOutputs, ctx.messageThinking, ctx.messageMeta] as const) {
+    for (const key of map.keys()) {
+      if (key.startsWith(prefix)) map.delete(key);
     }
   }
-  return output;
 }
 
 /**
- * Resolves the PARENT session id for a (possibly subagent) session, preferring
- * the in-process `sessionTotals.parentId` and falling back to scanning the
- * pending `task` tool spans MOST-RECENT-first (Spec #2745 R-3 fix).
+ * Resolves the PARENT session id for a (possibly subagent) session.
  *
- * The fallback is the robust live trigger: the parent's `fredo.tool.task` span
- * stays pending while the task tool awaits the child session (Phase-0 live
- * ordering — the child completes BEFORE the parent task span exports), so at the
- * child's `session.idle`/`session.error` the parent span is always present even
- * when the child's `session.created` carried no `parentID` (this opencode
- * version) and the session.created-time fallback in `handleSessionCreated` ran
- * before the parent's task `running` part update reached the plugin. Scanning
- * most-recent-first prefers the innermost dispatch for nested subagents; spans
- * belonging to OTHER sessions are the only candidates (`pending.sessionID !==
- * sessionID`), so a session can never become its own parent.
- *
- * #2770 round 4 (temporal-origin guard): a pending `task` span means "session X
- * dispatched a subagent that is still running" — NOT "session X is my parent".
- * Two guards make the scan safe on concurrent depth-≥3 trees:
- * 1. A session with NO totals entry has no recorded creation time — never guess
- *    (also covers the mid-session plugin-reload case where `session.created`
- *    was never seen). Returns undefined.
- * 2. A candidate is accepted only when `pending.startMs <= totals.startMs` — a
- *    genuine parent's task dispatch started at or before the resolving
- *    session's creation; anything started later dispatched a session that is
- *    not the resolving one. This eliminates the root-contamination shape where
- *    a primary root's span resolution fired while its DESCENDANTS' task
- *    dispatches were pending (the root was stamped with a grandchild's session
- *    id, poisoned `totals.parentId`, and was classified subagent downstream).
- *
- * When resolved from the pending-task scan, the parentId is persisted back into
- * `sessionTotals` so every later read agrees (preserving all existing fields).
+ * V2 carries `data.parentID` on `session.created` (types.d.ts:3351) and that is
+ * written into `sessionTotals.parentId` at creation, so the in-process value is
+ * the primary source here. The V1 pending-`task` scan is retained as the
+ * fallback for a payload that omitted the parent (and for a session whose
+ * creation event arrived before this process subscribed) with both V1 guards:
+ *   1. no totals ⇒ no known creation time ⇒ never guess;
+ *   2. a candidate dispatch is accepted only when it started at or before this
+ *      session's creation (`pending.startMs <= totals.startMs`).
+ * A resolved parent is persisted back into `sessionTotals` so every later read
+ * agrees (all other fields carried through).
  */
 export function resolveParentSessionId(
   sessionID: string,
@@ -359,12 +781,8 @@ export function resolveParentSessionId(
 ): string | undefined {
   const totals = ctx.sessionTotals.get(sessionID);
   if (totals?.parentId) return totals.parentId;
-  // Temporal-origin guard 1: no totals ⇒ no creation time ⇒ never guess.
   if (!totals) return undefined;
   for (const [, pending] of [...ctx.pendingToolSpans].reverse()) {
-    // Temporal-origin guard 2: the candidate dispatch must have started at or
-    // before this session's creation — a dispatch started later spawned some
-    // OTHER session, never this one (#2770 FIXB3b contamination shape).
     if (
       pending.tool === "task" &&
       pending.sessionID !== sessionID &&
@@ -376,7 +794,10 @@ export function resolveParentSessionId(
         cost: totals.cost,
         messages: totals.messages,
         agent: totals.agent,
-        agentType: totals.agentType,
+        // A session whose parent resolves only here IS a subagent: promote the
+        // role so the classifier's subagent detection (is_subagent/agent.type)
+        // and the self-carried parent attribute agree (R-1.4).
+        agentType: "subagent",
         parentId: pending.sessionID,
         inferenceCalls: totals.inferenceCalls,
         toolCalls: totals.toolCalls,
@@ -387,6 +808,14 @@ export function resolveParentSessionId(
         outputTokens: totals.outputTokens,
         ...(totals.instruction ? { instruction: totals.instruction } : {}),
       });
+      const liveSpan = ctx.sessionSpans.get(sessionID);
+      if (liveSpan) {
+        liveSpan.setAttributes({
+          [ATTR_AGENT_TYPE]: "subagent",
+          [ATTR_IS_SUBAGENT]: true,
+          ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: pending.sessionID }),
+        });
+      }
       ctx.log("debug", "otel: child parent resolved from pending task span", {
         sessionID,
         parentID: pending.sessionID,
@@ -400,18 +829,9 @@ export function resolveParentSessionId(
 /**
  * Records a child session's completion snapshot keyed by the PARENT session id
  * (Spec #2745 R-2) so the parent's `fredo.tool.task` span can carry the child's
- * identity + completion totals before it exports. No-op (returns undefined) for a
- * primary session (no parentId) or when the session has no totals — the parent's
- * task span then simply exports without child attrs (degrades silently).
- *
- * R-3 fix: the parent is resolved at SNAPSHOT time via `resolveParentSessionId`
- * (NOT solely the in-process `sessionTotals.parentId` recorded at
- * `session.created`, which the Phase-0 live diagnostic observed ABSENT — the
- * emitted `session.parent_id` span attribute was missing on live child
- * `fredo.session` rows because this opencode version's `session.created` omits
- * `parentID` and the session.created-time fallback ran too early). At the
- * child's completion the parent's task span is guaranteed pending (Phase-0
- * ordering), so the pending-task scan resolves it.
+ * identity + completion totals before it exports. Returns undefined for a
+ * primary session or when no parent resolves — the parent's task span then
+ * exports unchanged (degrades silently, never crashes).
  */
 export function recordChildCompletion(
   sessionID: string,
@@ -421,14 +841,11 @@ export function recordChildCompletion(
   if (!totals) return undefined;
   const parentId = resolveParentSessionId(sessionID, ctx);
   if (!parentId) {
-    // Diagnostic (debug level, mirrors the existing parentID-resolution debug):
-    // a session idled while a task dispatch was in flight but no parent could be
-    // linked — the round-2 live defect surfaced exactly this way (child
-    // completions never snapshotted, five child_* attrs NULL on the task span).
     if ([...ctx.pendingToolSpans.values()].some((p) => p.tool === "task")) {
       ctx.log("debug", "otel: child completion not recorded — no parent resolved", {
         sessionID,
-        pendingTaskSpans: [...ctx.pendingToolSpans.values()].filter((p) => p.tool === "task").length,
+        pendingTaskSpans: [...ctx.pendingToolSpans.values()].filter((p) => p.tool === "task")
+          .length,
       });
     }
     return undefined;
@@ -451,309 +868,18 @@ export function recordChildCompletion(
 }
 
 /**
- * Direct attach-at-idle/error point (Spec #2745 R-2): when a child completes, if
- * the parent's `fredo.tool.task` span is still pending, attach the snapshot's
- * five flat attrs onto it right away. ST-1 confirmed the child completes BEFORE
- * the parent task span ends, so this fires before the tool-completed branch's
- * attach in message.ts — both are safe (idempotent, same five keys).
+ * Attach-at-close point: when a child completes while the parent's
+ * `fredo.tool.task` span is still pending, attach the child-completion attributes
+ * onto it right away (idempotent with the tool handler's own attach).
  */
 function attachChildCompletionToPendingTaskSpan(
   parentSessionId: string,
   snapshot: PendingChildCompletion,
   ctx: HandlerContext,
-) {
+): void {
   for (const [, pending] of ctx.pendingToolSpans) {
     if (pending.tool === "task" && pending.sessionID === parentSessionId && pending.span) {
       pending.span.setAttributes(childCompletionAttrs(snapshot));
     }
   }
-}
-
-/** Emits a session.idle log event, ends the session span, and clears pending state. */
-export function handleSessionIdle(
-  e: { properties: { sessionID: string } },
-  ctx: HandlerContext,
-) {
-  const sessionID = e.properties.sessionID;
-
-  // Collect message outputs BEFORE sweepSession deletes them
-  const sessionOutput = collectSessionOutput(sessionID, ctx);
-
-  const totals = ctx.sessionTotals.get(sessionID);
-  const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
-  // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
-  // session id) BEFORE the totals delete, and attach it directly to the parent's
-  // still-pending task span when present (attach-at-idle point). R-3 fix: the
-  // parent is resolved at snapshot time (the in-process parentId may be absent
-  // for live children — see recordChildCompletion), so `resolveParentSessionId`
-  // is called AFTER recording; `totals` here is the pre-resolution reference and
-  // must never be read for parentId. Both degrade silently when this session has
-  // no parent / no pending task span.
-  const childCompletion = recordChildCompletion(sessionID, ctx);
-  if (childCompletion) {
-    const parentId = resolveParentSessionId(sessionID, ctx);
-    if (parentId) {
-      attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
-    }
-  }
-  // Spec #2768 ST-1: resolve the parent at the child's completion event (the
-  // pending-task scan via recordChildCompletion above may have resolved it
-  // only NOW, even when session.created omitted parentID) so the session
-  // span's final attribute set carries the self-carried session.parent_id.
-  // TEST SEAM: suppressed under FREDO_SUPPRESS_PARENT_ROUTING.
-  const stampedParentId = ctx.suppressParentRouting
-    ? undefined
-    : (totals?.parentId ?? resolveParentSessionId(sessionID, ctx));
-  ctx.sessionTotals.delete(sessionID);
-  sweepSession(sessionID, ctx);
-
-  let duration_ms: number | undefined;
-  if (totals) {
-    duration_ms = Date.now() - totals.startMs;
-    ctx.instruments.toolDurationHistogram.record(duration_ms, {
-      [ATTR_SESSION_ID]: sessionID,
-    });
-    // GA-7: gen_ai.invoke_agent.duration + gen_ai.client.operation.duration
-    // (gen-ai-metrics.md; values in SECONDS per the registry unit).
-    const agent = totals.agent !== "unknown" ? totals.agent : undefined;
-    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
-      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-    });
-    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
-      [ATTR_OP_NAME]: OP_NAME_SESSION,
-      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-    });
-    // GA-7 / Spec #2680 Sub-task 3: gen_ai.invoke_agent.inference_calls /
-    // tool_calls (gen-ai-metrics.md; units {inference_call}/{tool_call}) at
-    // session idle — EARS-9. Recorded only when the count is > 0: a session
-    // that issued no inference/tool calls emits no invoke_agent count rows
-    // (EARS-10, no zero-value placeholder rows).
-    if (totals.inferenceCalls > 0) {
-      ctx.instruments.genAiInferenceCalls.record(totals.inferenceCalls, {
-        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      });
-    }
-    if (totals.toolCalls > 0) {
-      ctx.instruments.genAiToolCalls.record(totals.toolCalls, {
-        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      });
-    }
-  }
-
-  const sessionSpan = ctx.sessionSpans.get(sessionID);
-  if (sessionSpan) {
-    if (totals) {
-      sessionSpan.setAttributes({
-        // GA-4: gen_ai.agent.name on the session span once the agent resolves
-        // (session idle / chat.message — totals.agent carries the resolution).
-        ...genAiAgentNameAttr(totals.agent),
-        agent: totals.agent,
-        [ATTR_AGENT_TYPE]: totals.agentType,
-        [ATTR_TOTAL_TOKENS]: totals.tokens,
-        [ATTR_TOTAL_COST]: totals.cost,
-        [ATTR_TOTAL_MESSAGES]: totals.messages,
-        // Spec #2768 ST-1: self-carried parent routing on the child session
-        // span's final attribute set (resolved above; seam-guarded).
-        ...(stampedParentId ? { [ATTR_PARENT_SESSION_ID]: stampedParentId } : {}),
-      });
-    }
-    // Set accumulated output text on the session span so the adapter includes
-    // it in the OTLP payload (for SubagentNode output display in Mission Monitor).
-    // The adapter's otlp_attrs_to_payload preserves ALL span attributes, so
-    // 'output' and 'response_text' will be in the delivery payload.
-    if (sessionOutput) {
-      sessionSpan.setAttribute('output', sessionOutput);
-      sessionSpan.setAttribute('response_text', sessionOutput);
-    }
-    sessionSpan.setStatus({ code: SpanStatusCode.OK });
-    sessionSpan.end();
-    ctx.sessionSpans.delete(sessionID);
-  }
-  const runID = ctx.activeRuns.get(sessionID);
-  if (runID) ctx.activeRuns.delete(sessionID);
-  const runSpan = runID ? ctx.runSpans.get(runID) : undefined;
-  if (runSpan) {
-    if (totals) {
-      runSpan.setAttributes({
-        agent: totals.agent,
-        [ATTR_AGENT_TYPE]: totals.agentType,
-        [ATTR_TOTAL_TOKENS]: totals.tokens,
-        [ATTR_TOTAL_COST]: totals.cost,
-        [ATTR_TOTAL_MESSAGES]: totals.messages,
-      });
-    }
-    runSpan.setStatus({ code: SpanStatusCode.OK });
-    runSpan.end();
-    ctx.runSpans.delete(runID!);
-  }
-
-  ctx.emitLog({
-    severityNumber: SeverityNumber.INFO,
-    severityText: "INFO",
-    timestamp: Date.now(),
-    observedTimestamp: Date.now(),
-    body: LOG_SESSION_IDLE,
-    attributes: {
-      "event.name": LOG_SESSION_IDLE,
-      [ATTR_SESSION_ID]: sessionID,
-      [ATTR_TOTAL_TOKENS]: totals?.tokens ?? 0,
-      [ATTR_TOTAL_COST]: totals?.cost ?? 0,
-      [ATTR_TOTAL_MESSAGES]: totals?.messages ?? 0,
-      ...agentAttrs(agentName, agentType),
-    },
-  });
-  ctx.log("debug", "otel: session.idle", {
-    sessionID,
-    ...(totals
-      ? { duration_ms, total_tokens: totals.tokens, total_cost_usd: totals.cost, total_messages: totals.messages }
-      : {}),
-  });
-}
-
-/** Emits a session.error log event, ends the session span with error status, and clears pending state. */
-export function handleSessionError(
-  e: { properties: { sessionID: string; error?: { name: string; data?: unknown } } },
-  ctx: HandlerContext,
-) {
-  const rawID = e.properties.sessionID;
-  const sessionID = rawID ?? "unknown";
-
-  // Collect message outputs BEFORE sweepSession deletes them
-  const sessionOutput = rawID ? collectSessionOutput(rawID, ctx) : '';
-
-  const error = errorSummary(e.properties.error);
-  const { agentName, agentType } = rawID
-    ? getSessionAgentMeta(rawID, ctx)
-    : { agentName: "unknown", agentType: "unknown" as const };
-  const totals = rawID ? ctx.sessionTotals.get(rawID) : undefined;
-  // Spec #2768 ST-1: self-carried parent routing resolved at the child's
-  // completion event — assigned inside the rawID branch below, stamped onto
-  // the session span's final attribute set (seam-guarded).
-  let stampedParentId: string | undefined;
-  if (rawID) {
-    // Spec #2745 R-2: record the child-completion snapshot (keyed by the PARENT
-    // session id) BEFORE the totals delete, and attach it directly to the
-    // parent's still-pending task span when present. R-3 fix: resolve the parent
-    // at snapshot time (see recordChildCompletion); `totals` is the
-    // pre-resolution reference and must never be read for parentId. Degrades
-    // silently when this session has no parent / no pending task span.
-    const childCompletion = recordChildCompletion(rawID, ctx);
-    if (childCompletion) {
-      const parentId = resolveParentSessionId(rawID, ctx);
-      if (parentId) {
-        attachChildCompletionToPendingTaskSpan(parentId, childCompletion, ctx);
-      }
-    }
-    // Spec #2768 ST-1: resolve the parent at the child's error event so the
-    // session span's final attribute set carries the self-carried
-    // session.parent_id (TEST SEAM: suppressed under
-    // FREDO_SUPPRESS_PARENT_ROUTING). Stamped onto the session span below.
-    stampedParentId = ctx.suppressParentRouting
-      ? undefined
-      : (totals?.parentId ?? resolveParentSessionId(rawID, ctx));
-    ctx.sessionTotals.delete(rawID);
-  }
-  sweepSession(sessionID, ctx);
-
-  const agent = agentName !== "unknown" ? agentName : undefined;
-  const duration_ms = totals ? Date.now() - totals.startMs : undefined;
-  if (duration_ms !== undefined) {
-    // GA-7: gen_ai.invoke_agent.duration + gen_ai.client.operation.duration for
-    // the failed agent dispatch (gen-ai-metrics.md; values in SECONDS, error.type
-    // attached since the operation ended in an error).
-    const errorType = e.properties.error?.name ?? "session.error";
-    ctx.instruments.genAiInvokeAgentDuration.record(duration_ms / 1000, {
-      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      [GEN_AI_ERROR_TYPE]: errorType,
-    });
-    ctx.instruments.genAiOperationDuration.record(duration_ms / 1000, {
-      [ATTR_OP_NAME]: OP_NAME_SESSION,
-      ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      [GEN_AI_ERROR_TYPE]: errorType,
-    });
-    // GA-7 / Spec #2680 Sub-task 3: gen_ai.invoke_agent.inference_calls /
-    // tool_calls (gen-ai-metrics.md; units {inference_call}/{tool_call}) at
-    // session error — EARS-9 (failed sessions included). Recorded only when the
-    // count is > 0 (EARS-10, no zero-value placeholder rows).
-    const inferenceCalls = totals?.inferenceCalls ?? 0;
-    const toolCalls = totals?.toolCalls ?? 0;
-    if (inferenceCalls > 0) {
-      ctx.instruments.genAiInferenceCalls.record(inferenceCalls, {
-        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      });
-    }
-    if (toolCalls > 0) {
-      ctx.instruments.genAiToolCalls.record(toolCalls, {
-        ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-      });
-    }
-  }
-
-  if (rawID) {
-    const sessionSpan = ctx.sessionSpans.get(rawID);
-    if (sessionSpan) {
-      if (totals) {
-        sessionSpan.setAttributes({
-          // GA-4: gen_ai.agent.name on the session span when the agent resolved.
-          ...genAiAgentNameAttr(totals.agent),
-          agent: totals.agent,
-          [ATTR_AGENT_TYPE]: totals.agentType,
-          // Spec #2768 ST-1: self-carried parent routing on the child session
-          // span's final attribute set (resolved above; seam-guarded).
-          ...(stampedParentId ? { [ATTR_PARENT_SESSION_ID]: stampedParentId } : {}),
-        });
-      }
-      if (sessionOutput) {
-        sessionSpan.setAttribute('output', sessionOutput);
-        sessionSpan.setAttribute('response_text', sessionOutput);
-      }
-      // GA-6: gen_ai.client.operation.exception as a SPAN EVENT on the session
-      // span (gen-ai-exceptions.md), attached BEFORE sessionSpan.end() so the
-      // receiver persists it to telemetry_spans.events_json. exception.message
-      // is set unconditionally (errorSummary always yields a string) so at least
-      // one of the Conditionally Required exception.type / exception.message is
-      // present. EARS-5: no live session span → the event is skipped (it only
-      // fires here, inside the live-span branch).
-      sessionSpan.addEvent(
-        GEN_AI_EVENT_EXCEPTION,
-        {
-          [ATTR_SESSION_ID]: sessionID,
-          ...genAiOpNameAttr(OP_NAME_SESSION),
-          ...(agent ? { [GEN_AI_AGENT_NAME]: agent } : {}),
-          ...genAiExceptionAttrs(e.properties.error),
-          [EXCEPTION_MESSAGE]: error,
-        },
-        Date.now(),
-      );
-      sessionSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
-      sessionSpan.setAttribute("error", error);
-      sessionSpan.end();
-      ctx.sessionSpans.delete(rawID);
-    }
-    const runID = ctx.activeRuns.get(rawID);
-    if (runID) ctx.activeRuns.delete(rawID);
-    const runSpan = runID ? ctx.runSpans.get(runID) : undefined;
-    if (runSpan) {
-      if (totals) runSpan.setAttributes({ agent: totals.agent, [ATTR_AGENT_TYPE]: totals.agentType });
-      runSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
-      runSpan.setAttribute("error", error);
-      runSpan.end();
-      ctx.runSpans.delete(runID!);
-    }
-  }
-
-  ctx.emitLog({
-    severityNumber: SeverityNumber.ERROR,
-    severityText: "ERROR",
-    timestamp: Date.now(),
-    observedTimestamp: Date.now(),
-    body: LOG_SESSION_ERROR,
-    attributes: {
-      "event.name": LOG_SESSION_ERROR,
-      [ATTR_SESSION_ID]: sessionID,
-      error,
-      ...agentAttrs(agentName, agentType),
-    },
-  });
-  ctx.log("error", "otel: session.error", { sessionID, error });
 }

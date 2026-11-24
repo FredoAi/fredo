@@ -43,6 +43,94 @@ export function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, maxSize: n
 }
 
 /**
+ * Inserts `value` into `set`, evicting the OLDEST entry first when the set has
+ * reached capacity — the Set counterpart of `setBoundedMap` (Spec #3197 round 2,
+ * F-3). `registeredSessions` uses it so the exactly-once registration guard stays
+ * bounded in a long-lived plugin host.
+ */
+export function setBoundedSet<T>(set: Set<T>, value: T, maxSize: number = MAX_PENDING) {
+  if (!set.has(value) && set.size >= maxSize) {
+    const first = set.values().next();
+    if (!first.done) set.delete(first.value);
+  }
+  set.add(value);
+}
+
+/**
+ * The `globalThis` anchor key for the per-session emission claim (Spec #3197
+ * round 3, ST-9).
+ *
+ * `Symbol.for` — NOT `Symbol()` — because OpenCode V2 evaluates this plugin's
+ * module once PER CONNECTED CLIENT in a shared `opencode serve` host (round 2:
+ * five `loading plugin` lines in one run, 55 spans / 15 traces for a three-turn
+ * session). A module-scoped registry is re-created per instance and therefore
+ * deduplicates nothing; only a `globalThis` property survives module
+ * re-evaluation. The `fredo.plugin.` namespace keeps it clearly outside the OTel
+ * global registries F-1/F-4 forbid.
+ */
+export const SESSION_OWNER_KEY: symbol = Symbol.for("fredo.plugin.sessionOwner");
+
+/**
+ * Cap on the per-session claim map. Oldest-first eviction, the same discipline as
+ * every other plugin map (NFR-5) — a long-lived host that sees many sessions must
+ * not grow this without bound. Sized like `MAX_CHILD_COMPLETIONS`: one entry per
+ * session is tiny, and the claim only has to outlive a session's event stream.
+ */
+export const MAX_SESSION_CLAIMS = 10_000;
+
+/** The process-wide claim state parked on `globalThis`. */
+interface SessionOwnerRegistry {
+  readonly owners: Map<string, string>;
+}
+
+/** Reads (or lazily creates) the ONE claim registry shared by every plugin instance. */
+function sessionOwnerRegistry(): Map<string, string> {
+  const holder = globalThis as unknown as { [key: symbol]: SessionOwnerRegistry | undefined };
+  const existing = holder[SESSION_OWNER_KEY];
+  if (existing && existing.owners instanceof Map) return existing.owners;
+  const owners = new Map<string, string>();
+  holder[SESSION_OWNER_KEY] = { owners };
+  return owners;
+}
+
+/**
+ * Claims emission for `key` on behalf of `instanceId` (Spec #3197 round 3, ST-9).
+ *
+ * Returns `true` when this instance may emit: the key is unclaimed (this
+ * instance takes it) or it is already owned by `instanceId` (the session's later
+ * events belong to the same owner). Returns `false` when ANOTHER instance holds
+ * the claim — that instance already emitted this logical event, so this one must
+ * emit nothing.
+ *
+ * A hit refreshes recency (delete + re-set) so a still-active session is not the
+ * first evicted once the map reaches `maxEntries`; a new claim on a full map
+ * evicts oldest-first, mirroring `setBoundedMap`. `registry`/`maxEntries` are
+ * injectable so a test can exercise the bounds without disturbing the shared
+ * process registry.
+ */
+export function claimSession(
+  key: string,
+  instanceId: string,
+  registry: Map<string, string> = sessionOwnerRegistry(),
+  maxEntries: number = MAX_SESSION_CLAIMS,
+): boolean {
+  const owner = registry.get(key);
+  if (owner !== undefined) {
+    if (owner !== instanceId) return false;
+    // LRU refresh: an active session must not age out of the claim map.
+    registry.delete(key);
+    registry.set(key, instanceId);
+    return true;
+  }
+  if (registry.size >= maxEntries) {
+    const first = registry.keys().next();
+    if (!first.done) registry.delete(first.value);
+  }
+  registry.set(key, instanceId);
+  return true;
+}
+
+/**
  * Builds the fredo-native flat attributes carrying a child-completion snapshot
  * onto the parent's `fredo.tool.task` span (Spec #2745 R-2). Deliberately NOT
  * `gen_ai.*` keys — the OTel GenAI registry defines no child-completion aggregate
@@ -177,6 +265,38 @@ export function getSessionAgentMeta(
     agentName: totals?.agent ?? "unknown",
     agentType: totals?.agentType ?? "unknown",
   };
+}
+
+/**
+ * Records the resolved agent name on a session's totals (Spec #3197 ST-3).
+ *
+ * V2 carries the authoritative agent on `session.step.started.data.agent`
+ * (`SessionCreated.data.agent` is optional), so the first model turn repairs the
+ * `unknown` placeholder written at `session.created`. The reconstruction is
+ * field-by-field and carries EVERY field (parentId / instruction included) —
+ * dropping one here silently loses it for the rest of the session.
+ * No-ops for a session that was never registered.
+ */
+export function setSessionAgent(sessionID: string, agent: string, ctx: HandlerContext): void {
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (!existing || existing.agent === agent) return;
+  setBoundedMap(ctx.sessionTotals, sessionID, {
+    startMs: existing.startMs,
+    tokens: existing.tokens,
+    cost: existing.cost,
+    messages: existing.messages,
+    agent,
+    agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls,
+    toolCalls: existing.toolCalls,
+    inputTokens: existing.inputTokens,
+    cacheReadTokens: existing.cacheReadTokens,
+    cacheWriteTokens: existing.cacheWriteTokens,
+    reasoningTokens: existing.reasoningTokens,
+    outputTokens: existing.outputTokens,
+    ...(existing.parentId ? { parentId: existing.parentId } : {}),
+    ...(existing.instruction ? { instruction: existing.instruction } : {}),
+  });
 }
 
 /** Builds a consistent agent attribute set for OTLP logs, metrics, and spans. */

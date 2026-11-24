@@ -90,21 +90,29 @@ Voice input is a **shipped, opt-in** capability (default off): **Settings → Co
 
 ## OTLP Configuration
 
-Fredo includes local OTLP receivers for agent telemetry. Configure OpenCode to send OTLP data:
+Fredo includes local OTLP receivers for agent telemetry. The Fredo OpenCode plugin captures **by default** — an OpenCode session sends OTLP data with no environment variable set.
 
 ### OpenCode
 
+Capture is on unless you opt out. The default target is `http://localhost:4317` over gRPC; set the endpoint/protocol only when you need a non-default receiver.
+
 ```bash
-# Windows
-setx OPENCODE_ENABLE_TELEMETRY "1"
+# Windows — optional: point at a non-default receiver
 setx OPENCODE_OTLP_ENDPOINT "http://127.0.0.1:4317"
 setx OPENCODE_OTLP_PROTOCOL "grpc"
 
-# Unix (add to ~/.bashrc or ~/.zshrc)
-export OPENCODE_ENABLE_TELEMETRY=1
+# Windows — opt out
+setx FREDO_TELEMETRY "0"
+
+# Unix (add to ~/.bashrc or ~/.zshrc) — optional endpoint override
 export OPENCODE_OTLP_ENDPOINT=http://127.0.0.1:4317
 export OPENCODE_OTLP_PROTOCOL=grpc
+
+# Unix — opt out
+export FREDO_TELEMETRY=0
 ```
+
+`FREDO_TELEMETRY=0` (also `false` / `off`, case-insensitive) disables capture; unset or any other value leaves it on. `OPENCODE_ENABLE_TELEMETRY=0`/`false` also disables, and its absence no longer disables anything. Setting `enabled: false` in the plugin's `options` in `opencode.json(c)` takes precedence over both environment variables.
 
 ### Using the Setup Wizard
 

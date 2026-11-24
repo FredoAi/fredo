@@ -8,6 +8,44 @@
 
 import type { Context, Counter, Histogram, Span, SpanContext, Tracer } from "@opentelemetry/api";
 import type { LogRecord } from "@opentelemetry/api-logs";
+import type { Plugin } from "@opencode/plugin";
+
+/**
+ * ── V2 authoring contract (Spec #3197 ST-1) ──────────────────────────────────
+ *
+ * Every payload type below is DERIVED from the installed package's shipped
+ * TypeScript definitions — never hand-written. The authoring source is
+ * `@opencode/plugin@2.4.1` (the exact pin in `package.json`), whose
+ * `dist/promise/index.d.ts` exposes `Plugin.define({ id, setup })`; the context
+ * type is `Plugin.Context` and its `event.subscribe` returns an
+ * `AsyncIterable` of the V2 event union.
+ *
+ * The union itself ships in the peer package the plugin module re-exports:
+ *   node_modules/@opencode/client/dist/promise/generated/types.d.ts
+ *     · `EventSubscribeOutput = V2Event`            (line 5575)
+ *     · `V2Event = <the full discriminated union>`  (line 3973)
+ *     · per-event payload shapes                     (SessionCreated :3333,
+ *       SessionInboxEnqueued :3886, SessionExecution* :1860-1929,
+ *       SessionStep* :2035-2143, SessionText/Reasoning/ToolInput delta
+ *       :2547-2608, SessionTool* :2225-2288 / :3035-3085, SessionIdle :2893,
+ *       PermissionAsked/Replied :2645-2679)
+ *
+ * Handlers must type their parameter as `V2EventOf<"session.created">` (etc.) so
+ * a payload-shape change at a version bump is a COMPILE error, not a silent
+ * runtime miss (G-028: no handler is authored against a guessed shape).
+ */
+export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0];
+
+/** The V2 event union delivered by `ctx.event.subscribe()` (excludes `server.connected`). */
+export type V2Event = ReturnType<PluginContext["event"]["subscribe"]> extends AsyncIterable<infer T>
+  ? T
+  : never;
+
+/** Every V2 event type string the plugin may subscribe to. */
+export type V2EventType = V2Event["type"];
+
+/** The payload of one V2 event, narrowed by its `type` discriminant. */
+export type V2EventOf<T extends V2EventType> = Extract<V2Event, { type: T }>;
 
 /** Numeric priority map for log levels; higher value = higher severity. */
 export const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
@@ -26,14 +64,18 @@ export const MAX_PENDING = 500;
  */
 export const MAX_CHILD_COMPLETIONS = 10_000;
 
-/** Structured logger forwarded to the opencode `client.app.log` API. */
+/**
+ * Structured diagnostic sink threaded through the handler context. Backed by
+ * `log.ts` → `pluginLog` (console.error). Synchronous: there is no V2 async
+ * logging API (`client.app.log` was removed with the V1 surface).
+ */
 export type PluginLogger = (
   level: Level,
   message: string,
   extra?: Record<string, unknown>,
-) => Promise<void>;
+) => void;
 
-/** In-flight tool execution tracked between `running` and `completed`/`error` part updates. */
+/** In-flight tool execution tracked between `session.tool.called` and `.success`/`.failed`. */
 export type PendingToolSpan = {
   tool: string;
   sessionID: string;
@@ -41,7 +83,39 @@ export type PendingToolSpan = {
   span?: Span;
 };
 
-/** Permission prompt tracked between `permission.updated` and `permission.replied`. */
+/**
+ * In-flight tool ARGUMENT accumulation (Spec #3197 ST-4).
+ *
+ * `session.tool.input.started` is the ONLY event that carries the tool name —
+ * `session.tool.called` / `.input.ended` / `.success` / `.failed` carry only
+ * `data.id`. The name and the streamed JSON input text are therefore remembered
+ * per call id (keyed `${sessionID}:${id}`) between `input.started` and `called`.
+ */
+export type PendingToolInput = {
+  sessionID: string;
+  assistantMessageID: string;
+  /** Tool name from `session.tool.input.started` (`"unknown"` when it was missed). */
+  name: string;
+  /** Accumulated `session.tool.input.delta` text; `input.ended` overwrites it. */
+  text: string;
+  /** `event.created` of `input.started` — the tool span start time. */
+  startMs: number;
+};
+
+/**
+ * The current user turn of a session (Spec #3197 ST-2/ST-3).
+ *
+ * `session.inbox.enqueued` carries the prompt text and `session.step.started`
+ * carries the resolved model — neither event repeats the other's value, so the
+ * LLM span's `prompt` / `gen_ai.input.messages` read the last-known turn here.
+ */
+export type SessionTurn = {
+  prompt?: string;
+  /** `"<providerID>/<modelID>"`, matching the V1 `model` span/log attribute. */
+  model?: string;
+};
+
+/** Permission prompt tracked between `permission.asked` and `permission.replied` (V2). */
 export type PendingPermission = {
   type: string;
   title: string;
@@ -160,8 +234,12 @@ export type HandlerContext = {
   emitLog: (record: LogRecord) => void;
   instruments: Instruments;
   pendingToolSpans: Map<string, PendingToolSpan>;
+  /** In-flight tool argument accumulation, keyed `${sessionID}:${toolCallID}` (ST-4). */
+  pendingToolInputs: Map<string, PendingToolInput>;
   pendingPermissions: Map<string, PendingPermission>;
   sessionTotals: Map<string, SessionTotals>;
+  /** Current turn (prompt + resolved model) per session (ST-2/ST-3). */
+  sessionTurns: Map<string, SessionTurn>;
   tracer: Tracer;
   tracePrefix: string;
   rootContext: () => Context;
@@ -171,6 +249,13 @@ export type HandlerContext = {
   assistantRuns: Map<string, string>;
   pendingRuns: Map<string, PendingRun>;
   runInputs: Map<string, string>;
+  /**
+   * The session's ONE `fredo.session` span, keyed by `session.id` (Spec #3197
+   * ST-2). A child session opens it at `session.created`; a primary session
+   * opens it on its first `session.inbox.enqueued` and refreshes it per turn.
+   * Exactly one span per session ⇒ every close path (succeeded/failed/
+   * interrupted/idle sweep) ends it exactly once and no turn root is orphaned.
+   */
   sessionSpans: Map<string, Span>;
   sessionSpanContexts: Map<string, SpanContext>;
   messageSpans: Map<string, Span>;
@@ -181,6 +266,16 @@ export type HandlerContext = {
   /** Child-completion snapshots keyed by PARENT session id (Spec #2745 R-2). */
   pendingChildCompletions: Map<string, PendingChildCompletion>;
   /**
+   * Sessions already REGISTERED (Spec #3197 round 2, F-3) — the exactly-once guard
+   * for `ensureSessionRegistered`.
+   *
+   * Deliberately separate from `sessionTotals`: the close path DELETES a session's
+   * totals, so a later event of the same session would otherwise emit a SECOND
+   * `session.created` body and count it twice. Bounded like every other map
+   * (oldest-first eviction at `MAX_PENDING`) via `setBoundedSet`.
+   */
+  registeredSessions: Set<string>;
+  /**
    * Spec #2768 ST-1 TEST SEAM: when true (FREDO_SUPPRESS_PARENT_ROUTING=1 in
    * the plugin host environment, read ONCE at plugin init), the plugin never
    * stamps the self-carried `session.parent_id` routing attribute nor runs the
@@ -190,4 +285,14 @@ export type HandlerContext = {
    * isolation (AC5/R6). Default OFF. Test affordance only — no settings UI.
    */
   suppressParentRouting: boolean;
+  /**
+   * Exporter flush seam (Spec #3197 round 2, F-2): `otel.ts` →
+   * `forceFlushOtel`, wired by `index.ts` to the live providers. Called from
+   * `closeSession`, i.e. on EVERY terminal session close
+   * (`execution.succeeded` / `.failed` / `.interrupted`, and `session.idle`) —
+   * deliberately not bound to the `session.idle` EVENT, which this host never
+   * delivers on its `run` path. Absent in unit contexts, so the flush is
+   * optional and never a hard dependency of a handler.
+   */
+  onExporterFlush?: () => Promise<void> | void;
 };

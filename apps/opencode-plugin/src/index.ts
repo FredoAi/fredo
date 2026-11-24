@@ -1,465 +1,482 @@
 /**
- * Fredo OpenCode Plugin — OTLP metrics, logs, and traces export.
+ * index.ts — the Fredo OpenCode plugin, OpenCode **V2** entry point (Spec #3197).
  *
- * Exports full OTLP telemetry following the Claude Code monitoring schema.
- * Replaces the previous CLI-based event forwarding with direct OTLP export
- * via OpenTelemetry SDK providers.
+ * SURFACE (verified against the pinned package, not guessed):
+ *   `node_modules/@opencode/plugin/dist/promise/index.d.ts`
+ *     · `export * as Plugin` → `dist/promise/plugin.d.ts`
+ *         `interface Plugin { id: string; setup(context: Context): Cleanup | void }`
+ *         `define(plugin): Plugin`
+ *     · `dist/promise/plugin.d.ts:26-61` → `Context` = `{ app, location, options,
+ *       event, session, tool, … }`;  `:62` → `Cleanup = () => Promise<void> | void`
+ *     · `dist/promise/event.d.ts:4-6` → `event.subscribe({ types?, signal? })`
+ *       returns `AsyncIterable<SelectedEvent<…>>`; `server.connected` is never
+ *       delivered.
+ *   The event union + every per-event payload shape ships in
+ *   `node_modules/@opencode/client/dist/promise/generated/types.d.ts`
+ *   (`EventSubscribeOutput = V2Event` :5575, `V2Event` :3973).
  *
- * Plugin format: async function returning hooks object (OpenCode v1.15+).
+ * WHAT THIS FILE DOES
+ *   · defines the V2 plugin (`Plugin.define({ id: "fredo", setup })`),
+ *   · resolves config with capture DEFAULT-ON and the `FREDO_TELEMETRY` opt-out,
+ *   · builds the plugin's OWN OTel providers (no global registration, F-1) and
+ *     takes the tracer/meter/logger FROM those instances,
+ *   · registers a bounded `beforeExit` flush for the batch tail (F-2),
+ *   · registers every session from its FIRST observed event, because this host
+ *     never delivers `session.created` on its `run` path (F-3),
+ *   · runs ONE detached subscription loop with an `AbortController` cleanup,
+ *   · claims each session for this instance before dispatching, so a host that
+ *     evaluates this module once per connected client still emits ONE copy of
+ *     every span/log per logical event (ST-9, `util.ts` → `claimSession`),
+ *   · hands every event to the typed handler for its type,
+ *   · honours `FREDO_CAPTURE_EVENTS` (one JSON line `{type, event}` per event).
  *
- * Hooks registered:
- *   - event: session.created, session.idle, session.error, message.updated,
- *            message.part.updated, permission.updated, permission.replied,
- *            command.executed
- *   - chat.message: user prompt capture
- *   - config: log level runtime updates
+ * There is deliberately NO V1 (hooks-object) export and no `--external` bundle
+ * split: the module default-exports the V2 definition and nothing else. Dual
+ * export is forbidden by the backlog even though OpenCode ≥1.18.29 supports it.
  *
- * NOT registered: experimental.compaction.autocontinue (REQ-16)
+ * No `client.app.log` call exists anywhere in this plugin — the V2 context has
+ * no logging API behind it. Diagnostics go through `log.ts` → `pluginLog`.
  */
 
-import type { Plugin } from "@opencode-ai/plugin";
-import { ROOT_CONTEXT, trace, type Span, type SpanContext } from "@opentelemetry/api";
-import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { Plugin } from "@opencode/plugin";
+import { appendFileSync } from "node:fs";
+import { ROOT_CONTEXT, type Span, type SpanContext } from "@opentelemetry/api";
 import pkg from "../package.json" with { type: "json" };
-import {
-  LOG_SESSION_CREATED,
-  LOG_SESSION_IDLE,
-  LOG_SESSION_ERROR,
-  LOG_USER_PROMPT,
-  ATTR_PARENT_SESSION_ID,
-} from "./telemetry-constants";
 import { loadConfig } from "./config";
+import { pluginLog } from "./log";
+import { claimSession } from "./util";
 import { probeEndpoint } from "./probe";
-import { setupOtel, createInstruments, forceFlushOtel } from "./otel";
+import { setupOtel, createInstruments, forceFlushOtel, registerExitFlush } from "./otel";
 import { remoteParentContext } from "./trace-context";
 import {
+  ensureSessionRegistered,
   handleSessionCreated,
+  handleSessionInboxEnqueued,
+  handleExecutionStarted,
+  handleExecutionSucceeded,
+  handleExecutionFailed,
+  handleExecutionInterrupted,
   handleSessionIdle,
-  handleSessionError,
-  handleRunStarted,
-  resolveParentSessionId,
+  type SessionSeed,
 } from "./handlers/session";
 import {
-  handleMessageUpdated,
-  handleMessagePartUpdated,
-  startMessageSpan,
+  handleStepStarted,
+  handleStepEnded,
+  handleStepFailed,
+  handleTextDelta,
+  handleReasoningDelta,
 } from "./handlers/message";
-import { handlePermissionUpdated, handlePermissionReplied } from "./handlers/permission";
-import { handleCommandExecuted } from "./handlers/activity";
-import { setBoundedMap, getSessionAgentMeta, agentAttrs } from "./util";
-import type { FredoPluginOptions } from "./telemetry-constants";
-import { LEVELS } from "./types";
+import {
+  handleToolInputStarted,
+  handleToolInputDelta,
+  handleToolInputEnded,
+  handleToolCalled,
+  handleToolProgress,
+  handleToolSuccess,
+  handleToolFailed,
+} from "./handlers/tool";
+import { handlePermissionAsked, handlePermissionReplied } from "./handlers/permission";
 import type {
-  SessionTotals,
-  SessionAgentType,
   HandlerContext,
-  Level,
-  PendingToolSpan,
+  MessageMeta,
+  PendingChildCompletion,
   PendingPermission,
   PendingRun,
-  PendingChildCompletion,
-  MessageMeta,
+  PendingToolInput,
+  PendingToolSpan,
+  PluginContext,
+  SessionTotals,
+  SessionTurn,
+  V2Event,
 } from "./types";
 
 const PLUGIN_VERSION: string = (pkg as { version?: string }).version ?? "unknown";
+
+/** The plugin id registered with the V2 host. */
+export const PLUGIN_ID = "fredo";
+
+/**
+ * THIS module evaluation's plugin-instance identity (Spec #3197 round 3, ST-9).
+ *
+ * OpenCode V2 evaluates the plugin module once per connected client inside a
+ * shared `serve` host, so this value is re-created for every instance — that is
+ * precisely why it lives in module scope and the CLAIM MAP does not (it is
+ * anchored on `globalThis` via `Symbol.for("fredo.plugin.sessionOwner")`; see
+ * `util.ts` → `claimSession`).
+ */
+const INSTANCE_ID: string = crypto.randomUUID();
+
+/**
+ * The key an event's emission claim is taken on.
+ *
+ * `data.sessionID` is the natural key for every session-scoped event (and covers
+ * the whole dispatched surface); the envelope's `durable.aggregateID` is the
+ * fallback, and `id` the last resort, for an event whose `data` carries no
+ * session. Returns `undefined` only for an event with no usable identity — such
+ * an event is never claimed and always dispatched.
+ */
+function eventClaimKey(event: V2Event): string | undefined {
+  if ("data" in event) {
+    const sessionID = (event.data as { sessionID?: unknown }).sessionID;
+    if (typeof sessionID === "string" && sessionID.length > 0) return sessionID;
+  }
+  if ("durable" in event) {
+    const aggregateID = (event.durable as { aggregateID?: unknown } | undefined)?.aggregateID;
+    if (typeof aggregateID === "string" && aggregateID.length > 0) return aggregateID;
+  }
+  return event.id.length > 0 ? event.id : undefined;
+}
 
 /**
  * Spec #2768 ST-1 TEST SEAM — read ONCE at plugin init, default OFF.
  *
  * When FREDO_SUPPRESS_PARENT_ROUTING=1 in the plugin host (opencode) process
  * environment, the plugin never stamps the self-carried `session.parent_id`
- * routing attribute on child-session spans and never runs the pending-task
- * parent backfill — child spans arrive genuinely LEGACY-SHAPED (attr absent →
- * the Rust adapter's `session.parent_id` → `parent_session_id` mapping no-ops
- * naturally, no adapter change needed), so the legacy inference paths (Hook
- * `properties.info.parentID`, PostToolUse `task`, plugin pending-task scan)
- * can be verified in isolation (AC5 / fixture S4). The Hook transport's
- * `properties.info.parentID` is NOT suppressed — legacy inference depends on
- * it. Test affordance only — no settings UI, no docs entry.
+ * routing attribute on child-session spans and never runs the parent backfill —
+ * child spans arrive genuinely LEGACY-SHAPED so the Rust adapter's
+ * `session.parent_id` → `parent_session_id` mapping no-ops naturally. Test
+ * affordance only — no settings UI, no docs entry.
  */
 const SUPPRESS_PARENT_ROUTING = process.env["FREDO_SUPPRESS_PARENT_ROUTING"] === "1";
 
 /**
- * OpenCode plugin that exports session telemetry via OpenTelemetry (OTLP over gRPC).
- * Instruments metrics (sessions, tokens, cost, tool durations) and structured log events.
- * All instrumentation is gated on OPENCODE_ENABLE_TELEMETRY or `enabled: true`.
+ * Spec #3197 ST-1 capture lever: `FREDO_CAPTURE_EVENTS=<path>`.
+ *
+ * When set, every received V2 event is appended to `<path>` as one JSON line
+ * `{ type, event }` — the only in-repo way to obtain REAL V2 payload shapes and
+ * the AC4 failure/interruption evidence path. Default OFF; no other behaviour
+ * change. The lever is read per event so a test (or the tester) can arm it
+ * without reloading the plugin.
  */
-const FredoPlugin: Plugin = async (
-  { client, directory, worktree },
-  options: unknown,
-) => {
-  const config = loadConfig(options as FredoPluginOptions);
-  let minLevel: Level = "info";
-
-  const log: HandlerContext["log"] = async (level, message, extra) => {
-    if (LEVELS[level] < LEVELS[minLevel]) return;
-    await client.app.log({ body: { service: "fredo-opencode-plugin", level, message, extra } });
-  };
-
-  // Diagnostic: emit startup context to console (always visible in opencode CLI output)
-  const enableTelemetryEnv = process.env["OPENCODE_ENABLE_TELEMETRY"] ?? "(not set)";
-  const otlpEndpointEnv = process.env["OPENCODE_OTLP_ENDPOINT"] ?? "(not set)";
-  const hasOptionsEnabled = typeof (options as any)?.enabled === "boolean";
-  const optionsEnabledVal = hasOptionsEnabled ? String((options as any).enabled) : "(not provided)";
-  // Spec #2944 ST-11: the plugin file is shared/global, but the effective endpoint
-  // is resolved from the per-process env, so a session spawned by env A streams to
-  // A's receiver. Emitted only when FREDO_ENV_ID is set — inert on the legacy
-  // single-env path (no extra output, no routing/behavior change).
-  const fredoEnvId = process.env["FREDO_ENV_ID"];
-
-  console.error(`\n[fredo-opencode-plugin] v${PLUGIN_VERSION} starting`);
-  console.error(`[fredo-opencode-plugin]   enabled (resolved): ${config.enabled}`);
-  console.error(`[fredo-opencode-plugin]   enabled (options):  ${optionsEnabledVal}${hasOptionsEnabled ? "" : " — options tuple not provided (auto-discovered plugin)"}`);
-  console.error(`[fredo-opencode-plugin]   OPENCODE_ENABLE_TELEMETRY: ${enableTelemetryEnv}`);
-  console.error(`[fredo-opencode-plugin]   OPENCODE_OTLP_ENDPOINT:    ${otlpEndpointEnv}`);
-  if (fredoEnvId) {
-    console.error(`[fredo-opencode-plugin]   effective endpoint: ${config.endpoint} (FREDO_ENV_ID=${fredoEnvId})`);
-  }
-  console.error(`[fredo-opencode-plugin]   FREDO_SUPPRESS_PARENT_ROUTING: ${SUPPRESS_PARENT_ROUTING} (test seam — legacy-shaped spans when true)`);
-  console.error(`[fredo-opencode-plugin]   directory: ${directory}\n`);
-
-  if (!config.enabled) {
-    console.error("[fredo-opencode-plugin] ❌ TELEMETRY DISABLED");
-    console.error("[fredo-opencode-plugin]    OPENCODE_ENABLE_TELEMETRY env var not set to '1'");
-    console.error("[fredo-opencode-plugin]    Plugin was loaded but all hooks are empty — no telemetry will be exported.");
-    console.error("[fredo-opencode-plugin]    Fix: (1) set OPENCODE_ENABLE_TELEMETRY=1 in your shell, or");
-    console.error("[fredo-opencode-plugin]         (2) run 'fredo setup --install-plugin' via the Fredo Setup Wizard.\n");
-    await log("warn", "telemetry disabled — no hooks registered", {
-      reason: "OPENCODE_ENABLE_TELEMETRY env var not set or not '1'",
-      opencode_enable_telemetry: enableTelemetryEnv,
-      options_enabled: hasOptionsEnabled ? optionsEnabledVal : "not provided",
-      loaded_from: hasOptionsEnabled ? "opencode.json plugin array" : "auto-discovery (~/.config/opencode/plugins/fredo.js)",
-      fix: "set OPENCODE_ENABLE_TELEMETRY=1 or run 'fredo setup --install-plugin'",
+function captureEventTo(path: string, event: V2Event): void {
+  try {
+    appendFileSync(path, `${JSON.stringify({ type: event.type, event })}\n`);
+  } catch (err) {
+    pluginLog("warn", "FREDO_CAPTURE_EVENTS append failed", {
+      path,
+      error: err instanceof Error ? err.message : String(err),
     });
-    return {};
+  }
+}
+
+/**
+ * The session bootstrap seed carried by an event (Spec #3197 round 2, F-3).
+ *
+ * `session.created` is NOT delivered on this host's `run` path (0 occurrences in
+ * three real captures), so `sessionTotals` — written only at creation — was never
+ * seeded for a run-mode session and every created-time effect (model on the turn
+ * root, `total_tokens`/`total_cost_usd`/`total_messages` at close, the duration /
+ * inference-call / tool-call metrics, the `session.created` log body) was lost.
+ * Every `session.*` event therefore contributes whatever identity it carries, and
+ * `ensureSessionRegistered` seeds the totals once from the FIRST one observed:
+ *   · `session.created` — agent, model, parentID (the full set);
+ *   · `session.step.started` — agent + model (authoritative on this host);
+ *   · every other session event — just the id (it still registers the session).
+ */
+function sessionSeedOf(event: V2Event): SessionSeed | undefined {
+  if (!("data" in event)) return undefined;
+  const sessionID = (event.data as { sessionID?: unknown }).sessionID;
+  if (typeof sessionID !== "string" || sessionID.length === 0) return undefined;
+
+  const seed: SessionSeed = { sessionID, createdAt: event.created };
+  if (event.type === "session.created") {
+    const data = event.data;
+    if (data.agent) seed.agent = data.agent;
+    if (data.model) seed.model = `${data.model.providerID}/${data.model.id}`;
+    if (data.parentID) seed.parentID = data.parentID;
+  } else if (event.type === "session.step.started") {
+    const data = event.data;
+    if (data.agent) seed.agent = data.agent;
+    if (data.model) seed.model = `${data.model.providerID}/${data.model.id}`;
+  }
+  return seed;
+}
+
+/**
+ * Routes one V2 event: claim the session (ST-9), capture (when the lever is
+ * armed), bootstrap the session, then dispatch to the typed handler for its type.
+ * Unhandled types are ignored deliberately — the subscription is unfiltered, so
+ * the host may deliver events this plugin has no opinion about.
+ *
+ * THE CLAIM COMES FIRST (Spec #3197 round 3, ST-9). In a shared host every client
+ * loads its own plugin instance and every instance subscribes to the same event
+ * stream, so without a claim N instances emit N copies of every span/log derived
+ * from one durable event (round 2: 5× — 55 spans / 15 traces for three turns).
+ * The first instance to observe a key owns it and emits; every other instance
+ * emits NOTHING for that key — not even a capture line or a diagnostic body. The
+ * claim is correct under both load topologies: broadcast (the owner wins every
+ * event) and partitioned (the claim is uncontended and behaviour is unchanged),
+ * and it is a no-op on the single-instance `--standalone` path by construction.
+ *
+ * `instanceId` is the instance-identity seam: production callers never pass it
+ * (it defaults to this module evaluation's `INSTANCE_ID`), while a test can drive
+ * two instances through the REAL dispatch path against the one shared
+ * `globalThis` registry.
+ *
+ * The bootstrap runs BEFORE dispatch so a session whose `session.created` never
+ * arrives is registered (exactly once) by its first observed event; when the host
+ * does deliver `session.created` the bootstrap and the handler share the same
+ * `ensureSessionRegistered`, so the effect still happens exactly once and in the
+ * same order as before.
+ */
+export function handleV2Event(
+  event: V2Event,
+  ctx: HandlerContext,
+  instanceId: string = INSTANCE_ID,
+): void {
+  const claimKey = eventClaimKey(event);
+  if (claimKey !== undefined && !claimSession(claimKey, instanceId)) {
+    pluginLog("debug", "duplicate plugin instance: session claimed elsewhere, skipping", {
+      sessionID: claimKey,
+      type: event.type,
+    });
+    return;
   }
 
-  await log("info", "fredo-opencode-plugin starting", {
-    version: PLUGIN_VERSION,
-    endpoint: config.endpoint,
-    protocol: config.protocol,
-    metricsInterval: config.metricsInterval,
-    logsInterval: config.logsInterval,
-    metricPrefix: config.metricPrefix,
-    loaded_from: hasOptionsEnabled ? "opencode.json plugin array" : "auto-discovery (~/.config/opencode/plugins/fredo.js)",
-    opencode_enable_telemetry: enableTelemetryEnv,
-  });
-  console.error(`[fredo-opencode-plugin] ✅ Telemetry ENABLED — exporting to ${config.endpoint} (${config.protocol})\n`);
+  const capturePath = process.env["FREDO_CAPTURE_EVENTS"];
+  if (capturePath) captureEventTo(capturePath, event);
 
-  const probe = await probeEndpoint(config.endpoint);
-  if (probe.ok) {
-    await log("info", "OTLP endpoint reachable", { endpoint: config.endpoint, ms: probe.ms });
-  } else {
-    await log("warn", "OTLP endpoint unreachable — exports may fail", {
+  if (event.type.startsWith("session.")) {
+    const seed = sessionSeedOf(event);
+    if (seed) ensureSessionRegistered(seed, ctx);
+  }
+
+  switch (event.type) {
+    case "session.created":
+      handleSessionCreated(event, ctx);
+      break;
+    case "session.inbox.enqueued":
+      handleSessionInboxEnqueued(event, ctx);
+      break;
+    case "session.execution.started":
+      handleExecutionStarted(event, ctx);
+      break;
+    case "session.execution.succeeded":
+      handleExecutionSucceeded(event, ctx);
+      break;
+    case "session.execution.failed":
+      handleExecutionFailed(event, ctx);
+      break;
+    case "session.execution.interrupted":
+      handleExecutionInterrupted(event, ctx);
+      break;
+    case "session.idle":
+      handleSessionIdle(event, ctx);
+      break;
+    case "session.step.started":
+      handleStepStarted(event, ctx);
+      break;
+    case "session.step.ended":
+      handleStepEnded(event, ctx);
+      break;
+    case "session.step.failed":
+      handleStepFailed(event, ctx);
+      break;
+    case "session.text.delta":
+      handleTextDelta(event, ctx);
+      break;
+    case "session.reasoning.delta":
+      handleReasoningDelta(event, ctx);
+      break;
+    case "session.tool.input.started":
+      handleToolInputStarted(event, ctx);
+      break;
+    case "session.tool.input.delta":
+      handleToolInputDelta(event, ctx);
+      break;
+    case "session.tool.input.ended":
+      handleToolInputEnded(event, ctx);
+      break;
+    case "session.tool.called":
+      handleToolCalled(event, ctx);
+      break;
+    case "session.tool.progress":
+      handleToolProgress(event, ctx);
+      break;
+    case "session.tool.success":
+      handleToolSuccess(event, ctx);
+      break;
+    case "session.tool.failed":
+      handleToolFailed(event, ctx);
+      break;
+    case "permission.asked":
+      handlePermissionAsked(event, ctx);
+      break;
+    case "permission.replied":
+      handlePermissionReplied(event, ctx);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * The V2 plugin definition. `setup` runs once per plugin host process; the
+ * returned cleanup aborts the event loop and shuts the OTel providers down.
+ */
+export const fredoPluginDefinition = Plugin.define({
+  id: PLUGIN_ID,
+  async setup(context: PluginContext) {
+    const config = loadConfig(context.options);
+
+    // Opt-out path: SILENT (R-5). No spans, no metrics, no log records, no
+    // diagnostics — and no OTel provider is registered, so nothing can flush.
+    if (!config.enabled) return;
+
+    // Exactly ONE startup diagnostic on the enabled path, at `info`: the default
+    // floor is `warn`, so a healthy session prints nothing (NFR-3).
+    pluginLog("info", "starting", {
+      version: PLUGIN_VERSION,
       endpoint: config.endpoint,
-      error: probe.error,
+      protocol: config.protocol,
+      pluginID: PLUGIN_ID,
+      opencode: context.app?.version,
     });
-  }
 
-  const providers = await setupOtel(
-    config.endpoint,
-    config.protocol,
-    config.metricsInterval,
-    config.logsInterval,
-    PLUGIN_VERSION,
-  );
-  const { meterProvider, loggerProvider, tracerProvider } = providers;
-  await log("info", "OTel SDK initialized");
+    // Best-effort reachability probe. Kept (probe.ts semantics unchanged) but
+    // reported at `debug` so an unreachable receiver never becomes user-visible
+    // noise (NFR-1/NFR-3).
+    const probe = await probeEndpoint(config.endpoint);
+    if (!probe.ok) {
+      pluginLog("debug", "OTLP endpoint unreachable at startup", {
+        endpoint: config.endpoint,
+        error: probe.error,
+      });
+    }
 
-  const instruments = createInstruments(config.metricPrefix);
-  const logger = logs.getLogger("com.fredo.opencode");
-  const emitLog: HandlerContext["emitLog"] = (record) => {
-    logger.emit(record);
-  };
-  const tracer = trace.getTracer("com.fredo.opencode");
-  const remoteContext = remoteParentContext(config.traceparent, config.tracestate);
-  if (config.traceparent && !remoteContext) {
-    await log("warn", "invalid traceparent ignored", { traceparentLength: config.traceparent.length });
-  }
-  const rootContext = remoteContext ? () => remoteContext : () => ROOT_CONTEXT;
+    const providers = await setupOtel(
+      config.endpoint,
+      config.protocol,
+      config.metricsInterval,
+      config.logsInterval,
+      PLUGIN_VERSION,
+    );
+    const { meterProvider, loggerProvider, tracerProvider } = providers;
 
-  // ── In-Memory State Maps ──────────────────────────────────────────────
-  const pendingToolSpans = new Map<string, PendingToolSpan>();
-  const pendingPermissions = new Map<string, PendingPermission>();
-  const sessionTotals = new Map<string, SessionTotals>();
-  const runSpans = new Map<string, Span>();
-  const runSpanContexts = new Map<string, SpanContext>();
-  const activeRuns = new Map<string, string>();
-  const assistantRuns = new Map<string, string>();
-  const pendingRuns = new Map<string, PendingRun>();
-  const runInputs = new Map<string, string>();
-  const sessionSpans = new Map<string, Span>();
-  const sessionSpanContexts = new Map<string, SpanContext>();
-  const messageSpans = new Map<string, Span>();
-  const messageOutputs = new Map<string, string>();
-  const messageThinking = new Map<string, string>();
-  const pendingSubagentInstructions = new Map<string, string>();
-  const messageMeta = new Map<string, MessageMeta>();
-  const pendingChildCompletions = new Map<string, PendingChildCompletion>();
+    // Process-exit safety net for the batch tail (F-2): the CLI returns right
+    // after the last session event, so anything the terminal flush did not
+    // finish is flushed on `beforeExit`. Bounded, and removed on cleanup.
+    const unregisterExitFlush = registerExitFlush(providers);
 
-  const ctx: HandlerContext = {
-    log,
-    emitLog,
-    instruments,
-    pendingToolSpans,
-    pendingPermissions,
-    sessionTotals,
-    tracer,
-    tracePrefix: "fredo.",
-    rootContext,
-    runSpans,
-    runSpanContexts,
-    activeRuns,
-    assistantRuns,
-    pendingRuns,
-    runInputs,
-    sessionSpans,
-    sessionSpanContexts,
-    messageSpans,
-    messageOutputs,
-    messageThinking,
-    pendingSubagentInstructions,
-    messageMeta,
-    pendingChildCompletions,
-    // Spec #2768 ST-1 TEST SEAM (see SUPPRESS_PARENT_ROUTING above).
-    suppressParentRouting: SUPPRESS_PARENT_ROUTING,
-  };
+    // Every handle comes from the plugin's OWN provider instances — never from
+    // the api's process-global registries, which this host owns (F-1).
+    const instruments = createInstruments(config.metricPrefix, meterProvider);
+    const otelLogger = loggerProvider.getLogger("com.fredo.opencode");
+    const tracer = tracerProvider.getTracer("com.fredo.opencode");
+    const remoteContext = remoteParentContext(config.traceparent, config.tracestate);
+    if (config.traceparent && !remoteContext) {
+      pluginLog("warn", "invalid traceparent ignored", {
+        traceparentLength: config.traceparent.length,
+      });
+    }
+    const rootContext = remoteContext ? () => remoteContext : () => ROOT_CONTEXT;
 
-  let shuttingDown = false;
+    // ── In-Memory State Maps (bounded via util.setBoundedMap) ────────────
+    const pendingToolSpans = new Map<string, PendingToolSpan>();
+    const pendingToolInputs = new Map<string, PendingToolInput>();
+    const pendingPermissions = new Map<string, PendingPermission>();
+    const sessionTotals = new Map<string, SessionTotals>();
+    const sessionTurns = new Map<string, SessionTurn>();
+    const runSpans = new Map<string, Span>();
+    const runSpanContexts = new Map<string, SpanContext>();
+    const activeRuns = new Map<string, string>();
+    const assistantRuns = new Map<string, string>();
+    const pendingRuns = new Map<string, PendingRun>();
+    const runInputs = new Map<string, string>();
+    const sessionSpans = new Map<string, Span>();
+    const sessionSpanContexts = new Map<string, SpanContext>();
+    const messageSpans = new Map<string, Span>();
+    const messageOutputs = new Map<string, string>();
+    const messageThinking = new Map<string, string>();
+    const pendingSubagentInstructions = new Map<string, string>();
+    const messageMeta = new Map<string, MessageMeta>();
+    const pendingChildCompletions = new Map<string, PendingChildCompletion>();
+    const registeredSessions = new Set<string>();
 
-  async function flushTelemetry(reason: string) {
-    if (shuttingDown) return;
-    await forceFlushOtel(providers);
-    await log("debug", "otel: telemetry flushed", { reason });
-  }
-
-  async function shutdown() {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    await forceFlushOtel(providers);
-    await Promise.allSettled([
-      meterProvider.shutdown(),
-      loggerProvider.shutdown(),
-      tracerProvider.shutdown(),
-    ]);
-  }
-
-  process.on("SIGTERM", () => {
-    shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
-  process.on("SIGINT", () => {
-    shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
-  });
-  process.on("beforeExit", () => { shutdown().catch(() => {}); });
-
-  const safe = <T extends unknown[]>(
-    name: string,
-    fn: (...args: T) => Promise<void> | void,
-  ): ((...args: T) => Promise<void>) =>
-    async (...args: T) => {
-      try {
-        await fn(...args);
-      } catch (err) {
-        await log("error", `otel: unhandled error in ${name}`, {
-          error: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
-        });
-      }
+    const ctx: HandlerContext = {
+      log: pluginLog,
+      emitLog: (record) => {
+        otelLogger.emit(record);
+      },
+      instruments,
+      pendingToolSpans,
+      pendingToolInputs,
+      pendingPermissions,
+      sessionTotals,
+      sessionTurns,
+      tracer,
+      tracePrefix: "fredo.",
+      rootContext,
+      runSpans,
+      runSpanContexts,
+      activeRuns,
+      assistantRuns,
+      pendingRuns,
+      runInputs,
+      sessionSpans,
+      sessionSpanContexts,
+      messageSpans,
+      messageOutputs,
+      messageThinking,
+      pendingSubagentInstructions,
+      messageMeta,
+      pendingChildCompletions,
+      registeredSessions,
+      suppressParentRouting: SUPPRESS_PARENT_ROUTING,
+      // Deterministic exporter flush, bound to EVERY terminal session close
+      // (execution.succeeded|failed|interrupted and session.idle) rather than to
+      // the `session.idle` EVENT, which this host never delivers (F-2).
+      onExporterFlush: () => forceFlushOtel(providers),
     };
 
-  return {
-    config: async (cfg: { logLevel?: string }) => {
-      if (cfg.logLevel) {
-        const candidate = cfg.logLevel.toLowerCase();
-        if (candidate in LEVELS) {
-          const next = candidate as Level;
-          if (next !== minLevel) {
-            minLevel = next;
-            await log("info", `log level set to "${minLevel}"`);
+    // ── Detached event loop ──────────────────────────────────────────────
+    // The loop must never block setup (prompt admission): it is started and
+    // intentionally NOT awaited, and every event/frame error is contained
+    // (NFR-1) so a failing handler or a dropped transport cannot break the
+    // session.
+    //
+    // The per-session emission claim (ST-9) is applied by `handleV2Event` itself
+    // — the ONE dispatch seam this loop calls — against this module evaluation's
+    // `INSTANCE_ID`, so a second plugin instance in the same process skips the
+    // session entirely and emits nothing.
+    const controller = new AbortController();
+
+    const runEventLoop = async () => {
+      try {
+        for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          try {
+            handleV2Event(event, ctx);
+          } catch (err) {
+            pluginLog("warn", "handler failed", {
+              type: event.type,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
-        } else {
-          await log("warn", `unknown log level "${cfg.logLevel}", keeping "${minLevel}"`);
         }
-      }
-    },
-
-    "chat.message": safe("chat.message", async (input: any, output: any) => {
-      const agent = input.agent ?? "unknown";
-      const startTime = Date.now();
-      const existingTotals = sessionTotals.get(input.sessionID);
-      // Spec #2745 R-3: backfill the parent session id at the child's first
-      // chat.message when `session.created` carried no parentID (this opencode
-      // version — Phase-0 diagnostic: no `session.parent_id` on live child
-      // `fredo.session` rows). The parent's `fredo.tool.task` span is pending
-      // while the task tool awaits the child, so the pending-task scan resolves
-      // it. Carried through every later sessionTotals reconstruction
-      // (accumulateSessionTotals now preserves parentId).
-      // Spec #2768 ST-1 TEST SEAM: the pending-task scan is skipped under
-      // FREDO_SUPPRESS_PARENT_ROUTING (origin suppression — no self-carried
-      // parent resolution for legacy-shaped spans).
-      const parentId = SUPPRESS_PARENT_ROUTING
-        ? existingTotals?.parentId
-        : (existingTotals?.parentId ?? resolveParentSessionId(input.sessionID, ctx));
-      const nextTotals: SessionTotals = {
-        startMs: existingTotals?.startMs ?? startTime,
-        tokens: existingTotals?.tokens ?? 0,
-        cost: existingTotals?.cost ?? 0,
-        messages: existingTotals?.messages ?? 0,
-        agent,
-        agentType: existingTotals?.agentType ?? ("unknown" as SessionAgentType),
-        parentId,
-        // EARS-9 counters — carried through this field-by-field reconstruction
-        // so a chat.message never silently resets them to zero.
-        inferenceCalls: existingTotals?.inferenceCalls ?? 0,
-        toolCalls: existingTotals?.toolCalls ?? 0,
-        // Per-family token breakdown — carried through (SubagentNode five-way row).
-        inputTokens: existingTotals?.inputTokens ?? 0,
-        cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
-        cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
-        reasoningTokens: existingTotals?.reasoningTokens ?? 0,
-        outputTokens: existingTotals?.outputTokens ?? 0,
-      };
-      setBoundedMap(sessionTotals, input.sessionID, nextTotals);
-      const { agentType } = getSessionAgentMeta(input.sessionID, ctx);
-      const sessionSpan = sessionSpans.get(input.sessionID);
-      if (sessionSpan) {
-        sessionSpan.setAttributes({ agent, "agent.type": agentType });
-      }
-
-      const promptText = (output?.parts ?? [])
-        .map((part: any) => {
-          switch (part.type) {
-            case "text": return part.text;
-            case "file": return part.filename ?? part.url;
-            case "agent": return part.name;
-            case "subtask": return part.description;
-            default: return "";
-          }
-        })
-        .filter(Boolean)
-        .join("\n");
-
-      if (!sessionSpan) {
-        const model = input.model
-          ? `${input.model.providerID}/${input.model.modelID}`
-          : "unknown";
-        if (input.messageID) {
-          handleRunStarted(
-            input.messageID,
-            input.sessionID,
-            agent,
-            promptText,
-            model,
-            startTime,
-            ctx,
-          );
-        } else {
-          setBoundedMap(pendingRuns, input.sessionID, {
-            agent,
-            promptText,
-            model,
-            startTime,
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          pluginLog("warn", "event subscription ended", {
+            error: err instanceof Error ? err.message : String(err),
           });
         }
       }
+    };
+    void runEventLoop();
 
-      // Spec #2768 ST-1: stamp the self-carried `session.parent_id` on the
-      // child's session/run span at its NEXT event (this chat.message) when
-      // `session.created` omitted parentID — the run span created above would
-      // otherwise export as a session span with no routing property. Placed
-      // AFTER handleRunStarted so a freshly created run span is stamped too.
-      // Seam-guarded (SUPPRESS_PARENT_ROUTING): no stamping when suppressed.
-      if (!SUPPRESS_PARENT_ROUTING && parentId && parentId !== input.sessionID) {
-        const runSpan = input.messageID ? runSpans.get(input.messageID) : undefined;
-        const span = sessionSpan ?? runSpan;
-        span?.setAttribute(ATTR_PARENT_SESSION_ID, parentId);
-      }
+    let cleanedUp = false;
+    return async () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      unregisterExitFlush();
+      controller.abort();
+      await forceFlushOtel(providers);
+      await Promise.allSettled([
+        meterProvider.shutdown(),
+        loggerProvider.shutdown(),
+        tracerProvider.shutdown(),
+      ]);
+    };
+  },
+});
 
-      const promptLength = promptText.length;
-      emitLog({
-        severityNumber: SeverityNumber.INFO,
-        severityText: "INFO",
-        timestamp: startTime,
-        observedTimestamp: startTime,
-        body: LOG_USER_PROMPT,
-        attributes: {
-          "event.name": LOG_USER_PROMPT,
-          "session.id": input.sessionID,
-          ...agentAttrs(agent, agentType),
-          prompt_length: promptLength,
-          model: input.model
-            ? `${input.model.providerID}/${input.model.modelID}`
-            : "unknown",
-        },
-      });
-    }),
-
-    event: safe("event", async ({ event }: { event: any }) => {
-      switch (event.type) {
-        case "session.created":
-          await handleSessionCreated(event, ctx);
-          break;
-        case "session.idle":
-          handleSessionIdle(event, ctx);
-          await flushTelemetry("session.idle");
-          break;
-        case "session.error":
-          handleSessionError(event, ctx);
-          await flushTelemetry("session.error");
-          break;
-        case "message.updated": {
-          const msgEvt = event;
-          const info = msgEvt.properties.info;
-          if (info.role === "user") {
-            const pendingRun = pendingRuns.get(info.sessionID);
-            if (!sessionSpans.has(info.sessionID) &&
-                (pendingRun || activeRuns.get(info.sessionID) !== info.id)) {
-              handleRunStarted(
-                info.id,
-                info.sessionID,
-                pendingRun?.agent ?? info.agent,
-                pendingRun?.promptText ?? "",
-                pendingRun?.model ??
-                  `${info.model?.providerID ?? "unknown"}/${info.model?.modelID ?? "unknown"}`,
-                pendingRun?.startTime ?? info.time.created,
-                ctx,
-              );
-            }
-            break;
-          }
-          if (info.role === "assistant" && !info.time?.completed) {
-            startMessageSpan(
-              info.sessionID,
-              info.id,
-              info.parentID,
-              info.modelID ?? "unknown",
-              info.providerID ?? "unknown",
-              info.time?.created ?? Date.now(),
-              ctx,
-            );
-          }
-          await handleMessageUpdated(msgEvt, ctx);
-          if (info.role === "assistant" && info.time?.completed) {
-            await flushTelemetry("message.completed");
-          }
-          break;
-        }
-        case "message.part.updated":
-          await handleMessagePartUpdated(event, ctx);
-          break;
-        case "permission.updated":
-          handlePermissionUpdated(event, ctx);
-          break;
-        case "permission.replied":
-          handlePermissionReplied(event, ctx);
-          break;
-        case "command.executed":
-          handleCommandExecuted(event, ctx);
-          break;
-      }
-    }),
-  };
-};
-
-export default FredoPlugin;
-export { FredoPlugin };
+export default fredoPluginDefinition;
