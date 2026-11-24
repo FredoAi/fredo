@@ -107,14 +107,21 @@ Set-Content -LiteralPath $log -Value $header -Encoding utf8
 # `*>&1 | Tee-Object` becomes a terminating NativeCommandError, which aborted the lever
 # before the client could finish (spec #3197 round 1). Run the native call under
 # 'Continue' and read the exit code afterwards — the same pattern telemetry-query.ps1 uses.
+#
+# `--standalone` is required for the lever to mean what this script promises: OpenCode 2
+# runs plugins inside its SERVER process, and by default that server is the shared
+# background service (`opencode serve --service`) — a process this script's environment
+# cannot reach. `--standalone` makes the CLI host its own server, so the variables stamped
+# here ARE the plugin host's environment (spec #3197 round 1: without it the plugin loaded
+# in the background service and none of the stamped variables applied).
 Push-Location -LiteralPath (Get-Location).Path
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
   if ($Model -ne "") {
-    & $open.Source run --model $Model $Prompt *>&1 | Tee-Object -FilePath $log -Append
+    & $open.Source run --standalone --model $Model $Prompt *>&1 | Tee-Object -FilePath $log -Append
   } else {
-    & $open.Source run $Prompt *>&1 | Tee-Object -FilePath $log -Append
+    & $open.Source run --standalone $Prompt *>&1 | Tee-Object -FilePath $log -Append
   }
   $code = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
 }
