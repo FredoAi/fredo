@@ -10,11 +10,24 @@
 
   The child inherits this script's environment (Start-Process inherits the parent's env).
 
+  MANIFEST KEYS come ONLY from `manifest-facts.ps1` (dot-sourced next to this file; shipped names
+  `envId`, `dataDir`, `pipe`, `webviewProfile`, `servedCommit`, `ports.*`, `processes[]`). The pipe
+  is the manifest's `pipe` (dev-env.ps1:588) and the WebView2 profile is `webviewProfile` (:589).
+
+  THE POSTMASTER CLAUSE IS ENV-SCOPED, NOT VACUOUS. The env's postmasters are the `postgres.exe`
+  processes whose command line references the CLUSTER dir - `<manifest parent>/postgres`
+  (dev-env.ps1:733,1535,1553) or the `-PgDataDir` override (normally
+  `pg_supervisor_status.dataDir`), never the manifest's app-data `dataDir`. The probed dir is printed
+  (`PG_DATA_DIR`, `PG_DATA_DIR_SOURCE`) and the run ABORTS (exit 2) when that directory does not
+  exist: a blank or empty postmaster pair must never read as "unchanged".
+
   Receipts printed as KEY=value lines:
     SECOND_PID / SECOND_EXITED / SECOND_EXITCODE / SECOND_STILL_RUNNING / SECOND_PID_GONE
     PRIMARY_PID / PRIMARY_ALIVE
     FREDO_PIDS_BEFORE / FREDO_PIDS_AFTER / NEW_FREDO_PIDS
-    POSTMASTER_BEFORE / POSTMASTER_AFTER
+    PG_DATA_DIR / PG_DATA_DIR_SOURCE
+    POSTGRES_TREE_BEFORE / POSTGRES_TREE_AFTER   (children included)
+    POSTMASTER_BEFORE / POSTMASTER_AFTER         (the postmasters themselves)
     RESULT=PASS|FAIL  and FAIL_REASON=<...>
 
   PASS requires ALL of:
@@ -22,16 +35,18 @@
     - the primary (manifest role 'app') is still alive,
     - the second PID is gone,
     - no NEW fredo.exe PID appeared,
-    - the env's postmaster PID set is unchanged (one postmaster).
+    - the env's postmaster set was NON-EMPTY before the launch and is unchanged (one owner).
+  A blank POSTMASTER_BEFORE/POSTMASTER_AFTER pair is a FAIL of the row, not a pass.
 
 .EXAMPLE
   powershell -File .opencode/tests/resident-shell/second-launch.ps1 -ManifestPath .opencode/tmp/envs/spec3192/manifest.json -Exe apps/tauri/src-tauri/target/debug/fredo.exe
 
-  Exit codes: 0 PASS; 1 FAIL (row signal); 2 usage / manifest / exe failure.
+  Exit codes: 0 PASS; 1 FAIL (row signal); 2 usage / manifest / exe / probed PG dir failure.
 #>
 param(
   [Parameter(Mandatory = $true)][string]$ManifestPath,
   [Parameter(Mandatory = $true)][string]$Exe,
+  [string]$PgDataDir = "",
   [int]$TimeoutSecs = 20
 )
 
@@ -43,64 +58,46 @@ function Write-Fail {
   exit 2
 }
 
-function Get-ManifestText {
-  param($Manifest, [string]$Name)
-  if ($null -eq $Manifest) { return "" }
-  $prop = $Manifest.PSObject.Properties[$Name]
-  if ($null -eq $prop -or $null -eq $prop.Value) { return "" }
-  return [string]$prop.Value
+$factsScript = Join-Path $PSScriptRoot "manifest-facts.ps1"
+if (-not (Test-Path -LiteralPath $factsScript)) {
+  Write-Fail ("shared manifest reader not found: " + $factsScript)
 }
-
-function Get-ManifestPort {
-  param($Manifest, [string]$Name)
-  if ($null -eq $Manifest -or $null -eq $Manifest.ports) { return 0 }
-  $prop = $Manifest.ports.PSObject.Properties[$Name]
-  if ($null -eq $prop -or -not $prop.Value) { return 0 }
-  return [int]$prop.Value
-}
-
-function Get-ManifestAppPid {
-  param($Manifest)
-  if ($null -eq $Manifest -or $null -eq $Manifest.processes) { return 0 }
-  foreach ($entry in @($Manifest.processes)) {
-    if ($null -eq $entry) { continue }
-    if ($null -ne $entry.role -and [string]$entry.role -eq "app" -and $entry.pid) {
-      return [int]$entry.pid
-    }
-  }
-  return 0
-}
+. $factsScript
 
 if (-not (Test-Path -LiteralPath $ManifestPath)) { Write-Fail ("manifest not found: " + $ManifestPath) }
-try {
-  $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-} catch {
-  Write-Fail ("manifest is not valid JSON: " + $ManifestPath)
-}
+$manifest = Read-ManifestFile -Path $ManifestPath
+if ($null -eq $manifest) { Write-Fail ("manifest is not valid JSON: " + $ManifestPath) }
 
 $resolvedExe = Resolve-Path -LiteralPath $Exe -ErrorAction SilentlyContinue
 if ($null -eq $resolvedExe) { Write-Fail ("exe not found: " + $Exe) }
 $exePath = [string]$resolvedExe.Path
 
-$envId = Get-ManifestText -Manifest $manifest -Name "envId"
-$cliPipe = Get-ManifestText -Manifest $manifest -Name "cliPipe"
-$dataDir = Get-ManifestText -Manifest $manifest -Name "dataDir"
+$envId = Get-ManifestEnvId -Manifest $manifest
+$cliPipe = Get-ManifestPipe -Manifest $manifest
+$dataDir = Get-ManifestDataDir -Manifest $manifest
+$webviewProfile = Get-ManifestWebviewProfile -Manifest $manifest
 if ([string]::IsNullOrWhiteSpace($cliPipe)) {
-  Write-Fail "manifest carries no cliPipe - refusing to launch a second instance onto the legacy pipe"
+  Write-Fail "manifest carries no 'pipe' - refusing to launch a second instance onto the legacy pipe"
 }
 if ([string]::IsNullOrWhiteSpace($dataDir)) {
-  Write-Fail "manifest carries no dataDir - refusing to launch without the env resolution"
+  Write-Fail "manifest carries no 'dataDir' - refusing to launch without the env resolution"
 }
 
-$envRoot = Split-Path -Parent (Resolve-Path -LiteralPath $ManifestPath).Path
-$webviewDir = Get-ManifestText -Manifest $manifest -Name "webviewDir"
+$envRoot = Get-ManifestEnvRoot -ManifestPath $ManifestPath
+$pgFacts = Resolve-PgDataDir -ManifestPath $ManifestPath -PgDataDir $PgDataDir
+if ([string]::IsNullOrWhiteSpace($pgFacts.Path)) {
+  Write-Fail "cannot resolve the PG cluster dir: pass -ManifestPath (the env manifest) or -PgDataDir"
+}
+if (-not $pgFacts.Exists) {
+  Write-Fail ("probed PG data dir does not exist: " + $pgFacts.Path + " (source=" + $pgFacts.Source + ") - the postmaster clause cannot be evaluated; pass -PgDataDir with pg_supervisor_status.dataDir")
+}
 
 # ---- Inject the environment's own resolution (env.rs variable names) -----------
 $env:FREDO_CLI_PIPE = $cliPipe
 $env:FREDO_DATA_DIR = $dataDir
 if (-not [string]::IsNullOrWhiteSpace($envId)) { $env:FREDO_ENV_ID = $envId }
 if (-not [string]::IsNullOrWhiteSpace($envRoot)) { $env:FREDO_ENV_ROOT = $envRoot }
-if (-not [string]::IsNullOrWhiteSpace($webviewDir)) { $env:FREDO_WEBVIEW_PROFILE_DIR = $webviewDir }
+if (-not [string]::IsNullOrWhiteSpace($webviewProfile)) { $env:FREDO_WEBVIEW_PROFILE_DIR = $webviewProfile }
 $mcpPort = Get-ManifestPort -Manifest $manifest -Name "mcp"
 $vitePort = Get-ManifestPort -Manifest $manifest -Name "vite"
 $grpcPort = Get-ManifestPort -Manifest $manifest -Name "otlpGrpc"
@@ -121,31 +118,49 @@ function Get-FredoPids {
   return @($pids | Sort-Object -Unique)
 }
 
-function Get-PostmasterPids {
-  $pids = @()
+function Get-PostgresProcs {
+  param([string]$FilterName)
+  $found = @()
   try {
-    $found = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'postgres.exe'" -ErrorAction Stop)
-    foreach ($proc in $found) {
-      $commandLine = [string]$proc.CommandLine
-      if ($commandLine -and $commandLine.ToLowerInvariant().Contains($dataDir.ToLowerInvariant())) {
-        $pids += [int]$proc.ProcessId
-      }
-    }
+    $found = @(Get-CimInstance -ClassName Win32_Process -Filter ("Name = '" + $FilterName + "'") -ErrorAction Stop)
   } catch {
     Write-Output ("WARN: postgres enumeration failed: " + $_.Exception.Message)
   }
+  return $found
+}
+
+function Get-PostmasterPids {
+  param([object[]]$Procs, [string]$ClusterDir)
+  $pids = @()
+  $masters = @(Get-PostmasterProcList -Procs $Procs -PgDataDir $ClusterDir)
+  foreach ($proc in $masters) { $pids += [int]$proc.ProcessId }
+  return @($pids | Sort-Object -Unique)
+}
+
+function Get-PostgresTreePids {
+  param([object[]]$Procs, [string]$ClusterDir)
+  $pids = @()
+  $tree = @(Get-PostgresProcList -Procs $Procs -PgDataDir $ClusterDir)
+  foreach ($proc in $tree) { $pids += [int]$proc.ProcessId }
   return @($pids | Sort-Object -Unique)
 }
 
 $primaryPid = Get-ManifestAppPid -Manifest $manifest
 $fredoBefore = Get-FredoPids
-$postmasterBefore = Get-PostmasterPids
+$postgresProcs = Get-PostgresProcs -FilterName "postgres.exe"
+$postmasterBefore = Get-PostmasterPids -Procs $postgresProcs -ClusterDir $pgFacts.Path
+$postgresTreeBefore = Get-PostgresTreePids -Procs $postgresProcs -ClusterDir $pgFacts.Path
 
 Write-Output ("ENV_ID=" + $envId)
 Write-Output ("CLI_PIPE=" + $cliPipe)
+Write-Output ("DATA_DIR=" + $dataDir)
+Write-Output ("WEBVIEW_PROFILE=" + $webviewProfile)
+Write-Output ("PG_DATA_DIR=" + $pgFacts.Path)
+Write-Output ("PG_DATA_DIR_SOURCE=" + $pgFacts.Source)
 Write-Output ("EXE=" + $exePath)
 Write-Output ("PRIMARY_PID=" + $primaryPid)
 Write-Output ("FREDO_PIDS_BEFORE=" + ($fredoBefore -join ","))
+Write-Output ("POSTGRES_TREE_BEFORE=" + ($postgresTreeBefore -join ","))
 Write-Output ("POSTMASTER_BEFORE=" + ($postmasterBefore -join ","))
 
 $workingDirectory = Split-Path -Parent $exePath
@@ -172,8 +187,11 @@ if ($exited) {
 
 $secondAlive = [bool](Get-Process -Id $secondPid -ErrorAction SilentlyContinue)
 $fredoAfter = Get-FredoPids
-$postmasterAfter = Get-PostmasterPids
-$primaryAlive = [bool](Get-Process -Id $primaryPid -ErrorAction SilentlyContinue)
+$postgresProcsAfter = Get-PostgresProcs -FilterName "postgres.exe"
+$postmasterAfter = Get-PostmasterPids -Procs $postgresProcsAfter -ClusterDir $pgFacts.Path
+$postgresTreeAfter = Get-PostgresTreePids -Procs $postgresProcsAfter -ClusterDir $pgFacts.Path
+$primaryAlive = $false
+if ($primaryPid -gt 0) { $primaryAlive = [bool](Get-Process -Id $primaryPid -ErrorAction SilentlyContinue) }
 
 $newFredoPids = @()
 foreach ($candidate in $fredoAfter) {
@@ -186,6 +204,7 @@ Write-Output ("SECOND_PID_GONE=" + (-not $secondAlive))
 Write-Output ("PRIMARY_ALIVE=" + $primaryAlive)
 Write-Output ("FREDO_PIDS_AFTER=" + ($fredoAfter -join ","))
 Write-Output ("NEW_FREDO_PIDS=" + ($newFredoPids -join ","))
+Write-Output ("POSTGRES_TREE_AFTER=" + ($postgresTreeAfter -join ","))
 Write-Output ("POSTMASTER_AFTER=" + ($postmasterAfter -join ","))
 
 $failReasons = @()
@@ -193,8 +212,11 @@ if (-not $exited) { $failReasons += "second process did not exit within ${Timeou
 if ($secondAlive) { $failReasons += "second PID still alive" }
 if (-not $primaryAlive) { $failReasons += "primary app PID is not alive" }
 if ($newFredoPids.Count -gt 0) { $failReasons += ("new fredo PID(s): " + ($newFredoPids -join ",")) }
+if (@($postmasterBefore).Count -eq 0) {
+  $failReasons += ("no postmaster found in " + $pgFacts.Path + " before the second launch - the env must be UP for the AC4 postmaster clause to mean anything")
+}
 if (($postmasterBefore -join ",") -ne ($postmasterAfter -join ",")) {
-  $failReasons += "env postmaster set changed"
+  $failReasons += ("env postmaster set changed: before=" + ($postmasterBefore -join ",") + " after=" + ($postmasterAfter -join ","))
 }
 if ($exitCodeKnown -and $exitCode -ne "0") {
   # A non-zero exit is reported but NOT a hard fail by itself: the guard's contract is "exit without

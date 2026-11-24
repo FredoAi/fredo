@@ -88,6 +88,24 @@
   (`ready does NOT resolve on subscribe return alone (replay: true)`, `ready resolves only on the
   MATCHING marker — a foreign queryId settles nothing`) are unchanged and green; no existing
   assertion deleted or weakened; no new `#[allow(...)]`.
+  **Targeted receipt for this round's guard repair:** `cargo test --lib commands_window` (the
+  installed-apps startup guard + its two new extractor controls) → `0 failed`, and paste the
+  `#3192` guard tests by name.
+  **Attribution — a PRE-EXISTING failure is not this round's FAIL, and is never a PASS either.**
+  This row asserts the suite CONTRACT (kept intact), not that no test anywhere in the tree is red. A
+  failing test is charged to this spec only when the module it lives in changed in this round, so
+  paste the full `failures:` list and, for every failing module,
+  `git diff --stat <base>..<tip> -- <that module's path>`:
+  - EMPTY diff and the failing set unchanged from the round-1 baseline ⇒ a **named pre-existing
+    residual**: disclose it in the verdict, carry it to the human, never a PASS, never this round's
+    FAIL, and never a reason to weaken/delete/`#[ignore]` an assertion;
+  - a NON-EMPTY diff, or a failure that is NEW since the baseline ⇒ a **FAIL of this row**.
+  The round-1 baseline residual for this spec is the seven
+  `applications::llm_server::engine::integration::*` tests (`BackendInitFailed — the inference
+  backend could not initialise: BackendAlreadyInitialized`) enumerated in the round-1 `## Tests Runs`
+  and in the round-2 Fix Plan; the module is in no sub-task's file list, so
+  `git diff --stat <base>..<tip> -- apps/tauri/src-tauri/src/applications/llm_server` is a MANDATORY
+  paste and the residual set must contain ONLY those members.
   **Edge:** `cargo-nextest` may be absent on this host — substitute `cargo test` and DISCLOSE the
   runner swap against CI's `cargo nextest run` (G-282); run with the env DOWN (the running exe locks
   the target).
@@ -108,6 +126,7 @@
 
 ## Suite-level pass/fail
 
-PASS = RT-1…RT-8 all green. FAIL = a new chord/binding, a new persistence surface, an `rtdb/` diff,
+PASS = RT-1…RT-8 all green (RT-8 judged with its pre-existing-residual attribution rule, which keeps
+every assertion). FAIL = a new chord/binding, a new persistence surface, an `rtdb/` diff,
 a changed teardown order/ownership invariant, a command reachable from an `installed-*` window, a
 second tray icon, or a weakened/deleted existing assertion.

@@ -7,14 +7,45 @@
   resident-shell rows need, scoped to ONE isolated environment via its process manifest. Read-only:
   no mutations, no kills, no P/Invoke, no network I/O.
 
+  MANIFEST KEYS come ONLY from `manifest-facts.ps1` (dot-sourced next to this file; shipped names
+  `envId`, `servedCommit`, `dataDir`, `pipe`, `webviewProfile`, `ports.*`, `processes[]`). No key
+  name is spelled in this script.
+
+  THE PG DIR IS THE CLUSTER DIR, NOT THE APP-DATA DIR. `PG_DATA_DIR` is `<manifest parent>/postgres`
+  (`dev-env.ps1:733,1535,1553`; product `pg_supervisor/state.rs:113-116`) or the `-PgDataDir`
+  override - normally the product's `pg_supervisor_status.dataDir`. Postmasters are matched against
+  THAT directory. When the probed directory is absent the probe prints
+  `ERROR: probed PG data dir does not exist: <path>` and EXITS 2, because a zero from a predicate
+  that matched nothing is not a postmaster count (the #3192 round-1 vacuous pass).
+
+  `PG_PORT=unrecorded` is deliberate: `ports.pg` is written as a constant 0 (`dev-env.ps1:584`), so
+  the live PG port is only knowable from `pg_supervisor_status.port`. Never probe port 0 and call it
+  "closed" - `-Action Port` refuses a non-positive `-PortNumber` for that reason.
+
   Modes (-Action):
-    Inventory    Env summary + app PID (alive? started?) + every fredo process + postmasters that
-                 belong to this env + the app's msedgewebview2 descendant count + working set.
+    Inventory    Env summary + app PID (alive? started?) + every fredo process + the postmasters
+                 that belong to this env + the app's msedgewebview2 descendant count + working set.
     App          APP_PID / APP_ALIVE / APP_STARTED only.
     WebviewCount WEBVIEW_COUNT = msedgewebview2(.exe) descendants of the app PID.
-    Postmaster   POSTMASTER_PIDS for this env (command line references the env data dir).
+    Postmaster   POSTMASTER_PIDS for this env (postgres.exe whose command line references the
+                 cluster dir, minus the `forkchild` children PostgreSQL spawns on Windows).
     Descendants  Descendant process list for -TargetPid (orphan / PTY-child checks).
     Port         Listener owner PID(s) for -PortNumber.
+
+  Facts printed by every action: ENV_ID, CLI_PIPE, DATA_DIR (app-data), PG_DATA_DIR,
+  PG_DATA_DIR_SOURCE=manifest|product, PG_DATA_DIR_EXISTS, SERVED_COMMIT, PORTS (pg deliberately
+  absent), PG_PORT=unrecorded. The postmaster actions add POSTGRES_TREE_COUNT (every postgres.exe
+  referencing the cluster dir, children included), POSTGRES_CHILD_PIDS (the excluded `forkchild`
+  processes), POSTMASTER_COUNT / POSTMASTER_PIDS / POSTMASTER=..., the `postmaster.pid` cross-check
+  (PG_POSTMASTER_PIDFILE_PID / PG_POSTMASTER_PIDFILE_MATCH) and PG_DATA_DIR_USED.
+
+  NON-VACUITY CONTROL: while the cluster is up, `POSTMASTER_COUNT` must be at least 1 and
+  `PG_POSTMASTER_PIDFILE_MATCH=True`. The probe HARD-FAILS (exit 2) when `postmaster.pid` names a
+  LIVE postgres PID that the predicate did not return - that combination means the instrument is
+  wrong, and reading it as "no postmaster" would be the same vacuous pass this guard prevents.
+
+  A process whose CommandLine is unreadable (owned by another / an elevated user) is invisible to
+  this probe; run it as the user that owns the env, exactly as `dev-env.ps1` launched it.
 
   Every value is printed as a `KEY=value` line so a verdict can quote it verbatim.
 
@@ -27,14 +58,16 @@
   powershell -File .opencode/tests/resident-shell/lifecycle-probe.ps1 -Action Inventory -ManifestPath .opencode/tmp/envs/spec3192/manifest.json
 
 .EXAMPLE
-  powershell -File .opencode/tests/resident-shell/lifecycle-probe.ps1 -Action Port -PortNumber 16002
+  powershell -File .opencode/tests/resident-shell/lifecycle-probe.ps1 -Action Postmaster -PgDataDir C:\Code\fredo\.opencode\tmp\envs\spec3192\postgres
 
-  Exit codes: 0 success; 2 usage / manifest read failure; 3 process enumeration failure.
+  Exit codes: 0 success; 2 usage / manifest read failure / probed PG data dir absent /
+  postmaster cross-check failed; 3 process enumeration failure.
 #>
 param(
   [ValidateSet("Inventory", "App", "WebviewCount", "Postmaster", "Descendants", "Port")]
   [string]$Action = "Inventory",
   [string]$ManifestPath = "",
+  [string]$PgDataDir = "",
   [int]$TargetPid = 0,
   [int]$PortNumber = 0
 )
@@ -47,43 +80,19 @@ function Write-Fail {
   exit 2
 }
 
-function Read-Manifest {
+$factsScript = Join-Path $PSScriptRoot "manifest-facts.ps1"
+if (-not (Test-Path -LiteralPath $factsScript)) {
+  Write-Fail ("shared manifest reader not found: " + $factsScript)
+}
+. $factsScript
+
+function Read-ManifestOrFail {
   param([string]$Path)
   if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
   if (-not (Test-Path -LiteralPath $Path)) { Write-Fail ("manifest not found: " + $Path) }
-  try {
-    return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json)
-  } catch {
-    Write-Fail ("manifest is not valid JSON: " + $Path)
-  }
-}
-
-function Get-ManifestText {
-  param($Manifest, [string]$Name)
-  if ($null -eq $Manifest) { return "" }
-  $prop = $Manifest.PSObject.Properties[$Name]
-  if ($null -eq $prop -or $null -eq $prop.Value) { return "" }
-  return [string]$prop.Value
-}
-
-function Get-ManifestPort {
-  param($Manifest, [string]$Name)
-  if ($null -eq $Manifest -or $null -eq $Manifest.ports) { return 0 }
-  $prop = $Manifest.ports.PSObject.Properties[$Name]
-  if ($null -eq $prop -or -not $prop.Value) { return 0 }
-  return [int]$prop.Value
-}
-
-function Get-ManifestAppPid {
-  param($Manifest)
-  if ($null -eq $Manifest -or $null -eq $Manifest.processes) { return 0 }
-  foreach ($entry in @($Manifest.processes)) {
-    if ($null -eq $entry) { continue }
-    if ($null -ne $entry.role -and [string]$entry.role -eq "app" -and $entry.pid) {
-      return [int]$entry.pid
-    }
-  }
-  return 0
+  $parsed = Read-ManifestFile -Path $Path
+  if ($null -eq $parsed) { Write-Fail ("manifest is not valid JSON: " + $Path) }
+  return $parsed
 }
 
 function Format-Creation {
@@ -101,7 +110,8 @@ function Format-CommandLine {
 }
 
 # ---- Enumerate once -----------------------------------------------------------
-$manifest = Read-Manifest -Path $ManifestPath
+$manifest = Read-ManifestOrFail -Path $ManifestPath
+$pgFacts = Resolve-PgDataDir -ManifestPath $ManifestPath -PgDataDir $PgDataDir
 
 try {
   $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
@@ -139,7 +149,7 @@ function Get-DescendantPids {
   return $result
 }
 
-$dataDir = Get-ManifestText -Manifest $manifest -Name "dataDir"
+$dataDir = Get-ManifestDataDir -Manifest $manifest
 $appPid = Get-ManifestAppPid -Manifest $manifest
 
 function Test-PidAlive {
@@ -148,39 +158,49 @@ function Test-PidAlive {
   return $byPid.ContainsKey($CheckPid)
 }
 
-function Get-PostmasterProcList {
-  $matches = New-Object 'System.Collections.Generic.List[object]'
-  if ([string]::IsNullOrWhiteSpace($dataDir)) { return $matches }
-  foreach ($proc in $procs) {
-    $name = [string]$proc.Name
-    if ($name -notmatch '^postgres(\.exe)?$') { continue }
-    $commandLine = [string]$proc.CommandLine
-    if ($commandLine -and $commandLine.ToLowerInvariant().Contains($dataDir.ToLowerInvariant())) {
-      $matches.Add($proc)
-    }
+# The postmaster rows are meaningless without a real cluster dir: fail closed, never a confident 0.
+function Assert-PgDataDirUsable {
+  param($Facts)
+  if ([string]::IsNullOrWhiteSpace($Facts.Path)) {
+    Write-Fail "cannot resolve the PG cluster dir: pass -ManifestPath (the env manifest) or -PgDataDir"
   }
-  return $matches
+  if (-not $Facts.Exists) {
+    Write-Fail ("probed PG data dir does not exist: " + $Facts.Path + " (source=" + $Facts.Source + ") - pass -PgDataDir with pg_supervisor_status.dataDir; a zero from a predicate that matched nothing is NOT a postmaster count")
+  }
+}
+
+# Every postgres.exe referencing the cluster dir (children included). Local is named `$found`, never
+# `$matches`: PowerShell rewrites the automatic `$matches` on the next -match/-notmatch, so a
+# `$matches.Add(...)` after a match test throws (the round-1 `Cannot find an overload for "Add"`).
+function Get-PostgresTreeProcs {
+  return @(Get-PostgresProcList -Procs $procs -PgDataDir $pgFacts.Path)
 }
 
 function Get-FredoProcList {
-  $matches = New-Object 'System.Collections.Generic.List[object]'
+  $found = @()
   foreach ($proc in $procs) {
     $name = [string]$proc.Name
-    if ($name -match '^fredo(\.exe)?$') { $matches.Add($proc) }
+    if ($name -match '^fredo(\.exe)?$') { $found += $proc }
   }
-  return $matches
+  return $found
 }
 
 function Write-EnvSummary {
-  Write-Output ("ENV_ID=" + (Get-ManifestText -Manifest $manifest -Name "envId"))
-  Write-Output ("CLI_PIPE=" + (Get-ManifestText -Manifest $manifest -Name "cliPipe"))
+  Write-Output ("ENV_ID=" + (Get-ManifestEnvId -Manifest $manifest))
+  Write-Output ("CLI_PIPE=" + (Get-ManifestPipe -Manifest $manifest))
   Write-Output ("DATA_DIR=" + $dataDir)
-  Write-Output ("SERVED_COMMIT=" + (Get-ManifestText -Manifest $manifest -Name "servedCommit"))
-  Write-Output ("PORTS=pg=" + (Get-ManifestPort -Manifest $manifest -Name "pg") +
-    ";mcp=" + (Get-ManifestPort -Manifest $manifest -Name "mcp") +
+  Write-Output ("PG_DATA_DIR=" + $pgFacts.Path)
+  Write-Output ("PG_DATA_DIR_SOURCE=" + $pgFacts.Source)
+  Write-Output ("PG_DATA_DIR_EXISTS=" + $pgFacts.Exists)
+  Write-Output ("SERVED_COMMIT=" + (Get-ManifestServedCommit -Manifest $manifest))
+  Write-Output ("PORTS=mcp=" + (Get-ManifestPort -Manifest $manifest -Name "mcp") +
     ";otlpGrpc=" + (Get-ManifestPort -Manifest $manifest -Name "otlpGrpc") +
     ";otlpHttp=" + (Get-ManifestPort -Manifest $manifest -Name "otlpHttp") +
     ";vite=" + (Get-ManifestPort -Manifest $manifest -Name "vite"))
+  # ports.pg is a constant 0 in the manifest (dev-env.ps1:584). Label it; never emit a port number,
+  # so no row can probe port 0 and report it "closed".
+  Write-Output "PG_PORT=unrecorded"
+  Write-Output "PG_PORT_SOURCE=pg_supervisor_status.port (manifest ports.pg is a constant 0)"
 }
 
 function Write-AppFacts {
@@ -211,14 +231,63 @@ function Write-WebviewCount {
 }
 
 function Write-PostmasterFacts {
-  $postmasters = Get-PostmasterProcList
-  $pids = @()
-  foreach ($proc in $postmasters) { $pids += ([string][int]$proc.ProcessId) }
-  Write-Output ("POSTMASTER_COUNT=" + $pids.Count)
-  Write-Output ("POSTMASTER_PIDS=" + ($pids -join ","))
-  foreach ($proc in $postmasters) {
+  $tree = @(Get-PostgresTreeProcs)
+  $masters = @(Get-PostmasterProcList -Procs $procs -PgDataDir $pgFacts.Path)
+
+  $masterPids = @()
+  foreach ($proc in $masters) { $masterPids += [int]$proc.ProcessId }
+  $masterPidText = @()
+  foreach ($pidValue in $masterPids) { $masterPidText += [string]$pidValue }
+
+  $childPidText = @()
+  foreach ($proc in $tree) {
+    if (Test-PostgresChildProc -Proc $proc) { $childPidText += ([string][int]$proc.ProcessId) }
+  }
+
+  Write-Output ("PG_DATA_DIR_USED=" + $pgFacts.Path)
+  Write-Output ("POSTGRES_TREE_COUNT=" + $tree.Count)
+  Write-Output ("POSTGRES_TREE_PIDS=" + ((@($tree) | ForEach-Object { [string][int]$_.ProcessId }) -join ","))
+  Write-Output ("POSTGRES_CHILD_PIDS=" + ($childPidText -join ","))
+  Write-Output ("POSTMASTER_COUNT=" + $masterPids.Count)
+  Write-Output ("POSTMASTER_PIDS=" + ($masterPidText -join ","))
+  foreach ($proc in $masters) {
     Write-Output ("POSTMASTER=pid=" + [int]$proc.ProcessId + " ppid=" + [int]$proc.ParentProcessId +
       " started=" + (Format-Creation -Proc $proc))
+  }
+
+  # `postmaster.pid` (first line = postmaster PID) is the independent control that catches a
+  # predicate which silently matches nothing: if it names a LIVE postgres.exe that the predicate did
+  # not return, the instrument is wrong and the reading must not be reported as a count.
+  $pidFile = Join-Path $pgFacts.Path "postmaster.pid"
+  $pidFilePid = 0
+  $pidFileExists = $false
+  try { $pidFileExists = Test-Path -LiteralPath $pidFile } catch { $pidFileExists = $false }
+  if ($pidFileExists) {
+    try {
+      $firstLine = Get-Content -LiteralPath $pidFile -TotalCount 1
+      if ($null -ne $firstLine) {
+        $firstText = ([string]$firstLine).Trim()
+        if ($firstText -ne "") { $pidFilePid = [int]$firstText }
+      }
+    } catch {
+      $pidFilePid = 0
+    }
+  }
+  Write-Output ("PG_POSTMASTER_PIDFILE_EXISTS=" + $pidFileExists)
+  Write-Output ("PG_POSTMASTER_PIDFILE_PID=" + $pidFilePid)
+  $pidFileMatch = "n/a"
+  if ($pidFilePid -gt 0) {
+    if ($masterPids -contains $pidFilePid) { $pidFileMatch = "True" } else { $pidFileMatch = "False" }
+  }
+  Write-Output ("PG_POSTMASTER_PIDFILE_MATCH=" + $pidFileMatch)
+
+  $pidFileIsLivePostgres = $false
+  if (Test-PidAlive -CheckPid $pidFilePid) {
+    $pidFileProc = $byPid[$pidFilePid]
+    if ([string]$pidFileProc.Name -match '^postgres(\.exe)?$') { $pidFileIsLivePostgres = $true }
+  }
+  if ($pidFileIsLivePostgres -and -not ($masterPids -contains $pidFilePid)) {
+    Write-Fail ("probed postmaster set does not contain the LIVE postmaster.pid PID " + $pidFilePid + " (" + $pidFile + ") - either the postmaster predicate against " + $pgFacts.Path + " missed it, or that process's CommandLine is unreadable (run the probe as the app's owner); do not read this run as 'no postmaster'")
   }
 }
 
@@ -268,12 +337,17 @@ switch ($Action) {
     Write-WebviewCount
   }
   "Postmaster" {
+    Assert-PgDataDirUsable -Facts $pgFacts
     Write-Output "ACTION=Postmaster"
     Write-EnvSummary
     Write-PostmasterFacts
     if ($PortNumber -gt 0) { Write-PortFacts -Port $PortNumber }
   }
   "Port" {
+    Assert-PgDataDirUsable -Facts $pgFacts
+    if ($PortNumber -le 0) {
+      Write-Fail "Port needs a positive -PortNumber; manifest ports.pg is a constant 0 - read the live PG port from pg_supervisor_status.port"
+    }
     Write-Output "ACTION=Port"
     Write-EnvSummary
     Write-PortFacts -Port $PortNumber
@@ -288,12 +362,13 @@ switch ($Action) {
     Write-DescendantFacts -RootPid $rootPid
   }
   default {
+    Assert-PgDataDirUsable -Facts $pgFacts
     Write-Output "ACTION=Inventory"
     Write-EnvSummary
     Write-AppFacts
     Write-WebviewCount
     Write-PostmasterFacts
-    $fredoProcs = Get-FredoProcList
+    $fredoProcs = @(Get-FredoProcList)
     Write-Output ("FREDO_PROCS=" + $fredoProcs.Count)
     foreach ($proc in $fredoProcs) {
       Write-Output ("FREDO_PROC=pid=" + [int]$proc.ProcessId + " ppid=" + [int]$proc.ParentProcessId +

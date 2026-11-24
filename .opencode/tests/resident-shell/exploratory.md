@@ -13,6 +13,13 @@
 
 ## E-2 — the guard is per-environment, not global
 
+> **Status (round 2): legitimate NAMED BLOCKER — non-binding probe, not a FAIL.** A second environment
+> needs a second `dev-env` env (its own cluster, ports and pipe) while the round's evidence is
+> attributed to the ONE leased env (`<env-root>/evidence.json`), so a second env's observations are
+> not attributable to this issue's round. No AC row depends on this probe. Drive it only if a second
+> env is already up; otherwise record the blocker and move on. The probe text below stays as the
+> durable recipe for a multi-env round.
+
 - [ ] **E-2:** With env A resident, boot env B
   (`powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3192 -EnvId spec3192-b -EnvSlot <n>`).
   Probe both `app_lifecycle_status` and both window lists. **Expected:** BOTH apps stay resident and
@@ -22,6 +29,12 @@
   **Lever:** distinct `-EnvId`/`-EnvSlot` → distinct pipe/ports/data dir.
 
 ## E-3 — quit during an in-flight turn
+
+> **Status (round 2): fold OPPORTUNISTICALLY.** If F-5/F-3 already leaves a terminal session live when
+> `quit_app` runs, this probe costs nothing extra and must be recorded; if no session is live at quit
+> time, do not spend a separate close/quit cycle on it — disclose the fold. The postmaster leg rides
+> the F-3 probe (`-Action Postmaster -PgDataDir <pre-quit pg_supervisor_status.dataDir>`), so a
+> `POSTMASTER_COUNT=0` here is evidence only next to `PG_DATA_DIR_EXISTS=True`.
 
 - [ ] **E-3:** Start a terminal session on a long-running command
   (`spawn_terminal_session`), confirm `get_pty_buffer{sessionId}` returns bytes, then `invoke('quit_app')`.
@@ -58,13 +71,22 @@
 
 ## E-8 — Doom Mode survives a main-window destroy (Rust-owned transient)
 
+> **Status (round 2): legitimate NAMED BLOCKER — non-binding probe, not a FAIL.** Doom Mode needs its
+> separate native engine process and level assets, which this round does not boot; no AC row depends
+> on this probe (`R-6b`'s AC observable is the persisted WORKSPACE, driven by F-6b/E-7). If a Doom
+> window is already live, drive it; otherwise record the blocker.
+
 - [ ] **E-8:** `enter_doom_mode`, destroy `main`, reopen, `invoke('get_doom_mode_status')`.
   **Expected:** still `active`; the reopened UI re-seeds from the Rust state (no restart). This is the
   stronger variant of R-6b (state the app owns, not the webview).
 
 ## E-9 — subscription residual (observation, not an AC)
 
-- [ ] **E-9:** Close + reopen `main` N times (N ≥ 3) and record whatever the app exposes about live
+> **Status (round 2): legitimate NAMED BLOCKER — non-binding OBSERVATION, never a FAIL.** Paste
+> whatever the surface reports if it is reachable in the round's existing close/reopen cycles; if it
+> is not, record the blocker. No AC row depends on it and it must never fail the round.
+
+- [ ] **E-9:** Close + reopen `main` N times (N >= 3) and record whatever the app exposes about live
   query registrations (`telemetry_get_stats` / the RTDB subscription count) before and after.
   **Expected:** monotonic small growth, attributed to the documented residual (a destroyed webview
   never calls `unsubscribe_events`; `infrastructure/rtdb/subscriptions.rs` has no per-webview purge).

@@ -7,6 +7,10 @@
   environment's IPC pipe (the `fredo` CLI resolves FREDO_CLI_PIPE from ITS OWN process environment;
   the app listens on its per-env pipe - ipc.rs socket_name()).
 
+  MANIFEST KEYS come ONLY from `manifest-facts.ps1` (dot-sourced next to this file). The pipe is the
+  manifest's `pipe` (dev-env.ps1:588) - the shipped name. No `cliPipe` key exists; a manifest
+  without `pipe` aborts rather than emitting onto the legacy/shared pipe.
+
   Emits one QUALIFYING chat turn for `-SessionId`:
     1. chat init    (payload carries userMessage + agentReply + model + token counts)
     2. chat response
@@ -39,22 +43,24 @@ function Write-Fail {
   exit 2
 }
 
+$factsScript = Join-Path $PSScriptRoot "manifest-facts.ps1"
+if (-not (Test-Path -LiteralPath $factsScript)) {
+  Write-Fail ("shared manifest reader not found: " + $factsScript)
+}
+. $factsScript
+
 if (-not (Test-Path -LiteralPath $ManifestPath)) { Write-Fail ("manifest not found: " + $ManifestPath) }
-try {
-  $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-} catch {
-  Write-Fail ("manifest is not valid JSON: " + $ManifestPath)
+$manifest = Read-ManifestFile -Path $ManifestPath
+if ($null -eq $manifest) { Write-Fail ("manifest is not valid JSON: " + $ManifestPath) }
+
+$cliPipe = Get-ManifestPipe -Manifest $manifest
+if ([string]::IsNullOrWhiteSpace($cliPipe)) {
+  Write-Fail "manifest carries no 'pipe' - refusing to emit onto the legacy pipe"
 }
 
-$pipeProp = $manifest.PSObject.Properties["cliPipe"]
-if ($null -eq $pipeProp -or [string]::IsNullOrWhiteSpace([string]$pipeProp.Value)) {
-  Write-Fail "manifest carries no cliPipe - refusing to emit onto the legacy pipe"
-}
-$cliPipe = [string]$pipeProp.Value
-
-$envIdProp = $manifest.PSObject.Properties["envId"]
-if ($null -ne $envIdProp -and -not [string]::IsNullOrWhiteSpace([string]$envIdProp.Value)) {
-  $env:FREDO_ENV_ID = [string]$envIdProp.Value
+$envId = Get-ManifestEnvId -Manifest $manifest
+if (-not [string]::IsNullOrWhiteSpace($envId)) {
+  $env:FREDO_ENV_ID = $envId
 }
 $env:FREDO_CLI_PIPE = $cliPipe
 
