@@ -1,0 +1,7 @@
+{
+  "userMessage": "e2e-resident-3192: this prompt was persisted while the main webview was destroyed",
+  "agentReply": "e2e-resident-3192-sentinel: reply persisted with no webview present, rendered after reopen",
+  "model": "e2e-resident-3192",
+  "promptTokens": 12,
+  "completionTokens": 5
+}
