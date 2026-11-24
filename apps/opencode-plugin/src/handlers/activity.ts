@@ -1,45 +1,38 @@
 /**
- * handlers/activity.ts — Activity handlers (code diff, commits) for the Fredo OpenCode plugin.
+ * handlers/activity.ts — activity signal handlers (the `commit` log body), Spec #3197 ST-5.
  *
- * Handles command.executed events to detect git commits and increment the
- * commit counter. session.diff events are acknowledged but not instrumented
- * (no lines_of_code metrics in the stripped config).
+ * ST-1 SCOPE: typed skeleton only. `handleToolCommandForCommit` is a NO-OP — it
+ * emits nothing. The regex it consumes is REAL and unchanged: it is the frozen
+ * detection rule the V1 `command.executed` handler used
+ * (handlers/activity.ts:17 on `main`), and ST-5 re-points it at the V2 tool
+ * lifecycle (there is no V2 command event).
+ *
+ * Payload contract (verified against the installed typings, not guessed):
+ *   node_modules/@opencode/client/dist/promise/generated/types.d.ts
+ *     · SessionToolCalled  :2265  (data.input: Record<string, any> — the shell
+ *                                  tool's command text lives inside this object)
+ *     · SessionToolSuccess :3035  / SessionToolFailed :3060
+ *   Note for ST-5: the exact field carrying the command inside `data.input` is
+ *   still UNVERIFIED (it is the plan's Phase-0 item). Take it from the tester's
+ *   `FREDO_CAPTURE_EVENTS` JSONL — never guess a field name in the emitted path.
+ *   The signal stays a LOG record (`event.name=commit`, `session.id`, agent
+ *   attrs): never a span, never a row.
  */
 
-import { SeverityNumber } from "@opentelemetry/api-logs";
-import {
-  ATTR_SESSION_ID,
-  LOG_COMMIT,
-} from "../telemetry-constants";
-import { agentAttrs, getSessionAgentMeta } from "../util";
 import type { HandlerContext } from "../types";
 
-const GIT_COMMIT_RE = /\bgit\s+commit(?![-\w])/;
+/** The frozen git-commit detection rule (copied verbatim from the V1 handler). */
+export const GIT_COMMIT_RE = /\bgit\s+commit(?![-\w])/;
 
-/** Detects git commit invocations in bash tool calls and emits a commit log event. */
-export function handleCommandExecuted(
-  e: { properties: { sessionID: string; name: string; arguments: string } },
+/** Emits the `commit` log record when a shell tool call is a `git commit`. */
+export function handleToolCommandForCommit(
+  toolName: string,
+  commandText: string,
+  sessionID: string,
   ctx: HandlerContext,
-) {
-  if (e.properties.name !== "bash") return;
-  ctx.log("debug", "otel: command.executed (bash)", {
-    sessionID: e.properties.sessionID,
-    argumentsLength: e.properties.arguments.length,
-  });
-  if (!GIT_COMMIT_RE.test(e.properties.arguments)) return;
-  const { agentName, agentType } = getSessionAgentMeta(e.properties.sessionID, ctx);
-
-  ctx.emitLog({
-    severityNumber: SeverityNumber.INFO,
-    severityText: "INFO",
-    timestamp: Date.now(),
-    observedTimestamp: Date.now(),
-    body: LOG_COMMIT,
-    attributes: {
-      "event.name": LOG_COMMIT,
-      [ATTR_SESSION_ID]: e.properties.sessionID,
-      ...agentAttrs(agentName, agentType),
-    },
-  });
-  ctx.log("debug", "otel: commit log event emitted", { sessionID: e.properties.sessionID });
+): void {
+  void toolName;
+  void commandText;
+  void sessionID;
+  void ctx;
 }

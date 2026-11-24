@@ -75,7 +75,12 @@ export const ATTR_CHILD_OUTPUT_TOKENS = "child_output_tokens" as const;
 
 /** Configuration accepted via plugin options tuple in opencode.json. */
 export interface FredoPluginOptions {
-  /** Enable telemetry export. Default: false (requires env var). */
+  /**
+   * Capture switch. `false` is the highest-precedence opt-out (Spec #3197:
+   * capture is DEFAULT-ON; `true` is an explicit opt-in that overrides the
+   * environment opt-outs). Omit to let `FREDO_TELEMETRY` /
+   * `OPENCODE_ENABLE_TELEMETRY` decide — see `config.ts` → `isTelemetryEnabled`.
+   */
   enabled?: boolean;
   /** OTLP collector endpoint URL. Default: "http://localhost:4317". */
   endpoint?: string;

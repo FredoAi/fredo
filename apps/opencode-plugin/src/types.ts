@@ -8,6 +8,44 @@
 
 import type { Context, Counter, Histogram, Span, SpanContext, Tracer } from "@opentelemetry/api";
 import type { LogRecord } from "@opentelemetry/api-logs";
+import type { Plugin } from "@opencode/plugin";
+
+/**
+ * ── V2 authoring contract (Spec #3197 ST-1) ──────────────────────────────────
+ *
+ * Every payload type below is DERIVED from the installed package's shipped
+ * TypeScript definitions — never hand-written. The authoring source is
+ * `@opencode/plugin@2.4.1` (the exact pin in `package.json`), whose
+ * `dist/promise/index.d.ts` exposes `Plugin.define({ id, setup })`; the context
+ * type is `Plugin.Context` and its `event.subscribe` returns an
+ * `AsyncIterable` of the V2 event union.
+ *
+ * The union itself ships in the peer package the plugin module re-exports:
+ *   node_modules/@opencode/client/dist/promise/generated/types.d.ts
+ *     · `EventSubscribeOutput = V2Event`            (line 5575)
+ *     · `V2Event = <the full discriminated union>`  (line 3973)
+ *     · per-event payload shapes                     (SessionCreated :3333,
+ *       SessionInboxEnqueued :3886, SessionExecution* :1860-1929,
+ *       SessionStep* :2035-2143, SessionText/Reasoning/ToolInput delta
+ *       :2547-2608, SessionTool* :2225-2288 / :3035-3085, SessionIdle :2893,
+ *       PermissionAsked/Replied :2645-2679)
+ *
+ * Handlers must type their parameter as `V2EventOf<"session.created">` (etc.) so
+ * a payload-shape change at a version bump is a COMPILE error, not a silent
+ * runtime miss (G-028: no handler is authored against a guessed shape).
+ */
+export type PluginContext = Parameters<Plugin.Plugin["setup"]>[0];
+
+/** The V2 event union delivered by `ctx.event.subscribe()` (excludes `server.connected`). */
+export type V2Event = ReturnType<PluginContext["event"]["subscribe"]> extends AsyncIterable<infer T>
+  ? T
+  : never;
+
+/** Every V2 event type string the plugin may subscribe to. */
+export type V2EventType = V2Event["type"];
+
+/** The payload of one V2 event, narrowed by its `type` discriminant. */
+export type V2EventOf<T extends V2EventType> = Extract<V2Event, { type: T }>;
 
 /** Numeric priority map for log levels; higher value = higher severity. */
 export const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const;
@@ -26,12 +64,16 @@ export const MAX_PENDING = 500;
  */
 export const MAX_CHILD_COMPLETIONS = 10_000;
 
-/** Structured logger forwarded to the opencode `client.app.log` API. */
+/**
+ * Structured diagnostic sink threaded through the handler context. Backed by
+ * `log.ts` → `pluginLog` (console.error). Synchronous: there is no V2 async
+ * logging API (`client.app.log` was removed with the V1 surface).
+ */
 export type PluginLogger = (
   level: Level,
   message: string,
   extra?: Record<string, unknown>,
-) => Promise<void>;
+) => void;
 
 /** In-flight tool execution tracked between `running` and `completed`/`error` part updates. */
 export type PendingToolSpan = {
@@ -41,7 +83,7 @@ export type PendingToolSpan = {
   span?: Span;
 };
 
-/** Permission prompt tracked between `permission.updated` and `permission.replied`. */
+/** Permission prompt tracked between `permission.asked` and `permission.replied` (V2). */
 export type PendingPermission = {
   type: string;
   title: string;
