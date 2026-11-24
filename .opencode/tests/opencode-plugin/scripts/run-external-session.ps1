@@ -102,7 +102,14 @@ $header = @(
 Set-Content -LiteralPath $log -Value $header -Encoding utf8
 
 # --- run the client, merging stdout+stderr into the same log ---
+# The client writes its banner/progress to STDERR even on a successful run. Under
+# PowerShell 5.1 `$ErrorActionPreference = 'Stop'` a native command's stderr write through
+# `*>&1 | Tee-Object` becomes a terminating NativeCommandError, which aborted the lever
+# before the client could finish (spec #3197 round 1). Run the native call under
+# 'Continue' and read the exit code afterwards — the same pattern telemetry-query.ps1 uses.
 Push-Location -LiteralPath (Get-Location).Path
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 try {
   if ($Model -ne "") {
     & $open.Source run --model $Model $Prompt *>&1 | Tee-Object -FilePath $log -Append
@@ -112,6 +119,7 @@ try {
   $code = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
 }
 finally {
+  $ErrorActionPreference = $prevEap
   Pop-Location
 }
 
