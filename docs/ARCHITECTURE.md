@@ -191,7 +191,7 @@ src-tauri/src/
 |   |   +-- commands.rs         — save_setting, get_setting
 |   +-- setup/                  — OpenCode 2 version gate, PATH management, global plugin install (no OTLP env config), three-file model acquisition, Companion readiness
 |   |   +-- mod.rs              — SetupApplication
-|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness (`check_all_setup`/`get_setup_plan`/`install_plugin` gate on `MIN_SUPPORTED_OPENCODE_MAJOR`; `install_plugin` copies the one artifact to the global plugins dir via `infrastructure::opencode_service::install_plugin_file` and restarts the background service when it wrote bytes and one is running; `configure_otel` is a not-required no-op)
+|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness (`check_all_setup`/`get_setup_plan`/`install_plugin` gate on `MIN_SUPPORTED_OPENCODE_MAJOR`; `install_plugin` copies the one artifact to the global plugins dir via `infrastructure::opencode_service::install_plugin_file` (hash-guarded; never restarts OpenCode's background service); `configure_otel` is a not-required no-op)
 |   |   +-- model_download_state.rs — pure required-file manifest (pinned URLs/sizes/SHA-256), on-disk classifier, complete-iff-all-present aggregator
 |   |   +-- model_download.rs   — streamed acquisition engine (HTTP Range resume, streaming SHA-256, bounded retry/backoff)
 |   +-- screenshot/             — Screen capture (xcap)
@@ -1165,7 +1165,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `resize_pty` | terminal | Resize PTY to new rows/cols |
 | `close_terminal_window` | terminal | Kill child, release PTY, close window |
 | `check_cli_installations` | setup | Detect the OpenCode CLI and its major — `opencode: false` when the major is below the supported minimum or cannot be determined — plus the global Fredo plugin's presence |
-| `install_plugin` | setup | Copy the plugin artifact into the global plugins directory (`~/.config/opencode/plugins/fredo.js`), gated on OpenCode 2 and failing loud when the artifact is absent; the copy is hash-guarded (an unchanged re-install writes nothing) and, when it wrote bytes while OpenCode's background service is running, it restarts that service through the runtime's own `opencode service restart`; returns the one `[fredo] …` line naming the resolved file (plus the restart-outcome line when a restart ran) |
+| `install_plugin` | setup | Copy the plugin artifact into the global plugins directory (`~/.config/opencode/plugins/fredo.js`), gated on OpenCode 2 and failing loud when the artifact is absent; the copy is hash-guarded (an unchanged re-install writes nothing); it never stops or restarts OpenCode's background service; returns the one `[fredo] …` line naming the resolved file |
 | `get_plugin_source_path` | setup | Return bundled plugin source path |
 | `check_fredo_in_path` | setup | Check if `fredo` is on PATH |
 | `add_fredo_to_path` | setup | Add Fredo to system PATH |
