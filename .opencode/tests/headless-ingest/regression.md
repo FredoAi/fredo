@@ -66,7 +66,9 @@ RTDB row pipeline, the control plane, or the autostart settings runs this suite 
 - [ ] **L-3: `.opencode/tests/event-persistence/`** — per-contract store + hydration; the
   Mission-Monitor replay path (`useEventRows(..., { replay: true })`).
 - [ ] **L-4: `.opencode/tests/settings/`** — the Settings feature window the autostart toggle
-  lands in; ensure the new `ingest` section does not regress sibling sections.
+  lands in; ensure the **Background capture** section (retitled from "Ingest" by #3193) does not
+  regress sibling sections. The section's FULL matrix is owned by
+  `.opencode/tests/background-capture/`.
 - [ ] **L-5: `.opencode/tests/persistence-spike/`** — the #2989 headless recipe the daemon
   builds on; its spike test must remain present.
 
