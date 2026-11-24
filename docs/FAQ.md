@@ -156,7 +156,7 @@ Fredo also collects its own internal metrics and structured logs from the Rust b
 
 ### Can I capture telemetry while the desktop app is closed?
 
-Yes — run `fredo ingest`. It is a headless daemon that owns the embedded PostgreSQL cluster and the OTLP receivers on the same loopback ports (`127.0.0.1:4317`/`:4318`), using the same data dir and credential as the GUI. It holds the exclusive data-dir lock (a second daemon or the GUI's own cluster start fails fast), and when you later open the GUI it **attaches** to the headless-owned cluster so Mission Monitor shows the captured sessions. Settings → **Ingest** can install a per-user login entry so it starts automatically. See [CLI_GUIDE.md](CLI_GUIDE.md#fredo-ingest).
+Yes. Closing the main window does not stop capture — Fredo stays resident in the tray and keeps the ingest pipeline running. For a machine that is signed out or freshly started, Settings → **Background capture** installs a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`), so capture resumes whenever you sign in; an entry left by an earlier version is migrated in place, and an entry the product does not own is never modified. A headless `fredo ingest` daemon also exists for running capture without the desktop app. See [CLI_GUIDE.md](CLI_GUIDE.md#fredo-ingest).
 
 ---
 

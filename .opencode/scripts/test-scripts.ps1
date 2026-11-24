@@ -1733,6 +1733,104 @@ Test-Script "audit-record spec size prefers the canonical Staffing Plan Effort l
   }
 }
 
+# Regression (observed #3193): a multi-task plan carries TWO canonical effort
+# lines — the Architect's per-TASK estimate (6) and the Staffing Plan's spec
+# TOTAL (15) — both `- **Effort:** N story points`. The parser must read the
+# Staffing Plan total, not the first occurrence.
+Test-Script "audit-record spec size reads the Staffing Plan total, not the Architect per-task estimate" {
+  $url = Mock-IssueCreate "temp: spec size two lines" "spec-size two-line scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-spec-size-two-lines.md"
+    $planBody = "## Triage Plan`n`n## Software Architect`n`n### Sub-issue Decomposition + Effort Estimates`n`n- [ ] **ST-1** intent`n`n- **Effort:** 6 story points`n`n## Staffing Plan`n`n- **Effort:** 15 story points (3 developers).`n"
+    [System.IO.File]::WriteAllText($plan, $planBody, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC SIZE RECORDED: 15 story points") { throw "Expected SPEC SIZE RECORDED: 15, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($ev.attributes.storyPoints -ne "15") { throw "expected storyPoints=15, got: $($ev.attributes.storyPoints)" }
+    return "Staffing Plan total (15 pts) wins over the Architect estimate (6) on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A plan with no `## Staffing Plan` section keeps the documented fallback: the
+# first canonical `- **Effort:** N story points` line is recorded.
+Test-Script "audit-record spec size falls back to the plan's Effort line with no Staffing Plan section" {
+  $url = Mock-IssueCreate "temp: spec size no staffing" "spec-size no-staffing scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-spec-size-no-staffing.md"
+    $planBody = "## Triage Plan`n`n## Software Architect`n`n### Sub-issue Decomposition + Effort Estimates`n`n- **Effort:** 9 story points`n"
+    [System.IO.File]::WriteAllText($plan, $planBody, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC SIZE RECORDED: 9 story points") { throw "Expected SPEC SIZE RECORDED: 9, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($ev.attributes.storyPoints -ne "9") { throw "expected storyPoints=9, got: $($ev.attributes.storyPoints)" }
+    return "fallback Effort line (9 pts) recorded on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A plan with no effort marker at all records NO storyPoints attribute — a miss
+# only skips the trend attribute, it never fails the verdict.
+Test-Script "audit-record spec size records no attribute when the plan has no Effort line" {
+  $url = Mock-IssueCreate "temp: spec size missing" "spec-size missing scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $plan = Join-Path $env:TEMP "fredo-spec-size-missing.md"
+    $planBody = "## Triage Plan`n`n## Staffing Plan`n`n2 developers, no estimate recorded.`n"
+    [System.IO.File]::WriteAllText($plan, $planBody, [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-gh --ghargs "issue comment $issueNum --body-file $plan" 2>&1 | Out-Null
+    Remove-Item $plan -Force -ErrorAction SilentlyContinue
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "spec size not recorded") { throw "Expected the spec-size miss note, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "audit.verdict" } | Select-Object -Last 1
+    if ($null -ne $ev.attributes.storyPoints) { throw "expected no storyPoints attribute, got: $($ev.attributes.storyPoints)" }
+    return "no Effort line -> no storyPoints attribute on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Single-writer permissions (opencode.json) ---
 Write-Host "Permissions (opencode.json):" -ForegroundColor Cyan
 

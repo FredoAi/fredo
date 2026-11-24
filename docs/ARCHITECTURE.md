@@ -978,19 +978,19 @@ The ingest classifier derives each row's `state` from span timing (helpers reloc
 
 ---
 
-## Dual-Mode Binary
+## Launch Modes
 
-The `fredo` binary detects its mode at startup:
+The `fredo` binary resolves its mode at startup **before** clap parses argv (`infrastructure/launch.rs`):
 
-```rust
-if std::env::args().len() > 1 {
-    // CLI: parse clap args -> connect to IPC socket -> send CliCommand -> exit
-} else {
-    // GUI: launch Tauri window + start IPC socket server + OTLP receivers
-}
-```
+- the sole `["<exe>", "--background"]` vector starts the resident app with **no window** (the login-launch shape);
+- every other argument vector takes the pre-existing path byte-for-byte — CLI parse → `CliCommand` over the IPC socket → exit;
+- the bare invocation launches the GUI.
 
-The same installed binary is both the desktop launcher and the `fredo` CLI in PATH.
+`--background` is deliberately **not** a clap argument, so `--help`, `--version` and every subcommand are unchanged and `--background emit` stays a parse error. The same installed binary is both the desktop launcher and the `fredo` CLI in PATH.
+
+The mode is carried into the single-instance probe: a **foreground** launch asks an already-resident instance to show its main window (`CliCommand::OpenMainWindow`), while a **background** launch sends a silent `CliCommand::Ping` — reusing the show verb would pop a window at sign-in and defeat the mode. The main window is configured `visible: false`; a foreground launch shows it at `RunEvent::Ready` (not in `setup`, where the configured window may not be materialised yet), a background launch leaves it hidden while IPC, the OTLP receivers and the ingest pipeline run, and `ensure_main_window` carries a `show()` leg so a hidden window can be revealed.
+
+**Login entry (Spec #3193).** Settings → **Background capture** manages one per-user value — `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FredoIngest`, `REG_SZ`, bounded `reg.exe`, no elevation — whose command is exactly `"<current_exe>" --background` (one builder, `applications/settings/autostart.rs`). At startup **and** on every toggle the entry is normalised by one decision table: a legacy `"<exe>" ingest` value owned by this executable is rewritten in place (enabled state preserved), an own-current value issues no write, and a value the product does **not** own is never touched by startup or by disable (enabling rewrites it — the recovery path). Non-Windows reports the surface as unavailable instead of failing.
 
 ---
 
@@ -1238,7 +1238,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 6. Start IPC socket server (`tauri::async_runtime::spawn`)
 7. Start OTLP receivers (gRPC :4317 + HTTP :4318)
 8. Register all Tauri command handlers via `generate_handler![]`
-9. Launch Tauri webview window
+9. Launch Tauri webview window — configured `visible: false`; shown at `RunEvent::Ready` for a foreground launch, left hidden for `--background` (Spec #3193)
 
 ---
 

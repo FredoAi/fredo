@@ -249,7 +249,7 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 - **Loopback only.** PostgreSQL binds an ephemeral `127.0.0.1` port by default — or the port pinned in the shared Settings → **Database** configuration (Spec #3022), along with its log verbosity; the OTLP receivers bind `127.0.0.1:4317`/`:4318`, exactly like the GUI.
 - **Markers untouched.** The daemon never reads or writes the one-shot `rtdb.backfill.*` markers and never writes `telemetry_spans` from the backfill path.
 
-> **Login auto-start.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in; disabling it removes the entry. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
+> **Login auto-start.** Settings → **Background capture** manages a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`); disabling it removes the entry. An entry written by an earlier version (`fredo ingest`) is migrated in place — at startup or on the next toggle — and an entry the product does not own is never modified. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
 
 ---
 

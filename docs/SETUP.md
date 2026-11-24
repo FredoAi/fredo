@@ -238,7 +238,7 @@ The daemon owns the embedded PostgreSQL cluster and the OTLP receivers on the sa
 
 Stop it with Ctrl+C (SIGINT) or `--shutdown-file`; shutdown is bounded and leaves no orphan postmaster. See [CLI_GUIDE.md](CLI_GUIDE.md#fredo-ingest) for all flags and exit codes.
 
-**Auto-start at login.** Settings → **Ingest** installs a per-user login entry that runs `fredo ingest` at sign-in, so capture is continuous without keeping the GUI open. Disabling the toggle removes the entry. No administrator rights are required (an OS-level service is out of scope).
+**Auto-start at login.** Settings → **Background capture** installs a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`), so capture is continuous without opening the desktop app. Disabling the toggle removes the entry. An entry left by an earlier version (`fredo ingest`) is migrated in place — at startup or on the next toggle — and an entry the product does not own is never modified. No administrator rights are required (an OS-level service is out of scope).
 
 > **Upgraded installs:** PostgreSQL is the only store (Spec #3005). A pre-existing legacy SQLite file in the data dir is ignored byte-for-byte — the daemon never reads, carries, or migrates it. There is no cutover leg.
 
