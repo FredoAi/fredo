@@ -17,3 +17,22 @@ Unscripted probes for the plugin emitter domain. Run after functional + smoke; p
 - [ ] E-8: Exception event on a tool-failure (message.ts:483 path) vs an LLM-API failure (message.ts:242 path) - does `exception.type`/`message` differ sensibly per failure mode?
 - [ ] E-9: Subagent run - does the details event's `gen_ai.conversation.id` equal the subagent session (not the parent)?
 - [ ] E-10: Multi-turn cache run - are usage attrs inside the details event present only on the completed turn (no premature emission)?
+
+## Spec #3197 additions (V2 port — unscripted probes)
+
+> Levers: `FREDO_CAPTURE_EVENTS=<path>` (default OFF) on the external lever's environment, and the
+> `scripts/run-external-session.ps1` opt-out/dead-endpoint switches. Non-AC probes; a confirmed
+> finding promotes to `functional.md` with its origin note.
+
+- [ ] E-11 (capture lever): with `FREDO_CAPTURE_EVENTS=.opencode/tmp/3197/e2e/<name>.jsonl`, one JSON
+  line `{type, event}` per received event is appended and no other behaviour changes; with the var
+  unset no file is created. (Owner: ST-1.)
+- [ ] E-12 (interrupt key semantics): in a Terminal session, does `Esc` (`\u001b`) interrupt an
+  in-flight turn while the TUI survives (the discriminator), or does only `Ctrl+C` (`\x03`) do it and
+  exit? Record which key produced `session.execution.interrupted` — this is the lever F-35/F-37 rest on.
+- [ ] E-13 (turn-root refresh): multi-turn session — does the `fredo.session` span stay one per turn
+  root (refreshed prompt) rather than accumulating a span per text delta?
+- [ ] E-14 (slow/dead export): with a dead endpoint, is the user-visible session latency unchanged
+  (NFR-1's "never slow a user session")? Compare turn wall-clock against the healthy-endpoint run.
+- [ ] E-15 (dropped `ended` event): kill a tool mid-flight — does the pending map stay bounded and
+  does the sweeper close the orphan span instead of leaking it?
