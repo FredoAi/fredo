@@ -72,8 +72,6 @@
     "backlog": "backlog",
     "planning": "planning",
     "ready-for-dev": "implementation",
-    "in-progress-dev": "implementation",
-    "ready-for-test": "implementation",
     "testing": "testing",
     "audit": "audit",
     "post-audit": "post-audit",

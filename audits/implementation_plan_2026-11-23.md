@@ -46,18 +46,19 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 - [x] **E3** No-lesson success: the Curator records a `record-improvement` event without authoring a new `### G-` record; the success gate needs the event, not ledger growth.
 - [x] **E5** Class→Lever routing now states executable-first precedence (Toolsmith/Machinist before prose).
 
-## P6 — Tooling library — NOT STARTED
+## P6 — Tooling library — DONE (initial set)
 
-- [ ] **D1** Probe families as committed tools.
-- [ ] **D2** Deterministic lint scripts.
-- [ ] **C4** Guard-universe instrument.
+- [x] **D1** `product-subtree-diff.ps1` (served vs intended product subtree) — script + `pipeline-checks` skill + `-SelfTest` + harness pin.
+- [x] **D2** `check-plan-drivability.ps1` (QA-row drivability census) — script + skill + `-SelfTest` + harness pin.
+- [~] **C4 (v1)** Both tools print the offending rows/decision; a full generic guard-universe tool can extend this set later.
 
 ## Human batch — PARTIAL
 
 - [x] **D4** `software-architect` granted `telemetry-query` (via `set-permission`).
 - [~] **F4** Doc-level ownership routing (see P3b); no permission grant.
 - [x] **B4** Post-audit is mandatory for the SUCCESS exit only; a restart may proceed while curation runs concurrently (state machine + `principles.md`/`pipeline.json`/`state-machine.md`/`orchestrator.md`).
-- [ ] **H1/H2** Prune deprecated actions/labels/channels — deferred (removing `generate-work`/mock verbs breaks the harness contracts; needs its own migration spec).
+- [x] **H1** `generate-work` pruned (unknown action); mock verbs accepted only under `FREDO_MOCK_GH=1`; legacy `in-progress-dev`/`ready-for-test` labels removed. Harness updated in lockstep.
+- [x] **H2** Fix-plan channel collapsed: the derived fallback compaction was removed; a rework round requires the authored `fix-plan.md`. The verdict draft/reconcile and dev-verify channels are idempotent by design (not duplicates).
 - [x] **G3** #2694/#2711 are already CLOSED; the SLA report now ignores terminal specs, so they no longer appear as overdue blockers.
 
 ## Deferred

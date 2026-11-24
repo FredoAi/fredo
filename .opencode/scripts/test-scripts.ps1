@@ -1289,7 +1289,7 @@ Test-Script "audit-record restart positive path (audit -> implementation)" {
   }
 }
 
-Test-Script "generate-work removed (no sub-issues or tester issue)" {
+Test-Script "generate-work is pruned (unknown action)" {
   $draft = Join-Path $env:TEMP "fredo-impl-plan.md"
   $planBody = @"
 ## Title
@@ -1317,7 +1317,8 @@ generate-work removed-path Implementation Plan
 
     $out = & rust-script $ps --issue $planNum --agent orchestrator --action generate-work 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-    if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected generate-work-removed note, got: $outStr" }
+    if ($LASTEXITCODE -eq 0) { throw "generate-work must be pruned (unknown action), got exit 0: $outStr" }
+    if ($outStr -notmatch "unknown action") { throw "Expected 'unknown action' after H1 prune, got: $outStr" }
     if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "generate-work must not create sub-issues/tester, got: $outStr" }
     # No scratch child issues may exist (sub-issues + tester issue were dropped).
     # In mock mode this is a local store read — never a GitHub search.
@@ -1867,13 +1868,15 @@ Test-Script "remove-worktree cleans gitignored artifacts before removal" {
   }
 }
 
-# generate-work is removed (any actor gets the removal note; no sub-issues)
-Test-Script "generate-work reports removal (no sub-issues)" {
+# generate-work is pruned (it is an unknown action; no sub-issues)
+Test-Script "generate-work is an unknown action" {
   $out = & rust-script $ps --issue $TestIssue --agent developer --action generate-work 2>&1
   $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
-  if ($outStr -notmatch "GENERATE-WORK REMOVED") { throw "Expected GENERATE-WORK REMOVED, got: $outStr" }
+  if ($LASTEXITCODE -eq 0) { throw "generate-work must be pruned, got exit 0: $outStr" }
+  if ($outStr -notmatch "unknown action: generate-work") { throw "Expected 'unknown action: generate-work', got: $outStr" }
   if ($outStr -match "SUB-ISSUE CREATED|TESTER ISSUE CREATED") { throw "must not create sub-issues/tester, got: $outStr" }
-  return "generate-work removed note verified"
+  $global:LASTEXITCODE = 0
+  return "generate-work pruned (unknown action) verified"
 }
 
 # triage-init is orchestrator-only (role gate fires before any file write)
@@ -2022,7 +2025,7 @@ Test-Script "update-plan positive path (replace software-architect section in dr
 
 # Retry-round compaction (PO feedback, #2688): a rework re-entry into implementation
 # posts a compact `## Fix Plan (round N)` instead of re-posting the full plan.
-Test-Script "Retry rework posts compact Fix Plan, not the full Triage Plan" {
+Test-Script "rework re-entry without an authored fix-plan is refused (one fix-plan channel)" {
   $url = Mock-IssueCreate "temp: fix-plan retry" "fix-plan scratch" ""
   if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
   $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
@@ -2033,14 +2036,9 @@ Test-Script "Retry rework posts compact Fix Plan, not the full Triage Plan" {
   try {
     New-Item -ItemType Directory -Path $planDraftDir -Force | Out-Null
     $fullPlan = @"
-Root cause class: defect
-
 ## Software Architect
-### Domain Model
-Full domain model body that should NOT be re-posted on retry.
 ### Sub-issue Decomposition
 - [ ] ST1 - Restrict the chat-node contract to chat-only gRPC
-- [ ] ST2 - Plugin thinking capture
 ## Risks & Mitigations
 Subagent regression risk under chat-only contract.
 
@@ -2055,15 +2053,12 @@ Subagent regression risk under chat-only contract.
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
-
-    $comments = @(Mock-IssueComments $issueNum)
-    $joined = $comments -join "`n"
-    if ($joined -notmatch "## Fix Plan \(round 2\)") { throw "Expected '## Fix Plan (round 2)', got: $joined" }
-    if ($joined -match "Full domain model") { throw "Fix Plan must not repeat the full plan body: $joined" }
-    if ($joined -notmatch "- \[ \] ST1") { throw "Fix Plan should carry the sub-issue checklist: $joined" }
-    if ($joined -notmatch "Subagent regression risk") { throw "Fix Plan should carry Risks & Mitigations context: $joined" }
-    if (Test-Path "$planDraftDir/triage-plan.md") { throw "triage-plan.md draft should be consumed after posting" }
-    return "retry rework posted compact Fix Plan (round 2) on #$issueNum"
+    if ($outStr -match "COMMENTED: Fix Plan") { throw "the fallback compaction must be removed (H2), got: $outStr" }
+    if ($outStr -notmatch "must author") { throw "expected the author-fix-plan warning, got: $outStr" }
+    if (-not (Test-Path "$planDraftDir/triage-plan.md")) { throw "the triage-plan draft should be KEPT when no authored fix plan exists" }
+    $joined = (@(Mock-IssueComments $issueNum) -join "`n")
+    if ($joined -match "## Fix Plan") { throw "no Fix Plan may post without an authored fix-plan.md, got: $joined" }
+    return "rework re-entry without an authored fix plan refused; triage-plan draft kept (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
@@ -4756,6 +4751,8 @@ $scripts = @(
   "launch-artifact-probe.ps1",
   "inspect-webview-config.ps1",
   "check-navigation-prose-retired.ps1",
+  "check-plan-drivability.ps1",
+  "product-subtree-diff.ps1",
   "verify-installer-payload.ps1",
   "gate-release-artifact.ps1",
   "gate-artifact-window.ps1",
@@ -4772,6 +4769,23 @@ if (Test-Path ".opencode/scripts/verify-env-isolation.ps1") {
 foreach ($script in $scripts) {
   $path = ".opencode/scripts/$script"
   Test-Script-Syntax $script $path
+}
+
+# --- Pipeline checks (P6: plan drivability + product-subtree diff) ---
+Write-Host "Pipeline checks (P6):" -ForegroundColor Cyan
+Test-Script "plan-drivability: -SelfTest passes all three controls" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/check-plan-drivability.ps1" -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "plan-drivability self-test failed (exit $code): $text" }
+  return "plan-drivability self-test passes"
+}
+Test-Script "product-subtree-diff: -SelfTest passes both controls" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/product-subtree-diff.ps1" -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "product-subtree-diff self-test failed (exit $code): $text" }
+  return "product-subtree-diff self-test passes"
 }
 
 # --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---
