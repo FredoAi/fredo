@@ -531,7 +531,12 @@ Test-Script "Create-worktree sweeps leftover dir then is idempotent (G-201)" {
   New-Item -ItemType Directory -Path $wt -Force | Out-Null
   Set-Content -Path (Join-Path $wt "leftover.txt") -Value "junk" -Encoding UTF8
   try {
-    $out1 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    # H3: a non-empty leftover is refused without --force-clean.
+    $deny = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($LASTEXITCODE -eq 0) { throw "create-worktree must refuse a non-empty leftover without --force-clean" }
+    if ($denyStr -notmatch "force-clean") { throw "Expected the force-clean refusal, got: $denyStr" }
+    $out1 = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt --force-clean 2>&1
     $s1 = if ($out1 -is [array]) { $out1 -join "`n" } else { "$out1" }
     if ($LASTEXITCODE -ne 0) { throw "create-worktree failed on a leftover dir: $s1" }
     if ($s1 -notmatch "WORKTREE CREATED") { throw "Expected WORKTREE CREATED, got: $s1" }
@@ -3709,13 +3714,18 @@ Test-Script "testing->implementation human-authorized rework bypasses the eviden
     # The flag WITHOUT a reason must still block (the authorization is justified).
     $nr = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized 2>&1
     $nrStr = if ($nr -is [array]) { $nr -join "`n" } else { "$nr" }
-    if ($nrStr -notmatch "no tester Evidence") { throw "Expected evidence block without a reason, got: $nrStr" }
+    if ($nrStr -notmatch "no tester Evidence|authorization-ref") { throw "Expected a block without a reason/provenance ref, got: $nrStr" }
+    # Flag + reason but NO provenance ref must block (H3).
+    $nref = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized --reason "scope" 2>&1
+    $nrefStr = if ($nref -is [array]) { $nref -join "`n" } else { "$nref" }
+    if ($nrefStr -notmatch "authorization-ref") { throw "Expected provenance block without --authorization-ref, got: $nrefStr" }
     # Seed the A2A (the implementation-entry side-effect reads it).
     $a2aDir = ".opencode/tmp/$issueNum"
     New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
     [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
     # Flag + reason -> allowed; records human.authorization; label implementation.
-    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" 2>&1
+    $authRef = "https://github.com/FredoAi/fredo/issues/$issueNum#issuecomment-1"
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized --reason "human-authorized scope addition" --authorization-ref $authRef 2>&1
     $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
     if ($LASTEXITCODE -ne 0) { throw "human-authorized rework failed: $okStr" }
     if ($okStr -notmatch "TRANSITIONED: testing -> implementation") { throw "Expected testing->implementation, got: $okStr" }
@@ -3724,6 +3734,7 @@ Test-Script "testing->implementation human-authorized rework bypasses the eviden
     if ($st.Labels -notcontains "ready-for-dev") { throw "expected ready-for-dev after rework, got: $($st.Labels)" }
     $authEv = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "human.authorization" } | Select-Object -Last 1
     if (-not $authEv) { throw "no human.authorization event recorded" }
+    if ($authEv.attributes.authorizationRef -ne $authRef) { throw "human.authorization must record the provenance ref, got: $($authEv.attributes.authorizationRef)" }
     return "human-authorized testing->implementation: blocked w/o flag/reason, allowed with both (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
@@ -4753,6 +4764,8 @@ $scripts = @(
   "check-navigation-prose-retired.ps1",
   "check-plan-drivability.ps1",
   "product-subtree-diff.ps1",
+  "guard-universe.ps1",
+  "ledger-audit.ps1",
   "verify-installer-payload.ps1",
   "gate-release-artifact.ps1",
   "gate-artifact-window.ps1",
@@ -4786,6 +4799,20 @@ Test-Script "product-subtree-diff: -SelfTest passes both controls" {
   $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($code -ne 0) { throw "product-subtree-diff self-test failed (exit $code): $text" }
   return "product-subtree-diff self-test passes"
+}
+Test-Script "guard-universe: -SelfTest passes all three controls" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/guard-universe.ps1" -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "guard-universe self-test failed (exit $code): $text" }
+  return "guard-universe self-test passes"
+}
+Test-Script "ledger-audit: -SelfTest passes all four controls" {
+  $out = & powershell -NoProfile -File ".opencode/scripts/ledger-audit.ps1" -SelfTest 2>&1
+  $code = $LASTEXITCODE
+  $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($code -ne 0) { throw "ledger-audit self-test failed (exit $code): $text" }
+  return "ledger-audit self-test passes"
 }
 
 # --- Navigation prose absence guard (Spec #3153, AC1's instrument) ---

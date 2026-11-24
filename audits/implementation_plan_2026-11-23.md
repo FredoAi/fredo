@@ -3,7 +3,7 @@
 Tracks the fixes in [`performance_audit_2026-11-23.md`](./performance_audit_2026-11-23.md).
 Execution mode: **direct implementation**. Last updated: 2026-11-23.
 
-Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine batch;
+Verification: `test-scripts.ps1` is **188/188 PASS** after each state-machine batch;
 `--action verify` is INTEGRITY OK. Docs updated in the same pass.
 
 ## P1 — Machine correctness — DONE
@@ -19,7 +19,7 @@ Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine ba
 
 - [x] **G1** Fixture `633.jsonl` quarantined to `.opencode/state/fixtures/`; metrics/health headline + agent/phase mix filtered to real specs (`create-issue`) and explicitly exclude fixture ids `0`/`633` (the offline harness recreates `633.jsonl`, so the filter is the durable fix).
 - [x] **G5** Validate-on-append; `ad-hoc-scripts` recorded once per issue; `verify` already flags non-JSON/malformed lines.
-- [~] **G2** Log cap added to `prune` (delete >200 MB or >7 days); removed the 2.87 GB log. `.opencode/tmp` prune deferred.
+- [x] **G2** Log cap added to `prune` (delete >200 MB or >7 days); removed the 2.87 GB log; `.opencode/tmp/<issue>` is pruned at the `done` close.
 
 ## P3a — Planning discipline — PARTIAL
 
@@ -38,7 +38,7 @@ Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine ba
 
 ## P4 — Throughput instrumentation — PARTIAL
 
-- [x] **F2** `retry_state` reads the event log once (was 3×); rounds shared via `round_authority`.
+- [x] **F2** `retry_state` reads the event log once (was 3×); rounds shared via `round_authority`; the comment timeline is cached per process and invalidated after every post.
 - [x] **G4** `metrics --issue` now reports the rework root-cause mix and the ad-hoc script count (retrospective inputs).
 
 ## P5 — Guardrail / instruction slimming — PARTIAL
@@ -52,7 +52,8 @@ Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine ba
 
 - [x] **D1** `product-subtree-diff.ps1` (served vs intended product subtree) — script + `pipeline-checks` skill + `-SelfTest` + harness pin.
 - [x] **D2** `check-plan-drivability.ps1` (QA-row drivability census) — script + skill + `-SelfTest` + harness pin.
-- [~] **C4 (v1)** Both tools print the offending rows/decision; a full generic guard-universe tool can extend this set later.
+- [x] **C4** `guard-universe.ps1` (scanned/excluded/hit counts + built-vs-pristine equality) — script + skill + `-SelfTest` + harness pin.
+- [x] **E1 tool** `ledger-audit.ps1` (records/Pending/stale/stubs/duplicate ids) — script + skill + `-SelfTest` + harness pin. Retirement remains a Curator judgment call.
 
 ## Human batch — PARTIAL
 
@@ -61,13 +62,11 @@ Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine ba
 - [x] **B4** Post-audit is mandatory for the SUCCESS exit only; a restart may proceed while curation runs concurrently (state machine + `principles.md`/`pipeline.json`/`state-machine.md`/`orchestrator.md`).
 - [x] **H1** `generate-work` pruned (unknown action); mock verbs accepted only under `FREDO_MOCK_GH=1`; legacy `in-progress-dev`/`ready-for-test` labels removed. Harness updated in lockstep.
 - [x] **H2** Fix-plan channel collapsed: the derived fallback compaction was removed; a rework round requires the authored `fix-plan.md`. The verdict draft/reconcile and dev-verify channels are idempotent by design (not duplicates).
+- [x] **H3** Worktree safety: a dirty worktree is never swept; a non-empty leftover needs `--force-clean`. Human rework now requires `--authorization-ref` (recorded on `human.authorization`).
 - [x] **G3** #2694/#2711 are already CLOSED; the SLA report now ignores terminal specs, so they no longer appear as overdue blockers.
 
 ## Deferred / residual
 
-- **F3** parallel dev waves, **F6** parallel envs — revisit after G4 data.
-- **H3** worktree dirty-check before sweep + `--human-authorized` provenance — needs a dedicated CLI/security design.
-- **A2** automated section-per-comment splitting; **F2** comment caching (retry-state memoization shipped).
-- **E1** retirement of 184 stale-`Pending` guardrails — Curator judgment pass.
-- **G2** `.opencode/tmp` prune at cleanup (log cap shipped).
-- **C4** generic guard-universe tool (v1 census shipped).
+- **F3** parallel dev waves, **F6** parallel envs — deferred by the audit (revisit after G4 data).
+- **A2** automated section-per-comment plan splitting (a >200 KB warning ships).
+- **E1** retirement of the 108 stale-`Pending` guardrails (`ledger-audit.ps1` lists them; retirement is a Curator judgment call).

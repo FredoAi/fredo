@@ -39,6 +39,30 @@ product evidence — re-stamp the evidence), **2 = CHANGED** (re-serve before
 re-testing), **1 = error**. Mirrors the state machine's env-evidence tolerance
 (C1). `-SelfTest` runs the two built-in controls.
 
+## 3. Guard-universe instrument
+
+```
+powershell -NoProfile -File .opencode/scripts/guard-universe.ps1 -Root <tree> -Tokens <file> [-PristineRoot <tree>] [-AllowHits]
+```
+
+Scans `<tree>` for the token set (one token per line) and prints the **SCANNED**,
+**EXCLUDED** (`.git`/`node_modules`/`target`/`dist`/`.next`) and **HITS** counts.With
+`-PristineRoot` it also prints a built-vs-pristine **EQUALITY: MATCH/MISMATCH**
+receipt for the scanned/hit counts — the audit surface an absence guard needs.
+Exit codes: **0 = ok**, **1 = hits** (unless `-AllowHits`), **2 = pristine
+mismatch**, **3 = error**. `-SelfTest` runs the three built-in controls.
+
+## 4. Guardrail-ledger audit
+
+```
+powershell -NoProfile -File .opencode/scripts/ledger-audit.ps1 [-File <path>] [-OlderThan 2026-10-01]
+```
+
+Reports the ledger's size and hygiene: **RECORDS**, **PENDING**, **STALE PENDING**
+(Pending with an activation date before the cutoff), **STUBS**
+(`on_the_go_improvement`), and **DUPLICATE IDS**. Read-only — retiring a record
+remains a Curator judgment call. `-SelfTest` runs the four built-in controls.
+
 ## Notes
 
 - Both scripts are read-only — they never write to the repo, the event log, or GitHub.

@@ -322,6 +322,15 @@ fn remove_worktree_robust(path: &str) -> anyhow::Result<()> {
                     // dirty-refusal guard would already have blocked us. Best-effort
                     // (a failure here is surfaced by the caller as the real reason).
                     if std::path::Path::new(path).exists() {
+                        // H3: never sweep a worktree that still carries uncommitted
+                        // changes. `git worktree remove` refused it above, so the
+                        // dirty-refusal must hold here too (tracked work must be
+                        // committed + pushed first).
+                        if let Ok(status) = run_cmd("git", &["-C", path, "status", "--porcelain"]) {
+                            if !status.trim().is_empty() {
+                                anyhow::bail!("refusing to remove worktree with uncommitted changes: {}", path);
+                            }
+                        }
                         std::fs::remove_dir_all(path)?;
                     }
                     if std::path::Path::new(path).exists() {
@@ -1681,23 +1690,47 @@ fn get_issue_comments(issue: u32) -> Vec<String> {
 /// array already carries `authorAssociation` (GitHub's comment shape), so we request
 /// `--json comments` and read the field per comment. Requesting
 /// `--json comments,authorAssociation` would fail real gh with "unknown field".
+/// Process-level comment cache (F2): one action can read the timeline several
+/// times (phase, entry, verification, verdict round). Cache the raw list per
+/// issue and invalidate it after any comment post (see `clear_comment_cache`).
+static COMMENT_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<u32, Vec<serde_json::Value>>>> = std::sync::OnceLock::new();
+
+fn comment_cache() -> &'static std::sync::Mutex<HashMap<u32, Vec<serde_json::Value>>> {
+    COMMENT_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Drop the cached timeline for an issue after a write (post/close).
+fn clear_comment_cache(issue: u32) {
+    comment_cache().lock().unwrap_or_else(|p| p.into_inner()).remove(&issue);
+}
+
 fn issue_comments_partitioned(issue: u32) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    let json = run_gh(&[
-        "issue", "view", &issue.to_string(), "--comments", "--json", "comments",
-    ])
-    .unwrap_or_else(|_| "{\"comments\":[]}".to_string());
-    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
+    let comments: Vec<serde_json::Value> = {
+        let cache = comment_cache();
+        let hit = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&issue).cloned();
+        match hit {
+            Some(v) => v,
+            None => {
+                let json = run_gh(&[
+                    "issue", "view", &issue.to_string(), "--comments", "--json", "comments",
+                ])
+                .unwrap_or_else(|_| "{\"comments\":[]}".to_string());
+                let parsed: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
+                let arr = parsed.get("comments").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+                cache.lock().unwrap_or_else(|p| p.into_inner()).insert(issue, arr.clone());
+                arr
+            }
+        }
+    };
     let mut trusted = Vec::new();
     let mut flagged = Vec::new();
-    if let Some(arr) = parsed.get("comments").and_then(|c| c.as_array()) {
-        for c in arr {
-            let assoc = c.get("authorAssociation").and_then(|a| a.as_str()).unwrap_or("");
-            // Fail-closed: an absent/unknown authorAssociation is treated as untrusted.
-            if is_trusted_comment_author(assoc) {
-                trusted.push(c.clone());
-            } else {
-                flagged.push(c.clone());
-            }
+    for c in &comments {
+        let assoc = c.get("authorAssociation").and_then(|a| a.as_str()).unwrap_or("");
+        // Fail-closed: an absent/unknown authorAssociation is treated as untrusted.
+        if is_trusted_comment_author(assoc) {
+            trusted.push(c.clone());
+        } else {
+            flagged.push(c.clone());
         }
     }
     (trusted, flagged)
@@ -2054,6 +2087,7 @@ fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> 
     std::fs::create_dir_all(tmp.parent().unwrap())?;
     std::fs::write(&tmp, body)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
     let _ = std::fs::remove_file(&tmp);
     // Consume the conventional draft so a re-run never re-posts it.
     if body_file.is_none() && conventional.exists() {
@@ -4118,6 +4152,13 @@ struct ActionArgs {
     /// for `testing -> implementation`, and ONLY with a non-empty `--reason` —
     /// bypasses that one exit guard and records a `human.authorization` event.
     human_authorized: bool,
+    /// `transition --authorization-ref <url|comment-id>` (H3): the recorded human
+    /// directive that authorizes a pre-verdict rework. Required with
+    /// `--human-authorized` so the bypass is traceable, not self-asserted.
+    authorization_ref: Option<String>,
+    /// `create-worktree --force-clean` (H3): permits sweeping a NON-EMPTY leftover
+    /// dir that has no `.git` marker (disposable scratch only).
+    force_clean: bool,
     /// `create-issue --revises <N>` / `link-revision --revises <N>`: the prior
     /// feature this new issue revises. Recorded on the new issue's log as a
     /// `feature.revised` event (attrs `revises`, `intent`) and as the `revises`
@@ -4471,6 +4512,7 @@ fn post_one_timeline_comment(issue: u32, actor: &str, phase: &str, p: &std::path
     let content = if already_headed { body.to_string() } else { format!("## {}\n\n{}", header, body) };
     std::fs::write(&tmp, content)?;
     run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(p);
     println!("COMMENTED: {} on #{}", header, issue);
@@ -4809,6 +4851,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             };
             std::fs::write(&tmp, content)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
             let _ = std::fs::remove_file(&tmp);
             println!("COMMENTED: {} on #{}", prefix, issue);
             append_event(issue, "comment", &a.actor, phase.as_str(), "success", &format!("posted {} comment from {}", prefix, body_file))?;
@@ -4904,6 +4947,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, &body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
             let _ = std::fs::remove_file(&tmp);
             if a.body_file.is_none() { let _ = std::fs::remove_file(&conventional); }
             println!("RECONCILED: superseding `## Tests Runs (round {})` verdict posted on #{} (previous verdict kept on the timeline)", round, issue);
@@ -4960,6 +5004,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, &body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
             let _ = std::fs::remove_file(&tmp);
             if from_conventional {
                 let _ = std::fs::remove_file(&conventional);
@@ -5044,7 +5089,21 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let human_authorized_rework = phase == Phase::Testing
                 && to == Phase::Implementation
                 && a.human_authorized
-                && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+                && a.reason.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false)
+                && a.authorization_ref.as_deref().map(|r| !r.trim().is_empty()).unwrap_or(false);
+            // H3 provenance: `--human-authorized` is self-asserted by whoever runs
+            // the transition. Require the recorded human directive reference so the
+            // flag is auditable rather than an arbitrary bypass.
+            if a.human_authorized
+                && phase == Phase::Testing
+                && to == Phase::Implementation
+                && a.authorization_ref.as_deref().map(|r| r.trim().is_empty()).unwrap_or(true)
+            {
+                let reason = "human-authorized rework requires --authorization-ref <url|comment-id> (H3 provenance)".to_string();
+                append_event(issue, "transition", &a.actor, phase.as_str(), "blocked", &reason)?;
+                println!("BLOCKED: {}", reason);
+                return Ok(());
+            }
             // The Testing exit guard requires a POSTED tester verdict comment (a FAIL
             // routes to rework, a PASS to audit). The tester leaves that verdict as a
             // `tests-runs.md` draft and the transition's own flush runs AFTER the guard,
@@ -5121,9 +5180,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 }
             }
             if human_authorized_rework {
-                append_event(issue, "human.authorization", &a.actor, phase.as_str(), "success",
-                    &format!("human-authorized rework {} -> {}: {}", phase.as_str(), to.as_str(),
-                        a.reason.as_deref().unwrap_or("").trim()))?;
+                append_event_attrs(issue, "human.authorization", &a.actor, phase.as_str(), "success",
+                    &format!("human-authorized rework {} -> {}: {} (ref: {})", phase.as_str(), to.as_str(),
+                        a.reason.as_deref().unwrap_or("").trim(),
+                        a.authorization_ref.as_deref().unwrap_or("").trim()),
+                    &[("authorizationRef", a.authorization_ref.as_deref().unwrap_or(""))])?;
                 println!("HUMAN-AUTHORIZED REWORK: {} -> {} (bypasses the tester-evidence exit guard; reason recorded)",
                     phase.as_str(), to.as_str());
             }
@@ -5264,6 +5325,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, ensure_author_footer(&format!("## Status\n\nBlocked: {}", reason), &a.actor))?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
             let _ = std::fs::remove_file(&tmp);
             println!("BLOCKED: #{} ({})", issue, reason);
             append_event_attrs(issue, "block", &a.actor, phase.as_str(), "success", &format!("blocked: {}", reason), &[("reason", reason)])?;
@@ -5347,6 +5409,11 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // Post the ONE `## Final Status` closing comment: the Orchestrator's
                 // outcome/doc-sync draft (`--body-file`) + the machine's final metrics.
                 let _ = post_final_status(issue, a.body_file.as_deref());
+                // G2: prune the issue's scratch dir at the done close (the final
+                // status already consumed the ad-hoc inventory). Best-effort.
+                if let Ok(root) = project_root() {
+                    let _ = std::fs::remove_dir_all(root.join(".opencode").join("tmp").join(issue.to_string()));
+                }
                 // Mirror the done status onto the project Status field (issue stays OPEN).
                 let _ = sync_project_status(issue, "done");
                 println!("CLEANUP -> DONE: #{} labeled done (issue left OPEN for human close)", issue);
@@ -5401,6 +5468,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("reused existing worktree {}", path))?;
             } else {
                 if wt.exists() {
+                    // H3: a non-empty leftover is only swept on an explicit
+                    // `--force-clean` (it may be someone's uncommitted scratch).
+                    let non_empty = std::fs::read_dir(wt)
+                        .map(|mut d| d.next().is_some())
+                        .unwrap_or(false);
+                    if non_empty && !a.force_clean {
+                        anyhow::bail!("refusing to sweep a non-empty leftover dir at {} — pass --force-clean if it is disposable scratch", path);
+                    }
                     std::fs::remove_dir_all(wt)?;
                 }
                 match run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
@@ -5814,6 +5889,7 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             std::fs::create_dir_all(tmp.parent().unwrap())?;
             std::fs::write(&tmp, body)?;
             run_gh(&["issue", "comment", &issue.to_string(), "--body-file", tmp.to_str().unwrap()])?;
+        clear_comment_cache(issue);
             let _ = std::fs::remove_file(&tmp);
             let mut verdict_attrs: Vec<(&str, &str)> = vec![("verdict", verdict), ("phase", phase)];
             if let Some(rc) = root_cause_attr { verdict_attrs.push(rc); }
@@ -7933,6 +8009,8 @@ fn parse_args() -> ActionArgs {
         branch: val("--branch"),
         commits: val("--commits").and_then(|s| s.parse().ok()),
         human_authorized: args.iter().any(|a| a == "--human-authorized"),
+        authorization_ref: val("--authorization-ref"),
+        force_clean: args.iter().any(|a| a == "--force-clean"),
         revises: val("--revises").and_then(|s| s.parse().ok()),
         intent: val("--intent"),
         note: val("--note"),
