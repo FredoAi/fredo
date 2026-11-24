@@ -549,3 +549,36 @@ Served commit `spec/2940 @ a4b4dfa1` (cold restart built+served the round-2 fix 
   keydown listeners; the `hotkeys-keybar*` surface is untouched.
 - **Live receipt:** `SELECT count(*) FROM telemetry_spans` = 1 (env store :55730/fredo); see the G-345
   shadowing caveat recorded in `functional.md` F-88.
+
+## #3198 no-change baseline — the launch path, its argv, and its messages
+
+> Seeded at triage for Spec #3198. The default launch path is NOT refactored (it already carries
+> no `OPENCODE_*` wiring); these rows pin what the isolation branch must not disturb. Evidence:
+> committed unit pins (static) + live corroboration where a user can observe it.
+
+- [ ] R-32 (**AC3 — the default-path child env and argv are unchanged**): run the ST-4 unit pins +
+      read `spawn_and_wire` (`applications/terminal/commands.rs:881-1084`).
+  EXPECTED: a default-path spawn sets exactly `TERM=xterm-256color`, `COLORTERM=truecolor`,
+      `TERM_PROGRAM=fredo` (`:903-905`) and appends NO argv element (`extra_args` unchanged at
+      `:900-902`); no key starting `OPENCODE_`/`OTEL_` and no `--standalone`.
+      Edge: a resumed session still appends the shipped `--session`/`--continue`; the isolation
+      branch must be reachable only through `isolation_required()`.
+- [ ] R-33 (**AC3 — `not_found_message` byte-identical**): `cargo test` the pins
+      `shell_not_found_message_names_the_shell` (`:1802`) and
+      `resolve_binary_not_found_message_names_opencode` (`:1825`).
+  EXPECTED: both green, unmodified; the OpenCode string still reads "`opencode` not found in PATH.
+      Install OpenCode from https://opencode.ai or via your package manager."
+      Edge: the new blocked message (functional F-92) is a SEPARATE constant — reusing
+      `not_found_message` for a version/launch refusal is a FAIL.
+- [ ] R-34 (**AC3 — session listing / attach / continue**): exercise the list (`--format json`),
+      attach (`--session <id>`) and continue (`--continue`) legs (functional F-91; #2935 rows
+      F-22..F-25, F-30).
+  EXPECTED: the same argv strings, the same behaviour, and no new pre-flight bound; a resumed
+      OpenCode session still re-renders its prior conversation (the #2935 sentinel control).
+      Edge: a record whose CLI session id is gone → the shipped blocked state, never a silent
+      fresh session.
+- [ ] R-35 (**AC4 — isolation cannot leak into the default path**): with NO isolation signal, a
+      launch must not set any `OPENCODE_*` key and must not pass `--standalone` (functional F-95);
+      with `FREDO_REQUIRE_ENV_ISOLATION=` blank or `0`/`false`, the same holds
+      (`dev-env.ps1:1399-1402` byte-mirror).
+      Edge: a non-default `OPENCODE_OTLP_ENDPOINT` IS a signal (isolation), by design.
