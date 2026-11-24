@@ -479,6 +479,17 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // never blocked by the (up to 120 s) model load.
             applications::llm_server::start_companion_engine_on_launch(app.handle());
 
+            // -- Login-entry migration (Spec #3193 ST-2, R-3) ------------------
+            // The retired login entry launched the headless daemon
+            // (`"<exe>" ingest`). An entry THIS product owns is rewritten in
+            // place to the current `"<exe>" --background` form, preserving the
+            // enabled state; a value owned by anything else (a different
+            // executable) is left byte-identical. SPAWNED, never awaited: the
+            // bounded `reg.exe` call can neither block nor fail startup, and a
+            // failure is logged. A no-op off Windows.
+            applications::settings::autostart::spawn_startup_migration(app.handle().clone());
+
+
             // -- Doom native engine state (Spec #3023 ST-2) --------------------
             // The native in-process Doom engine session (exactly-one) lives in
             // this state and is driven via the `applications::doom` commands
@@ -1039,9 +1050,12 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // presentation map on the terminal per-emit hot path).
             applications::settings::commands::get_control_setting,
             applications::settings::commands::save_control_setting,
-            // Per-user login auto-start backend (Spec #2992 ST-6): installs /
-            // removes the `HKCU\...\Run\FredoIngest` entry that launches
-            // `fredo ingest` at login. Registry-backed, bounded `reg.exe`.
+            // Per-user login auto-start backend (Spec #2992 ST-6; reworked by
+            // #3193 ST-2): installs / removes the
+            // `HKCU\...\Run\FredoIngest` entry that launches the resident app
+            // (`"<exe>" --background`), and migrates an owned legacy entry in
+            // place. Registry-backed, bounded `reg.exe`; the view carries
+            // `available`/`owned` so the settings surface states the truth.
             applications::settings::autostart::ingest_autostart_get,
             applications::settings::autostart::ingest_autostart_set,
             applications::terminal::commands::open_terminal_window,
