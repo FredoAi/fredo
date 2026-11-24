@@ -62,9 +62,10 @@ const STEPS: StepDef[] = [
   {
     id: 'plugin-install',
     label: 'Plugin Install',
-    // The disclosure BEFORE the click: finishing this step restarts OpenCode's
-    // background service, which ends any turn running on it (R-2e).
-    description: "Install the plugin (restarts OpenCode's background service)",
+    // The disclosure BEFORE the click: the install is a plain, hash-guarded copy
+    // — it restarts nothing and changes no configuration, so a turn running on
+    // OpenCode's shared server is never interrupted (R-2e′).
+    description: 'Install the plugin (no restart, no config change)',
     icon: LuWrench,
     actionLabel: 'Install',
     actionLabelRunning: 'Installing…',
@@ -152,11 +153,11 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'otel-config': {
-      // R-2c/R-2e: the capture point is the global Fredo plugin, so the telemetry
+      // R-2c/R-2e′: the capture point is the global Fredo plugin, so the telemetry
       // step is NOT REQUIRED rather than missing. The backend owns the wording AND
-      // the state: `error` means a restart this process knows failed (the false
-      // green this slice removes), `ok` carries the capture mechanism. Both are
-      // rendered explicitly so neither falls through by accident.
+      // the state: `ok` carries the capture mechanism, and round 3 removed the
+      // install-time restart, so `error` is no longer produced for this step —
+      // both branches stay explicit so neither falls through by accident.
       const res = await adapterBridge.invoke<{ otel?: { status: string; detail?: string } }>('check_all_setup');
       const step = res?.otel;
       if (!step) return { status: 'idle' };

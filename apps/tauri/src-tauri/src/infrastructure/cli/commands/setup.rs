@@ -1,7 +1,6 @@
 use clap::Parser;
 use std::path::{Path, PathBuf};
 
-use crate::applications::setup::commands::InstallOutcome;
 use crate::applications::setup::model_download::{
     download_missing_files, DownloadProgress, ProgressReporter, ProgressState, ReqwestTransport,
     SystemClock,
@@ -30,15 +29,11 @@ pub struct SetupArgs {
     pub add_to_path: bool,
 
     /// Install the Fredo plugin for OpenCode into the global plugins directory
-    /// (no OTEL environment is written). Restarts OpenCode's background service
-    /// when a new bundle was written, so the running server loads it.
+    /// (no OTEL environment is written). Writes one hash-guarded file and stops
+    /// there — OpenCode loads the installed plugin itself, so no part of the
+    /// install restarts its background service.
     #[arg(long)]
     pub install_plugin: bool,
-
-    /// Skip the background-service restart after installing the plugin (the
-    /// bundle is still written; the run stays successful)
-    #[arg(long)]
-    pub no_restart_service: bool,
 
     /// Download model files (GGUF + mmproj) from Hugging Face
     #[arg(long)]
@@ -146,12 +141,17 @@ fn plugin_step(version: &OpenCodeVersion, plugin_installed: bool) -> serde_json:
 /// global plugin, which is the capture point — so the honest state is `ok`, never
 /// `missing` and never a bare "configured".
 ///
-/// R-2e (ST-A3): the claim comes from the SAME module function the in-app twin
-/// uses, so a restart that failed in this process reads `error` here too and no
-/// sentence is duplicated between the surfaces.
+/// R-2e′: the detail comes from the SAME constant the in-app twin renders, so no
+/// sentence is duplicated between the surfaces. It claims the mechanism only:
+/// round 3 removed the install-time restart, so the step reports no lifecycle
+/// outcome — and has no restart failure to hide.
 fn otel_step(plugin_installed: bool) -> serde_json::Value {
-    let (status, detail) = crate::applications::setup::commands::otel_status(plugin_installed);
-    serde_json::json!({ "status": status, "detail": detail })
+    let detail = if plugin_installed {
+        crate::applications::setup::commands::OTEL_CAPTURE_MECHANISM_MSG
+    } else {
+        crate::applications::setup::commands::OTEL_NOT_REQUIRED_MSG
+    };
+    serde_json::json!({ "status": "ok", "detail": detail })
 }
 
 /// The `--check` payload.
@@ -339,47 +339,14 @@ pub async fn run_setup(args: &SetupArgs) -> anyhow::Result<()> {
     if args.install_plugin {
         let version = opencode_version::probe();
         let home = home_dir();
-        let (destination, wrote_bytes) =
+        // Gate → hash-guarded copy. The copy is the whole install (R-2e′): no
+        // child process is spawned and no service verb is run.
+        let (destination, _wrote_bytes) =
             install_gated(&version, &home).unwrap_or_else(|error| fail_step(&error));
 
         // R-2b: exactly one `[fredo] ` stdout line naming the resolved
         // destination and stating the install is global.
         println!("{}", plugin_installed_message(&destination));
-
-        // R-2e: restart the background service IFF this invocation wrote bytes AND
-        // a service is running. `--no-restart-service` is the explicit opt-out and
-        // keeps the run successful — the user asked for the write, not the restart.
-        if args.no_restart_service {
-            if wrote_bytes {
-                crate::applications::setup::commands::record_install_outcome(
-                    InstallOutcome::Unknown,
-                );
-                println!("{}", opencode_service::restart_skipped_message());
-            }
-        } else if opencode_service::restart_needed(wrote_bytes, &opencode_service::probe()) {
-            match opencode_service::restart() {
-                Ok(()) => {
-                    crate::applications::setup::commands::record_install_outcome(
-                        InstallOutcome::Restarted,
-                    );
-                    println!("{}", opencode_service::restarted_message());
-                }
-                Err(detail) => {
-                    // The copy already succeeded and stays on disk: the failure is
-                    // the capture outcome, and the CLI's failed-step channel says
-                    // so on stderr with exit 1 — never a silent success.
-                    let message = opencode_service::restart_failed_message(&detail);
-                    crate::applications::setup::commands::record_install_outcome(
-                        InstallOutcome::Failed {
-                            message: message.clone(),
-                        },
-                    );
-                    fail_step(&message);
-                }
-            }
-        } else {
-            crate::applications::setup::commands::record_install_outcome(InstallOutcome::Unknown);
-        }
     }
 
     if args.download_model {
@@ -606,41 +573,37 @@ mod tests {
         assert_eq!(
             step["status"].as_str(),
             Some("ok"),
-            "R-2c/R-2e: the telemetry step is ok (never `missing`): {step}"
+            "R-2c/R-2e′: the telemetry step is ok (never `missing`): {step}"
         );
         let detail = step["detail"].as_str().expect("a detail");
         assert!(
-            detail.contains("restarts the service"),
+            detail.contains("OpenCode loads the global plugin itself"),
             "the detail states the mechanism, never a bare `configured`: {detail}"
         );
         assert!(
-            detail.contains("background service"),
-            "the mechanism names the background service: {detail}"
+            detail.contains("no OpenCode environment variable"),
+            "the mechanism names the absent variable: {detail}"
+        );
+        assert!(
+            !detail.to_lowercase().contains("restart"),
+            "no lifecycle claim survives the removal: {detail}"
         );
     }
 
-    /// R-2e (ST-A3): the CLI twin reads the SAME claim as the in-app step — a
-    /// restart that failed in this process is an `error`, and a machine without
-    /// the plugin keeps the not-required wording.
+    /// R-2c: a machine without the plugin keeps the not-required wording — the
+    /// `plugin` step owns the missing state, and the claim is still `ok`.
     #[test]
-    fn the_otel_step_is_error_when_this_process_knows_the_restart_failed() {
-        use crate::applications::setup::commands::{otel_status_for, InstallOutcome};
-
-        let failure = crate::infrastructure::opencode_service::restart_failed_message(
-            "exit 2: the service did not respond",
-        );
-        let failed = InstallOutcome::Failed {
-            message: failure.clone(),
-        };
-        let (status, detail) = otel_status_for(&failed, true);
-        assert_eq!(status, "error");
-        assert_eq!(detail, failure);
-
-        let (status, detail) = otel_status_for(&InstallOutcome::Unknown, false);
-        assert_eq!(status, "ok");
+    fn the_otel_step_keeps_the_not_required_wording_without_a_plugin() {
+        let step = otel_step(false);
+        assert_eq!(step["status"].as_str(), Some("ok"), "{step}");
+        let detail = step["detail"].as_str().expect("a detail");
         assert!(
             detail.contains("Not required"),
             "no plugin installed keeps the not-required wording: {detail}"
+        );
+        assert!(
+            !detail.to_lowercase().contains("restart"),
+            "the not-required wording carries no lifecycle claim: {detail}"
         );
     }
 
@@ -731,13 +694,13 @@ mod tests {
         );
 
         // NFR-1: the same artifact again writes nothing — the hash guard is what
-        // lets the caller skip the restart.
+        // makes a second setup run a no-op.
         let (again, wrote_again) =
             install_artifact(&resolved, home.path()).expect("the second copy succeeds");
         assert_eq!(again, destination);
         assert!(
             !wrote_again,
-            "an unchanged re-install must report no write (and no restart)"
+            "an unchanged re-install must report no write"
         );
 
         // R-2b: ONE line, `[fredo] `-prefixed, naming the resolved destination
@@ -761,38 +724,6 @@ mod tests {
         assert!(
             !plugin_install_path(home.path()).exists(),
             "no destination file is written when the copy fails"
-        );
-    }
-
-    /// G-254: the opt-out is part of the shipped surface — the flag is declared,
-    /// it is a bare boolean (no value to learn), and its help says what it skips.
-    #[test]
-    fn the_no_restart_service_flag_is_declared_as_a_bare_boolean_with_help() {
-        use clap::CommandFactory;
-
-        let command = SetupArgs::command();
-        let arg = command
-            .get_arguments()
-            .find(|arg| arg.get_id() == "no_restart_service")
-            .expect("`--no-restart-service` is declared");
-        assert!(
-            matches!(arg.get_action(), &clap::ArgAction::SetTrue),
-            "the opt-out takes no value"
-        );
-        let help = arg
-            .get_help()
-            .map(|help| help.to_string())
-            .unwrap_or_default();
-        assert!(
-            help.contains("background-service restart"),
-            "the help states what it skips: {help}"
-        );
-
-        let rendered = SetupArgs::command().render_long_help().to_string();
-        assert!(rendered.contains("--no-restart-service"), "{rendered}");
-        assert!(
-            rendered.contains("--install-plugin"),
-            "the install flag it modifies stays documented: {rendered}"
         );
     }
 }
