@@ -64,7 +64,9 @@ Durable test suite for the Fredo OpenCode plugin emitter domain. Spec #2680 addi
 - [ ] F-30 (R-3 / AC3 — the contract is preserved, immutable): run
   `scripts/verify-contract-immutable.ps1` (copied into `.opencode/tmp/3197/`).
   - EXPECTED: `CONTRACT-DIFF-EMPTY: true`, `EXITCODE=0`, for `rtdb/attrs.rs` **and** `rtdb/ingest.rs`,
-    at the same tip the live legs ran on; quote the resolved `BASE=`.
+    at the same tip the live legs ran on; quote the resolved `BASE=<ref>@<sha>` and `HEAD=<branch>@<sha>`.
+  - TOOLING: `EXITCODE=3` / `CONTRACT-DIFF-EMPTY: unknown` is NO VERDICT (git missing, no base ref,
+    or a path absent from base and worktree) — report it as tooling, never as a PASS.
 - [ ] F-31 (R-3 / AC3 — render): the captured external session renders in Mission Monitor.
   - EXPECTED: session listed; selecting it shows the prompt marker under `── USER ──`, the model
     turn, `── TOOLS (N) ──` with the tool, and non-empty token usage; at the same instant
@@ -79,6 +81,12 @@ Durable test suite for the Fredo OpenCode plugin emitter domain. Spec #2680 addi
     `session.created`, `user_prompt`, `api_request`, `tool_result`, `session.idle` (plus
     `session.error` on the F-35 session).
 - [ ] F-34 (R-3.3): the git-commit signal is a LOG body.
+  - LEVER: `scripts/run-external-session.ps1 -WorkDir <path> -InitRepo` (round-2 parameters), where
+    `<path>` is a throwaway repo under `.opencode/tmp/3197/e2e/` (gitignored) — never the
+    spec-branch checkout. `-InitRepo` creates/`git init`s it, sets a local identity and seeds one
+    commit, so no bare `git` is needed. Paste the lever's `WORKDIR=` / `WORKDIR_GIT=` / `INITREPO=`
+    receipt lines; a run with `WORKDIR_GIT=false` commits into the ENCLOSING repo and is not valid
+    evidence for this row.
   - EXPECTED: a record with `event.name=commit` for the session that committed (marker
     `AC3C-MARK-<rnd>`). Query `telemetry_logs`, never `telemetry_spans` — there is no `fredo.commit`
     span and none should be invented.
