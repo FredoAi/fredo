@@ -45,7 +45,13 @@
       `v2.0.0`, `opencode 2.4.1`, a bare `2`, and a two-line banner + version. Does
       `parse_major()` read every shape the constant's contract claims ("first semver-ish
       token, stdout+stderr")? A shape the parser cannot read, or a wrong major, promotes to
-      F-9/F-11.
+      F-9/F-11. **Lever:** write each shape's `opencode.cmd` into its own directory under
+      `.opencode/tmp/3198/` and reach the gate with
+      `powershell -File .opencode/scripts/setup-version-shim.ps1 -Mode Cli -ShimDir <that dir>
+      -Args "--check"` — the forwarder drops the installed binaries, and the drive gate is the
+      product's own `binary_path` resolving inside your shim dir (see F-9), so a shape probe is
+      never confounded by a real `opencode.exe`. Never name a shim `opencode.exe`: a `.cmd`
+      renamed `.exe` is not a PE image and `CreateProcessW` refuses it (round-2 Fix Plan, L-1).
 - [ ] E-7: **Half-retired variable set.** With only `OPENCODE_OTLP_PROTOCOL=grpc` still set
       (the other two removed by the user), boot + install + run a session. Does setup stay
       green, and does the session still land in `telemetry_spans`? A setup that re-writes the
