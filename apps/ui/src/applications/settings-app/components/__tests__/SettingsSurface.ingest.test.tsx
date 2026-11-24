@@ -1,7 +1,12 @@
 /**
- * Spec #2992 ST-7 — the Ingest pane is reachable from the LIVE Settings shell as
- * a STATIC sidebar NavItem (not the feature `hasSettings` discovery), placed
- * after Telemetry, and renders the auto-start control.
+ * Spec #3193 ST-2 — the Background capture pane is reachable from the LIVE
+ * Settings shell as a STATIC sidebar NavItem (not the feature `hasSettings`
+ * discovery), placed after Telemetry, and renders the login-item control.
+ *
+ * The nav TESTID is deliberately unchanged (`settings-nav-ingest`) so no QA row
+ * or other surface churns; only the visible LABEL moved from `Ingest` to
+ * `Background capture`, because the entry now starts the resident application at
+ * sign-in rather than the retired `fredo ingest` daemon.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -37,14 +42,16 @@ import { SettingsSurface } from '../SettingsSurface';
 
 afterEach(cleanup);
 
-describe('#2992 ST-7 — Ingest static section wiring', () => {
-  it('shows an Ingest nav item after Telemetry and opens the auto-start pane', async () => {
+describe('#3193 ST-2 — Background capture static section wiring', () => {
+  it('shows a Background capture nav item after Telemetry and opens the pane', async () => {
     registryState.features = [];
     renderWithChakra(<SettingsSurface />);
 
     const nav = screen.getByTestId('settings-nav-ingest');
     expect(nav).toBeInTheDocument();
-    expect(nav).toHaveTextContent('Ingest');
+    expect(nav).toHaveTextContent('Background capture');
+    // The retired label must not survive anywhere in the nav.
+    expect(nav).not.toHaveTextContent('Ingest');
 
     // Placed AFTER Telemetry (the data/telemetry cluster) — DOM order.
     const telemetry = screen.getByText('Telemetry').closest('button');

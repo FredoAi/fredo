@@ -177,8 +177,10 @@ export const SettingsSurface: React.FC = () => {
         {/* Static: Apps (Spec #2955 ST-3 — per-app main/own window choice) */}
         <NavItem id="apps" label="Apps" icon={LuAppWindow} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-apps" />
 
-        {/* Static: Ingest (Spec #2992 ST-7 — login auto-start for the headless daemon) */}
-        <NavItem id="ingest" label="Ingest" icon={LuDatabase} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-ingest" />
+        {/* Static: Background capture (Spec #3193 ST-2 — the per-user login item that
+            starts the RESIDENT Fredo at sign-in; the section id and testid are
+            unchanged so no other surface or QA row churns). */}
+        <NavItem id="ingest" label="Background capture" icon={LuDatabase} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-ingest" />
 
         {/* Static: Database (Spec #3022 ST-8 — PostgreSQL store pane) */}
         <NavItem id="postgres" label="Database" icon={LuServer} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-postgres" />

@@ -5,6 +5,12 @@
 //! focuses — or rebuilds — its `main` window, and the second process exits
 //! without touching PostgreSQL, the OTLP receivers, the tray or a window.
 //!
+//! **The hand-off is MODE-AWARE (Spec #3193 ST-1).** The probe's verb used to be
+//! "show the main window", which is wrong for a login launch: a `--background`
+//! launch asks the silent [`CliCommand::Ping`] instead, so a resident instance
+//! confirms it is alive without touching (or popping) a window, while a
+//! foreground launch keeps the historical [`CliCommand::OpenMainWindow`].
+//!
 //! **The key is the ENVIRONMENT, not the application identity.** Detection is a
 //! connect on this process's own IPC pipe (`FREDO_CLI_PIPE`, resolved by
 //! [`socket_name`]), so the supported multi-environment workflow (per-env pipe,
@@ -31,8 +37,9 @@
 use std::time::Duration;
 
 use crate::infrastructure::ipc::{send_cli_command_on, socket_name, CliCommand};
+use crate::infrastructure::launch::LaunchMode;
 
-/// How long a launch waits for a resident instance to answer the focus request.
+/// How long a launch waits for a resident instance to answer the probe.
 ///
 /// The read is bounded by construction: when nothing answers within this window
 /// the process treats itself as the primary and continues a normal launch, so a
@@ -40,24 +47,39 @@ use crate::infrastructure::ipc::{send_cli_command_on, socket_name, CliCommand};
 /// long and can never block it.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// Whether another Fredo instance is already resident for this environment.
+/// The probe verb for a launch mode (Spec #3193 ST-1, R-1).
 ///
-/// `true` means a resident instance ANSWERED the focus request — it has been
-/// asked to focus or rebuild its `main` window, and this process must exit
-/// without starting a second stack. `false` means this process is the primary:
-/// nothing is listening (the normal cold start), the probe failed, or the answer
-/// did not arrive inside [`PROBE_TIMEOUT`] — every "not proven resident" case
-/// falls through to a normal launch, because refusing to start would be far
-/// worse than a redundant probe.
-pub fn probe_existing_instance() -> bool {
-    probe_existing_instance_on(&socket_name(), PROBE_TIMEOUT)
+/// * `Foreground` — [`CliCommand::OpenMainWindow`]: the historical behaviour, the
+///   second process asks the resident instance to focus (or rebuild) its window.
+/// * `Background` — [`CliCommand::Ping`]: a login launch must NOT pop a window at
+///   sign-in, so it asks a liveness question only. The handler performs no window
+///   work at all (it does not even receive an `AppHandle`), which is what keeps
+///   AC1's "no window" true while AC4's "no second process" still holds.
+fn probe_command(launch: LaunchMode) -> CliCommand {
+    match launch {
+        LaunchMode::Foreground => CliCommand::OpenMainWindow,
+        LaunchMode::Background => CliCommand::Ping,
+    }
 }
 
-/// The socket- and bound-parameterised core of [`probe_existing_instance`], so
-/// the classification is unit-pinnable without mutating process environment
-/// (`FREDO_CLI_PIPE` is process-global; injecting the pipe keeps the pins
-/// order-independent).
-fn probe_existing_instance_on(socket: &str, bound: Duration) -> bool {
+/// Whether another Fredo instance is already resident for this environment.
+///
+/// `true` means a resident instance ANSWERED the probe — it has been asked to
+/// focus or rebuild its `main` window (foreground) or merely to confirm it is
+/// resident (background), and this process must exit without starting a second
+/// stack. `false` means this process is the primary: nothing is listening (the
+/// normal cold start), the probe failed, or the answer did not arrive inside
+/// [`PROBE_TIMEOUT`] — every "not proven resident" case falls through to a normal
+/// launch, because refusing to start would be far worse than a redundant probe.
+pub fn probe_existing_instance(launch: LaunchMode) -> bool {
+    probe_existing_instance_on(&socket_name(), PROBE_TIMEOUT, launch)
+}
+
+/// The socket-, bound- and mode-parameterised core of
+/// [`probe_existing_instance`], so the classification is unit-pinnable without
+/// mutating process environment (`FREDO_CLI_PIPE` is process-global; injecting
+/// the pipe keeps the pins order-independent).
+fn probe_existing_instance_on(socket: &str, bound: Duration, launch: LaunchMode) -> bool {
     // `tauri::async_runtime::block_on` is safe before the builder: the global
     // runtime is created lazily on first use, and it is Tokio's default
     // multi-thread runtime with `enable_all()` (the timer driver included), so
@@ -70,12 +92,9 @@ fn probe_existing_instance_on(socket: &str, bound: Duration) -> bool {
     // entered and panic ("there is no reactor running") — a cold start would
     // never reach the builder. This exact failure was caught by
     // `probe_reports_primary_when_nothing_is_listening`.
+    let command = probe_command(launch);
     let outcome = tauri::async_runtime::block_on(async move {
-        tokio::time::timeout(
-            bound,
-            send_cli_command_on(socket, &CliCommand::OpenMainWindow),
-        )
-        .await
+        tokio::time::timeout(bound, send_cli_command_on(socket, &command)).await
     });
 
     match outcome {
@@ -86,10 +105,14 @@ fn probe_existing_instance_on(socket: &str, bound: Duration) -> bool {
             // second stack would be strictly worse than leaving the user with a
             // resident instance that could not focus (and, per R-2d, that
             // instance keeps its tray, so the window stays reachable).
+            let asked = match launch {
+                LaunchMode::Foreground => "open its main window",
+                LaunchMode::Background => "confirm it is resident",
+            };
             report(format!(
                 "another Fredo instance is resident for this environment and was asked to \
-                 open its main window (answered ok={}); this launch exits without starting a \
-                 second PostgreSQL/OTLP stack",
+                 {asked} (answered ok={}); this launch exits without starting a second \
+                 PostgreSQL/OTLP stack",
                 response.ok
             ));
             true
@@ -184,16 +207,113 @@ mod tests {
         assert_eq!(PROBE_TIMEOUT, Duration::from_millis(1500));
     }
 
+    /// Spec #3193 ST-1 (R-1): the probe verb is MODE-SPECIFIC. A background
+    /// launch asks the silent `Ping` — never `OpenMainWindow`, whose handler IS
+    /// `ensure_main_window` — so a login launch can never pop a window at sign-in.
+    #[test]
+    fn the_probe_command_is_mode_specific() {
+        assert!(
+            matches!(probe_command(LaunchMode::Foreground), CliCommand::OpenMainWindow),
+            "a foreground launch keeps the historical focus request"
+        );
+        assert!(
+            matches!(probe_command(LaunchMode::Background), CliCommand::Ping),
+            "a background launch must ask the silent liveness verb"
+        );
+    }
+
+    /// Spec #3193 ST-1 (R-1) — the WIRE pin: driving the real probe in background
+    /// mode against a serving listener sends exactly `{"type":"ping"}`. The
+    /// resident side answers without any window work (`ipc::dispatch_ping` takes
+    /// no `AppHandle`), so a login launch neither asks for nor gets a window.
+    #[test]
+    fn a_background_probe_sends_the_silent_ping_verb() {
+        let pipe = unique_pipe("ping");
+        let listener = bind(&pipe);
+        let (observed_tx, observed_rx) = mpsc::channel::<String>();
+
+        let server = std::thread::spawn(move || {
+            let connection = listener.accept().expect("accept the background probe");
+            let request = serve_one(connection, r#"{"ok":true,"data":{"resident":true}}"#);
+            observed_tx.send(request).expect("report the request");
+        });
+
+        let resident =
+            probe_existing_instance_on(&pipe, Duration::from_millis(1500), LaunchMode::Background);
+        assert!(
+            resident,
+            "a background probe answered by a resident instance must classify as resident"
+        );
+
+        let request = observed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the probe must send its command within 10 s");
+        assert_eq!(
+            request, r#"{"type":"ping"}"#,
+            "a background probe must send the pinned silent wire command"
+        );
+        let parsed: CliCommand =
+            serde_json::from_str(&request).expect("the wire line is a CliCommand");
+        assert!(
+            matches!(parsed, CliCommand::Ping),
+            "a background probe must never ask for window work, got {request}"
+        );
+        assert!(
+            !request.contains("open_main_window"),
+            "the foreground focus verb must never be sent by a background launch"
+        );
+
+        server.join().expect("the resident-side thread joins");
+    }
+
+    /// The foreground counterpart: the historical focus request is on the wire
+    /// unchanged (`{"type":"open_main_window"}`), so #3192's behaviour is intact.
+    #[test]
+    fn a_foreground_probe_keeps_the_open_main_window_verb() {
+        let pipe = unique_pipe("open-main-window");
+        let listener = bind(&pipe);
+        let (observed_tx, observed_rx) = mpsc::channel::<String>();
+
+        let server = std::thread::spawn(move || {
+            let connection = listener.accept().expect("accept the foreground probe");
+            let request = serve_one(
+                connection,
+                r#"{"ok":true,"data":{"recreated":false,"focused":true}}"#,
+            );
+            observed_tx.send(request).expect("report the request");
+        });
+
+        let resident =
+            probe_existing_instance_on(&pipe, Duration::from_millis(1500), LaunchMode::Foreground);
+        assert!(
+            resident,
+            "a foreground probe answered by a resident instance is resident"
+        );
+
+
+        let request = observed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the probe must send its command within 10 s");
+        assert_eq!(
+            request, r#"{"type":"open_main_window"}"#,
+            "the foreground probe wire shape must stay byte-identical to #3192"
+        );
+
+        server.join().expect("the resident-side thread joins");
+    }
+
     /// With nothing listening the probe reports "primary" — the only path a cold
     /// start takes, and the one that must never be mistaken for a resident
     /// instance.
     #[test]
     fn probe_reports_primary_when_nothing_is_listening() {
         let pipe = unique_pipe("no-listener");
-        assert!(
-            !probe_existing_instance_on(&pipe, Duration::from_millis(500)),
-            "a pipe nobody serves must classify as the primary launch"
-        );
+        for launch in [LaunchMode::Foreground, LaunchMode::Background] {
+            assert!(
+                !probe_existing_instance_on(&pipe, Duration::from_millis(500), launch),
+                "a pipe nobody serves must classify as the primary launch ({launch:?})"
+            );
+        }
     }
 
     /// A listener that accepts but never answers must NOT be mistaken for a
@@ -213,7 +333,7 @@ mod tests {
 
         let bound = Duration::from_millis(150);
         let started = Instant::now();
-        let resident = probe_existing_instance_on(&pipe, bound);
+        let resident = probe_existing_instance_on(&pipe, bound, LaunchMode::Foreground);
         let elapsed = started.elapsed();
 
         assert!(
@@ -302,7 +422,7 @@ mod tests {
             "the parent must inject the environment's pipe"
         );
         assert!(
-            probe_existing_instance(),
+            probe_existing_instance(LaunchMode::Foreground),
             "the second process must observe the resident instance through the real entry point"
         );
     }

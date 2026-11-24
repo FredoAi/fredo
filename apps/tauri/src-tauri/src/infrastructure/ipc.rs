@@ -59,6 +59,14 @@ pub enum CliCommand {
     /// command call. Carries no fields, so the wire shape is exactly
     /// `{"type":"open_main_window"}`.
     OpenMainWindow,
+    /// Confirm the resident instance is alive WITHOUT any window work (Spec #3193
+    /// ST-1, R-1). This is the verb a `--background` (login) launch sends: the
+    /// probe's foreground verb is "show the main window", which would pop a window
+    /// at sign-in. The handler ([`dispatch_ping`]) receives no `AppHandle` at all,
+    /// so it structurally cannot touch a window. Carries no fields, so the wire
+    /// shape is exactly `{"type":"ping"}` and the answer is
+    /// `{"ok":true,"data":{"resident":true}}`.
+    Ping,
     /// Export the Doom fine-tuning dataset to a CONFINED local path (Spec #3032
     /// ST-5; confined by Spec #3078 ST-3). `format` is the canonical lowercase
     /// token (`raw|sft|dpo`; default `raw`); `out` may be a plain relative path
@@ -179,6 +187,9 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
             crate::applications::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
         }
         CliCommand::OpenMainWindow => dispatch_open_main_window(app).await,
+        // Spec #3193 ST-1 (R-1) — the silent probe verb. `app` is deliberately
+        // NOT passed on: this arm can never reach a window.
+        CliCommand::Ping => dispatch_ping(),
         CliCommand::DoomExportDataset { format, out } => {
             dispatch_doom_export_dataset(format, out, app).await
         }
@@ -202,6 +213,19 @@ async fn dispatch_open_main_window(app: &AppHandle) -> CliResponse {
         }
         Err(message) => CliResponse::err(message),
     }
+}
+
+/// Handle one `CliCommand::Ping` from the IPC server (Spec #3193 ST-1, R-1): the
+/// silent liveness answer a `--background` (login) launch exchanges with the
+/// resident instance.
+///
+/// **It takes NO `AppHandle` on purpose.** The probe's foreground verb shows the
+/// main window, which is exactly what a login launch must not do, so the
+/// background verb is structurally incapable of window work: there is no app
+/// handle in scope to reach `ensure_main_window` with. No window is built,
+/// shown, focused or hidden; nothing is emitted to the webview.
+fn dispatch_ping() -> CliResponse {
+    CliResponse::ok(serde_json::json!({ "resident": true }))
 }
 
 /// Handle one `CliCommand::DoomExportDataset` from the IPC server: validate the
@@ -416,6 +440,49 @@ mod tests {
             }
             other => panic!("expected DoomExportDataset, got {other:?}"),
         }
+    }
+
+    /// Spec #3193 ST-1 (R-1): the silent probe verb serializes to the EXACT wire
+    /// shape the plan's names block binds (`{"type":"ping"}`) — a unit variant,
+    /// so no field may appear on the wire.
+    #[test]
+    fn ping_command_serializes_to_the_pinned_wire_shape() {
+        let cmd = CliCommand::Ping;
+        let json = serde_json::to_value(&cmd).expect("CliCommand serializes");
+        assert_eq!(json, serde_json::json!({ "type": "ping" }));
+        assert_eq!(
+            serde_json::to_string(&cmd).expect("serialize"),
+            r#"{"type":"ping"}"#
+        );
+    }
+
+    /// Spec #3193 ST-1 (R-1): the `Ping` handler does NOT touch a window.
+    ///
+    /// Two pins, both structural rather than aspirational:
+    /// 1. `dispatch_ping` has the signature `fn() -> CliResponse` — a compile-time
+    ///    fact. Adding an `AppHandle` parameter (the only way to reach
+    ///    `ensure_main_window`) breaks this line, so the "no window work" claim
+    ///    cannot silently rot.
+    /// 2. the answer is the pinned `{"resident": true}` data, so the probe
+    ///    classifies the instance resident without reading a window outcome.
+    #[test]
+    fn ping_dispatch_answers_resident_without_any_window_handle() {
+        fn takes_no_app_handle(_: fn() -> CliResponse) {}
+        takes_no_app_handle(dispatch_ping);
+
+        assert_eq!(
+            serde_json::to_value(dispatch_ping()).expect("CliResponse serializes"),
+            serde_json::json!({ "ok": true, "data": { "resident": true } })
+        );
+    }
+
+    /// Spec #3193 ST-1 (R-1): both probe verbs round-trip through the shared
+    /// serde contract, so a resident instance can decode either one.
+    #[test]
+    fn ping_command_round_trips() {
+        let raw = serde_json::to_string(&CliCommand::Ping).expect("serialize");
+        let decoded: CliCommand = serde_json::from_str(&raw).expect("deserialize");
+        assert!(matches!(decoded, CliCommand::Ping));
     }
 
     /// ST-3 (R-4): the second-launch wire command serializes to the EXACT tag

@@ -196,7 +196,7 @@ fn install_app_menu(app: &tauri::AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run(launch: infrastructure::launch::LaunchMode) {
     // Spec #3192 ST-3 (R-4) — the second-launch hand-off, at the very TOP of the
     // launch path, BEFORE `AppRuntime::new()` and the builder: a launch that
     // finds a resident instance asks it to focus (or rebuild) its `main` window
@@ -211,7 +211,14 @@ pub fn run() {
     // bind-or-fail OTLP receivers remain the structural one-owner guarantee for
     // the cold-launch race (both processes probing before either serves the
     // pipe); this probe is the user-experience layer only.
-    if infrastructure::single_instance::probe_existing_instance() {
+    //
+    // Spec #3193 ST-1 (R-1): the probe is MODE-AWARE. The probe's verb IS "show
+    // the main window" (`CliCommand::OpenMainWindow` → `ensure_main_window`), so a
+    // background/login launch asks the silent `CliCommand::Ping` instead — a
+    // resident instance answers it without touching a window, and the second
+    // process exits without starting a stack and without popping a window at
+    // sign-in. A foreground launch keeps the historical verb byte-for-byte.
+    if infrastructure::single_instance::probe_existing_instance(launch) {
         return;
     }
 
@@ -471,6 +478,17 @@ pub fn run() {
             // process-once and SPAWNED: `setup` returns immediately, so boot is
             // never blocked by the (up to 120 s) model load.
             applications::llm_server::start_companion_engine_on_launch(app.handle());
+
+            // -- Login-entry migration (Spec #3193 ST-2, R-3) ------------------
+            // The retired login entry launched the headless daemon
+            // (`"<exe>" ingest`). An entry THIS product owns is rewritten in
+            // place to the current `"<exe>" --background` form, preserving the
+            // enabled state; a value owned by anything else (a different
+            // executable) is left byte-identical. SPAWNED, never awaited: the
+            // bounded `reg.exe` call can neither block nor fail startup, and a
+            // failure is logged. A no-op off Windows.
+            applications::settings::autostart::spawn_startup_migration(app.handle().clone());
+
 
             // -- Doom native engine state (Spec #3023 ST-2) --------------------
             // The native in-process Doom engine session (exactly-one) lives in
@@ -1032,9 +1050,12 @@ pub fn run() {
             // presentation map on the terminal per-emit hot path).
             applications::settings::commands::get_control_setting,
             applications::settings::commands::save_control_setting,
-            // Per-user login auto-start backend (Spec #2992 ST-6): installs /
-            // removes the `HKCU\...\Run\FredoIngest` entry that launches
-            // `fredo ingest` at login. Registry-backed, bounded `reg.exe`.
+            // Per-user login auto-start backend (Spec #2992 ST-6; reworked by
+            // #3193 ST-2): installs / removes the
+            // `HKCU\...\Run\FredoIngest` entry that launches the resident app
+            // (`"<exe>" --background`), and migrates an owned legacy entry in
+            // place. Registry-backed, bounded `reg.exe`; the view carries
+            // `available`/`owned` so the settings surface states the truth.
             applications::settings::autostart::ingest_autostart_get,
             applications::settings::autostart::ingest_autostart_set,
             applications::terminal::commands::open_terminal_window,
@@ -1236,10 +1257,18 @@ pub fn run() {
             // Spec #2944 ST-2 (R-2.2): re-assert the per-env window title once
             // the app is ready, so the title lands even if the config window was
             // not yet materialized during `setup`.
+            //
+            // Spec #3193 ST-1 (R-1) — `Ready` is ALSO the launch-mode show point:
+            // the declarative window is hidden by config (`visible: false`, so a
+            // background launch never paints a frame), and a FOREGROUND launch
+            // shows it here. `setup` is deliberately not the show point — the
+            // config window may not be materialised there (see the note above),
+            // while `Ready` guarantees it. A background launch shows nothing.
             if let tauri::RunEvent::Ready = event {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&window_title);
                 }
+                infrastructure::launch::apply_launch_mode(app, launch);
             }
             // Spec #3192 ST-1 (R-1a/R-2d/R-3) — the resident exit policy. This is
             // the ONE place exit is gated; the DEFAULT close of `main` stays the

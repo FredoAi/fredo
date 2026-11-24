@@ -7,6 +7,7 @@ pub mod companion;
 pub mod env;
 pub mod application_data;
 pub mod ipc;
+pub mod launch;
 pub mod opencode_service;
 pub mod opencode_version;
 pub mod otlp;

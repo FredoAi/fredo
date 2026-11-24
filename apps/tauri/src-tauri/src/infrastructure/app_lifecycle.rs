@@ -55,6 +55,16 @@ pub const MAIN_WINDOW_MIN_SIZE: (f64, f64) = (900.0, 600.0);
 pub const MAIN_WINDOW_RESIZABLE: bool = true;
 pub const MAIN_WINDOW_MAXIMIZED: bool = true;
 
+/// Whether the declarative `main` window is visible by config (Spec #3193 ST-1).
+///
+/// `false`: `tauri.conf.json` declares `app.windows[0].visible = false`, so a
+/// launch never paints a window frame. A `--background` (login) launch leaves it
+/// hidden forever; a foreground launch shows it at `RunEvent::Ready`
+/// ([`crate::infrastructure::launch::apply_launch_mode`]), and the tray `Open`
+/// item shows it through [`ensure_main_window`]. The drift guard below asserts
+/// this constant against the real config, so the two artifacts cannot disagree.
+pub const MAIN_WINDOW_VISIBLE_BY_CONFIG: bool = false;
+
 /// What [`ensure_main_window`] did, reported to the caller (and, through the
 /// `open_main_window` command, to the webview).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -114,13 +124,30 @@ pub fn should_prevent_exit(code: Option<i32>, tray_installed: bool) -> bool {
 
 /// Focus the `main` window, rebuilding it when there is nothing left to focus.
 ///
-/// An existing window is unminimized if needed and focused — never duplicated.
-/// A focus error means the handle is unusable, so it is destroyed and rebuilt
-/// rather than left unreachable. A rebuild failure is logged at
+/// An existing window is shown if it is hidden (Spec #3193 ST-1: the config
+/// window starts hidden, and unminimize/focus alone never reveals a hidden
+/// window — the show leg is what makes the tray `Open` item work on a
+/// `--background` instance), unminimized if needed, and focused — never
+/// duplicated. A focus error means the handle is unusable, so it is destroyed
+/// and rebuilt rather than left unreachable. A rebuild failure is logged at
 /// `fredo::app_lifecycle` and returned as `Err` — never a dialog: there may be no
 /// window at all to host one. The next call simply retries.
 pub fn ensure_main_window(app: &AppHandle) -> Result<MainWindowOutcome, String> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        // Spec #3193 ST-1 (R-1): a background launch's `main` window exists but
+        // is HIDDEN by config, and `unminimize`/`set_focus` do not reveal a
+        // hidden window — without this leg the tray `Open` item would focus an
+        // invisible window and the user could never reach it.
+        if !window.is_visible().unwrap_or(false) {
+            if let Err(error) = window.show() {
+                tracing::warn!(
+                    target: "fredo::app_lifecycle",
+                    error = %error,
+                    "could not show the hidden main window"
+                );
+            }
+        }
+
         if window.is_minimized().unwrap_or(false) {
             if let Err(error) = window.unminimize() {
                 tracing::warn!(
@@ -189,6 +216,11 @@ fn build_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     .min_inner_size(MAIN_WINDOW_MIN_SIZE.0, MAIN_WINDOW_MIN_SIZE.1)
     .resizable(MAIN_WINDOW_RESIZABLE)
     .maximized(MAIN_WINDOW_MAXIMIZED)
+    // Spec #3193 ST-1: a REBUILT window is deliberately visible — the rebuild is
+    // only ever triggered by a user asking for the window (tray `Open`, a second
+    // foreground launch, `open_main_window`). The config's `visible: false` only
+    // governs the cold-launch window.
+    .visible(true)
     .build();
 
     match built {
@@ -238,6 +270,8 @@ mod tests {
         assert_eq!(MAIN_WINDOW_MIN_SIZE, (900.0, 600.0));
         assert!(MAIN_WINDOW_RESIZABLE);
         assert!(MAIN_WINDOW_MAXIMIZED);
+        // Spec #3193 ST-1 (R-1): the cold-launch window is HIDDEN by config.
+        assert!(!MAIN_WINDOW_VISIBLE_BY_CONFIG);
     }
 
     /// Drift guard: the rebuilt window and the cold-launch window are two
@@ -301,6 +335,15 @@ mod tests {
             window["url"].as_str().unwrap_or(MAIN_WINDOW_URL),
             MAIN_WINDOW_URL,
             "app.windows[0].url disagrees with MAIN_WINDOW_URL"
+        );
+        // Spec #3193 ST-1 — cold-launch visibility. Tauri's default is `true`,
+        // so an ABSENT key must fail this guard too: only an explicit
+        // `"visible": false` can keep a background launch from painting a frame.
+        assert_eq!(
+            window["visible"].as_bool().unwrap_or(true),
+            MAIN_WINDOW_VISIBLE_BY_CONFIG,
+            "app.windows[0].visible must be an explicit `false` (the cold-launch window is \
+             hidden so a --background launch never flashes)"
         );
     }
 
