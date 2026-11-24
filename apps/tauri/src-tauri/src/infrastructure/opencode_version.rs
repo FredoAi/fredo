@@ -39,7 +39,11 @@ pub const MIN_SUPPORTED_OPENCODE_MAJOR: u32 = 2;
 pub const OPENCODE_VERSION_ARG: &str = "--version";
 
 /// The supported upgrade path printed in the gate-failure message.
-pub const OPENCODE_UPGRADE_COMMAND: &str = "opencode upgrade --major";
+///
+/// **Bare, never a flag.** The installed runtime's `opencode upgrade --help`
+/// takes a POSITIONAL target plus `--method` — there is no `--major` flag
+/// (ST-1 probe), so naming one would print a command the runtime rejects.
+pub const OPENCODE_UPGRADE_COMMAND: &str = "opencode upgrade";
 
 /// The install/upgrade reference the setup surfaces offer.
 pub const OPENCODE_INSTALL_DOCS_URL: &str = "https://opencode.ai/docs/install";
@@ -69,7 +73,7 @@ pub const FREDO_GLOBAL_PLUGINS_SUBDIR: [&str; 3] = [".config", "opencode", "plug
 /// binary that exists and runs.
 pub const OPENCODE_VERSION_UNSUPPORTED_MSG: &str =
     "OpenCode {found} is installed, but Fredo requires OpenCode {min}.x. \
-     Run `opencode upgrade --major`, then re-run `fredo setup --check`.";
+     Run `{upgrade}`, then re-run `fredo setup --check`.";
 
 /// R-1b: the probe could not establish a version. Names the probe's own failure
 /// and the diagnostic command — never degrades to "not installed", never a
@@ -419,7 +423,11 @@ pub fn version_message(version: &OpenCodeVersion) -> Option<String> {
             let min = MIN_SUPPORTED_OPENCODE_MAJOR.to_string();
             Some(render(
                 OPENCODE_VERSION_UNSUPPORTED_MSG,
-                &[("{found}", raw.as_str()), ("{min}", min.as_str())],
+                &[
+                    ("{found}", raw.as_str()),
+                    ("{min}", min.as_str()),
+                    ("{upgrade}", OPENCODE_UPGRADE_COMMAND),
+                ],
             ))
         }
         OpenCodeVersion::Undetermined { detail } => Some(render(
@@ -653,6 +661,22 @@ mod tests {
         // framing must never appear here.
         assert!(!message.contains("not installed"));
         assert!(!message.contains(OPENCODE_INSTALL_DOCS_URL));
+        // The runtime rejects `--major` (ST-1 probe: `opencode upgrade --help`
+        // takes a positional target + `--method`), so the copy must be bare.
+        assert!(
+            !message.contains("--major"),
+            "the message must never name a flag the runtime rejects: {message}"
+        );
+    }
+
+    #[test]
+    fn the_upgrade_command_is_the_bare_verb_the_runtime_accepts() {
+        // The selector is a POSITIONAL target in `opencode upgrade --help`, so
+        // the one command constant carries no flag at all — every message that
+        // renders it follows, which is why the flag can never reappear in copy.
+        assert_eq!(OPENCODE_UPGRADE_COMMAND, "opencode upgrade");
+        assert!(!OPENCODE_UPGRADE_COMMAND.contains("--"));
+        assert!(!OPENCODE_VERSION_UNSUPPORTED_MSG.contains("--major"));
     }
 
     #[test]
