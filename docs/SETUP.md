@@ -90,9 +90,13 @@ Voice input is a **shipped, opt-in** capability (default off): **Settings → Co
 
 ## OTLP Configuration
 
-Fredo includes local OTLP receivers for agent telemetry. The Fredo OpenCode plugin captures **by default** — an OpenCode session sends OTLP data with no environment variable set.
+Fredo includes local OTLP receivers for agent telemetry. **OpenCode 2 is the supported runtime** — the minimum major the setup gate enforces. The Fredo OpenCode plugin captures **by default** — an OpenCode session sends OTLP data with no environment variable set.
 
 ### OpenCode
+
+Fredo supports **OpenCode 2**. Setup detects the installed version (`opencode --version`) and gates on it: on a 1.x install the OpenCode step names the version it found and tells you to run `opencode upgrade`, then re-run `fredo setup --check` — and installs nothing. Upgrading is the bare `opencode upgrade`; the exact selector for landing on 2.x is in the [install guide](https://opencode.ai/docs/install).
+
+On OpenCode 2 setup installs the Fredo plugin **once, globally**, into the global plugins directory (`~/.config/opencode/plugins/fredo.js`): every OpenCode client on the machine loads it, so the plugin is never installed per repository or per session.
 
 Capture is on unless you opt out. The default target is `http://localhost:4317` over gRPC; set the endpoint/protocol only when you need a non-default receiver.
 
@@ -114,6 +118,8 @@ export FREDO_TELEMETRY=0
 
 `FREDO_TELEMETRY=0` (also `false` / `off`, case-insensitive) disables capture; unset or any other value leaves it on. `OPENCODE_ENABLE_TELEMETRY=0`/`false` also disables, and its absence no longer disables anything. Setting `enabled: false` in the plugin's `options` in `opencode.json(c)` takes precedence over both environment variables.
 
+Fredo Terminal launches OpenCode against its **shared background service** by default, and that process loads the global plugin — that is the capture point, so the default path wires no per-session OTLP receiver and exports no variable. `--standalone` starts a private server instead of the background service and is the **isolation-only** lever: Fredo passes it only when the environment declares isolation (`FREDO_REQUIRE_ENV_ISOLATION`, or a non-default `OPENCODE_OTLP_ENDPOINT`), and on that path it also pins the child's `OPENCODE_ENABLE_TELEMETRY` / `OPENCODE_OTLP_PROTOCOL` / `OPENCODE_OTLP_ENDPOINT` to that environment's own receiver. It is never the default.
+
 ### Using the Setup Wizard
 
 Fredo no longer opens the wizard automatically on startup. Reach it through either explicit entry:
@@ -121,7 +127,7 @@ Fredo no longer opens the wizard automatically on startup. Reach it through eith
 - **Launcher tile** — from the desktop/launcher, select the **Fredo Setup** tile.
 - **Settings** — open **Settings → Fredo Setup**.
 
-Either entry opens the same wizard, which detects OpenCode and configures OTLP.
+Either entry opens the same wizard. It probes the installed OpenCode version and gates on it: on 1.x the OpenCode step shows the version it found plus the `opencode upgrade` remedy and installs nothing; on OpenCode 2 it installs the Fredo plugin into the global plugins directory and prints one `[fredo] … (global …)` line naming the resolved file. The telemetry step reports **not required** — capture comes from that plugin, so no OTLP environment variable is written or needed.
 
 ## Development
 
@@ -268,3 +274,5 @@ The Doom game window (Spec #2968) runs a **native, in-process, pure-Rust Doom en
 The Tauri app does not require environment variables for basic operation. For connecting to external services (Azure DevOps, Kubernetes, Jira), configure credentials via the Settings panel in the app UI.
 
 For OTLP receivers, the endpoints default to `127.0.0.1:4317` (gRPC) and `127.0.0.1:4318` (HTTP) and are resolved at runtime from `FREDO_INGEST_GRPC_PORT` / `FREDO_INGEST_HTTP_PORT` (the headless `fredo ingest` `--grpc-port`/`--http-port` flags share those names). An isolated local test environment (`dev-env.ps1 -EnvId <id> -EnvSlot <n>`, Spec #2944) binds its own ports for the app, MCP bridge, OTLP receivers, and CLI pipe; slot 0 keeps these defaults.
+
+OpenCode telemetry needs no variable: the Fredo plugin is installed into the global plugins directory and captures by default (`FREDO_TELEMETRY=0`/`false`/`off` opts out, and `enabled: false` in the plugin's `options` takes precedence). An isolated environment (`FREDO_REQUIRE_ENV_ISOLATION`, or a non-default `OPENCODE_OTLP_ENDPOINT`) is the only case that pins `OPENCODE_ENABLE_TELEMETRY` / `OPENCODE_OTLP_PROTOCOL` / `OPENCODE_OTLP_ENDPOINT` on the spawned session — and the only case Fredo passes `--standalone`. The default path writes none of them.
