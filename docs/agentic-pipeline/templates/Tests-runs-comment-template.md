@@ -7,13 +7,14 @@
      now accepts that header on ANY line (BOM/leading-whitespace tolerant — C3). Prefer writing
      no heading; a heading written lower in the body is tolerated, but the `Verdict:` line is
      still mandatory. Stamp `Tested commit:` with the merged spec tip you actually tested so the
-     machine can reject a verdict written against a superseded head (B5). The value is spliced
-     verbatim into that comparison, so the line carries the SHA ALONE — a trailing parenthetical
-     ("(served tree …, env …, PR …)") makes the guard read a non-SHA and blocks the transition on
-     a sound verdict; put that context on the next line (#3198 round 2). -->
+     machine can reject a verdict written against a superseded head (B5). The machine reads the
+     LEADING whitespace-delimited token of that line and trims backticks, so trailing context is
+     tolerated — but only a bare 7-40 hex SHA is accepted, and a malformed leading token is
+     refused while naming the value it recognised (#3198 round 2 was the splice era; the
+     leading-token rule retired it). Put the SHA first and any context on the next line. -->
 
 Verdict: **PASS** (N/N ACs)
-Tested commit: <bare sha of the spec tip you tested — full or 7-char, nothing else on the line>
+Tested commit: <bare sha of the spec tip you tested — 7-40 hex characters; the machine reads the LEADING token, so put any context on the next line>
 
 ## Per-AC results
 
