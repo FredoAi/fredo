@@ -7,11 +7,13 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
 `settings/` on overlapping surfaces.
 
 > **Verification policy: LIVE** — this is a runtime/ingest feature. Cluster ownership, OTLP
-> delivery, bounded shutdown, lock conflict/attach, the login entry, and the Mission-Monitor
-> replay are provable only by observing a running artifact. Every row's receipt must reference a
-> `telemetry_spans` live read (PG-backed via the managed `psql`; see Required test data). A
-> static-only PASS is a FALSE PASS. The CLI `emit` path routes to the RTDB row pipeline and
-> writes **no** spans (G-256) — it is not a span producer.
+> delivery, bounded shutdown, lock conflict/attach, the Mission-Monitor replay and — until #3193 —
+> the login entry are provable only by observing a running artifact. Every row's receipt must
+> reference a `telemetry_spans` live read (PG-backed via the managed `psql`; see Required test
+> data). A static-only PASS is a FALSE PASS. The CLI `emit` path routes to the RTDB row pipeline and
+> writes **no** spans (G-256) — it is not a span producer. **The login-entry contract moved to
+> `.opencode/tests/background-capture/` (#3193): the entry now launches `<exe> --background`, not
+> `"<exe>" ingest`.**
 
 > **G-263 SAFETY (named failure mode): the #2948 ~11 h `pg.stop()` hang.** NEVER run an unbounded
 > binary. Every start/stop/readiness/teardown wait MUST be bounded (finite timeout, hard-kill
@@ -78,11 +80,16 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
 
 - [ ] **F-6 (R-3) — GUI cluster-start fails fast, then ATTACHES.**
   While the daemon holds the lock, boot the GUI (its own cluster start); read
-  `pg_supervisor_status` / `settings-ingest-daemon-status`; inventory postmasters.
+  `pg_supervisor_status`; inventory postmasters.
   **Expected:** the GUI's own cluster start fails fast on the lock with a clear message and starts
   no postmaster; with a live descriptor present the GUI attaches to the headless-owned cluster
   (state `attached`, `attached:true`) using the same data dir + credential, and neither starts nor
   later stops a postmaster (`stop_on_exit` no-ops).
+  **Superseded clause (#3193):** this row previously ALSO read the settings surface's
+  `settings-ingest-daemon-status` element. That element is REMOVED by #3193 (the Ingest pane became
+  Settings -> **Background capture**; capture liveness is out of #3193's scope and is no longer
+  rendered there). The attach state is proven from `pg_supervisor_status` alone; do NOT assert
+  `settings-ingest-daemon-status`.
   **Edge:** attach while the daemon is shutting down; GUI already running before the daemon starts
   (no attach expected); descriptor present but port unreachable.
 
@@ -94,19 +101,26 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
   **Edge:** malformed JSON; pid reused by another image; bounded TCP connect times out (≤500 ms);
   descriptor absent entirely.
 
-- [ ] **F-8 (R-4) — autostart toggle installs/removes the login entry.**
-  From the no-daemon/no-registry-entry state, open Settings → Ingest and confirm `Off` + `Not
-  running` (G-265); drive the toggle on, read the registry, then off; read the registry again;
-  check the KV + DOM status.
+- [ ] **F-8 (R-4) — autostart toggle installs/removes the CURRENT login entry.**
+  From the no-daemon/no-registry-entry state, open Settings -> **Background capture** and confirm
+  `Background capture: Off` (G-265); drive the toggle on, read the registry, then off; read the
+  registry again; check the KV + DOM status.
   **Expected:** enabling installs `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\FredoIngest`
-  = `"<exe>" ingest`; disabling removes it; the KV key `ingest.autostart` mirrors the effective
-  state; the surface renders `settings-nav-ingest`, `settings-ingest-autostart-section`,
-  `settings-ingest-autostart-toggle`, `settings-ingest-autostart-status`, and
-  `settings-ingest-daemon-status`, and reflects the real registry state on mount; while enabled
-  `entry`/`command` are always populated (never blank).
+  = `"<exe>" --background` (**NOT** the pre-#3193 `"<exe>" ingest` form - #3193 changed the login
+  entry so it launches the resident application, not the headless daemon); disabling removes it;
+  the KV key `ingest.autostart` mirrors the effective state; the surface renders
+  `settings-nav-ingest`, `settings-ingest-autostart-section`, `settings-ingest-autostart-toggle`,
+  `settings-ingest-autostart-status` and `settings-ingest-autostart-timing`, and reflects the real
+  registry state on mount. The backend view still carries `entry`/`command` (assert them by
+  `invoke('ingest_autostart_get')`, NOT from the DOM - the `Entry:`/`Command:` rows were removed
+  from the surface by #3193).
+  **Owned by `.opencode/tests/background-capture/functional.md` F-2/F-3 in full** (exact bytes,
+  migration, foreign preservation, no-second-process). This row keeps the daemon-flavoured
+  regression leg only: the daemon's own suite must not still teach the retired `ingest` login
+  command.
   **Edge:** disable when absent (idempotent, no error); enable twice; exe path containing spaces
-  (quoting); `reg.exe` invocation bounded ≤10 s; a forced `reg.exe` failure shows the persistent
-  error copy `Could not update login auto-start: {message}` and reverts the switch.
+  (quoting); `reg.exe` invocation bounded <=10 s; a seeded FOREIGN value is NOT deleted by a
+  disable (#3193 R-3) - see background-capture F-3d.
 
 - [ ] **F-9 (R-5) — no one-shot markers, no SQLite data store.**
   Snapshot the control-plane markers before/after a daemon session; grep the daemon path for
@@ -179,7 +193,8 @@ closed. Seeded at issue **#2992**. Inherits `.opencode/tests/persistence-spike/`
 
 PASS = F-1…F-14 all green **and** N-1…N-6 hold. FAIL = any unbounded wait, a started
 `postgres.exe` surviving normal/error/panic teardown, a never-cleared lock/descriptor, a second
-postmaster under R-3, a registry entry that survives disable, a backfill-path `telemetry_spans`
+postmaster under R-3, a login entry this product OWNS that survives disable (#3193 R-3: a FOREIGN
+value surviving disable is CORRECT - see background-capture F-3d), a backfill-path `telemetry_spans`
 write, or a static-only receipt for a live-policy row. Every UNVERIFIED row carries a named,
 actionable blocker (G-053).
 
