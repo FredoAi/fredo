@@ -215,6 +215,127 @@ impl EnvConfig {
     }
 }
 
+// ── Isolation predicate (Spec #3198 ST-1; Names Block — BINDING) ─────────────
+//
+// The capture point is the shared background service, so the DEFAULT path
+// needs no receiver wiring. An environment opts OUT (`--standalone` + an
+// explicit endpoint pin) when it either declares isolation or points at an OTLP
+// endpoint that is not THIS instance's own receiver.
+//
+// **The comparison target is this instance's own `ingest_grpc_port`, never the
+// literal `4317`** (G-452): env mode injects
+// `OPENCODE_OTLP_ENDPOINT=http://localhost:$OtlpGrpcPort`
+// (`.opencode/scripts/dev-env.ps1:743-745`, slot ports `:1508-1517`), so every
+// slot instance is non-4317 by construction and a literal comparison would
+// classify it as isolated — diverting the default path on every env. Slot 0
+// still resolves to `DEFAULT_INGEST_GRPC_PORT`, which stays unchanged as the
+// resolver default.
+
+/// The opt-out switch. A non-blank value other than `0`/`false` means "this
+/// instance keeps its own OTLP receiver" — a byte-mirror of
+/// `dev-env.ps1:1397-1402`, which only ever READS it (it never exports it).
+pub const REQUIRE_ENV_ISOLATION_ENV: &str = "FREDO_REQUIRE_ENV_ISOLATION";
+
+/// The endpoint OpenCode's plugin reads
+/// (`apps/opencode-plugin/src/config.ts`). Compared against this instance's own
+/// receiver endpoint, never the literal `4317`.
+pub const OPENCODE_OTLP_ENDPOINT_ENV: &str = "OPENCODE_OTLP_ENDPOINT";
+
+/// The endpoint a NON-isolated (shared-service) session points at: this
+/// instance's own receiver.
+pub fn shared_endpoint_for(own_ingest_grpc_port: u16) -> String {
+    format!("http://localhost:{own_ingest_grpc_port}")
+}
+
+/// Pure: `true` iff `raw` is present, non-blank, and not `0`/`false`.
+pub fn flag_on(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        Some(value) if !value.is_empty() => {
+            !value.eq_ignore_ascii_case("0") && !value.eq_ignore_ascii_case("false")
+        }
+        _ => false,
+    }
+}
+
+/// Pure isolation decision for an injected flag + endpoint (G-222).
+///
+/// Precedence (G-452): the FLAG first (authoritative, short-circuits), the
+/// ENDPOINT second. An absent or blank endpoint is UNSET — never "isolated",
+/// never "shared"; it falls through to the default path.
+pub fn isolation_required_with(
+    flag: Option<&str>,
+    endpoint: Option<&str>,
+    own_ingest_grpc_port: u16,
+) -> bool {
+    if flag_on(flag) {
+        return true;
+    }
+    match (
+        endpoint.and_then(normalize_endpoint),
+        normalize_endpoint(&shared_endpoint_for(own_ingest_grpc_port)),
+    ) {
+        (Some(configured), Some(own)) => configured != own,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// The production wrapper over the live process environment.
+pub fn isolation_required(env: &EnvConfig) -> bool {
+    let flag = std::env::var(REQUIRE_ENV_ISOLATION_ENV).ok();
+    let endpoint = std::env::var(OPENCODE_OTLP_ENDPOINT_ENV).ok();
+    isolation_required_with(flag.as_deref(), endpoint.as_deref(), env.ingest_grpc_port)
+}
+
+/// Normalize an OTLP endpoint for comparison: one trailing `/` stripped, scheme
+/// and host lowercased, `127.0.0.1` ≡ `localhost`, and an `http(s)` URL without
+/// an explicit port takes its implied port (http ⇒ 4317, https ⇒ 443).
+///
+/// Returns `None` for a blank value or an unusable scheme — an unparseable
+/// endpoint is treated as unset by [`isolation_required_with`].
+fn normalize_endpoint(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let trimmed = trimmed.strip_suffix('/').unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let (scheme, rest) = match lower.split_once("://") {
+        Some((scheme, rest)) => (scheme.to_string(), rest.to_string()),
+        None => ("http".to_string(), lower),
+    };
+    let implied_port: u16 = match scheme.as_str() {
+        "http" => DEFAULT_INGEST_GRPC_PORT,
+        "https" => 443,
+        _ => return None,
+    };
+
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return None;
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if is_port(port) => (host.to_string(), port.parse::<u16>().ok()?),
+        _ => (authority.to_string(), implied_port),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let host = if host == "127.0.0.1" {
+        "localhost".to_string()
+    } else {
+        host
+    };
+
+    Some(format!("{scheme}://{host}:{port}"))
+}
+
+fn is_port(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +481,113 @@ mod tests {
     fn from_env_resolves_a_non_blank_pipe() {
         let env = EnvConfig::from_env();
         assert!(!env.cli_pipe.trim().is_empty());
+    }
+
+    // ── #3198 ST-1: the isolation predicate truth table ─────────────────────
+
+    /// The flag is present and not blank/`0`/`false`.
+    #[test]
+    fn the_isolation_flag_is_on_for_any_truthy_value() {
+        assert!(flag_on(Some("1")));
+        assert!(flag_on(Some("true")));
+        assert!(flag_on(Some("yes")));
+        assert!(flag_on(Some(" 1 ")));
+    }
+
+    /// The flag is unset for absent, blank, `0` and `false`
+    /// (byte-mirror of `dev-env.ps1:1399-1402`).
+    #[test]
+    fn the_isolation_flag_is_off_when_unset_blank_or_false() {
+        assert!(!flag_on(None));
+        assert!(!flag_on(Some("")));
+        assert!(!flag_on(Some("   ")));
+        assert!(!flag_on(Some("0")));
+        assert!(!flag_on(Some("FALSE")));
+    }
+
+    /// Flag set → isolated regardless of the endpoint (and short-circuits it).
+    #[test]
+    fn a_set_flag_is_isolated_even_at_this_instances_own_endpoint() {
+        assert!(isolation_required_with(
+            Some("1"),
+            Some(&shared_endpoint_for(DEFAULT_INGEST_GRPC_PORT)),
+            DEFAULT_INGEST_GRPC_PORT
+        ));
+        assert!(isolation_required_with(Some("1"), None, DEFAULT_INGEST_GRPC_PORT));
+    }
+
+    /// Endpoint ≠ this instance's own port → isolated.
+    #[test]
+    fn a_foreign_endpoint_is_isolated() {
+        assert!(isolation_required_with(
+            None,
+            Some("http://localhost:16002"),
+            DEFAULT_INGEST_GRPC_PORT
+        ));
+        assert!(isolation_required_with(None, Some("http://localhost:4318"), 4317));
+    }
+
+    /// Endpoint == this instance's own port → the shared default path.
+    #[test]
+    fn this_instances_own_endpoint_is_not_isolated() {
+        assert!(!isolation_required_with(
+            None,
+            Some("http://localhost:4317"),
+            DEFAULT_INGEST_GRPC_PORT
+        ));
+        assert!(!isolation_required_with(None, Some("http://localhost:16002"), 16002));
+    }
+
+    /// **G-452:** a slot instance (own port `16002`) whose ambient endpoint IS
+    /// its own receiver must NOT read as isolated — the literal-`4317`
+    /// comparison would divert the default path on every env-mode instance.
+    #[test]
+    fn a_slot_instance_at_its_own_endpoint_is_not_isolated() {
+        let own = 16002u16;
+        assert_ne!(own, DEFAULT_INGEST_GRPC_PORT);
+        assert!(!isolation_required_with(
+            None,
+            Some(&shared_endpoint_for(own)),
+            own
+        ));
+    }
+
+    /// An absent or blank endpoint is UNSET — never isolated, never shared.
+    #[test]
+    fn an_absent_or_blank_endpoint_is_unset() {
+        assert!(!isolation_required_with(None, None, DEFAULT_INGEST_GRPC_PORT));
+        assert!(!isolation_required_with(None, Some(""), DEFAULT_INGEST_GRPC_PORT));
+        assert!(!isolation_required_with(None, Some("   "), DEFAULT_INGEST_GRPC_PORT));
+    }
+
+    /// Equivalences: case, one trailing `/`, `127.0.0.1` ≡ `localhost`, and an
+    /// `http` URL without a port taking the implied 4317.
+    #[test]
+    fn endpoint_equivalences_do_not_read_as_isolated() {
+        for endpoint in [
+            "HTTP://LOCALHOST:4317",
+            "http://localhost:4317/",
+            "http://127.0.0.1:4317",
+            "http://localhost",
+        ] {
+            assert!(
+                !isolation_required_with(None, Some(endpoint), DEFAULT_INGEST_GRPC_PORT),
+                "endpoint read as isolated: {endpoint}"
+            );
+        }
+    }
+
+    /// The shared endpoint renders this instance's own receiver.
+    #[test]
+    fn the_shared_endpoint_names_this_instances_port() {
+        assert_eq!(shared_endpoint_for(4317), "http://localhost:4317");
+        assert_eq!(shared_endpoint_for(16002), "http://localhost:16002");
+    }
+
+    /// The two env-var names are the binding ones (Names Block).
+    #[test]
+    fn the_isolation_env_names_are_pinned() {
+        assert_eq!(REQUIRE_ENV_ISOLATION_ENV, "FREDO_REQUIRE_ENV_ISOLATION");
+        assert_eq!(OPENCODE_OTLP_ENDPOINT_ENV, "OPENCODE_OTLP_ENDPOINT");
     }
 }

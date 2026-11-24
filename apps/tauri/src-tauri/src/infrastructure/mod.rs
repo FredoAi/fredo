@@ -6,6 +6,7 @@ pub mod companion;
 pub mod env;
 pub mod application_data;
 pub mod ipc;
+pub mod opencode_version;
 pub mod otlp;
 pub mod rtdb;
 pub mod storage;
