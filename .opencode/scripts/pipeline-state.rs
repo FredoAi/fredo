@@ -292,6 +292,135 @@ fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
     run_with_timeout(cmd, &format!("{} {}", bin, args.join(" ")))
 }
 
+// ── Worktree identity (#3197) ────────────────────────────────────────────────
+//
+// A worktree action must reason about ONE tree, and must be able to prove which
+// tree it is. #3197: `create-worktree` printed "WORKTREE CREATED" while nothing
+// was on disk (no `.git` marker, no registration, `git rev-parse --show-toplevel`
+// from inside it returned the MAIN checkout), so the developer's commits landed in
+// the shared root checkout — and `remove-worktree` then refused because it had
+// evaluated the MAIN checkout's dirt (another agent's in-flight edits). The root
+// cause class is the same for both: the machine trusted an exit code and never
+// asked git WHICH tree the path belongs to. `git -C <path>` on a plain directory
+// answers for the ENCLOSING repo, so an unverified path silently aliases the
+// shared checkout. Never trust exit status alone; resolve the root and compare.
+
+/// Normalize a path for identity comparison: absolute, `/`-separated, no
+/// `\\?\` verbatim prefix, no trailing slash, case-folded on Windows.
+fn norm_path(p: &str) -> String {
+    let abs = std::fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().to_string())
+        .unwrap_or_else(|_| p.to_string());
+    let s = abs.replace('\\', "/");
+    let s = s.strip_prefix("//?/").map(|x| x.to_string()).unwrap_or(s);
+    let s = s.trim_end_matches('/').trim().to_string();
+    if cfg!(windows) { s.to_lowercase() } else { s }
+}
+
+/// The checkout root git resolves FROM `path` (`git -C <path> rev-parse
+/// --show-toplevel`). For a plain directory inside a repo this is the ENCLOSING
+/// checkout — which is exactly why it must never be used as "the worktree's state"
+/// without an identity comparison.
+fn git_toplevel(path: &str) -> Option<String> {
+    run_cmd("git", &["-C", path, "rev-parse", "--show-toplevel"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// True only when `path` is a worktree ROOT: it exists, carries a `.git` marker
+/// (file for a linked worktree, dir for a full checkout), and git resolves its
+/// toplevel to that same path. A plain directory under the repo fails the identity
+/// comparison (it resolves to the enclosing checkout) — the #3197 false positive.
+fn is_worktree_root(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    if !p.is_dir() || !p.join(".git").exists() {
+        return false;
+    }
+    match git_toplevel(path) {
+        Some(t) => norm_path(&t) == norm_path(path),
+        None => false,
+    }
+}
+
+/// True when `path` lives under the pipeline's own `.worktrees/` root — the only
+/// directory whose leftover debris the machine may sweep without a ceremony.
+fn under_worktree_root(path: &str) -> bool {
+    let root = match project_root() {
+        Ok(r) => r.join(".worktrees"),
+        Err(_) => return false,
+    };
+    let base = norm_path(&root.to_string_lossy());
+    let target = norm_path(path);
+    target == base || target.starts_with(&format!("{}/", base))
+}
+
+/// Resolve `--worktree-path` (or the default) against the REPO ROOT when relative.
+/// A cwd-relative path is how a worktree can be created somewhere the developer
+/// will never `cd` into; anchoring the argument makes create/verify/remove agree
+/// no matter which directory the action was invoked from (#3197).
+fn resolve_worktree_path(given: &str) -> anyhow::Result<String> {
+    let p = std::path::Path::new(given);
+    if p.is_absolute() {
+        return Ok(given.to_string());
+    }
+    let root = project_root()?;
+    Ok(root.join(p).to_string_lossy().to_string())
+}
+
+/// Post-condition gate for `create-worktree`: git exiting 0 is NOT evidence that a
+/// usable worktree exists. Verify the directory, its `.git` marker, and that git
+/// resolves the checkout root of that path to that path. Returns the failure
+/// reason so the caller can surface git's own words and refuse to record success.
+fn verify_worktree(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if !p.is_dir() {
+        return Err(format!("no directory exists at {} — git reported success but created nothing", path));
+    }
+    if !p.join(".git").exists() {
+        return Err(format!("{} carries no .git marker, so it is not a linked worktree of this repo", path));
+    }
+    match git_toplevel(path) {
+        Some(t) if norm_path(&t) == norm_path(path) => Ok(()),
+        Some(t) => Err(format!(
+            "git resolves the checkout root for {} to {} — that is the ENCLOSING checkout, not the worktree",
+            path, t
+        )),
+        None => Err(format!("git cannot resolve a checkout root from {} — it is not a usable worktree", path)),
+    }
+}
+
+/// Surface a worktree post-condition failure the way an agent can act on it:
+/// a non-zero exit (the caller bails) carrying a `BLOCKED:` line plus git's own
+/// words, and a `failed` metric event so the record never claims a success that
+/// did not happen (#3197: the event said success while nothing was on disk).
+fn report_worktree_failure(issue: u32, a: &ActionArgs, action: &str, path: &str, reason: &str) -> anyhow::Result<()> {
+    let phase = current_phase(issue).map(|p| p.as_str()).unwrap_or("unknown");
+    let msg = format!("BLOCKED: {} at {} — {}", action, path, reason);
+    eprintln!("{}", msg);
+    append_event_attrs(issue, action, &a.actor, phase, "failed", &msg, &[("worktree_path", path)])?;
+    Ok(())
+}
+
+/// #3197: a worktree action must never be satisfied by the OFFLINE SIMULATOR. In a
+/// real developer session a stray `FREDO_MOCK_GH=1` would let `mock_git` "succeed"
+/// while nothing usable exists on disk — the most likely mechanism behind a success
+/// message with no worktree, and one the verification alone cannot catch because it
+/// interrogates the same seam. Real developer sessions have no reason to run the
+/// offline mock; the validation harness opts in explicitly.
+fn guard_worktree_simulation(action: &str) -> anyhow::Result<()> {
+    let opted_in = std::env::var("FREDO_MOCK_WORKTREE").map(|v| v == "1").unwrap_or(false);
+    if mock_mode() && !opted_in {
+        anyhow::bail!(
+            "{} refuses to run with FREDO_MOCK_GH=1 set — that is the OFFLINE VALIDATION mode and its git \
+             is simulated, so it cannot create or inspect a real worktree (the #3197 hazard: a mocked \
+             `git worktree add` reports success with nothing on disk). Unset FREDO_MOCK_GH and re-run",
+            action
+        );
+    }
+    Ok(())
+}
+
 /// Robust worktree removal. Plain `git worktree remove` refuses a worktree that
 /// still carries gitignored build artifacts (`node_modules`/`dist` created by
 /// pnpm install/build) with "Directory not empty" on Windows, and pnpm leaves
@@ -301,41 +430,63 @@ fn run_cmd(bin: &str, args: &[&str]) -> anyhow::Result<String> {
 /// the pre-clean + remove, then sweeps the gitignored leftover debris directly and
 /// retries. Tracked work is already committed+pushed, so sweeping a deregistered
 /// worktree's physical dir is safe. Returns Ok when the worktree is gone.
+///
+/// #3197: the dirty check runs against THAT worktree (`git -C <path>`), and only
+/// after `is_worktree_root` proved the path IS its own checkout root. For any other
+/// path there is no per-worktree state to judge — a plain directory inside the repo
+/// would otherwise report the MAIN checkout's dirt and block an unrelated teardown.
 fn remove_worktree_robust(path: &str) -> anyhow::Result<()> {
-    // First pass: pre-clean ignored files (best-effort) then the plain remove.
-    let _ = run_cmd("git", &["clean", "-fdX", path]);
+    if !std::path::Path::new(path).exists() {
+        // Already gone: drop a stale registration, never touch a physical dir.
+        let _ = run_cmd("git", &["worktree", "prune"]);
+        return Ok(());
+    }
+    if !is_worktree_root(path) {
+        // Not a worktree root: there is no tracked work here to protect. Sweep only
+        // inside the pipeline's own `.worktrees/` root (create-worktree debris from
+        // a crashed run); refuse anywhere else so a mistyped path cannot delete an
+        // unrelated directory.
+        if !under_worktree_root(path) {
+            anyhow::bail!(
+                "refusing to remove {}: it is not a worktree root (no .git marker — it belongs to the enclosing checkout, whose state is NOT this path's state)",
+                path
+            );
+        }
+        std::fs::remove_dir_all(path)?;
+        let _ = run_cmd("git", &["worktree", "prune"]);
+        return Ok(());
+    }
+    // H3: never remove a worktree that still carries uncommitted changes. This is
+    // THIS tree's status (the identity above guarantees it), never the shared root
+    // checkout's.
+    let status = run_cmd("git", &["-C", path, "status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        anyhow::bail!("refusing to remove worktree with uncommitted changes: {}", path);
+    }
+    // Pre-clean ignored files INSIDE this worktree (never from the main checkout).
+    let _ = run_cmd("git", &["-C", path, "clean", "-fdX"]);
     match run_cmd("git", &["worktree", "remove", path]) {
-        Ok(_) => return Ok(()),
+        Ok(_) => Ok(()),
         Err(_) => {
-            // Second pass: the pre-clean did not clear the debris (pnpm junction
-            // remnants). Sweep the gitignored build-artifact dirs directly, then
-            // retry the remove once.
+            // The pre-clean did not clear the debris (pnpm junction remnants).
+            // Sweep the gitignored build-artifact dirs directly, then retry once.
             for artifact in ["node_modules", "dist", "target"] {
                 let _ = std::fs::remove_dir_all(std::path::Path::new(path).join(artifact));
             }
             match run_cmd("git", &["worktree", "remove", path]) {
-                Ok(_) => return Ok(()),
+                Ok(_) => Ok(()),
                 Err(_) => {
-                    // The worktree is deregistered but a physical dir remains
-                    // (git could not reap it). SWEEP the whole leftover dir — it
-                    // is gitignored scratch, and if tracked work existed the
-                    // dirty-refusal guard would already have blocked us. Best-effort
-                    // (a failure here is surfaced by the caller as the real reason).
+                    // The worktree is deregistered but a physical dir remains (git
+                    // could not reap it). SWEEP the whole leftover dir — it is
+                    // gitignored scratch, and tracked work was already refused above
+                    // by the dirty guard.
                     if std::path::Path::new(path).exists() {
-                        // H3: never sweep a worktree that still carries uncommitted
-                        // changes. `git worktree remove` refused it above, so the
-                        // dirty-refusal must hold here too (tracked work must be
-                        // committed + pushed first).
-                        if let Ok(status) = run_cmd("git", &["-C", path, "status", "--porcelain"]) {
-                            if !status.trim().is_empty() {
-                                anyhow::bail!("refusing to remove worktree with uncommitted changes: {}", path);
-                            }
-                        }
                         std::fs::remove_dir_all(path)?;
                     }
                     if std::path::Path::new(path).exists() {
                         anyhow::bail!("worktree dir not fully swept: {}", path);
                     }
+                    let _ = run_cmd("git", &["worktree", "prune"]);
                     Ok(())
                 }
             }
@@ -379,6 +530,63 @@ fn mock_file(parts: &[&str]) -> PathBuf {
 
 fn mock_ensure_dir(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
+}
+
+// ── Mock worktree registry (#3197) ───────────────────────────────────────────
+// A real linked worktree is REGISTERED with the main checkout (`git worktree
+// list`). The mock keeps the same bookkeeping in a `worktrees` file (one absolute
+// path per line) so the harness can pin identity behaviour — reuse, removal and
+// registration — instead of an empty dir that merely looks like a worktree.
+
+fn mock_worktree_list() -> Vec<String> {
+    std::fs::read_to_string(mock_file(&["worktrees"]))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+fn mock_worktree_write(entries: &[String]) -> anyhow::Result<()> {
+    let path = mock_file(&["worktrees"]);
+    if entries.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    mock_write(&path, &format!("{}\n", entries.join("\n")))
+}
+
+fn mock_worktree_register(dir: &Path) -> anyhow::Result<()> {
+    let key = norm_path(&dir.to_string_lossy());
+    let mut entries = mock_worktree_list();
+    if !entries.iter().any(|e| norm_path(e) == key) {
+        entries.push(dir.to_string_lossy().to_string());
+        mock_worktree_write(&entries)?;
+    }
+    Ok(())
+}
+
+fn mock_worktree_deregister(dir: &Path) -> anyhow::Result<()> {
+    let key = norm_path(&dir.to_string_lossy());
+    let entries: Vec<String> = mock_worktree_list().into_iter().filter(|e| norm_path(e) != key).collect();
+    mock_worktree_write(&entries)
+}
+
+/// `git worktree prune` — drop registrations whose directory is gone.
+fn mock_worktree_prune() -> anyhow::Result<()> {
+    let entries: Vec<String> = mock_worktree_list()
+        .into_iter()
+        .filter(|e| std::path::Path::new(e).is_dir())
+        .collect();
+    mock_worktree_write(&entries)
+}
+
+/// A registered mock worktree, or a dir that carries its own `.git` marker, is
+/// its own checkout root. (The marker case keeps the "reuse an existing worktree"
+/// path exercisable without a real gitdir to link to.)
+fn mock_is_worktree_root(dir: &Path) -> bool {
+    let key = norm_path(&dir.to_string_lossy());
+    mock_worktree_list().iter().any(|e| norm_path(e) == key) || dir.join(".git").exists()
 }
 
 fn mock_read(path: &Path) -> Option<String> {
@@ -1115,6 +1323,19 @@ fn mock_jq(v: &serde_json::Value, query: &str) -> String {
 
 /// Emulate the `git` commands the state machine uses, against the mock store.
 fn mock_git(args: &[&str]) -> anyhow::Result<String> {
+    // `git -C <dir> <sub> ...` — the worktree actions resolve a tree's identity
+    // through `-C`, so the mock must honour that context: a plain directory must
+    // resolve to the ENCLOSING checkout, exactly like real git (that identity is
+    // what #3197's honesty gate compares against).
+    if args.first() == Some(&"-C") {
+        let dir = args.get(1).copied().unwrap_or("");
+        let start = args.len().min(2);
+        return mock_git_in(dir, &args[start..]);
+    }
+    mock_git_in("", args)
+}
+
+fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
     let sub = args.first().copied().unwrap_or("");
     match sub {
         "fetch" => {
@@ -1134,6 +1355,19 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "status" => {
+            // git [-C <dir>] status --porcelain. When `-C` names a tree, the store
+            // marker `worktree-dirty` (its content = the path, or `*` for any) makes
+            // THAT tree report uncommitted changes — so the harness can prove the
+            // removal guard judges the right tree (#3197). Without `-C` the marker
+            // is irrelevant: a plain dir must never inherit a worktree's dirt.
+            if !cwd.is_empty() {
+                if let Some(marker) = mock_read(&mock_file(&["worktree-dirty"])) {
+                    let m = marker.trim();
+                    if m == "*" || norm_path(m) == norm_path(cwd) {
+                        return Ok(" M dirty.txt".to_string());
+                    }
+                }
+            }
             // git status --porcelain -- <paths>. The mock reports the named paths as
             // modified when the `maint-dirty` marker exists, so `maint-pr` can be
             // exercised offline (the test that drives it writes the marker).
@@ -1177,6 +1411,23 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "rev-parse" => {
+            // git -C <path> rev-parse --show-toplevel — the worktree identity probe
+            // (#3197). A `.git`-marked dir is its own root; any other existing dir
+            // resolves to the ENCLOSING checkout (the repo root), and a missing dir
+            // fails exactly like real git.
+            if args.iter().any(|a| *a == "--show-toplevel") {
+                if cwd.is_empty() {
+                    return Ok(project_root()?.to_string_lossy().to_string());
+                }
+                let dir = PathBuf::from(cwd);
+                if !dir.is_dir() {
+                    anyhow::bail!("git -C {} rev-parse: cannot change to '{}'", cwd, cwd);
+                }
+                if mock_is_worktree_root(&dir) {
+                    return Ok(dir.to_string_lossy().to_string());
+                }
+                return Ok(project_root()?.to_string_lossy().to_string());
+            }
             // git rev-parse --verify --quiet refs/heads/<branch>
             if args.iter().any(|a| *a == "--verify") {
                 let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
@@ -1267,43 +1518,91 @@ fn mock_git(args: &[&str]) -> anyhow::Result<String> {
             let op = args.get(1).copied().unwrap_or("");
             match op {
                 "add" => {
-                    // git worktree add --detach <path> <base>
+                    // git worktree add --detach <path> <base>. Faithful shape: a real
+                    // linked worktree ALWAYS carries a `.git` marker file and is
+                    // registered with the main checkout — the mock writes both, so a
+                    // post-condition check cannot pass against a fabricated empty dir
+                    // (#3197). Harness levers (store markers, like `maint-dirty`):
+                    //  - `worktree-add-noop`  → exit 0 without creating anything: the
+                    //    exact #3197 symptom the action must refuse to call success.
+                    //  - `worktree-add-fail`  → fail with git's own words.
                     let path = args.windows(2).find(|w| w[0] == "--detach").and_then(|w| w.get(1)).copied().unwrap_or("");
+                    if mock_file(&["worktree-add-fail"]).exists() {
+                        anyhow::bail!("git worktree add --detach {}: simulated failure", path);
+                    }
+                    if mock_file(&["worktree-add-noop"]).exists() {
+                        return Ok(String::new());
+                    }
                     if !path.is_empty() {
-                        mock_ensure_dir(&PathBuf::from(path));
+                        let dir = PathBuf::from(path);
+                        mock_ensure_dir(&dir);
+                        let _ = std::fs::write(dir.join(".git"), format!("gitdir: {}\n", dir.display()));
+                        mock_worktree_register(&dir)?;
                     }
                     Ok(String::new())
                 }
                 "remove" => {
                     let path = args.get(2).copied().unwrap_or("");
                     if !path.is_empty() {
-                        // Simulate real `git worktree remove`: refuse a non-empty
-                        // directory (gitignored build artifacts block deletion —
-                        // the "Directory not empty" failure from #2688/#633/#2700).
+                        // Simulate real `git worktree remove`: it refuses a directory
+                        // that still holds anything beyond the `.git` marker (the
+                        // gitignored `node_modules`/`dist` "Directory not empty"
+                        // failure from #2688/#633/#2700).
                         let p = PathBuf::from(path);
                         if p.is_dir() {
-                            let entries = std::fs::read_dir(&p).map(|r| r.count()).unwrap_or(0);
+                            let entries = std::fs::read_dir(&p)
+                                .map(|r| r.filter_map(|e| e.ok()).filter(|e| e.file_name() != ".git").count())
+                                .unwrap_or(0);
                             if entries > 0 {
                                 anyhow::bail!("git worktree remove: Directory not empty: {}", path);
                             }
                         }
-                        let _ = std::fs::remove_dir_all(path);
+                        let _ = std::fs::remove_dir_all(&p);
+                        mock_worktree_deregister(&p)?;
                     }
                     Ok(String::new())
                 }
-                "prune" => Ok(String::new()),
+                "prune" => {
+                    mock_worktree_prune()?;
+                    Ok(String::new())
+                }
+                "list" => {
+                    // git worktree list --porcelain — one `worktree <abs path>` line
+                    // per registration (the main checkout is always listed).
+                    let mut out = format!("worktree {}\n", project_root()?.to_string_lossy());
+                    for p in mock_worktree_list() {
+                        out.push_str(&format!("worktree {}\n", p));
+                    }
+                    Ok(out.trim_end().to_string())
+                }
                 _ => Ok(String::new()),
             }
         }
         "clean" => {
-            // git clean -fdX <path> — the remove-worktree pre-clean of gitignored
-            // build artifacts. Simulated: wipe the directory content (ignored files
-            // only in reality) so the subsequent `worktree remove` no longer fails.
-            if let Some(path) = args.last() {
-                if !path.is_empty() && !path.starts_with('-') {
-                    let p = PathBuf::from(path);
-                    if p.is_dir() {
-                        let _ = std::fs::remove_dir_all(&p);
+            // git [(-C <dir>)] clean -fdX [<path>] — the remove-worktree pre-clean of
+            // gitignored build artifacts. Simulated: wipe everything in the target
+            // dir except the `.git` marker (ignored files only in reality), so the
+            // subsequent `worktree remove` no longer fails.
+            let target = if !cwd.is_empty() {
+                Some(PathBuf::from(cwd))
+            } else {
+                args.last()
+                    .filter(|a| !a.is_empty() && !a.starts_with('-'))
+                    .map(PathBuf::from)
+            };
+            if let Some(p) = target {
+                if p.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&p) {
+                        for e in entries.filter_map(|e| e.ok()) {
+                            if e.file_name() == ".git" {
+                                continue;
+                            }
+                            let _ = if e.path().is_dir() {
+                                std::fs::remove_dir_all(e.path())
+                            } else {
+                                std::fs::remove_file(e.path())
+                            };
+                        }
                     }
                 }
             }
@@ -5441,11 +5740,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
+            guard_worktree_simulation("create-worktree")?;
             let issue = req_issue(a)?;
-            let path = match a.worktree_path.as_deref() {
+            let path_arg = match a.worktree_path.as_deref() {
                 Some(p) => p.to_string(),
                 None => format!(".worktrees/{}", issue),
             };
+            // #3197: anchor a relative path at the REPO ROOT so the worktree is
+            // created (and later removed) where the developer will actually `cd`.
+            let path = resolve_worktree_path(&path_arg)?;
             let base = resolve_base(issue)?;
             let (ok, reason) = branch_guard(issue)?;
             if !ok {
@@ -5464,8 +5767,16 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let _ = run_cmd("git", &["worktree", "prune"]);
             let wt = std::path::Path::new(&path);
             if wt.join(".git").exists() {
+                // Even a "reuse" must be a real worktree: a `.git` file pointing at
+                // nothing would hand the developer the enclosing checkout (#3197).
+                if let Err(e) = verify_worktree(&path) {
+                    report_worktree_failure(issue, a, "create-worktree", &path, &e)?;
+                    anyhow::bail!("create-worktree: existing path at {} is not a usable worktree: {}", path, e);
+                }
                 println!("WORKTREE EXISTS (reused): {}", path);
-                append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("reused existing worktree {}", path))?;
+                append_event_attrs(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success",
+                    &format!("reused existing worktree {}", path),
+                    &[("worktree_path", &path), ("verified", "git-marker+toplevel")])?;
             } else {
                 if wt.exists() {
                     // H3: a non-empty leftover is only swept on an explicit
@@ -5478,25 +5789,40 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     }
                     std::fs::remove_dir_all(wt)?;
                 }
-                match run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
-                    Ok(_) => {
-                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
-                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
-                    }
+                let added = match run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
+                    Ok(_) => Ok(()),
                     Err(e) => {
                         // A stubborn leftover (pnpm junction remnants, a race) —
                         // sweep with the robust remover and retry ONCE.
                         let _ = remove_worktree_robust(&path);
-                        if let Err(retry_err) = run_cmd("git", &["worktree", "add", "--detach", &path, &base]) {
-                            anyhow::bail!(
+                        run_cmd("git", &["worktree", "add", "--detach", &path, &base]).map(|_| ()).map_err(|retry_err| {
+                            anyhow::anyhow!(
                                 "worktree add failed at {}: {} (after sweep retry: {})",
                                 path, e, retry_err
-                            );
-                        }
-                        println!("WORKTREE CREATED (detached at {}): {}", base, path);
-                        append_event(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success", &format!("detached worktree {} at {}", path, base))?;
+                            )
+                        })
                     }
+                };
+                if let Err(e) = added {
+                    report_worktree_failure(issue, a, "create-worktree", &path, &e.to_string())?;
+                    anyhow::bail!("{}", e);
                 }
+                // #3197: NEVER print success / record the event on git's exit code
+                // alone. Verify the worktree actually exists and that git agrees the
+                // path is its own checkout root.
+                if let Err(reason) = verify_worktree(&path) {
+                    report_worktree_failure(issue, a, "create-worktree", &path, &reason)?;
+                    anyhow::bail!(
+                        "create-worktree verified nothing after git reported success: {} (base {}). \
+                         Do NOT work in the repo root — re-run create-worktree (add --force-clean \
+                         if a leftover directory blocks the retry).",
+                        reason, base
+                    );
+                }
+                println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                append_event_attrs(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success",
+                    &format!("detached worktree {} at {}", path, base),
+                    &[("worktree_path", &path), ("base", &base), ("verified", "git-marker+toplevel")])?;
             }
         }
         "remove-worktree" => {
@@ -5507,11 +5833,15 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
                 return Ok(());
             }
+            guard_worktree_simulation("remove-worktree")?;
             let issue = req_issue(a)?;
-            let path = match a.worktree_path.as_deref() {
+            let path_arg = match a.worktree_path.as_deref() {
                 Some(p) => p.to_string(),
                 None => format!(".worktrees/{}", issue),
             };
+            // Symmetric with create-worktree: anchor a relative path at the repo
+            // root so the same argument always names the same tree (#3197).
+            let path = resolve_worktree_path(&path_arg)?;
             // Build artifacts (node_modules/dist — gitignored, created by pnpm
             // install/build in the worktree) make plain `git worktree remove` fail
             // with "Directory not empty" on Windows (observed on #2688/#633/#2700
