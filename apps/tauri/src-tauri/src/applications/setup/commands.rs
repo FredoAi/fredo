@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::models::{
@@ -7,6 +8,7 @@ use crate::infrastructure::companion::models::{
 };
 #[cfg(test)]
 use crate::infrastructure::companion::models::default_manifest;
+use crate::infrastructure::opencode_service;
 use crate::infrastructure::opencode_version::{
     self, is_plugin_installed, plugin_artifact_path, plugin_install_path, plugin_installed_message,
     plugins_dir, resolve_plugin_source_dir, version_message, OpenCodeVersion,
@@ -125,6 +127,81 @@ pub const OTEL_NOT_REQUIRED_MSG: &str =
     "Not required — OpenCode telemetry is captured by the global Fredo plugin; \
      no OpenCode environment variables are needed.";
 
+/// R-2e: the bounded `otel` claim. It states the **mechanism** — how the plugin
+/// reaches the runtime — instead of a bare "configured": with no service-age or
+/// health surface, the check path cannot re-derive staleness across processes, so
+/// it says what is true and where the guarantee is made (at install time).
+pub const OTEL_CAPTURE_MECHANISM_MSG: &str =
+    "Plugin installed. OpenCode loads it when its background service starts; \
+     setup restarts the service after installing.";
+
+/// The process-local outcome of the last plugin install **in this process**
+/// (ST-A3). It is the only cross-step fact the check path can honestly use: a
+/// restart that failed in this process must never be reported as `ok`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// No install has run in this process, or it ran and needed no restart.
+    Unknown,
+    /// The install wrote bytes and the background service was restarted.
+    Restarted,
+    /// The restart failed. Carries the rendered failure message so the `otel`
+    /// step can name the cause instead of inventing one.
+    Failed {
+        /// The rendered restart-failure message (plugin installed, capture not).
+        message: String,
+    },
+}
+
+/// The last install outcome for this process.
+static LAST_INSTALL: Mutex<InstallOutcome> = Mutex::new(InstallOutcome::Unknown);
+
+/// Record what this process's install did — called by the in-app command and by
+/// the `fredo setup --install-plugin` twin, so both surfaces read one record.
+pub fn record_install_outcome(outcome: InstallOutcome) {
+    match LAST_INSTALL.lock() {
+        Ok(mut slot) => *slot = outcome,
+        // A poisoned lock must never turn into a claim: reading it falls back to
+        // `Unknown`, and a failed write here cannot invent a success.
+        Err(poisoned) => *poisoned.into_inner() = outcome,
+    }
+}
+
+/// The recorded outcome, cloned out of the lock.
+fn last_install_outcome() -> InstallOutcome {
+    match LAST_INSTALL.lock() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// The ONE `otel` claim both setup surfaces render — `(status, detail)`, PURE
+/// over the record and the install flag so the whole table is unit-tested without
+/// touching process-global state (G-222).
+///
+/// - a restart that FAILED is an `error` carrying that failure's message — the
+///   false green this slice removes;
+/// - an installed plugin reports the mechanism, never a bare "configured";
+/// - a machine without the plugin keeps today's not-required wording (the
+///   `plugin` step owns that state).
+pub fn otel_status_for(outcome: &InstallOutcome, plugin_installed: bool) -> (&'static str, String) {
+    match outcome {
+        InstallOutcome::Failed { message } => ("error", message.clone()),
+        _ if plugin_installed => ("ok", OTEL_CAPTURE_MECHANISM_MSG.to_string()),
+        _ => ("ok", OTEL_NOT_REQUIRED_MSG.to_string()),
+    }
+}
+
+/// [`otel_status_for`] over this process's recorded install outcome.
+pub fn otel_status(plugin_installed: bool) -> (&'static str, String) {
+    otel_status_for(&last_install_outcome(), plugin_installed)
+}
+
+/// `true` only when the capture point is in place AND this process knows the
+/// restart did not fail — file presence alone is not "configured" (ST-A3).
+fn otel_configured_for(outcome: &InstallOutcome, plugin_installed: bool) -> bool {
+    plugin_installed && !matches!(outcome, InstallOutcome::Failed { .. })
+}
+
 /// The `opencode_version` wire value for a probe result. `None` — an ABSENT KEY,
 /// never `null`/`""` — when the version could not be determined (G-413).
 fn version_wire(version: &OpenCodeVersion) -> Option<String> {
@@ -182,11 +259,20 @@ fn plugin_step_for(supported: bool, installed: bool) -> StepStatus {
     }
 }
 
-/// (b) The `otel` step — R-2c's not-required state, always `ok`.
-fn otel_step() -> StepStatus {
+/// (b) The `otel` step — R-2c's not-required state, bounded by ST-A3: a restart
+/// this process knows FAILED is an `error` naming the failure; otherwise the
+/// detail states the capture mechanism, never a bare "configured".
+fn otel_step(plugin_installed: bool) -> StepStatus {
+    otel_step_for(&last_install_outcome(), plugin_installed)
+}
+
+/// The pure core of [`otel_step`]: the step over an EXPLICIT record, so the whole
+/// table is unit-tested without touching process-global state (G-222).
+fn otel_step_for(outcome: &InstallOutcome, plugin_installed: bool) -> StepStatus {
+    let (status, detail) = otel_status_for(outcome, plugin_installed);
     StepStatus {
-        status: "ok".into(),
-        detail: Some(OTEL_NOT_REQUIRED_MSG.into()),
+        status: status.into(),
+        detail: Some(detail),
     }
 }
 
@@ -427,10 +513,15 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
 /// Install the Fredo plugin for OpenCode.
 ///
 /// The install is ONE pass (R-2a): copy the artifact #3197 produced to the flat
-/// global `fredo.js`. The version gate runs FIRST, so a refused install touches
-/// nothing — no directory create, no overwrite (R-1c) — and a missing artifact
-/// fails loud instead of reporting a silent skip. No persistent environment
-/// value is written (R-2c).
+/// global `fredo.js`, then — when this invocation actually wrote new bytes and an
+/// OpenCode background service is running — restart that service through the
+/// runtime's own `opencode service restart` verb so the running server loads the
+/// plugin (R-2e). The copy is hash-guarded (`opencode_service::install_plugin_file`
+/// — the SAME rule the CLI twin calls), so an unchanged re-install writes nothing
+/// and restarts nothing (NFR-1). The version gate runs FIRST, so a refused install
+/// touches nothing — no directory create, no overwrite (R-1c) — and a missing
+/// artifact fails loud instead of reporting a silent skip. No persistent
+/// environment value is written (R-2c).
 #[tauri::command]
 pub async fn install_plugin(app: AppHandle) -> InstallResult {
     // R-1a / R-1b / R-1c: gate before any filesystem work.
@@ -491,8 +582,11 @@ pub async fn install_plugin(app: AppHandle) -> InstallResult {
     );
 
     let dest_file = plugin_install_path(&home);
-    let copied_bytes = match std::fs::copy(&artifact, &dest_file) {
-        Ok(n) => n,
+    // ONE hash-guarded copy rule, shared with the CLI twin (ST-A2): the bytes are
+    // written only when they differ, so an unchanged re-install is a no-op —
+    // which is also why it must not restart anything.
+    let wrote_bytes = match opencode_service::install_plugin_file(&artifact, &dest_file) {
+        Ok(wrote_bytes) => wrote_bytes,
         Err(e) => {
             let err = format!("Failed to copy plugin to {}: {e}", dest_file.display());
             tracing::warn!("install_plugin early-exit [copy]: {err}");
@@ -500,7 +594,7 @@ pub async fn install_plugin(app: AppHandle) -> InstallResult {
         }
     };
     tracing::info!(
-        "install_plugin copied {copied_bytes} bytes -> {}",
+        "install_plugin destination {} (wrote_bytes={wrote_bytes})",
         dest_file.display()
     );
 
@@ -508,8 +602,42 @@ pub async fn install_plugin(app: AppHandle) -> InstallResult {
     // destination and stating the install is global (ST-1 renders it from
     // `PLUGIN_INSTALLED_GLOBAL_MSG`, so the copy and the constant cannot drift).
     let output = plugin_installed_message(&dest_file);
-    tracing::info!("install_plugin completed: {output}");
-    InstallResult { success: true, output, error: None }
+
+    // R-2e: restart the background service IFF this invocation wrote bytes AND a
+    // service is running. The runtime's own verb is the only lifecycle action —
+    // Fredo never signals or kills a process it does not own.
+    if !opencode_service::restart_needed(wrote_bytes, &opencode_service::probe()) {
+        record_install_outcome(InstallOutcome::Unknown);
+        tracing::info!("install_plugin completed: {output}");
+        return InstallResult { success: true, output, error: None };
+    }
+
+    match opencode_service::restart() {
+        Ok(()) => {
+            record_install_outcome(InstallOutcome::Restarted);
+            let restarted = opencode_service::restarted_message();
+            tracing::info!("install_plugin restarted the OpenCode background service");
+            InstallResult {
+                success: true,
+                output: format!("{output}\n{restarted}"),
+                error: None,
+            }
+        }
+        Err(detail) => {
+            // The COPY stands — only the capture outcome failed, and the message
+            // says so. Reporting `success: true` here would be the false green.
+            let message = opencode_service::restart_failed_message(&detail);
+            record_install_outcome(InstallOutcome::Failed {
+                message: message.clone(),
+            });
+            tracing::warn!("install_plugin restart failed: {message}");
+            InstallResult {
+                success: false,
+                output,
+                error: Some(message),
+            }
+        }
+    }
 }
 
 /// Returns whether the `fredo` binary is reachable in PATH and the path of the
@@ -723,11 +851,17 @@ pub struct OtelStatus {
 }
 
 /// Check whether Fredo telemetry is in place for OpenCode: the global plugin.
+///
+/// R-2e (ST-A3): file presence alone is not "configured" — a restart this process
+/// knows failed reads `false`, so the step cannot claim capture it does not have.
 #[tauri::command]
 pub fn check_otel_configured(app: AppHandle) -> OtelStatus {
     let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
     OtelStatus {
-        opencode_configured: is_plugin_installed(&home),
+        opencode_configured: otel_configured_for(
+            &last_install_outcome(),
+            is_plugin_installed(&home),
+        ),
     }
 }
 
@@ -807,8 +941,9 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
         }
     };
 
-    // otel — R-2c: not-required on OpenCode 2, never `missing`.
-    let otel = otel_step();
+    // otel — R-2c's not-required state, bounded by R-2e: an install this process
+    // knows failed reports `error`, and the mechanism is never a bare "configured".
+    let otel = otel_step(plugin_installed);
 
     CheckAllSetupResult {
         fredo_path,
@@ -1295,7 +1430,7 @@ mod tests {
             opencode: opencode_step_for(&version),
             plugin: plugin_step_for(false, false),
             model: StepStatus { status: "ok".into(), detail: None },
-            otel: otel_step(),
+            otel: otel_step(false),
             opencode_version: version_wire(&version),
             opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
         };
@@ -1373,16 +1508,81 @@ mod tests {
         assert_eq!(plugin_step_for(true, false).status, "missing");
     }
 
-    /// (b) R-2c: telemetry is not-required and names the global plugin — never
-    /// `missing`, which would send the user looking for environment variables.
+    /// (b) R-2c/R-2e: an installed plugin is `ok` and its detail states the
+    /// MECHANISM (how the plugin reaches the runtime) — never a bare
+    /// "configured", and never `missing` (which would send the user looking for
+    /// environment variables).
     #[test]
-    fn the_otel_step_is_not_required_and_names_the_global_plugin() {
-        let step = otel_step();
+    fn the_otel_step_states_the_capture_mechanism_for_an_installed_plugin() {
+        let step = otel_step(true);
         assert_eq!(step.status, "ok");
         let detail = step.detail.expect("a detail");
-        assert!(detail.contains("global"), "{detail}");
-        assert!(detail.contains("plugin"), "{detail}");
-        assert!(detail.contains("Not required"), "{detail}");
+        assert!(detail.contains("restarts the service"), "{detail}");
+        assert!(detail.contains("background service"), "{detail}");
+        assert!(
+            !detail.contains("configured"),
+            "the false-green wording is gone: {detail}"
+        );
+    }
+
+    /// (b) R-2e: a restart this process knows FAILED is an `error` carrying that
+    /// failure's message — the false green the slice removes — and the failure is
+    /// reported even though the file IS installed.
+    #[test]
+    fn a_failed_restart_is_an_error_naming_the_failure() {
+        let message = crate::infrastructure::opencode_service::restart_failed_message(
+            "exit 2: the service did not respond",
+        );
+        let outcome = InstallOutcome::Failed {
+            message: message.clone(),
+        };
+        let step = otel_step_for(&outcome, true);
+        assert_eq!(step.status, "error");
+        assert_eq!(step.detail.as_deref(), Some(message.as_str()));
+        // Never `ok` on a failed restart, even though the plugin file is present.
+        assert_ne!(step.status, "ok");
+    }
+
+    /// (b) ST-A3's table: the record decides `error` vs `ok`, and file presence
+    /// alone is never "configured" once a restart failed.
+    #[test]
+    fn the_otel_claim_follows_the_record_and_the_install_flag() {
+        let failure = "the restart failed".to_string();
+        let failed = InstallOutcome::Failed {
+            message: failure.clone(),
+        };
+
+        // Unknown + installed ⇒ the mechanism, `ok`.
+        let (status, detail) = otel_status_for(&InstallOutcome::Unknown, true);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_CAPTURE_MECHANISM_MSG);
+
+        // Restarted + installed ⇒ the same mechanism claim.
+        let (status, detail) = otel_status_for(&InstallOutcome::Restarted, true);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_CAPTURE_MECHANISM_MSG);
+
+        // Failed ⇒ `error` with the failure message, installed or not.
+        for installed in [true, false] {
+            let (status, detail) = otel_status_for(&failed, installed);
+            assert_eq!(status, "error", "a failed restart is never ok");
+            assert_eq!(detail, failure);
+        }
+
+        // No plugin installed and no recorded failure ⇒ today's not-required copy
+        // (the `plugin` step owns the missing state).
+        let (status, detail) = otel_status_for(&InstallOutcome::Unknown, false);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_NOT_REQUIRED_MSG);
+
+        // `check_otel_configured`: presence AND no known failure.
+        assert!(otel_configured_for(&InstallOutcome::Unknown, true));
+        assert!(otel_configured_for(&InstallOutcome::Restarted, true));
+        assert!(
+            !otel_configured_for(&failed, true),
+            "file presence alone must stop reading as configured"
+        );
+        assert!(!otel_configured_for(&InstallOutcome::Unknown, false));
     }
 
     /// (c) R-2c: the plan's copy command is the COPY ALONE — no environment
@@ -1423,18 +1623,25 @@ mod tests {
         );
     }
 
-    /// (e) The telemetry step is an idempotent no-op report: the same
-    /// not-required detail on every call, naming the global plugin and stating
-    /// that no environment variable is needed.
+    /// (e) The telemetry step is an idempotent report: for a GIVEN record the
+    /// claim does not move between calls, and the not-installed wording keeps
+    /// naming the global plugin and the absence of any environment variable.
+    /// (The record itself is process-global, so this pin drives the pure core —
+    /// G-222 — while the live `otel_step` is a two-line wrapper over it.)
     #[test]
-    fn the_telemetry_step_reports_the_same_not_required_message_every_time() {
-        let first = otel_step();
-        let second = otel_step();
+    fn the_telemetry_step_reports_the_same_claim_for_the_same_record() {
+        let first = otel_step_for(&InstallOutcome::Unknown, false);
+        let second = otel_step_for(&InstallOutcome::Unknown, false);
         assert_eq!(first.status, second.status);
         assert_eq!(first.detail, second.detail);
         assert_eq!(first.detail.as_deref(), Some(OTEL_NOT_REQUIRED_MSG));
         assert!(OTEL_NOT_REQUIRED_MSG.contains("environment variables"),
             "the not-required state must say no variable is needed: {OTEL_NOT_REQUIRED_MSG}");
+        // ... and the installed claim is equally stable.
+        assert_eq!(
+            otel_step_for(&InstallOutcome::Unknown, true).detail,
+            otel_step_for(&InstallOutcome::Unknown, true).detail
+        );
     }
 
     /// (f) + R-2c absence guard (G-430): this surface carries no persistent

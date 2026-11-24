@@ -46,7 +46,7 @@ const STEPS: StepDef[] = [
   {
     id: 'opencode-cli',
     label: 'OpenCode CLI',
-    description: 'Check the installed OpenCode version (2 is required)',
+    description: 'Check the installed OpenCode version',
     icon: LuTerminal,
     actionLabel: 'Check again',
     actionLabelRunning: 'Checking…',
@@ -62,7 +62,9 @@ const STEPS: StepDef[] = [
   {
     id: 'plugin-install',
     label: 'Plugin Install',
-    description: 'Install the plugin',
+    // The disclosure BEFORE the click: finishing this step restarts OpenCode's
+    // background service, which ends any turn running on it (R-2e).
+    description: "Install the plugin (restarts OpenCode's background service)",
     icon: LuWrench,
     actionLabel: 'Install',
     actionLabelRunning: 'Installing…',
@@ -150,13 +152,17 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'otel-config': {
-      // R-2c: the capture point is the global Fredo plugin, so the telemetry
-      // step is NOT REQUIRED rather than missing. Render the backend's own
-      // not-required wording instead of a bare configured/not-configured flag.
+      // R-2c/R-2e: the capture point is the global Fredo plugin, so the telemetry
+      // step is NOT REQUIRED rather than missing. The backend owns the wording AND
+      // the state: `error` means a restart this process knows failed (the false
+      // green this slice removes), `ok` carries the capture mechanism. Both are
+      // rendered explicitly so neither falls through by accident.
       const res = await adapterBridge.invoke<{ otel?: { status: string; detail?: string } }>('check_all_setup');
       const step = res?.otel;
       if (!step) return { status: 'idle' };
-      return { status: step.status === 'ok' ? 'done' : 'idle', detail: step.detail };
+      if (step.status === 'error') return { status: 'error', detail: step.detail };
+      if (step.status === 'ok') return { status: 'done', detail: step.detail };
+      return { status: 'idle', detail: step.detail };
     }
     default:
       return { status: 'idle' };

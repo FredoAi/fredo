@@ -260,6 +260,8 @@ pub fn probe_binary(binary: &str) -> OpenCodeVersion {
     let output = match run_bounded(
         probe_command(binary),
         Duration::from_millis(VERSION_PROBE_TIMEOUT_MS),
+        "the version probe",
+        "`opencode --version`",
     ) {
         Ok(output) => output,
         Err(detail) => return OpenCodeVersion::Undetermined { detail },
@@ -292,6 +294,19 @@ pub fn probe_binary(binary: &str) -> OpenCodeVersion {
 /// The command that runs the probe for `binary`, honouring the Windows shim
 /// rule (`cmd.exe /C` for `.cmd`/`.bat`).
 fn probe_command(binary: &str) -> Command {
+    let mut command = opencode_command(binary);
+    command.arg(OPENCODE_VERSION_ARG);
+    command
+}
+
+/// The command for `binary` with the Windows shim rule applied and **no**
+/// arguments yet — the ONE plumbing the version probe and the background-service
+/// control (`infrastructure::opencode_service`) share, so the `.cmd`/`.bat`
+/// handling can never diverge between them.
+///
+/// `CreateProcessW` cannot execute a `.cmd`/`.bat`, so those go through
+/// `cmd.exe /C`; every other candidate is spawned directly.
+pub(crate) fn opencode_command(binary: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         let lower = binary.to_ascii_lowercase();
@@ -299,19 +314,16 @@ fn probe_command(binary: &str) -> Command {
             let mut command = Command::new("cmd.exe");
             command.arg("/C");
             command.arg(binary);
-            command.arg(OPENCODE_VERSION_ARG);
             return command;
         }
     }
 
-    let mut command = Command::new(binary);
-    command.arg(OPENCODE_VERSION_ARG);
-    command
+    Command::new(binary)
 }
 
 /// The Windows candidate order Terminal uses (`opencode.exe`, `.cmd`, `.bat`,
 /// bare); on other platforms the extension probes miss harmlessly.
-fn resolve_opencode_binary() -> Option<String> {
+pub(crate) fn resolve_opencode_binary() -> Option<String> {
     const CANDIDATES: [&str; 4] = ["opencode.exe", "opencode.cmd", "opencode.bat", "opencode"];
     CANDIDATES.iter().find_map(|candidate| where_first(candidate))
 }
@@ -338,13 +350,23 @@ fn where_first(name: &str) -> Option<String> {
 /// `infrastructure/` must not import from an application, and this probe needs
 /// only this small bounded runner. stdin is null so a CLI cannot block on a
 /// prompt; the child is killed at the deadline (NFR-3).
-fn run_bounded(mut command: Command, timeout: Duration) -> Result<Output, String> {
+///
+/// `spawn_label` names the probe in the spawn/read failures and `timeout_label`
+/// names the command in the deadline message: both are supplied by the caller so
+/// ONE runner serves the version probe and the background-service control
+/// (`infrastructure::opencode_service`) without either surface's copy changing.
+pub(crate) fn run_bounded(
+    mut command: Command,
+    timeout: Duration,
+    spawn_label: &str,
+    timeout_label: &str,
+) -> Result<Output, String> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not run the version probe: {e}"))?;
+        .map_err(|e| format!("could not run {spawn_label}: {e}"))?;
 
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
@@ -374,21 +396,22 @@ fn run_bounded(mut command: Command, timeout: Duration) -> Result<Output, String
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "`opencode {OPENCODE_VERSION_ARG}` did not finish within {VERSION_PROBE_TIMEOUT_MS} ms"
+                        "{timeout_label} did not finish within {} ms",
+                        timeout.as_millis()
                     ));
                 }
                 thread::sleep(Duration::from_millis(50));
             }
-            Err(e) => return Err(format!("could not run the version probe: {e}")),
+            Err(e) => return Err(format!("could not run {spawn_label}: {e}")),
         }
     };
 
     let stdout = out_rx
         .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "reading the version probe's stdout timed out".to_string())?;
+        .map_err(|_| format!("reading {spawn_label}'s stdout timed out"))?;
     let stderr = err_rx
         .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| "reading the version probe's stderr timed out".to_string())?;
+        .map_err(|_| format!("reading {spawn_label}'s stderr timed out"))?;
     Ok(Output {
         status,
         stdout,
@@ -451,7 +474,10 @@ pub fn terminal_blocked_message(cause: &str) -> String {
 }
 
 /// Substitute `{placeholder}` pairs in a message template.
-fn render(template: &str, substitutions: &[(&str, &str)]) -> String {
+///
+/// `pub(crate)` because `infrastructure::opencode_service` renders its copy from
+/// its own constants through this ONE substitution rule.
+pub(crate) fn render(template: &str, substitutions: &[(&str, &str)]) -> String {
     let mut rendered = template.to_string();
     for (placeholder, value) in substitutions {
         rendered = rendered.replace(placeholder, value);
