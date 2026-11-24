@@ -49,6 +49,16 @@ pub enum CliCommand {
         cli: Option<String>,
         work_dir: Option<String>,
     },
+    /// Focus the resident instance's `main` window, rebuilding it when it was
+    /// destroyed (Spec #3192 ST-3, R-4). This is the ONE command a SECOND launch
+    /// sends through this environment's pipe: the resident instance answers and
+    /// the second process exits without starting a second PostgreSQL/OTLP stack.
+    /// The handler is
+    /// [`ensure_main_window`](crate::infrastructure::app_lifecycle::ensure_main_window)
+    /// — the same primitive the tray `Open` item and the `open_main_window`
+    /// command call. Carries no fields, so the wire shape is exactly
+    /// `{"type":"open_main_window"}`.
+    OpenMainWindow,
     /// Export the Doom fine-tuning dataset to a CONFINED local path (Spec #3032
     /// ST-5; confined by Spec #3078 ST-3). `format` is the canonical lowercase
     /// token (`raw|sft|dpo`; default `raw`); `out` may be a plain relative path
@@ -168,9 +178,29 @@ async fn dispatch_command(cmd: CliCommand, app: &AppHandle) -> CliResponse {
         CliCommand::OpenTerminal { cli, work_dir } => {
             crate::applications::terminal::open_terminal::dispatch_open_terminal(cli, work_dir, app).await
         }
+        CliCommand::OpenMainWindow => dispatch_open_main_window(app).await,
         CliCommand::DoomExportDataset { format, out } => {
             dispatch_doom_export_dataset(format, out, app).await
         }
+    }
+}
+
+/// Handle one `CliCommand::OpenMainWindow` from the IPC server (Spec #3192
+/// ST-3): focus the resident `main` window — or rebuild it when it was
+/// destroyed — through the ONE recreate-or-focus primitive, and report the
+/// outcome as `CliResponse` data.
+///
+/// A failure is reported as a typed error response, never a panic: the resident
+/// instance keeps its tray and the next `Open`/second launch retries. The
+/// second process does not need the payload — it only needs to know that an
+/// instance answered — but the data lets the CLI/IPC client and the webview read
+/// the same `{recreated, focused}` outcome.
+async fn dispatch_open_main_window(app: &AppHandle) -> CliResponse {
+    match crate::infrastructure::app_lifecycle::ensure_main_window(app) {
+        Ok(outcome) => {
+            CliResponse::ok(serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null))
+        }
+        Err(message) => CliResponse::err(message),
     }
 }
 
@@ -245,8 +275,22 @@ async fn dispatch_emit_event(
 /// Connect to the running Fredo app IPC socket, send a command, and return the response.
 /// Returns `None` if the app is not running.
 pub async fn send_cli_command(cmd: &CliCommand) -> Result<Option<CliResponse>> {
-    let socket = socket_name();
-    let name = match socket.as_str().to_fs_name::<GenericFilePath>() {
+    send_cli_command_on(&socket_name(), cmd).await
+}
+
+/// The socket-parameterised core of [`send_cli_command`].
+///
+/// The public entry resolves this environment's pipe itself (as every shipped
+/// caller expects); taking the name here lets the single-instance probe
+/// ([`crate::infrastructure::single_instance`]) be pinned against an explicit
+/// pipe without mutating process environment, which is process-global and would
+/// make the pins order-dependent. Same connect / write / read / `Ok(None)`
+/// semantics — this is the client, never a second transport.
+pub(crate) async fn send_cli_command_on(
+    socket: &str,
+    cmd: &CliCommand,
+) -> Result<Option<CliResponse>> {
+    let name = match socket.to_fs_name::<GenericFilePath>() {
         Ok(n) => n,
         Err(e) => return Err(anyhow::anyhow!("Invalid socket name: {e}")),
     };
@@ -372,6 +416,50 @@ mod tests {
             }
             other => panic!("expected DoomExportDataset, got {other:?}"),
         }
+    }
+
+    /// ST-3 (R-4): the second-launch wire command serializes to the EXACT tag
+    /// the plan's names block binds (`{"type":"open_main_window"}`) — a unit
+    /// variant, so no field may appear on the wire.
+    #[test]
+    fn open_main_window_command_serializes_to_the_pinned_wire_shape() {
+        let cmd = CliCommand::OpenMainWindow;
+        let json = serde_json::to_value(&cmd).expect("CliCommand serializes");
+        assert_eq!(json, serde_json::json!({ "type": "open_main_window" }));
+        assert_eq!(
+            serde_json::to_string(&cmd).expect("serialize"),
+            r#"{"type":"open_main_window"}"#
+        );
+    }
+
+    /// ST-3 (R-4): the second-launch command round-trips, and the resident
+    /// instance's answer is the shipped `CliResponse` carrying
+    /// `{recreated, focused}` — the only two shapes the probe path exchanges.
+    #[test]
+    fn open_main_window_command_round_trips_and_answers_with_the_outcome() {
+        let cmd = CliCommand::OpenMainWindow;
+        let raw = serde_json::to_string(&cmd).expect("serialize");
+        let decoded: CliCommand = serde_json::from_str(&raw).expect("deserialize");
+        assert!(matches!(decoded, CliCommand::OpenMainWindow));
+
+        let answer = CliResponse::ok(
+            serde_json::to_value(crate::infrastructure::app_lifecycle::MainWindowOutcome {
+                recreated: false,
+                focused: true,
+            })
+            .expect("the outcome serializes"),
+        );
+        assert_eq!(
+            serde_json::to_value(&answer).expect("CliResponse serializes"),
+            serde_json::json!({ "ok": true, "data": { "recreated": false, "focused": true } })
+        );
+        // The shared contract's omitted-when-None rule is unchanged (`message`
+        // is absent on success, `data` absent on a typed error).
+        assert_eq!(
+            serde_json::to_value(CliResponse::err("failed to rebuild the main window"))
+                .expect("CliResponse serializes"),
+            serde_json::json!({ "ok": false, "message": "failed to rebuild the main window" })
+        );
     }
 
     /// ST-2 regression invariant (R-1.2): with `FREDO_CLI_PIPE` unset the pipe

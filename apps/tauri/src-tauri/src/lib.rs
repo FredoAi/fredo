@@ -180,6 +180,24 @@ async fn prune_application_data(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Spec #3192 ST-3 (R-4) — the second-launch hand-off, at the very TOP of the
+    // launch path, BEFORE `AppRuntime::new()` and the builder: a launch that
+    // finds a resident instance asks it to focus (or rebuild) its `main` window
+    // and returns, so it never starts a second PostgreSQL cluster, never binds
+    // the OTLP ports, never installs a second tray icon and never opens a
+    // second window.
+    //
+    // Detection is a CONNECT with a time-bounded read on THIS environment's IPC
+    // pipe (`single_instance::probe_existing_instance` →
+    // `CliCommand::OpenMainWindow`) — never a bind, and capped at 1500 ms, so a
+    // cold start can never be blocked by it. `PgDataDirLock` and the
+    // bind-or-fail OTLP receivers remain the structural one-owner guarantee for
+    // the cold-launch race (both processes probing before either serves the
+    // pipe); this probe is the user-experience layer only.
+    if infrastructure::single_instance::probe_existing_instance() {
+        return;
+    }
+
     let _runtime = AppRuntime::new();
 
     // Spec #2944 ST-2 (R-1.2/R-4.1): resolve this process's local

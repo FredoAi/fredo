@@ -11,6 +11,7 @@ pub mod opencode_service;
 pub mod opencode_version;
 pub mod otlp;
 pub mod rtdb;
+pub mod single_instance;
 pub mod storage;
 pub mod telemetry;
 pub mod voice;
