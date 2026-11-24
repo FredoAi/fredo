@@ -679,6 +679,52 @@ Test-Script "Create-worktree surfaces a git failure as an error, never success (
   }
 }
 
+# Stale REMOTE-TRACKING ref: twice a developer received a worktree at a stale
+# `origin/spec/<N>` (the remote-tracking ref predated the push), then was rejected
+# on push. The action runs `git fetch origin` itself, so it must resolve the
+# POST-fetch commit and report it. The mock models the refresh: `remote-tip-sha` is
+# the freshly-pushed tip; a fetch copies it into `remote-tracking-sha`, which is
+# what a remote-tracking rev-parse resolves.
+Test-Script "Create-worktree fetches first and reports the POST-fetch commit sha (#stale-base)" {
+  $url = Mock-IssueCreate "temp: wt stale base" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $stale = "1111111111111111111111111111111111111111"
+  $fresh = "2222222222222222222222222222222222222222"
+  [System.IO.File]::WriteAllText((Mock-StorePath "remote-tracking-sha"), $stale, [System.Text.UTF8Encoding]::new($false))
+  [System.IO.File]::WriteAllText((Mock-StorePath "remote-tip-sha"), $fresh, [System.Text.UTF8Encoding]::new($false))
+  $wt = Join-Path $env:TEMP "fredo-wt-stale-$n"
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $s = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "create-worktree failed: $s" }
+    if ($s -notmatch "WORKTREE CREATED") { throw "Expected WORKTREE CREATED, got: $s" }
+    if ($s -notmatch [regex]::Escape($fresh)) { throw "the success line must report the POST-fetch commit $fresh, got: $s" }
+    if ($s -match [regex]::Escape($stale)) { throw "the stale pre-fetch commit must not be reported, got: $s" }
+    # The fetch was actually attempted and refreshed the remote-tracking ref.
+    if (-not (Test-Path (Mock-StorePath "last-fetch"))) { throw "no fetch was attempted before resolving the base" }
+    $tracked = (Get-Content (Mock-StorePath "remote-tracking-sha") -Raw).Trim()
+    if ($tracked -ne $fresh) { throw "the remote-tracking ref was not refreshed (still $tracked)" }
+    $ev = Get-Content ".opencode/state/issues/$n.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "create-worktree" -and $_.outcome -eq "success" } | Select-Object -Last 1
+    if (-not $ev) { throw "no successful create-worktree event recorded" }
+    if ($ev.attributes.commit -ne $fresh) { throw "event commit attr must be the post-fetch sha, got: $($ev.attributes.commit)" }
+    if ($ev.attributes.base -ne "origin/spec/$n") { throw "event base attr wrong: $($ev.attributes.base)" }
+    return "stale remote-tracking ref refreshed; reported commit = post-fetch $fresh"
+  } finally {
+    Remove-Item (Mock-StorePath "remote-tracking-sha") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "remote-tip-sha") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "last-fetch") -Force -ErrorAction SilentlyContinue
+    if (Test-Path $wt) { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-Item (Mock-StorePath "refs\spec\$n") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$n") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
 Test-Script "upload-evidence role-gates + validates" {
   # non-tester/SM actor blocked
   $role = & rust-script $ps --issue $TestIssue --agent developer --action upload-evidence --body-file x --image y 2>&1
@@ -863,6 +909,34 @@ Test-Script "Comment with a heading in the body does not get a double header" {
     return "headed body not double-prefixed"
   } finally {
     Remove-Item -LiteralPath $body -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "Comment without --body-file refuses the implicit status.md draft" {
+  # A `comment --prefix Status` with no --body-file posted
+  # `.opencode/tmp/<issue>/status.md` — which on one occasion still held a WITHDRAWN
+  # AC amendment, republishing a retracted decision. RULE: explicit --body-file only;
+  # the implicit default is retired, so a foreign draft can never be published.
+  $url = Mock-IssueCreate "temp: comment implicit draft" "comment implicit scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/status.md", "WITHDRAWN: this amendment was retracted", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent product-owner --action comment --prefix Status 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a comment without --body-file must be refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "requires --body-file") { throw "Expected the explicit-body-file refusal, got: $outStr" }
+    if ($outStr -notmatch "implicit") { throw "the refusal must state the implicit-default rule, got: $outStr" }
+    $comments = @(Mock-IssueComments $issueNum)
+    if ($comments.Count -ne 0) { throw "the foreign status.md draft was published: $($comments -join '; ')" }
+    return "implicit status.md draft refused; nothing posted on #$issueNum"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
   }
 }
 
@@ -5794,6 +5868,200 @@ Test-Script "sync-spec-branch: a wrong-phase call is refused" {
     return "wrong-phase sync refused (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- Root alignment (`align-root`) ---
+# Every `implementation -> testing` transition refuses unless the repo root sits on
+# the spec tip (G-052). The Orchestrator has no `git checkout` grant, so each round
+# burned a developer dispatch on a hand-run preserve/align/restore dance. The
+# machine now performs the move itself — safely: it refuses when a checkout would
+# overwrite in-flight work, and never forces/casts stashes.
+Write-Host "Root alignment (align-root):" -ForegroundColor Cyan
+
+Test-Script "align-root: clean align checks out the spec tip and reports HEAD + preserved set" {
+  $url = Mock-IssueCreate "temp: align clean" "align clean scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action align-root 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "clean align failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "ROOT ALIGNED") { throw "Expected ROOT ALIGNED, got: $outStr" }
+    if ($outStr -notmatch "Preserved uncommitted path\(s\): none") { throw "Expected an empty preserved set, got: $outStr" }
+    if ($outStr -notmatch "Tree matches .* tip: yes") { throw "Expected the tree to match the tip, got: $outStr" }
+    $base = (Get-Content (Mock-StorePath "checkout-base") -Raw).Trim()
+    if ($base -ne "origin/spec/$issueNum") { throw "the checkout must be from origin/spec/$issueNum, got: $base" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "root.aligned" } | Select-Object -Last 1
+    if (-not $ev) { throw "no root.aligned event recorded" }
+    if ($ev.attributes.branch -ne "spec/$issueNum") { throw "root.aligned branch attr wrong: $($ev.attributes.branch)" }
+    if ($ev.attributes.tree_matches_tip -ne "true") { throw "root.aligned tree_matches_tip attr wrong: $($ev.attributes.tree_matches_tip)" }
+    return "aligned root to spec/$issueNum, preserved set empty, tip matched (#$issueNum)"
+  } finally {
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "align-root: refuses a conflicting dirty path and does not check out" {
+  # The exact condition that bit repeatedly: an uncommitted path also differs
+  # between HEAD and the target, so `git checkout` would overwrite in-flight work.
+  $url = Mock-IssueCreate "temp: align conflict" "align conflict scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-dirty"), "docs/SETUP.md", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-target-changed"), "docs/SETUP.md", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action align-root 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "a conflicting dirty path must be refused, got exit 0: $outStr" }
+    if ($outStr -notmatch "REFUSED") { throw "Expected the REFUSED refusal, got: $outStr" }
+    if ($outStr -notmatch "docs/SETUP\.md") { throw "the refusal must NAME the conflicting path, got: $outStr" }
+    if ($outStr -notmatch "overwrite uncommitted work") { throw "the refusal must state the overwrite hazard, got: $outStr" }
+    if (Test-Path (Mock-StorePath "checkout-base")) { throw "the checkout must NOT run when a dirty path would be overwritten" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "root.aligned" -and $_.outcome -eq "success" }
+    if ($ev) { throw "a refused align must not record a root.aligned success" }
+    return "conflicting dirty path refused, checkout not run, path named (#$issueNum)"
+  } finally {
+    Remove-Item (Mock-StorePath "align-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "align-target-changed") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "align-root: wrong actor and wrong phase are refused" {
+  $url = Mock-IssueCreate "temp: align gates" "align gate scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $wrongPhase = 0
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    $deny = & rust-script $ps --issue $issueNum --agent developer --action align-root 2>&1
+    $denyStr = if ($deny -is [array]) { $deny -join "`n" } else { "$deny" }
+    if ($denyStr -notmatch "BLOCKED: actor developer not allowed to align-root") { throw "expected the actor gate, got: $denyStr" }
+    $wrong = Mock-IssueCreate "temp: align wrong phase" "align wrong-phase scratch" "planning"
+    $wrongPhase = [int][regex]::Match("$wrong", "issues/(\d+)").Groups[1].Value
+    $phaseOut = & rust-script $ps --issue $wrongPhase --agent orchestrator --action align-root 2>&1
+    $phaseStr = if ($phaseOut -is [array]) { $phaseOut -join "`n" } else { "$phaseOut" }
+    if ($LASTEXITCODE -eq 0) { throw "an align in the planning phase must be refused, got exit 0: $phaseStr" }
+    if ($phaseStr -notmatch "only valid while the issue is in implementation or testing") { throw "expected the phase refusal, got: $phaseStr" }
+    return "align-root: developer refused, planning phase refused"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    if ($wrongPhase) { Mock-Cleanup $wrongPhase }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# --- `Tested commit:` stamp parsing ---
+# A verdict line `Tested commit: 34567eb5 (spec/3198 tip; served tree …; env …)` was
+# compared WHOLE against the served sha; the trailing context made it fail with a
+# nonsense value. Only the leading whitespace-delimited token (backticks trimmed) is
+# the commit; a malformed token refuses with the recognised value + a one-line hint.
+Write-Host "Tested commit stamp parsing:" -ForegroundColor Cyan
+
+function New-TestedCommitScratch {
+  param([int]$IssueNum)
+  $prOut = & rust-script $ps --action mock-gh --ghargs "pr create --base main --head spec/$IssueNum --title t --body b" 2>&1
+  $prStr = if ($prOut -is [array]) { $prOut -join "" } else { "$prOut" }
+  $prNum = [regex]::Match($prStr, "pull/(\d+)").Groups[1].Value
+  if (-not $prNum) { throw "no PR number from mock create: $prStr" }
+  return $prNum
+}
+
+Test-Script "Tested commit: the leading sha token parses; trailing context is ignored" {
+  $url = Mock-IssueCreate "temp: tested commit ok" "tested-commit scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    $full = "34567eb5aaaabbbbccccddddeeeeffff00001111"
+    $prNum = New-TestedCommitScratch -IssueNum $issueNum
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    $pr.headRefOid = $full
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    # No spec refs: the intended commit resolves to the MERGED PR's recorded head.
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md",
+      "Verdict: PASS`nTested commit: 34567eb5 (spec/$issueNum tip; served tree .serve/$issueNum; env spec$issueNum)`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*",
+      [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "harness: tested-commit parse" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "audit-record failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "AUDIT PASS -> POST-AUDIT") { throw "the leading token must match the served head, got: $outStr" }
+    if ($outStr -match "not a commit sha|is not the intended served commit|is not the head the MERGED") { throw "a valid leading token must not be refused, got: $outStr" }
+    return "leading sha parsed, trailing context ignored (#$issueNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "Tested commit: a malformed leading token refuses and names the recognised value" {
+  $url = Mock-IssueCreate "temp: tested commit bad" "tested-commit bad scratch" "audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $dir = ".opencode/tmp/$issueNum"
+  try {
+    $full = "34567eb5aaaabbbbccccddddeeeeffff00001111"
+    $prNum = New-TestedCommitScratch -IssueNum $issueNum
+    $prFile = Join-Path $env:FREDO_MOCK_STORE "prs\$prNum.json"
+    $pr = Get-Content $prFile -Raw | ConvertFrom-Json
+    $pr.state = "MERGED"
+    $pr.headRefOid = $full
+    [System.IO.File]::WriteAllText($prFile, ($pr | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$dir/tests-runs.md",
+      "Verdict: PASS`nTested commit: see-above (spec/$issueNum tip; served tree .serve/$issueNum; env spec$issueNum)`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*",
+      [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "harness: tested-commit bad" 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($outStr -notmatch "not a commit sha") { throw "expected the malformed-sha refusal, got: $outStr" }
+    if ($outStr -notmatch "see-above") { throw "the refusal must NAME the recognised value, got: $outStr" }
+    if ($outStr -notmatch "next line") { throw "the refusal must carry the one-line hint, got: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -contains "post-audit") { throw "a malformed Tested commit must not advance the issue" }
+    return "malformed leading token refused, recognised value named, issue stayed audit (#$issueNum)"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum

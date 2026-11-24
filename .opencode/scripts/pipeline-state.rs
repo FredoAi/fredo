@@ -689,6 +689,23 @@ fn mock_local_ref_delete(branch: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolve a ref for the mock. A remote-tracking ref (`origin/...` or
+/// `refs/remotes/...`) resolves to `remote-tracking-sha` when that marker is
+/// present — the refresh model behind the stale-base harness leg: `git fetch`
+/// copies `remote-tip-sha` into it, so a pre-fetch resolve sees the stale value
+/// and a post-fetch resolve sees the fresh one. Every other ref is `mock-sha`.
+fn mock_tracking_sha(raw: &str) -> String {
+    if raw.starts_with("origin/") || raw.starts_with("refs/remotes/") {
+        if let Some(sha) = mock_read(&mock_file(&["remote-tracking-sha"])) {
+            let sha = sha.trim().to_string();
+            if !sha.is_empty() {
+                return sha;
+            }
+        }
+    }
+    "mock-sha".to_string()
+}
+
 /// Recursively list ref files under a store dir, returning `a/b`-joined names
 /// (the store nests `spec/5` as `spec/5` on disk).
 fn mock_list_refs(dir: &Path) -> Vec<String> {
@@ -1355,9 +1372,18 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
     let sub = args.first().copied().unwrap_or("");
     match sub {
         "fetch" => {
-            // git fetch origin main / git fetch origin spec/N — no-op; record FETCH_HEAD.
-            if let Some(branch) = args.get(2) {
-                mock_write(&mock_file(&["last-fetch"]), branch)?;
+            // git fetch origin / git fetch origin spec/N — refresh the
+            // remote-tracking ref model and record the attempt. `remote-tip-sha`
+            // holds the freshly-pushed tip; a fetch copies it into
+            // `remote-tracking-sha`, so the machine can prove its resolve happened
+            // AFTER the fetch (the stale-base harness leg).
+            let target = args.iter().skip(2).find(|a| !a.starts_with('-')).copied().unwrap_or("origin");
+            mock_write(&mock_file(&["last-fetch"]), target)?;
+            if let Some(fresh) = mock_read(&mock_file(&["remote-tip-sha"])) {
+                let fresh = fresh.trim().to_string();
+                if !fresh.is_empty() {
+                    mock_write(&mock_file(&["remote-tracking-sha"]), &fresh)?;
+                }
             }
             Ok(String::new())
         }
@@ -1387,6 +1413,17 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // git status --porcelain -- <paths>. The mock reports the named paths as
             // modified when the `maint-dirty` marker exists, so `maint-pr` can be
             // exercised offline (the test that drives it writes the marker).
+            // `align-dirty` models the serving root's uncommitted set for align-root
+            // (content = one path per line).
+            if cwd.is_empty() && mock_file(&["align-dirty"]).exists() {
+                let raw = mock_read(&mock_file(&["align-dirty"])).unwrap_or_default();
+                let out: Vec<String> = raw.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .map(|l| format!(" M {}", l))
+                    .collect();
+                return Ok(out.join("\n"));
+            }
             if mock_file(&["maint-dirty"]).exists() {
                 let mut out = String::new();
                 let mut after = false;
@@ -1444,12 +1481,18 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                 }
                 return Ok(project_root()?.to_string_lossy().to_string());
             }
-            // git rev-parse --verify --quiet refs/heads/<branch>
+            // git rev-parse --verify --quiet refs/heads/<branch> (or
+            // `refs/remotes/origin/<branch>` / `origin/<branch>` — the forms the
+            // align-root / serving guards use).
             if args.iter().any(|a| *a == "--verify") {
-                let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
-                let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
-                if mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
-                    return Ok("mock-sha".into());
+                let raw = args.last().copied().unwrap_or("");
+                let branch = raw
+                    .strip_prefix("refs/remotes/origin/")
+                    .or_else(|| raw.strip_prefix("refs/heads/"))
+                    .or_else(|| raw.strip_prefix("origin/"))
+                    .unwrap_or(raw);
+                if mock_ref_exists(branch) || mock_local_ref_exists(branch) {
+                    return Ok(mock_tracking_sha(raw));
                 }
                 anyhow::bail!("git rev-parse --verify: branch `{}` not found", branch);
             }
@@ -1459,9 +1502,11 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             }
             // Bare `git rev-parse <ref>` (e.g. `origin/main`, `origin/spec/N`, `HEAD`):
             // the mock has no commit graph, so every resolvable ref is the one
-            // synthetic commit id the mock store reports everywhere.
+            // synthetic commit id the mock store reports (`remote-tracking-sha` for a
+            // remote-tracking ref when the refresh model is armed).
             if args.iter().skip(1).any(|a| !a.starts_with('-')) {
-                return Ok("mock-sha".into());
+                let raw = args.iter().skip(1).find(|a| !a.starts_with('-')).copied().unwrap_or("");
+                return Ok(mock_tracking_sha(raw));
             }
             Ok(String::new())
         }
@@ -1508,6 +1553,12 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // `maint-base-diverged` marker models main having moved a gate-edited
             // path, driving the loud-failure (G-1976) branch deterministically.
             if args.iter().any(|a| *a == "--name-only") {
+                // align-root: the paths whose content differs between HEAD and the
+                // target commit (content = one path per line). Intersected with
+                // `align-dirty`, this models the overwrite-conflict refusal.
+                if mock_file(&["align-target-changed"]).exists() {
+                    return Ok(mock_read(&mock_file(&["align-target-changed"])).unwrap_or_default().trim().to_string());
+                }
                 if mock_file(&["maint-base-diverged"]).exists() {
                     return Ok("docs/ARCHITECTURE.md".to_string());
                 }
@@ -1832,31 +1883,42 @@ fn parent_spec(issue: u32) -> anyhow::Result<u32> {
 /// Resolve the base branch for sub-issue work: the spec integration branch
 /// `spec/<parent>` when the issue references a parent, otherwise `main`.
 ///
-/// Returns the REMOTE-tracking ref (`origin/spec/<N>`) so `create-worktree`
-/// always checks out the freshest pushed tip. The local `spec/<N>` branch ref
-/// lags the remote whenever the branch was created before the developer pushed
-/// (evidence uploads and dev pushes land on the remote only) — checking out the
-/// local ref silently produces a stale-base worktree (G-031: #2728, #2743).
-fn resolve_base(issue: u32) -> anyhow::Result<String> {
+/// Returns `(remote-tracking ref, resolved commit sha)` so `create-worktree`
+/// always checks out the freshest pushed tip AND reports the exact commit it
+/// handed over. The local `spec/<N>` branch ref lags the remote whenever the
+/// branch was created before the developer pushed (evidence uploads and dev
+/// pushes land on the remote only) — checking out the local ref silently produces
+/// a stale-base worktree (G-031: #2728, #2743).
+///
+/// A stale **remote-tracking** ref (`origin/spec/<N>` not refreshed since the last
+/// push) is just as harmful: the developer got a worktree at the stale tip and its
+/// push was rejected. The action therefore runs `git fetch origin` (bounded by
+/// `run_cmd`'s command timeout) BEFORE it resolves the ref, then reports the
+/// post-fetch commit sha.
+fn resolve_base(issue: u32) -> anyhow::Result<(String, String)> {
     // The developer works directly on the FEATURE issue (sub-issues were removed).
     // If the issue references a plan (a legacy sub-issue), map plan → feature;
     // otherwise the issue IS the feature and its branch is `spec/<issue>`.
-    match parent_spec(issue) {
+    let branch = match parent_spec(issue) {
         Ok(plan) => {
             // The sub-issue references the PLAN; the integration branch is named
             // after the FEATURE — map plan → feature (falling back to the plan
             // number) so `spec/<feature>` resolves instead of a phantom `spec/<plan>`.
-            let feature = plan_feature(plan).unwrap_or(plan);
-            let branch = format!("spec/{}", feature);
-            let _ = run_cmd("git", &["fetch", "origin", &branch]);
-            Ok(format!("origin/{}", branch))
+            format!("spec/{}", plan_feature(plan).unwrap_or(plan))
         }
-        Err(_) => {
-            let branch = format!("spec/{}", issue);
-            let _ = run_cmd("git", &["fetch", "origin", &branch]);
-            Ok(format!("origin/{}", branch))
-        }
-    }
+        Err(_) => format!("spec/{}", issue),
+    };
+    // Refresh the remote-tracking refs BEFORE resolving (both bounded). Without the
+    // full `fetch origin`, a remote-tracking `origin/spec/<N>` that predates the
+    // developer's push is handed out as the worktree base — the stale-base defect
+    // that produced a rejected push and a lineage repair.
+    let _ = run_cmd("git", &["fetch", "origin"]);
+    let _ = run_cmd("git", &["fetch", "origin", &branch]);
+    let base = format!("origin/{}", branch);
+    let commit = run_cmd("git", &["rev-parse", &base])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    Ok((base, commit))
 }
 
 /// Extract the text under a `## Heading` in a markdown body (until the next heading).
@@ -2898,6 +2960,128 @@ The machine never invents a conflict resolution: resolve these by hand on the sp
         "SPEC BRANCH SYNCED: merged origin/main ({}) into `{}` — new tip {}. Re-serve the root at this tip (G-032) before the tester runs: dev-env.ps1 -Action Up -Spec {}",
         short_sha(&main_sha), branch, short_sha(&tip), issue
     );
+    Ok(())
+}
+
+/// Parse one `git status --porcelain` line into the path it names (v1 format:
+/// `XY <path>`, or `XY <old> -> <new>` for a rename). Surrounding quotes from
+/// git's path quoting are stripped; empty entries are ignored.
+fn porcelain_path(line: &str) -> Option<String> {
+    let l = line.trim_end();
+    if l.len() < 4 {
+        return None;
+    }
+    let rest = &l[3..];
+    let path = match rest.find(" -> ") {
+        Some(i) => &rest[i + 4..],
+        None => rest,
+    };
+    let p = path.trim().trim_matches('"').trim();
+    if p.is_empty() { None } else { Some(p.to_string()) }
+}
+
+/// **`align-root`** — put the repo root ON the spec tip, safely, so the
+/// `implementation → testing` serving-currency guard (G-052) is satisfied without a
+/// hand-run preserve/align/restore dance.
+///
+/// The Orchestrator holds no `git checkout` grant, so every `→ testing` transition
+/// with the root on `main` used to cost a developer dispatch. This action performs
+/// the same move the machine is trusted to make, but NEVER force:
+/// - `git fetch origin` (bounded by `run_cmd`'s timeout), then resolve
+///   `origin/spec/<N>`;
+/// - REFUSE, naming every path, when an **uncommitted** path also differs between
+///   the current HEAD and the target — exactly the condition where a checkout would
+///   overwrite in-flight work (the failure that bit repeatedly);
+/// - otherwise `git checkout -B spec/<N> origin/spec/<N>` (no `-f`, no stash drop,
+///   no commit), then report HEAD, the preserved dirty set, and whether HEAD matches
+///   the tip;
+/// - legal only while the issue is in `implementation` or `testing`; orchestrator
+///   gated (see `actor_allowed`).
+fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    let phase = current_phase(issue)?;
+    if !matches!(phase, Phase::Implementation | Phase::Testing) {
+        anyhow::bail!(
+            "align-root is only valid while the issue is in implementation or testing (it is in {})",
+            phase.as_str()
+        );
+    }
+    let root = project_root()?;
+    // Refresh the remote-tracking refs first; the checkout below must be from the
+    // freshest pushed tip, never a stale `origin/spec/<N>`.
+    run_git_in(&root, &["fetch", "origin"])?;
+    let target = run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{}", branch)])
+        .or_else(|_| run_git_in(&root, &["rev-parse", "--verify", "--quiet", &format!("origin/{}", branch)]))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if target.is_empty() {
+        anyhow::bail!(
+            "cannot resolve `origin/{}` after `git fetch origin` — is the spec branch pushed?",
+            branch
+        );
+    }
+    let head_before = run_git_in(&root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
+    // The uncommitted paths in the serving working tree.
+    let dirty_raw = run_git_in(&root, &["status", "--porcelain"])?;
+    let dirty: Vec<String> = dirty_raw.lines().filter_map(porcelain_path).collect();
+    // The paths whose content differs between the current HEAD and the target. A
+    // dirty path that appears here is exactly one the checkout would overwrite.
+    let changed_raw = run_git_in(&root, &["diff", "--name-only", "HEAD", &target])?;
+    let changed: Vec<String> = changed_raw.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let conflicts: Vec<String> = dirty.iter()
+        .filter(|p| changed.iter().any(|c| c == *p))
+        .cloned()
+        .collect();
+    if !conflicts.is_empty() {
+        anyhow::bail!(
+            "REFUSED: aligning the repo root to `{}` ({}) would overwrite uncommitted work in {} path(s): {}. Commit, stash, or move that work first — align-root never forces (-f), never drops a stash, and never commits.",
+            branch,
+            short_sha(&target),
+            conflicts.len(),
+            conflicts.join(", ")
+        );
+    }
+    // No dirty path is touched by the checkout, so it is safe — and still no `-f`.
+    run_git_in(&root, &["checkout", "-B", &branch, &format!("origin/{}", branch)])?;
+    let head_after = run_git_in(&root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
+    let matches = !head_after.is_empty() && head_after.eq_ignore_ascii_case(&target);
+    let preserved = if dirty.is_empty() { "none".to_string() } else { dirty.join(", ") };
+    println!(
+        "ROOT ALIGNED: {} -> HEAD {} ({} from {}). Preserved uncommitted path(s): {}. Tree matches {} tip: {}",
+        branch,
+        head_after,
+        short_sha(&head_after),
+        short_sha(&head_before),
+        preserved,
+        branch,
+        if matches { "yes" } else { "no" }
+    );
+    append_event_attrs(
+        issue,
+        "root.aligned",
+        actor,
+        phase.as_str(),
+        "success",
+        &format!("aligned repo root to {} at {} (preserved: {})", branch, head_after, preserved),
+        &[
+            ("branch", branch.as_str()),
+            ("head", head_after.as_str()),
+            ("target", target.as_str()),
+            ("preserved", preserved.as_str()),
+            ("tree_matches_tip", if matches { "true" } else { "false" }),
+        ],
+    )?;
+    if !matches {
+        anyhow::bail!(
+            "ROOT ALIGNMENT INCOMPLETE: HEAD {} does not match the `{}` tip {}",
+            head_after,
+            branch,
+            target
+        );
+    }
     Ok(())
 }
 
@@ -3956,6 +4140,17 @@ fn short_sha(s: &str) -> String {
     s.chars().take(8).collect()
 }
 
+/// A bare commit sha accepted from a verdict's `Tested commit:` line: 7–40 ASCII
+/// hex characters (git's abbreviated..full range), with nothing else. The offline
+/// simulator's synthetic ref id (`mock-sha`) is accepted ONLY under `FREDO_MOCK_GH=1`
+/// — production verdicts must stamp a real hex sha.
+fn is_hex_sha(s: &str) -> bool {
+    if mock_mode() && s == "mock-sha" {
+        return true;
+    }
+    (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Absolute path of the env evidence record. Precedence: explicit
 /// `FREDO_EVIDENCE_FILE` (Names Block override), else `<env-root>/evidence.json`
 /// where the env root is `FREDO_ENV_ROOT` (resolved against the repo root) or the
@@ -4387,15 +4582,30 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
             || t.contains("tauri_webview_")
             || t.contains("getboundingclientrect")
     });
-    // B5: a verdict may stamp the commit it tested (`Tested commit: <sha>`). When
-    // present it must match the intended served commit, so a PASS written against a
-    // superseded head cannot advance (G-434). Legacy verdicts without the stamp fall
-    // back to the round guard only.
-    let tested_commit = latest.lines().find_map(|l| {
+    // B5: a verdict may stamp the commit it tested (`Tested commit: <sha>`). The
+    // commit is the LEADING whitespace-delimited token (backticks trimmed): verdicts
+    // routinely append context on the same line — `Tested commit: 34567eb5 (spec/3198
+    // tip; served tree …; env …)` — and comparing that WHOLE tail against a sha
+    // produced a nonsense refusal. Only a bare 7–40 hex sha is accepted; a malformed
+    // leading token is a hard refusal that names what it recognised and tells the
+    // tester to put the context on the next line.
+    let tested_line = latest.lines().find_map(|l| {
         let t = l.trim().trim_start_matches('\u{feff}').trim_start_matches('>').trim()
             .trim_start_matches('*').trim().to_lowercase();
         t.strip_prefix("tested commit:").map(|r| r.trim().trim_matches('*').trim().to_string())
     });
+    let (tested_commit, tested_parse_error) = match tested_line {
+        None => (None, None),
+        Some(rest) => {
+            let token = rest.split_whitespace().next().unwrap_or("").trim_matches('`').trim().to_string();
+            if is_hex_sha(&token) {
+                (Some(token.to_ascii_lowercase()), None)
+            } else {
+                let shown = if token.is_empty() { "(empty)".to_string() } else { token };
+                (None, Some(shown))
+            }
+        }
+    };
     let intended_commit = intended_served_commit(issue);
     // #3197: the intended commit is re-resolved from the LOCAL `spec/<N>` ref, and
     // `prune` legitimately deletes that ref once the squash merge removed its remote
@@ -4404,7 +4614,7 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     // fall back to the MERGED spec PR's head oid — gh's durable record of the last
     // published tip. A stale-head verdict still fails (the oids differ); a tip with
     // NO record at all refuses with a distinguishable "cannot resolve" error.
-    let tested_present = tested_commit.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let tested_present = tested_commit.is_some() || tested_parse_error.is_some();
     let merged_head = if intended_commit.is_empty() && tested_present {
         merged_spec_pr_head(issue)
     } else {
@@ -4416,20 +4626,29 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         !anchor.is_empty()
             && (anchor.eq_ignore_ascii_case(sha) || anchor.starts_with(sha) || sha.starts_with(anchor))
     };
-    let sha_ok = match tested_commit.as_deref() {
-        None | Some("") => true,
-        Some(_) => {
-            if !intended_commit.is_empty() {
-                sha_matches(&intended_commit)
-            } else {
-                // The live ref is gone: only the merged PR's recorded head can vouch
-                // for the verdict's stamped commit.
-                sha_matches(merged_head.as_deref().unwrap_or(""))
+    let sha_ok = if tested_parse_error.is_some() {
+        false
+    } else {
+        match tested_commit.as_deref() {
+            None | Some("") => true,
+            Some(_) => {
+                if !intended_commit.is_empty() {
+                    sha_matches(&intended_commit)
+                } else {
+                    // The live ref is gone: only the merged PR's recorded head can vouch
+                    // for the verdict's stamped commit.
+                    sha_matches(merged_head.as_deref().unwrap_or(""))
+                }
             }
         }
     };
     let ok = has_evidence && round_ok && sha_ok && verdict_pass && (policy_static || live_evidence);
-    let reason = if !has_evidence {
+    let reason = if let Some(recognised) = tested_parse_error.as_deref() {
+        format!(
+            "the verdict's `Tested commit:` leading token `{}` is not a commit sha (expected 7–40 hex characters) — put the context on the next line, e.g. `Tested commit: <sha>` then `Tested on: <context>`",
+            recognised
+        )
+    } else if !has_evidence {
         "no tester Evidence / Tests Runs comment found on the feature issue".to_string()
     } else if !round_ok {
         format!("evidence is from round {} but the issue is on round {} — the tester must post fresh `## Tests Runs (round {})` evidence for the current round", evidence_round, current_round, current_round)
@@ -5368,23 +5587,18 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             if !["Status"].contains(&prefix) {
                 anyhow::bail!("invalid --prefix: {} (the only agent-facing prefix is `Status`)", prefix);
             }
-            // The agent drafts its comment as `.opencode/tmp/<issue>/<prefix>.md`
-            // (lowercased prefix) using the comment templates in
-            // `docs/agentic-pipeline/templates/*-comment-template.md`. The state
-            // machine reads that file and posts it — `--body-file` is optional and
-            // overrides the conventional path.
+            // RULE: **explicit `--body-file` only.** The implicit
+            // `.opencode/tmp/<issue>/status.md` default is RETIRED: a draft left on
+            // disk from an earlier (often withdrawn) amendment could be published by
+            // a later `comment` that never named its body — a retracted decision was
+            // republished exactly that way. The caller must name the body it authored
+            // for THIS call, so the machine can never pick up a foreign draft.
             let body_file = match a.body_file.as_deref() {
                 Some(f) => f.to_string(),
-                None => {
-                    let conventional = project_root()?
-                        .join(".opencode").join("tmp").join(issue.to_string())
-                        .join(format!("{}.md", prefix.to_lowercase()));
-                    if conventional.exists() {
-                        conventional.to_string_lossy().to_string()
-                    } else {
-                        anyhow::bail!("comment requires --body-file (or draft `.opencode/tmp/{}/{}.md` per the comment templates)", issue, prefix.to_lowercase());
-                    }
-                }
+                None => anyhow::bail!(
+                    "comment requires --body-file <path> — the implicit `.opencode/tmp/{}/status.md` default is retired (explicit-body-file rule) so a withdrawn/foreign draft can never be republished by accident; pass the draft you authored for this comment",
+                    issue
+                ),
             };
             let body = std::fs::read_to_string(&body_file)?;
             // A2A triage-file guard: the `.opencode/tmp/<issue>/triage.md` A2A
@@ -6065,12 +6279,23 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // #3197: anchor a relative path at the REPO ROOT so the worktree is
             // created (and later removed) where the developer will actually `cd`.
             let path = resolve_worktree_path(&path_arg)?;
-            let base = resolve_base(issue)?;
+            let (base, base_commit) = resolve_base(issue)?;
             let (ok, reason) = branch_guard(issue)?;
             if !ok {
                 append_event(issue, "create-worktree", &a.actor, "triage", "blocked", &reason)?;
                 println!("BLOCKED: {}", reason);
                 return Ok(());
+            }
+            // The resolved commit IS the handover: a worktree cannot be created from
+            // a ref that does not resolve, and an empty sha would make a success line
+            // lie about what the developer received.
+            if base_commit.is_empty() {
+                let reason = format!(
+                    "cannot resolve `{}` to a commit after `git fetch origin` — push the spec branch before creating a worktree",
+                    base
+                );
+                report_worktree_failure(issue, a, "create-worktree", &path, &reason)?;
+                anyhow::bail!("create-worktree: {}", reason);
             }
             // G-201: idempotent on an existing path. `git worktree prune` clears
             // stale registrations (a prior run removed the dir without
@@ -6089,10 +6314,13 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     report_worktree_failure(issue, a, "create-worktree", &path, &e)?;
                     anyhow::bail!("create-worktree: existing path at {} is not a usable worktree: {}", path, e);
                 }
-                println!("WORKTREE EXISTS (reused): {}", path);
+                let wt_head = run_cmd("git", &["-C", &path, "rev-parse", "HEAD"])
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                println!("WORKTREE EXISTS (reused): {} @ {}", path, wt_head);
                 append_event_attrs(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success",
-                    &format!("reused existing worktree {}", path),
-                    &[("worktree_path", &path), ("verified", "git-marker+toplevel")])?;
+                    &format!("reused existing worktree {} at {}", path, wt_head),
+                    &[("worktree_path", &path), ("commit", wt_head.as_str()), ("base", base.as_str()), ("verified", "git-marker+toplevel")])?;
             } else {
                 if wt.exists() {
                     // H3: a non-empty leftover is only swept on an explicit
@@ -6135,10 +6363,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                         reason, base
                     );
                 }
-                println!("WORKTREE CREATED (detached at {}): {}", base, path);
+                println!("WORKTREE CREATED (detached at {} @ {}): {}", base, base_commit, path);
                 append_event_attrs(issue, "create-worktree", &a.actor, phase_of(a)?.as_str(), "success",
-                    &format!("detached worktree {} at {}", path, base),
-                    &[("worktree_path", &path), ("base", &base), ("verified", "git-marker+toplevel")])?;
+                    &format!("detached worktree {} at {} ({})", path, base, base_commit),
+                    &[("worktree_path", &path), ("base", &base), ("commit", base_commit.as_str()), ("verified", "git-marker+toplevel")])?;
             }
         }
         "remove-worktree" => {
@@ -6851,6 +7079,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let issue = req_issue(a)?;
             sync_spec_branch(issue)?;
         }
+        "align-root" => {
+            // Put the repo root ON the spec tip so `implementation → testing` can
+            // pass its serving-currency guard (G-052). The Orchestrator holds no
+            // `git checkout` grant, so the machine performs the safe move itself:
+            // refuse if any uncommitted path would be overwritten, never `-f`.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            align_root(issue, &a.actor)?;
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -6902,6 +7143,9 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         // The spec-branch ⇄ trunk sync (#3198): the machine merges origin/main into
         // the live spec branch because no agent's sandbox grants `git merge`.
         "sync-spec-branch" => actor == "orchestrator",
+        // Root alignment to the spec tip (G-052): the machine performs the checkout
+        // the Orchestrator has no grant to run itself.
+        "align-root" => actor == "orchestrator",
         "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
         "hardening-lock-open-issues" => actor == "machinist",
         "interaction-limit" => actor == "machinist",
