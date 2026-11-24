@@ -965,7 +965,11 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
                     let pr_state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("");
                     let match_state = if state == "merged" { pr_state == "MERGED" } else { pr_state == "OPEN" };
                     if pr_head == head && match_state {
-                        nums.push(serde_json::json!({ "number": n }));
+                        // `headRefOid` is gh's durable record of the branch tip that
+                        // was merged — the anchor `verification_status` falls back to
+                        // when `prune` already deleted the `spec/<N>` ref (#3197).
+                        let oid = pr.get("headRefOid").and_then(|v| v.as_str()).unwrap_or("mock-sha");
+                        nums.push(serde_json::json!({ "number": n, "headRefOid": oid }));
                     }
                 }
             }
@@ -978,8 +982,12 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
                 anyhow::bail!("mock gh pr view #{}: not found", n);
             }
             let pr = mock_read_pr(n);
+            // `mergeable` follows the `spec-merge-conflict` marker so the
+            // `sync-spec-branch` post-merge verification is exercisable offline.
+            let mergeable = if mock_file(&["spec-merge-conflict"]).exists() { "CONFLICTING" } else { "MERGEABLE" };
             let out = serde_json::json!({
                 "state": pr.get("state").cloned().unwrap_or_else(|| serde_json::json!("OPEN")),
+                "mergeable": mergeable,
                 "mergeStateStatus": pr.get("mergeStateStatus").cloned().unwrap_or_else(|| serde_json::json!("CLEAN")),
                 "statusCheckRollup": pr.get("statusCheckRollup").cloned().unwrap_or_else(|| serde_json::json!([])),
             });
@@ -1002,9 +1010,17 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
                 }
             }
             let n = mock_next_counter("pr");
+            // `headRefOid` mirrors what mock git reports for the branch tip
+            // (`mock-sha`) — the merged-PR anchor for the #3197 close-guard fallback.
+            // `pr-head-sha` overrides it so a test can model a superseded head.
+            let head_oid = mock_read(&mock_file(&["pr-head-sha"]))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "mock-sha".to_string());
             let pr = serde_json::json!({
                 "number": n,
                 "head": head,
+                "headRefOid": head_oid,
                 "base": base,
                 "title": title,
                 "body": body,
@@ -1437,6 +1453,28 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                 }
                 anyhow::bail!("git rev-parse --verify: branch `{}` not found", branch);
             }
+            // git rev-parse --abbrev-ref HEAD → the simulated checkout branch.
+            if args.iter().any(|a| *a == "--abbrev-ref") {
+                return Ok("spec/mock".into());
+            }
+            // Bare `git rev-parse <ref>` (e.g. `origin/main`, `origin/spec/N`, `HEAD`):
+            // the mock has no commit graph, so every resolvable ref is the one
+            // synthetic commit id the mock store reports everywhere.
+            if args.iter().skip(1).any(|a| !a.starts_with('-')) {
+                return Ok("mock-sha".into());
+            }
+            Ok(String::new())
+        }
+        "merge" => {
+            // git merge --no-ff -m <msg> origin/main — the `sync-spec-branch` merge in
+            // its throwaway worktree. `spec-merge-conflict` makes it conflict so the
+            // abort-and-report path is exercised offline; `--abort` always no-ops.
+            if args.iter().any(|a| *a == "--abort") {
+                return Ok(String::new());
+            }
+            if mock_file(&["spec-merge-conflict"]).exists() {
+                anyhow::bail!("merge conflict");
+            }
             Ok(String::new())
         }
         "checkout" => {
@@ -1456,6 +1494,15 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "diff" => {
+            // git diff --name-only --diff-filter=U — the unmerged paths of a failed
+            // merge (the `sync-spec-branch` conflict report). `spec-merge-conflict`
+            // declares the conflict and its paths so the loud refusal is testable.
+            if args.iter().any(|a| a.starts_with("--diff-filter")) {
+                if mock_file(&["spec-merge-conflict"]).exists() {
+                    return Ok("docs/SETUP.md\nFAQ.md".to_string());
+                }
+                return Ok(String::new());
+            }
             // git diff --name-only HEAD origin/main -- <paths>: the mock does not
             // model commit trees, so an identical tree is the default. The
             // `maint-base-diverged` marker models main having moved a gate-edited
@@ -1617,6 +1664,12 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
         "merge-base" => {
             // git merge-base --is-ancestor <name> main
             if args.iter().any(|a| *a == "--is-ancestor") {
+                // `spec-behind-main` declares a spec branch that does NOT descend from
+                // the trunk (the #3198 shape: the trunk advanced under a live spec),
+                // driving the G-421 descent re-check deterministically.
+                if mock_file(&["spec-behind-main"]).exists() {
+                    anyhow::bail!("git merge-base --is-ancestor: origin/main is not an ancestor");
+                }
                 return Ok(String::new());
             }
             Ok(String::new())
@@ -2416,6 +2469,26 @@ fn merged_spec_pr_count(issue: u32) -> anyhow::Result<usize> {
         .unwrap_or(0))
 }
 
+/// The head commit (`headRefOid`) of the MERGED spec PR whose head is
+/// `spec/<issue>` — gh's durable record of the branch's last published tip.
+///
+/// This is the anchor the close/reach guard falls back to when the local
+/// `spec/<N>` ref no longer resolves: `prune` deletes it once the squash merge
+/// removed its remote counterpart, so re-reading the ref at `close-issue` time
+/// found nothing and compared the verdict's `Tested commit:` against an empty
+/// string (#3197: `BLOCKED: … is not the intended served commit ()`). `None` when
+/// no merged PR records the tip (an unmerged/lost branch) or the read fails.
+fn merged_spec_pr_head(issue: u32) -> Option<String> {
+    let head = format!("spec/{}", issue);
+    let out = run_gh(&["pr", "list", "--head", &head, "--state", "merged", "--json", "number,headRefOid"]).ok()?;
+    serde_json::from_str::<serde_json::Value>(&out).ok()?
+        .as_array()?
+        .iter()
+        .find_map(|p| p.get("headRefOid").and_then(|v| v.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Commits reachable from `spec/<issue>` but not from `main` (`None` when the
 /// lookup fails — the branch is missing, or a fetch failed). Shared by the
 /// implementation exit guard and the spec-PR side-effect so both read one signal.
@@ -2652,6 +2725,180 @@ fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     run_gh(&["pr", "merge", pr, "--squash"])?;
     println!("SPEC PR MERGED: #{}", pr);
     Ok(Some(format!("spec PR #{} merged", pr)))
+}
+
+/// The number of the OPEN spec PR for `spec/<issue>` (`None` when there is none).
+fn open_spec_pr_number(issue: u32) -> Option<String> {
+    let head = format!("spec/{}", issue);
+    let out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"]).ok()?;
+    serde_json::from_str::<serde_json::Value>(&out).ok()?
+        .as_array()?.first()?
+        .get("number")?.as_u64()
+        .map(|n| n.to_string())
+}
+
+/// A PR's `mergeable` state (`gh pr view <n> --json mergeable`): `MERGEABLE` /
+/// `CONFLICTING` / `UNKNOWN` (GitHub computes it asynchronously). `None` when the
+/// read fails — a missing/unknown value never fails a sync on its own.
+fn pr_mergeable(pr: &str) -> Option<String> {
+    let out = run_gh(&["pr", "view", pr, "--json", "mergeable"]).ok()?;
+    serde_json::from_str::<serde_json::Value>(&out).ok()?
+        .get("mergeable")?.as_str()
+        .map(|s| s.to_string())
+}
+
+/// G-421 descent RE-CHECK (#3198): refuse to enter `testing` when the trunk
+/// advanced under a live spec branch.
+///
+/// `ensure_spec_branch` enforces descent only at CREATION (a stale *local* ref is
+/// reseeded onto `origin/main`). Nothing re-checked it afterwards, so a spec cut
+/// before a trunk merge walked into a test round with a `CONFLICTING` spec PR
+/// (#3198: `spec/3198` was cut from `main@696f5a6`; #3197 then rewrote the same
+/// OpenCode doc passages, leaving PR #3205 `mergeable: CONFLICTING`). Refuse with a
+/// pointer to `sync-spec-branch` — the machine action that merges the trunk in.
+fn spec_branch_descends_from_main(issue: u32) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    if !remote_branch_exists(&branch) {
+        // No branch on origin: the post-merge restart path (`ensure_spec_pr` →
+        // `maybe_recreate_merged_spec_branch`) owns the recreate-or-refuse decision.
+        return Ok(());
+    }
+    let _ = run_cmd("git", &["fetch", "origin", "main"]);
+    let _ = run_cmd("git", &["fetch", "origin", &branch]);
+    run_cmd("git", &["merge-base", "--is-ancestor", "origin/main", &format!("origin/{}", branch)])
+        .map(|_| ())
+        .map_err(|_| anyhow::anyhow!(
+            "`{}` does not descend from `origin/main` — the trunk advanced under the spec branch, so its PR is CONFLICTING (or will be). \
+Run `rust-script .opencode/scripts/pipeline-state.rs --issue {} --agent orchestrator --action sync-spec-branch` \
+(it merges origin/main into the branch and fails loudly on conflicts), then re-serve the root (G-032) and retry",
+            branch, issue
+        ))
+}
+
+/// `sync-spec-branch` (#3198): merge `origin/main` into `spec/<issue>` in a
+/// throwaway detached worktree so the open spec PR becomes mergeable again.
+///
+/// **Why the machine runs git:** the resolution path was closed to every agent. The
+/// developer is explicitly denied `git merge main*`/`git merge master*` (and
+/// `git merge origin/main` falls to the catch-all deny); the Orchestrator holds no
+/// `git checkout`/`git merge` at all; and permission grants are restart-inert, so a
+/// sandbox edit cannot unblock the run that needs it. `playbooks/orchestrator.md`
+/// step 6 still instructs the `fetch && merge && push` sync — this action is its
+/// executable form, and it works in the run that found the problem.
+///
+/// **Contract:**
+/// - orchestrator-gated by `actor_allowed`; legal only in `implementation`/`testing`;
+/// - `spec/<N>` must exist on `origin` (a merged+deleted branch is the post-merge
+///   recreate path, not a sync);
+/// - the merge is a MERGE (`--no-ff -m …`, published history preserved — never a
+///   rebase, never a force-push), performed in a DETACHED throwaway worktree so the
+///   repo root's HEAD/index/working tree are never moved (the served tree keeps
+///   serving);
+/// - nothing is auto-resolved: on conflict the merge is ABORTED, the published ref is
+///   asserted unchanged, and the action fails loudly naming the conflicted paths;
+/// - on a clean merge it pushes `HEAD:spec/<N>`, verifies PR `mergeable` is no longer
+///   `CONFLICTING`, records `spec-branch.synced` (`branch`/`main`/`tip`), and tells
+///   the caller to re-serve the root (G-032) before the tester runs.
+fn sync_spec_branch(issue: u32) -> anyhow::Result<()> {
+    let branch = format!("spec/{}", issue);
+    let phase = current_phase(issue)?;
+    if !matches!(phase, Phase::Implementation | Phase::Testing) {
+        anyhow::bail!(
+            "sync-spec-branch is only valid while the issue is in implementation or testing (it is in {})",
+            phase.as_str()
+        );
+    }
+    if !remote_branch_exists(&branch) {
+        anyhow::bail!(
+            "`{}` does not exist on origin — nothing to sync (a post-merge restart recreates it from origin/main)",
+            branch
+        );
+    }
+    run_cmd("git", &["fetch", "origin", "main"])?;
+    run_cmd("git", &["fetch", "origin", &branch])?;
+    let main_sha = run_cmd("git", &["rev-parse", "origin/main"])?.trim().to_string();
+    let pre_tip = run_cmd("git", &["rev-parse", &format!("origin/{}", branch)])?.trim().to_string();
+    if run_cmd("git", &["merge-base", "--is-ancestor", "origin/main", &format!("origin/{}", branch)]).is_ok() {
+        println!(
+            "SPEC BRANCH IN SYNC: `{}` already contains origin/main ({}) — nothing to merge",
+            branch, short_sha(&main_sha)
+        );
+        return Ok(());
+    }
+    let root = project_root()?;
+    let wt = root.join(".worktrees").join(format!("sync-{}-{}", issue, uuid::Uuid::new_v4()));
+    let wt_str = wt.to_string_lossy().to_string();
+    run_cmd("git", &["worktree", "add", "--detach", &wt_str, &format!("origin/{}", branch)])
+        .map_err(|e| anyhow::anyhow!("cannot create the sync worktree at {}: {}", wt_str, e))?;
+
+    let merge_msg = format!("merge origin/main into {}", branch);
+    let merge = run_git_in(&wt, &["merge", "--no-ff", "-m", &merge_msg, "origin/main"]);
+    if let Err(e) = merge {
+        // A machine must never invent a resolution: collect the unmerged paths,
+        // abort, prove the published ref never moved, clean the worktree, and fail.
+        let conflicted = run_git_in(&wt, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+        let _ = run_git_in(&wt, &["merge", "--abort"]);
+        let post_tip = run_cmd("git", &["rev-parse", &format!("origin/{}", branch)]).unwrap_or_default();
+        let _ = remove_worktree_robust(&wt_str);
+        if post_tip.trim() != pre_tip.trim() {
+            anyhow::bail!(
+                "sync ABORTED: the merge failed AND `origin/{}` moved ({} -> {}) — a human must inspect the branch before anything else runs",
+                branch, short_sha(&pre_tip), short_sha(post_tip.trim())
+            );
+        }
+        let paths: Vec<String> = conflicted.lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        anyhow::bail!(
+            "sync ABORTED — `{}` conflicts with origin/main ({}); the published branch is unchanged at {}. Conflicted path(s): {}. \
+The machine never invents a conflict resolution: resolve these by hand on the spec branch, then re-run `--action sync-spec-branch` ({})",
+            branch, short_sha(&main_sha), short_sha(&pre_tip),
+            if paths.is_empty() {
+                "(git reported a failed merge with no unmerged path list)".to_string()
+            } else {
+                paths.join(", ")
+            },
+            e
+        );
+    }
+
+    let tip = run_git_in(&wt, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
+    run_git_in(&wt, &["push", "origin", &format!("HEAD:{}", branch)]).map_err(|e| {
+        let _ = remove_worktree_robust(&wt_str);
+        anyhow::anyhow!(
+            "merged origin/main cleanly but pushing HEAD:{} failed: {} (the published branch is unchanged — nothing half-landed)",
+            branch, e
+        )
+    })?;
+    let _ = remove_worktree_robust(&wt_str);
+
+    // Verify the PR actually became mergeable. A read failure or `UNKNOWN` (GitHub
+    // computes mergeability asynchronously) is inconclusive, never fatal.
+    if let Some(pr) = open_spec_pr_number(issue) {
+        if let Some(state) = pr_mergeable(&pr) {
+            if state.eq_ignore_ascii_case("CONFLICTING") {
+                anyhow::bail!(
+                    "merged origin/main into `{}` and pushed the new tip, but PR #{} still reports CONFLICTING — inspect it before the test round",
+                    branch, pr
+                );
+            }
+        }
+    }
+    append_event_attrs(
+        issue,
+        "spec-branch.synced",
+        "orchestrator",
+        phase.as_str(),
+        "success",
+        &format!("merged origin/main ({}) into {} -> tip {}", short_sha(&main_sha), branch, short_sha(&tip)),
+        &[("branch", branch.as_str()), ("main", main_sha.as_str()), ("tip", tip.as_str())],
+    )?;
+    println!(
+        "SPEC BRANCH SYNCED: merged origin/main ({}) into `{}` — new tip {}. Re-serve the root at this tip (G-032) before the tester runs: dev-env.ps1 -Action Up -Spec {}",
+        short_sha(&main_sha), branch, short_sha(&tip), issue
+    );
+    Ok(())
 }
 
 /// The post-audit **SPEC MAINT PR** — replaces the orchestrator's former direct
@@ -3175,29 +3422,57 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
 /// Persist one feature-domain test suite `.opencode/tests/<feature>/` to `main`.
 /// Returns the number of files persisted (0 when the suite does not exist yet).
 /// Reused by the `tests-commit` action and the transition side-effect.
+///
+/// The WHOLE feature directory is persisted — every regular file at any depth, not
+/// just top-level `*.md`. A QA suite legitimately carries executable levers
+/// (`scripts/*.ps1`) and fixtures (`fixtures/**`); persisting only markdown dropped
+/// them from `main` SILENTLY and forced a developer to commit them on the spec
+/// branch instead (#3197). Silence is the defect: anything that cannot be persisted
+/// is collected and the call REFUSES LOUDLY, naming every unpersisted path.
 fn persist_tests(feature: &str) -> anyhow::Result<usize> {
     let dir = project_root()?.join(".opencode").join("tests").join(feature);
     if !dir.is_dir() {
         return Ok(0);
     }
-    let mut files: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file() && e.path().extension().map(|x| x == "md").unwrap_or(false))
-        .collect();
-    files.sort_by_key(|e| e.file_name());
+    // Recursive, order-stable walk of the feature directory.
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    walk(&dir, &mut files);
+    files.sort();
     if files.is_empty() {
         return Ok(0);
     }
     let repo = gh_repo()?;
     let mut persisted: Vec<std::path::PathBuf> = Vec::with_capacity(files.len());
-    for entry in &files {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let rel = format!(".opencode/tests/{}/{}", feature, name);
-        let bytes = std::fs::read(&path)?;
+    let mut failed: Vec<String> = Vec::new();
+    for path in &files {
+        let rel_suffix = path.strip_prefix(&dir).unwrap_or(path).to_string_lossy().replace('\\', "/");
+        let rel = format!(".opencode/tests/{}/{}", feature, rel_suffix);
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => { failed.push(format!("{} (read failed: {})", rel, e)); continue; }
+        };
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, name))?;
-        persisted.push(path);
+        match upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, rel_suffix)) {
+            Ok(()) => persisted.push(path.clone()),
+            Err(e) => failed.push(format!("{} ({})", rel, e)),
+        }
+    }
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "{} of {} suite path(s) under .opencode/tests/{} were NOT persisted to main — nothing below is on `main`: {}",
+            failed.len(), files.len(), feature, failed.join(", ")
+        );
     }
     println!("TESTS COMMITTED: feature '{}' ({} file(s)) to main", feature, files.len());
     // G-200: the Contents-API write advances `origin/main` while the ROOT
@@ -3606,7 +3881,15 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
 /// `spec/<issue>` or no HEAD resolves.
 fn serving_record(issue: u32) -> Option<(String, String, String)> {
     if mock_mode() {
-        return Some(("repo root".to_string(), format!("spec/{}", issue), "mock-sha".to_string()));
+        // Mock harness: the simulated root sits on `spec/<issue>` only while the
+        // mock refs exist — mirroring the real per-issue/per-root check. Without
+        // this gate the mock ALWAYS reported a served HEAD, so the "the spec ref is
+        // gone" close path (#3197) could never be exercised offline.
+        let branch = format!("spec/{}", issue);
+        if !mock_ref_exists(&branch) && !mock_local_ref_exists(&branch) {
+            return None;
+        }
+        return Some(("repo root".to_string(), branch, "mock-sha".to_string()));
     }
     let repo_root = project_root().ok()?;
     let checkout = serving_checkout_root(issue).ok()?;
@@ -4114,14 +4397,35 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
         t.strip_prefix("tested commit:").map(|r| r.trim().trim_matches('*').trim().to_string())
     });
     let intended_commit = intended_served_commit(issue);
+    // #3197: the intended commit is re-resolved from the LOCAL `spec/<N>` ref, and
+    // `prune` legitimately deletes that ref once the squash merge removed its remote
+    // counterpart. Comparing against the resulting EMPTY string made a merged spec
+    // unclosable (`… is not the intended served commit ()`), so when the ref is gone
+    // fall back to the MERGED spec PR's head oid — gh's durable record of the last
+    // published tip. A stale-head verdict still fails (the oids differ); a tip with
+    // NO record at all refuses with a distinguishable "cannot resolve" error.
+    let tested_present = tested_commit.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let merged_head = if intended_commit.is_empty() && tested_present {
+        merged_spec_pr_head(issue)
+    } else {
+        None
+    };
+    let sha_matches = |anchor: &str| -> bool {
+        let anchor = anchor.trim();
+        let sha = tested_commit.as_deref().unwrap_or("").trim();
+        !anchor.is_empty()
+            && (anchor.eq_ignore_ascii_case(sha) || anchor.starts_with(sha) || sha.starts_with(anchor))
+    };
     let sha_ok = match tested_commit.as_deref() {
         None | Some("") => true,
-        Some(sha) => {
-            let sha = sha.trim();
-            !intended_commit.is_empty()
-                && (intended_commit.eq_ignore_ascii_case(sha)
-                    || intended_commit.starts_with(sha)
-                    || sha.starts_with(&intended_commit))
+        Some(_) => {
+            if !intended_commit.is_empty() {
+                sha_matches(&intended_commit)
+            } else {
+                // The live ref is gone: only the merged PR's recorded head can vouch
+                // for the verdict's stamped commit.
+                sha_matches(merged_head.as_deref().unwrap_or(""))
+            }
         }
     };
     let ok = has_evidence && round_ok && sha_ok && verdict_pass && (policy_static || live_evidence);
@@ -4130,7 +4434,15 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     } else if !round_ok {
         format!("evidence is from round {} but the issue is on round {} — the tester must post fresh `## Tests Runs (round {})` evidence for the current round", evidence_round, current_round, current_round)
     } else if !sha_ok {
-        format!("the verdict's `Tested commit:` ({}) is not the intended served commit ({}) — re-test at the current head and stamp the verdict", tested_commit.as_deref().unwrap_or(""), short_sha(&intended_commit))
+        let tested = tested_commit.as_deref().unwrap_or("");
+        if !intended_commit.is_empty() {
+            format!("the verdict's `Tested commit:` ({}) is not the intended served commit ({}) — re-test at the current head and stamp the verdict", tested, short_sha(&intended_commit))
+        } else {
+            match merged_head.as_deref() {
+                Some(h) => format!("the verdict's `Tested commit:` ({}) is not the head the MERGED spec PR recorded ({}) — a verdict for a superseded head cannot reach `done`; re-test at the current head and stamp the verdict", tested, short_sha(h)),
+                None => format!("cannot resolve the intended served commit for #{issue}: no serving checkout, no `spec/{issue}` ref (local or origin) and no MERGED spec PR records its tip — the verdict's `Tested commit:` ({}) cannot be verified; re-serve the spec head (dev-env.ps1 -Action Up -Spec {issue}) and re-stamp the verdict", tested),
+            }
+        }
     } else if !verdict_pass {
         "tester verdict is not PASS (no `Verdict: PASS` line) — a failing feature must route back to implementation, not audit".to_string()
     } else if !policy_static && !live_evidence {
@@ -5571,6 +5883,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                     if let Some(n) = ensure_spec_branch(issue)? { notes.push(n); }
                 }
                 Phase::Testing => {
+                    // G-421 descent RE-CHECK (#3198): a stale spec branch must not
+                    // enter a test round — sync it with the trunk first (the machine
+                    // action, since no agent holds `git merge`).
+                    spec_branch_descends_from_main(issue)?;
                     if let Some(n) = ensure_spec_pr(issue)? { notes.push(n); }
                 }
                 Phase::Audit => { if phase == Phase::Testing { if let Some(n) = ensure_spec_pr_merged(issue)? { notes.push(n); } } }
@@ -5944,12 +6260,12 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("tests-commit: --feature <name> required (lowercase-kebab, ascii) — resolves .opencode/tests/<feature>/"))?;
             let dir = project_root()?.join(".opencode").join("tests").join(feature);
             if !dir.is_dir() {
-                anyhow::bail!("tests-commit: no test suite at {} (create .opencode/tests/<feature>/*.md first)", dir.display());
+                anyhow::bail!("tests-commit: no test suite at {} (create .opencode/tests/<feature>/ first)", dir.display());
             }
             let phase = phase_of(a)?;
             let count = persist_tests(feature)?;
             if count == 0 {
-                anyhow::bail!("tests-commit: no .md files in {} ", dir.display());
+                anyhow::bail!("tests-commit: {} is empty — the whole feature directory (markdown, `scripts/**`, `fixtures/**`) is persisted, so seed at least one file", dir.display());
             }
             append_event(issue, "tests-commit", &a.actor, phase.as_str(), "success", &format!("feature '{}' ({} file(s)) -> main", feature, count))?;
         }
@@ -6521,6 +6837,20 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             let phase = phase_of(a)?.as_str().to_string();
             post_audit_maint_pr(issue, &a.actor, &phase, a.title.as_deref(), a.body_file.as_deref())?;
         }
+        "sync-spec-branch" => {
+            // Spec branch ⇄ trunk sync (#3198): the trunk advanced under a live spec
+            // branch, so its PR is CONFLICTING. No agent's sandbox grants `git
+            // merge`, and grants are restart-inert — the machine performs the merge
+            // itself (throwaway worktree, merge commit, abort-and-report on
+            // conflict). See `sync_spec_branch`.
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            sync_spec_branch(issue)?;
+        }
         other => anyhow::bail!("unknown action: {}", other),
     }
     Ok(())
@@ -6569,6 +6899,9 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         // The post-audit gate opens the single SPEC MAINT PR (the gate runner is
         // the orchestrator).
         "maint-pr" => actor == "orchestrator",
+        // The spec-branch ⇄ trunk sync (#3198): the machine merges origin/main into
+        // the live spec branch because no agent's sandbox grants `git merge`.
+        "sync-spec-branch" => actor == "orchestrator",
         "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
         "hardening-lock-open-issues" => actor == "machinist",
         "interaction-limit" => actor == "machinist",
