@@ -244,6 +244,12 @@ pub fn run() {
                 let _ = window.set_title(&env_config.window_title());
             }
 
+            // Spec #3192 ST-1 — the resident shell's ONE policy bit. It starts
+            // `false`, so the `RunEvent::ExitRequested` gate below still lets a
+            // window close exit exactly as before (inert-safe); the tray (ST-2)
+            // flips it once its icon is really built (R-2d).
+            app.manage(infrastructure::app_lifecycle::ResidentShellState::default());
+
             // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
             // `FREDO_DATA_DIR` redirects the app-data dir to an in-repo fixture; the
             // managed-PG install dir + lock stay
@@ -1145,6 +1151,14 @@ pub fn run() {
             // without reloading (R-1.5). No database, no file, and nothing at
             // startup — the host's theme effect is the only caller.
             applications::installed_apps::theme_push::installed_apps_push_theme,
+            // Spec #3192 ST-1 — the resident shell (`infrastructure::app_lifecycle`):
+            // `open_main_window` focuses the `main` window or rebuilds it when it was
+            // destroyed (the SAME `ensure_main_window` the tray Open item and the
+            // second-launch probe call), and `quit_app` dispatches the SAME `quit()`
+            // the tray Quit item calls. `quit_app` is an IPC seam only — no visible
+            // control is wired to it, and nothing here runs at startup (R-5.5).
+            infrastructure::app_lifecycle::open_main_window,
+            infrastructure::app_lifecycle::quit_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
@@ -1155,6 +1169,31 @@ pub fn run() {
             if let tauri::RunEvent::Ready = event {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_title(&window_title);
+                }
+            }
+            // Spec #3192 ST-1 (R-1a/R-2d/R-3) — the resident exit policy. This is
+            // the ONE place exit is gated; the DEFAULT close of `main` stays the
+            // destroy path (no `CloseRequested` handler is added), and the app
+            // keeps ingesting with no window.
+            //
+            // The decision is pure and unit-pinned in
+            // `infrastructure::app_lifecycle::should_prevent_exit`:
+            //   * `code: Some(_)` — a programmatic exit (`AppHandle::exit`, i.e.
+            //     `quit()` / the tray Quit item) is ALWAYS allowed, so the
+            //     bounded `RunEvent::Exit` teardown below still runs (R-3);
+            //   * `code: None` — the last-window-closed path — is prevented ONLY
+            //     while a tray is installed, so no tray degrades to today's
+            //     behaviour instead of orphaning a windowless process (R-2d);
+            //   * on macOS a system Quit (⌘Q) arrives as `code: None` too, and
+            //     the recorded decision is that macOS ⌘Q quits — see
+            //     `SYSTEM_QUIT_SHARES_NONE_CODE` for the full rationale.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
+                let tray_installed = app
+                    .try_state::<infrastructure::app_lifecycle::ResidentShellState>()
+                    .map(|state| state.tray_installed())
+                    .unwrap_or(false);
+                if infrastructure::app_lifecycle::should_prevent_exit(*code, tray_installed) {
+                    api.prevent_exit();
                 }
             }
             // Spec #3141: the app-exit hook. Stop the in-process companion

@@ -168,6 +168,12 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // mirror (serve-time injection reads it) and eval the theme into every open
     // `installed-*` window.
     "installed_apps_push_theme",
+    // Spec #3192 ST-1 — the resident shell's command surface: focus-or-rebuild
+    // the `main` window (the tray / second-launch primitive) and quit through the
+    // SAME `quit()` the tray `Quit` item dispatches. `quit_app` is the IPC seam
+    // only — nothing renders it.
+    "open_main_window",
+    "quit_app",
 ];
 
 #[cfg(test)]

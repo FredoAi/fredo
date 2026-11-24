@@ -1,3 +1,4 @@
+pub mod app_lifecycle;
 pub mod app_open;
 pub mod app_window;
 pub mod cli;
