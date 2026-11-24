@@ -13,6 +13,9 @@ Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
 >    redistributable that build links against (Vulkan). See §1 and §2.
 > 2. **Doom Mode** — the game data (`DOOM1.WAD`) and the engine (`neurodoom`). See §3 and §4.
 > 3. Nothing else is bundled with a source-distribution obligation.
+> 4. **Design references** (section 7) are *attribution only*: visual references
+>    used while designing the companion avatar's Doom mode. No geometry,
+>    texture, or material from them is bundled or redistributed.
 >
 > Since Spec #3141 the companion runtime is **in-process** (no `llama-server` executable is shipped
 > and no separate inference program is distributed); since Spec #3158 the `llama.cpp`/ggml build
@@ -183,4 +186,39 @@ beside `fredo.exe` (§1) — and the GPU runtime redistributables it links are r
 
 ---
 
-*Authored by Developer — Spec #3023 (ST-8); amended by Spec #3141 (ST-6).*
+## 7. Design references (attribution only - not bundled)
+
+The companion avatar's secret **Doom mode** armour was designed by studying a
+third-party base model. **No geometry from it is shipped**: no vertices, meshes,
+textures, materials or bone data from the reference appear in
+`fredo-character.glb` or anywhere else in the distribution. It is credited here
+because the design derives from it and its licence requires attribution.
+
+### 7.1 Posable Doomguy (Blender file) - Fjaru
+
+| Field | Value |
+|-------|-------|
+| Work | "Posable Doomguy (Blender file)" |
+| Author | Fjaru |
+| Source | https://www.thingiverse.com/thing:4873090 |
+| Licence | **Creative Commons Attribution 4.0** (CC BY 4.0) |
+| Licence URL | https://creativecommons.org/licenses/by/4.0/ |
+| Used for | Proportion study and part decomposition for the doom-mode armour kit - helmet / visor / respirator, torso, shoulder pads, belt, knee pads and boots |
+| Redistributed | **No**. Reference only. The reference files (`.blend`, STL, textures) are not committed to this repository, not bundled with the app, and not redistributed in any form |
+
+**Why attribution is still owed.** CC BY 4.0 requires credit for the original
+even when only the *derived design* is published, and the acknowledgement costs
+nothing. The credit is reproduced in the avatar documentation
+(`.opencode/wireframes/blender/ASSET.md`) so designers working on the avatar see
+it next to the thing it refers to.
+
+**Trademarks.** The doom-mode avatar is an homage to the DOOM Slayer character.
+DOOM and the DOOM logo are trademarks of id Software LLC / ZeniMax Media Inc.
+Fredo is **not affiliated with, endorsed by, or sponsored by** id Software. The
+in-app avatar is an original reconstruction built from voxel slabs and primitive
+plates - it is not a copy of, and contains no assets from, any id Software title.
+
+---
+
+*Authored by Developer - Spec #3023 (ST-8); amended by Spec #3141 (ST-6);
+design-reference attribution added for the companion avatar's Doom mode.*
