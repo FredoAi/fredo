@@ -96,7 +96,7 @@ Fredo includes local OTLP receivers for agent telemetry. **OpenCode 2 is the sup
 
 Fredo supports **OpenCode 2**. Setup detects the installed version (`opencode --version`) and gates on it: on a 1.x install the OpenCode step names the version it found and tells you to run `opencode upgrade`, then re-run `fredo setup --check` — and installs nothing. Upgrading is the bare `opencode upgrade`; the exact selector for landing on 2.x is in the [install guide](https://opencode.ai/docs/install).
 
-On OpenCode 2 setup installs the Fredo plugin **once, globally**, into the global plugins directory (`~/.config/opencode/plugins/fredo.js`): every OpenCode client on the machine loads it, so the plugin is never installed per repository or per session. Finishing setup does not stop, restart or reconfigure anything that is already running: OpenCode loads the installed global plugin itself, so an install never ends a turn that is in progress. (`opencode service restart` is OpenCode's own command if you ever want to cycle its server; Fredo never runs it for you.)
+On OpenCode 2 setup installs the Fredo plugin **once, globally**, into the global plugins directory (`~/.config/opencode/plugins/fredo.js`): every OpenCode client on the machine loads it, so the plugin is never installed per repository or per session. A server that was already running loaded the plugin at its own start, so setup restarts OpenCode's background service (`opencode service restart`) after it writes a new copy — that is the one action finishing setup takes on the running runtime, and it ends any turn live on that shared server.
 
 Capture is on unless you opt out. The default target is `http://localhost:4317` over gRPC; set the endpoint/protocol only when you need a non-default receiver.
 
@@ -127,7 +127,7 @@ Fredo no longer opens the wizard automatically on startup. Reach it through eith
 - **Launcher tile** — from the desktop/launcher, select the **Fredo Setup** tile.
 - **Settings** — open **Settings → Fredo Setup**.
 
-Either entry opens the same wizard. It probes the installed OpenCode version and gates on it: on 1.x the OpenCode step shows the version it found plus the `opencode upgrade` remedy and installs nothing; on OpenCode 2 it installs the Fredo plugin into the global plugins directory and prints one `[fredo] … (global …)` line naming the resolved file. Finishing the install touches nothing else on the running runtime: no service restart, no environment variable, and no turn is interrupted. The telemetry step states how capture works — OpenCode loads the installed global plugin itself — so no OTLP environment variable is written or needed.
+Either entry opens the same wizard. It probes the installed OpenCode version and gates on it: on 1.x the OpenCode step shows the version it found plus the `opencode upgrade` remedy and installs nothing; on OpenCode 2 it installs the Fredo plugin into the global plugins directory and prints one `[fredo] … (global …)` line naming the resolved file. When that install writes a new copy and OpenCode's background service is running, setup restarts the service (`opencode service restart`) so the running server loads the plugin, and reports the outcome — a restart that fails is shown as an error, never as a completed step. `fredo setup --install-plugin --no-restart-service` performs the copy and skips the restart. The telemetry step states how capture works — OpenCode loads the plugin when its background service starts — so no OTLP environment variable is written or needed.
 
 ## Development
 

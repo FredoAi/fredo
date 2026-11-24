@@ -1,34 +1,234 @@
-//! Infrastructure/opencode_service — the ONE **install-file** rule both setup
-//! paths call (Spec #3198; Names Block).
+//! Infrastructure/opencode_service — the ONE OpenCode **background-service**
+//! surface: a bounded read-only probe, the PURE restart trigger, the
+//! hash-guarded plugin write both install paths call, and the restart-outcome
+//! copy (Spec #3198 round-2 ST-A1; Names Block).
 //!
-//! **Why a module of its own.** There are TWO copy sites — the in-app setup
-//! wizard (`applications::setup::commands`) and the `fredo setup
-//! --install-plugin` CLI twin (`infrastructure::cli::commands::setup`) — and
-//! `docs/ENGINEERING_RULES.md` forbids the application-to-application import a
-//! per-surface copy would need. So the hash-guarded write lives here, once, and
-//! both call it; a guard written twice would diverge exactly as the two install
-//! paths did before.
+//! **Why a module of its own.** The capture point is one global plugin loaded by
+//! OpenCode's shared background server (#3197), so a plugin copied to
+//! disk after that server started is invisible until the server restarts. Setup
+//! therefore has to (a) know whether a service is running, (b) restart it through
+//! **the runtime's own verb** and (c) report the outcome honestly. All three live
+//! here, once, because `docs/ENGINEERING_RULES.md` forbids the
+//! application-to-application import that a per-surface copy would need: the
+//! in-app setup wizard (`applications::setup`) and the `fredo setup` CLI twin
+//! (`infrastructure::cli`) call these functions.
 //!
-//! **Setup does not manage OpenCode's background service.** There is no probe,
-//! no trigger and no lifecycle verb here: the install writes one file and
-//! touches nothing else. The runtime loads the installed global plugin itself —
-//! a copy written while a server is already running is picked up by that server
-//! (round 2's controls: F-17(a) installed → captured, F-17(a′) a server started
-//! *before* the write captured too, span count 6 → 8). Round 3 removed the
-//! install-time restart its earlier premise implied, so no process is signalled,
-//! restarted or terminated, no environment variable is written, and no turn in
-//! progress can be interrupted by an install.
+//! **What the runtime actually exposes** (posted probe, `opencode v2.4.1`):
+//! `opencode service status` prints only `http://127.0.0.1:28894` and exits 0 —
+//! **no pid, no start time, no client count**. `opencode service --help` lists
+//! `start | restart | status | stop | get | set | unset`. That is why the trigger
+//! is the **write event** (`restart_needed(wrote_bytes, state)`) and not service
+//! age: an age predicate would be written on a surface the probe never showed
+//! (the `--major` lesson — never name a mechanism the runtime does not have).
+//!
+//! **Nothing here terminates a process.** The only lifecycle action is the
+//! runtime's own `restart` subcommand: the server's owner performs its own
+//! shutdown, and Fredo kills nothing it did not spawn. The bounded runner kills
+//! only the child it spawned itself when that child overruns its deadline.
 //!
 //! **Idempotent, hash-guarded write.** [`install_plugin_file`] compares SHA-256
 //! digests and writes **only** when the destination is absent or differs, then
-//! stamps the install instant. A second identical run writes nothing and leaves
-//! the file's timestamp untouched — that is what keeps NFR-1 (setup is
-//! idempotent) intact.
+//! stamps the install instant. A second identical run writes nothing — so it also
+//! restarts nothing (`restart_needed(false, _) == false`), which is what keeps
+//! NFR-1 (setup is idempotent) intact while still allowing the restart.
 
 use std::path::Path;
-use std::time::SystemTime;
+use std::process::Output;
+use std::time::{Duration, SystemTime};
 
 use sha2::{Digest, Sha256};
+
+use super::opencode_version::{
+    opencode_command, render, resolve_opencode_binary, run_bounded, VERSION_PROBE_TIMEOUT_MS,
+};
+
+// ── The verb (Names Block — BINDING, from the posted probe) ───────────────────
+
+/// The read-only status argv (`opencode service status`).
+pub const OPENCODE_SERVICE_STATUS_ARGS: [&str; 2] = ["service", "status"];
+
+/// The restart argv (`opencode service restart`) — the runtime's OWN verb.
+pub const OPENCODE_SERVICE_RESTART_ARGS: [&str; 2] = ["service", "restart"];
+
+/// The one command STRING every restart-outcome message renders `{restart}`
+/// from. Prose never carries a literal command: a constant that drifts from the
+/// argv above would tell the user to run something the runtime rejects.
+pub const OPENCODE_SERVICE_RESTART_COMMAND: &str = "opencode service restart";
+
+/// Hard bound on the restart. A shared server that will not come back must not
+/// hang setup: the bound fails the step loud and names the command to run.
+pub const SERVICE_RESTART_TIMEOUT_MS: u64 = 15_000;
+
+// ── Message templates (copy contracts — BINDING) ──────────────────────────────
+
+/// R-2e success: the restart happened, so the next session is captured.
+pub const OPENCODE_SERVICE_RESTARTED_MSG: &str =
+    "[fredo] Restarted OpenCode's background service so it loads the plugin — new sessions are \
+     captured.";
+
+/// R-2e failure: the file IS installed (the copy succeeded); what failed is the
+/// capture outcome. Names the child's own detail and the one command that fixes
+/// it — never a silent success, never a claim that nothing was installed.
+pub const OPENCODE_SERVICE_RESTART_FAILED_MSG: &str =
+    "The Fredo plugin is installed, but OpenCode's background service could not be restarted \
+     ({detail}), so new sessions will not be captured yet. Run `{restart}`, then start a new \
+     session.";
+
+/// The deferred busy branch. `opencode service status` exposes no client count, so
+/// no code path can establish "a session is attached" and this message is not
+/// reachable today; it ships as the wording to use when such a surface appears
+/// (the addendum's guard (d)) rather than being re-invented then.
+pub const OPENCODE_SERVICE_BUSY_MSG: &str =
+    "The Fredo plugin is installed. An OpenCode session is running on the background service, so \
+     Fredo did not restart it — new sessions will not be captured until you run `{restart}`.";
+
+/// `--no-restart-service`: the user opted out. The write stands, the run stays
+/// successful, and the state is never silent — the remedy is named.
+pub const OPENCODE_SERVICE_RESTART_SKIPPED_MSG: &str =
+    "The Fredo plugin is installed; the background-service restart was skipped \
+     (--no-restart-service). New sessions are captured only after the service restarts — run \
+     `{restart}` when convenient.";
+
+// ── The typed service state ──────────────────────────────────────────────────
+
+/// What the background service is doing, as far as a read-only probe can tell.
+///
+/// `Absent` is a distinct state rather than a flavour of `Unknown`: "there is no
+/// service" and "I could not tell" have different consequences (the first needs no
+/// restart by construction — the next session starts a fresh server that loads the
+/// plugin; the second must never be acted on). No production path constructs it
+/// yet: the posted probe recorded only the RUNNING shape (`exit 0` +
+/// `http://127.0.0.1:28894`) and no "no service" exit code, and guessing that code
+/// is exactly the failure mode this slice exists to remove.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SharedServiceState {
+    /// No background service is running.
+    Absent,
+    /// A service answered; `url` is the first line it printed.
+    Running {
+        /// The URL the runtime reported (`http://127.0.0.1:28894`).
+        url: Option<String>,
+    },
+    /// The state could not be established. `detail` names the probe's own failure.
+    Unknown {
+        /// What went wrong, for the outcome copy.
+        detail: String,
+    },
+}
+
+// ── The probe (bounded, read-only) ───────────────────────────────────────────
+
+/// Probe the running background service with `opencode service status`.
+///
+/// Read-only and bounded by [`VERSION_PROBE_TIMEOUT_MS`] (the same budget as the
+/// version probe), resolved through the SAME binary resolution and Windows shim
+/// rule — a PATH-shadowing fake drives the real code path, which is why the
+/// product needs no test seam.
+pub fn probe() -> SharedServiceState {
+    match resolve_opencode_binary() {
+        Some(binary) => probe_binary(&binary),
+        None => SharedServiceState::Unknown {
+            detail: format!(
+                "the `opencode` binary could not be resolved on PATH (`{}`)",
+                status_command()
+            ),
+        },
+    }
+}
+
+/// Probe one already-resolved binary — the executable core of [`probe`].
+pub fn probe_binary(binary: &str) -> SharedServiceState {
+    let mut command = opencode_command(binary);
+    command.args(OPENCODE_SERVICE_STATUS_ARGS);
+
+    match run_bounded(
+        command,
+        Duration::from_millis(VERSION_PROBE_TIMEOUT_MS),
+        "the OpenCode service probe",
+        &format!("`{}`", status_command()),
+    ) {
+        Ok(output) => classify_status(
+            output.status.code(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(detail) => SharedServiceState::Unknown { detail },
+    }
+}
+
+/// Classify a status run — **PURE**, so every branch is unit-tested without
+/// spawning the runtime (G-222).
+///
+/// `Running` iff the command exits 0 with a non-empty first line (the recorded
+/// `http://127.0.0.1:28894` shape). Anything else is `Unknown` carrying the
+/// child's own detail: the probe record establishes no distinct "no service" exit
+/// code, so none is invented.
+pub fn classify_status(code: Option<i32>, stdout: &str, stderr: &str) -> SharedServiceState {
+    let url = if code == Some(0) {
+        first_line(stdout)
+    } else {
+        None
+    };
+
+    match url {
+        Some(url) => SharedServiceState::Running { url: Some(url) },
+        None => SharedServiceState::Unknown {
+            detail: describe_failure(code, stdout, stderr),
+        },
+    }
+}
+
+// ── The pure trigger ─────────────────────────────────────────────────────────
+
+/// The ONE restart rule: restart **iff this invocation wrote bytes AND a service
+/// is running**.
+///
+/// - an unchanged install wrote nothing, so there is nothing new for a restart to
+///   pick up (NFR-1: a second setup run changes nothing, and must not end a live
+///   turn);
+/// - `Absent` needs no restart — the next session starts a server that loads the
+///   plugin by construction;
+/// - `Unknown` is reported, never acted on: a restart on a guess is a hazard with
+///   no evidence behind it.
+pub fn restart_needed(wrote_bytes: bool, state: &SharedServiceState) -> bool {
+    wrote_bytes && matches!(state, SharedServiceState::Running { .. })
+}
+
+// ── The restart (the runtime's own verb, bounded) ────────────────────────────
+
+/// Restart the background service through `opencode service restart`.
+///
+/// Bounded by [`SERVICE_RESTART_TIMEOUT_MS`]; a non-zero exit returns the child's
+/// own detail (exit code + first stderr/stdout line) so the failure copy names
+/// what actually happened. Never a signal, never a second mechanism.
+pub fn restart() -> Result<(), String> {
+    let binary = resolve_opencode_binary().ok_or_else(|| {
+        format!(
+            "the `opencode` binary could not be resolved on PATH (`{OPENCODE_SERVICE_RESTART_COMMAND}`)"
+        )
+    })?;
+    restart_binary(&binary)
+}
+
+/// Restart through one already-resolved binary — the executable core of
+/// [`restart`].
+pub fn restart_binary(binary: &str) -> Result<(), String> {
+    let mut command = opencode_command(binary);
+    command.args(OPENCODE_SERVICE_RESTART_ARGS);
+
+    let output = run_bounded(
+        command,
+        Duration::from_millis(SERVICE_RESTART_TIMEOUT_MS),
+        "the OpenCode service restart",
+        &format!("`{OPENCODE_SERVICE_RESTART_COMMAND}`"),
+    )?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(child_detail(&output))
+    }
+}
 
 // ── The hash-guarded write (ONE rule for both install paths) ─────────────────
 
@@ -37,8 +237,9 @@ use sha2::{Digest, Sha256};
 ///
 /// One rule, because there are TWO copy sites (`applications::setup::commands`
 /// and `infrastructure::cli::commands::setup`) and a guard written twice would
-/// diverge. The digest comparison is what lets an unchanged install be a no-op:
-/// no write, no mtime churn.
+/// diverge exactly as the two install paths did before. The digest comparison is
+/// what lets an unchanged install be a no-op — no write, no mtime churn, and
+/// therefore no restart (`restart_needed(false, _) == false`).
 ///
 /// The install instant is stamped onto the destination only after a real write:
 /// `std::fs::copy`/`write` leave the SOURCE's timestamp on Windows, so an
@@ -92,11 +293,179 @@ fn stamp_install_instant(destination: &Path) {
     }
 }
 
+// ── Message rendering (derived from the constants) ───────────────────────────
+
+/// R-2e: the restart happened.
+pub fn restarted_message() -> String {
+    OPENCODE_SERVICE_RESTARTED_MSG.to_string()
+}
+
+/// R-2e: the restart failed; `{detail}` is the child's own failure.
+pub fn restart_failed_message(detail: &str) -> String {
+    render(
+        OPENCODE_SERVICE_RESTART_FAILED_MSG,
+        &[
+            ("{detail}", detail),
+            ("{restart}", OPENCODE_SERVICE_RESTART_COMMAND),
+        ],
+    )
+}
+
+/// `--no-restart-service`: the restart was skipped by explicit request.
+pub fn restart_skipped_message() -> String {
+    render(
+        OPENCODE_SERVICE_RESTART_SKIPPED_MSG,
+        &[("{restart}", OPENCODE_SERVICE_RESTART_COMMAND)],
+    )
+}
+
+/// The deferred busy wording (see [`OPENCODE_SERVICE_BUSY_MSG`]).
+pub fn busy_message() -> String {
+    render(
+        OPENCODE_SERVICE_BUSY_MSG,
+        &[("{restart}", OPENCODE_SERVICE_RESTART_COMMAND)],
+    )
+}
+
+// ── Small helpers ────────────────────────────────────────────────────────────
+
+/// `opencode service status` as one string (used in probe failure detail so the
+/// reader is told which command failed).
+fn status_command() -> String {
+    format!("opencode {}", OPENCODE_SERVICE_STATUS_ARGS.join(" "))
+}
+
+/// The first non-blank line, trimmed.
+fn first_line(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+/// `exit <code>: <first stderr line, else first stdout line>` — the child's own
+/// failure, for the restart-failure copy.
+fn child_detail(output: &Output) -> String {
+    let code = match output.status.code() {
+        Some(code) => code.to_string(),
+        None => "terminated by a signal".to_string(),
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let head = first_line(&stderr)
+        .or_else(|| first_line(&stdout))
+        .unwrap_or_else(|| "no output".to_string());
+    format!("exit {code}: {head}")
+}
+
+/// The `Unknown` detail for a status run: exit code plus the first line the
+/// runtime printed.
+fn describe_failure(code: Option<i32>, stdout: &str, stderr: &str) -> String {
+    let code = match code {
+        Some(code) => code.to_string(),
+        None => "terminated by a signal".to_string(),
+    };
+    let head = first_line(stderr)
+        .or_else(|| first_line(stdout))
+        .unwrap_or_else(|| "no output".to_string());
+    format!("`{}` exited with {code} ({head})", status_command())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::Duration;
+
+    fn running() -> SharedServiceState {
+        SharedServiceState::Running {
+            url: Some("http://127.0.0.1:28894".to_string()),
+        }
+    }
+
+    // ── the PURE trigger: all four states × wrote / not wrote ────────────────
+
+    /// R-2e: the restart happens ONLY for a write plus a running service. Every
+    /// cell of the table is asserted — the "never on a guess" clauses are the
+    /// ones a plausible-looking inversion would break.
+    #[test]
+    fn restart_needed_is_wrote_bytes_and_running_only() {
+        let states = [
+            SharedServiceState::Absent,
+            running(),
+            SharedServiceState::Running { url: None },
+            SharedServiceState::Unknown {
+                detail: "the probe could not run".to_string(),
+            },
+        ];
+
+        // wrote bytes: exactly the running states restart.
+        let decided: Vec<bool> = states.iter().map(|s| restart_needed(true, s)).collect();
+        assert_eq!(decided, vec![false, true, true, false]);
+
+        // no write: nothing restarts, whatever the service is doing.
+        for state in &states {
+            assert!(
+                !restart_needed(false, state),
+                "an unchanged install must never restart the service: {state:?}"
+            );
+        }
+    }
+
+    // ── classify_status: the recorded shapes ────────────────────────────────
+
+    /// The posted probe's live shape: exit 0 and the URL on the first line.
+    #[test]
+    fn a_zero_exit_with_a_url_reads_running_with_that_url() {
+        let state = classify_status(Some(0), "http://127.0.0.1:28894\n", "");
+        assert_eq!(
+            state,
+            SharedServiceState::Running {
+                url: Some("http://127.0.0.1:28894".to_string())
+            }
+        );
+    }
+
+    /// A zero exit that printed nothing is NOT a pass: nothing was established.
+    #[test]
+    fn a_zero_exit_with_no_output_is_unknown() {
+        for empty in ["", "   \n\n "] {
+            match classify_status(Some(0), empty, "") {
+                SharedServiceState::Unknown { detail } => {
+                    assert!(detail.contains("no output"), "{detail}");
+                }
+                other => panic!("no output must not read as running: {other:?}"),
+            }
+        }
+    }
+
+    /// A non-zero exit is `Unknown` naming the code and the child's own line —
+    /// never `Absent` (no "no service" code is established) and never `Running`.
+    #[test]
+    fn a_non_zero_exit_is_unknown_naming_the_code_and_the_line() {
+        match classify_status(Some(3), "", "connect ECONNREFUSED\n") {
+            SharedServiceState::Unknown { detail } => {
+                assert!(detail.contains("exited with 3"), "{detail}");
+                assert!(detail.contains("connect ECONNREFUSED"), "{detail}");
+                assert!(detail.contains("opencode service status"), "{detail}");
+            }
+            other => panic!("a failed status run is Unknown: {other:?}"),
+        }
+    }
+
+    /// The command STRING every message renders is the argv actually run — a
+    /// drifted constant would print a command the runtime rejects.
+    #[test]
+    fn the_restart_command_constant_is_the_argv_the_runtime_runs() {
+        assert_eq!(
+            OPENCODE_SERVICE_RESTART_COMMAND,
+            format!("opencode {}", OPENCODE_SERVICE_RESTART_ARGS.join(" "))
+        );
+        assert_eq!(OPENCODE_SERVICE_RESTART_ARGS, ["service", "restart"]);
+        assert_eq!(OPENCODE_SERVICE_STATUS_ARGS, ["service", "status"]);
+        // The posted probe's verb set includes `restart` — no invented spelling.
+        assert!(!OPENCODE_SERVICE_RESTART_COMMAND.contains("--"));
+    }
 
     // ── the hash-guarded write ──────────────────────────────────────────────
 
@@ -204,24 +573,78 @@ mod tests {
         );
     }
 
-    /// G-430 absence guard: this module carries **no direct termination path** —
-    /// and, since round 3, no lifecycle verb at all. The raw source is scanned
-    /// (comments and doc comments included, because the AC's predicate is a raw
-    /// grep) and every banned token is CONSTRUCTED here so the guard cannot match
-    /// its own text.
+    // ── the copy contracts ──────────────────────────────────────────────────
+
+    /// The restarted line is the ONE `[fredo] `-prefixed line and states the
+    /// capture outcome the restart bought.
+    #[test]
+    fn the_restarted_message_is_prefixed_and_names_the_outcome() {
+        let message = restarted_message();
+        assert!(message.starts_with("[fredo] "), "{message}");
+        assert!(message.contains("background service"), "{message}");
+        assert!(message.contains("captured"), "{message}");
+    }
+
+    /// The failure copy names the child's detail AND the command to run, and it
+    /// never claims nothing was installed — the file IS on disk.
+    #[test]
+    fn the_failure_message_names_the_detail_the_remedy_and_keeps_the_install() {
+        let message = restart_failed_message("exit 2: the service did not respond");
+        assert!(
+            message.contains("exit 2: the service did not respond"),
+            "{message}"
+        );
+        assert!(
+            message.contains(OPENCODE_SERVICE_RESTART_COMMAND),
+            "the remedy is rendered from the command constant: {message}"
+        );
+        assert!(
+            message.contains("The Fredo plugin is installed"),
+            "the file stays installed — the failure is the capture outcome: {message}"
+        );
+        assert!(!message.contains('{'), "no placeholder survives: {message}");
+    }
+
+    /// The skipped copy names the flag that skipped it and the remedy.
+    #[test]
+    fn the_skipped_message_names_the_flag_and_the_remedy() {
+        let message = restart_skipped_message();
+        assert!(message.contains("--no-restart-service"), "{message}");
+        assert!(
+            message.contains(OPENCODE_SERVICE_RESTART_COMMAND),
+            "{message}"
+        );
+        assert!(!message.contains('{'), "{message}");
+    }
+
+    /// Every outcome template renders with no placeholder surviving — including
+    /// the deferred busy wording, so it cannot rot before a surface reaches it.
+    #[test]
+    fn every_outcome_template_is_fully_rendered() {
+        for message in [
+            restarted_message(),
+            restart_failed_message("exit 2: nope"),
+            restart_skipped_message(),
+            busy_message(),
+        ] {
+            assert!(!message.contains('{'), "unsubstituted placeholder: {message}");
+            assert!(!message.contains('}'), "unsubstituted placeholder: {message}");
+        }
+    }
+
+    /// G-430 absence guard: this module carries **no direct termination path**.
+    /// The raw source is scanned (comments and doc comments included, because the
+    /// AC's predicate is a raw grep) and every banned token is CONSTRUCTED here so
+    /// the guard cannot match its own text.
     #[test]
     fn the_module_carries_no_direct_process_termination() {
         let source = include_str!("opencode_service.rs");
 
         // Non-vacuity: the universe is the real file and the matcher fires on a
-        // token that IS present (the surviving rule this module owns).
+        // token that IS present.
+        assert!(source.len() > 5_000, "the scan universe is the whole module");
         assert!(
-            source.len() > 2_000,
-            "the scan universe is the whole module ({} bytes)",
-            source.len()
-        );
-        assert!(
-            source.contains("install_plugin_file"),
+            source.contains(OPENCODE_SERVICE_RESTART_ARGS[1]),
             "the matcher fires on a token that is present"
         );
 
@@ -233,7 +656,7 @@ mod tests {
         for token in &banned {
             assert!(
                 !source.contains(token.as_str()),
-                "the install is a file write only — no lifecycle action: {token}"
+                "the only lifecycle action is the runtime's own restart verb: {token}"
             );
         }
     }

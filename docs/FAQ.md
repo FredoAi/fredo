@@ -109,7 +109,7 @@ By design. The UI is reactive — it subscribes to row deliveries via `useEventR
 
 Capture is **on by default** — no variable is required. The plugin sends to `http://localhost:4317` (gRPC) unless the endpoint is overridden, and `FREDO_TELEMETRY=0` (also `false` / `off`) opts out.
 
-Fredo supports **OpenCode 2**. Setup detects the installed version: on 1.x it names the version it found and directs you to the bare `opencode upgrade` (then re-run `fredo setup --check`) instead of reporting success, and installs nothing. On 2.x Fredo's Setup wizard (or `fredo setup --install-plugin`) installs the plugin into the global plugins directory (`~/.config/opencode/plugins/`), so it is installed once for the user, not per repository. OpenCode loads the installed global plugin itself, so setup never restarts OpenCode's background service and never ends a turn that is running.
+Fredo supports **OpenCode 2**. Setup detects the installed version: on 1.x it names the version it found and directs you to the bare `opencode upgrade` (then re-run `fredo setup --check`) instead of reporting success, and installs nothing. On 2.x Fredo's Setup wizard (or `fredo setup --install-plugin`) installs the plugin into the global plugins directory (`~/.config/opencode/plugins/`), so it is installed once for the user, not per repository — and when a new copy is written while OpenCode's background service is running, setup restarts that service (`opencode service restart`) so the running server loads the plugin. A server started before the install had already loaded its plugins; the restart is what closes that gap, and it ends any turn live on that shared server (`--no-restart-service` skips it).
 
 ```bash
 # Windows — optional: point at a non-default receiver
