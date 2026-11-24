@@ -1,19 +1,25 @@
 @echo off
-rem QA fixture (issue #3198, fix-plan addendum ST-A5 item 1): a fake OpenCode
-rem 2.x CLI that the PRODUCT's own resolver picks, so `install_plugin`'s
-rem write -> probe -> `service restart` dispatch runs for real with ZERO contact
-rem with the real background service (which hosts the pipeline's own session and
-rem must never be restarted - G-461).
+rem QA fixture (issue #3198; KEPT after the round-3 restart removal): a fake
+rem OpenCode 2.x CLI that the PRODUCT's own resolver picks, so the real
+rem `install_plugin` path (version gate -> hash-guarded write -> result) runs
+rem end-to-end with ZERO contact with the real background service (which hosts
+rem the pipeline's own session and must never be restarted - G-461).
 rem
 rem   --version        -> `opencode v2.4.1` (passes the version gate)
-rem   service status   -> `http://127.0.0.1:28894`, exit 0  => Running
+rem   service status   -> `http://127.0.0.1:28894`, exit 0  (no longer probed by
+rem                       the product; kept so the fixture stays a faithful CLI)
 rem   service restart  -> exit 0 AND appends its argv to the journal file
 rem                       (%FREDO_QA_SHIM_JOURNAL%, else
 rem                        %TEMP%\fredo-3198-shim-journal.txt)
 rem   anything else    -> exit 1
 rem
+rem ROUND-3 USAGE (functional F-17(b) / smoke S-10): the restart is REMOVED from
+rem the product, so the row asserts the journal is EMPTY - a line here means a
+rem `service restart` was dispatched and the removed default came back. Only an
+rem explicit `service restart` writes the journal; nothing else touches it.
+rem
 rem Reached through `.opencode/scripts/setup-version-shim.ps1 -ShimDir <this
-rem dir>` (needs the L-1/ST-A6 shadow fix: a `.cmd` only wins once the installed
+rem dir>` (needs the L-1 shadow fix: a `.cmd` only wins once the installed
 rem `opencode.exe` is off the launched PATH). No `.exe` fixture exists or may:
 rem a `.cmd` renamed `.exe` is not a PE image and CreateProcessW refuses it.
 rem

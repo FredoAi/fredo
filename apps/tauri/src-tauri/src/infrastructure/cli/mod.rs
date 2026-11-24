@@ -227,7 +227,6 @@ mod tests {
             check: false,
             add_to_path: false,
             install_plugin: false,
-            no_restart_service: false,
             download_model: false,
         };
         let cmd = Commands::Setup(args);

@@ -9,20 +9,22 @@ committed forwarder `.opencode/scripts/setup-version-shim.ps1`.
 | `shim-opencode-junk/opencode.cmd` | prints `hello from a fake cli`, exit 0 (unparseable → `parse_major() == None`) | R-1b undetermined (F-11) |
 | `shim-opencode-nonzero/opencode.cmd` | no output, exit 1 (probe's non-zero-exit path) | R-1b undetermined (F-11) |
 | `shim-opencode-slow/opencode.cmd` | blocks ~7 s, then prints `OpenCode 1.15.5` | NFR-3 probe bound (F-12) |
-| `shim-opencode-service-ok/opencode.cmd` | `opencode v2.4.1`; `service status` → `http://127.0.0.1:28894` exit 0; `service restart` → exit 0 **and journaled** | R-2e dispatch + idempotency + opt-out (F-17 b) |
-| `shim-opencode-service-fail/opencode.cmd` | same gate/status; `service restart` → stderr line + **exit 2** | R-2e failure path (F-17 c) |
-| `shim-opencode-service-none/opencode.cmd` | same gate; `service status` → stderr + **exit 1** (no Running service); `service restart` → journaled, exit 0 | R-2e no-service path (F-17 d) |
+| `shim-opencode-service-ok/opencode.cmd` | `opencode v2.4.1`; `service status` → `http://127.0.0.1:28894` exit 0 (no longer probed); `service restart` → exit 0 **and journaled** | No-restart guard: a real write must dispatch nothing (F-17 b / S-10) |
 
-The three `*-service-*` fixtures are the **fake control CLI** of fix-plan addendum ST-A5: they are
-reached through the product's own resolver, so `install_plugin` → write decision → `probe()` →
-`restart()` → result/exit code runs inside the product with **zero** contact with the real
-background service (which hosts this pipeline's own session — G-461).
+The `*-service-ok` fixture is the **fake control CLI** kept from fix-plan addendum ST-A5: it is
+reached through the product's own resolver, so `install_plugin` → version gate → hash-guarded write
+→ result/exit code runs inside the product with **zero** contact with the real background service
+(which hosts this pipeline's own session — G-461). Round 3 removed the install-time restart, so the
+receipt is inverted: the journal must stay **EMPTY**. The two fixtures that existed only for the
+deleted restart-failure and no-service branches (`shim-opencode-service-fail`,
+`shim-opencode-service-none`) and their roster rows were deleted with the same round-3 re-cut.
 
 **Journal contract.** `service restart` appends its argv to `%FREDO_QA_SHIM_JOURNAL%`, else to
 `%TEMP%\fredo-3198-shim-journal.txt`. Set the journal explicitly per run (it is the receipt): the
 CLI leg sets it inside a scratch wrapper under `.opencode/tmp/3198/`; the in-app leg sets it with
 the forwarder's `-ExtraEnvVar "FREDO_QA_SHIM_JOURNAL=<abs path>"`. Delete the journal file before
-the first run, then `Get-Content` it: one line `service restart` per dispatch.
+the first run, then `Get-Content` it: **absent or empty is the PASS** — one line `service restart`
+means the removed dispatch came back.
 
 **Version literal.** Every service fixture reports `opencode v2.4.1` — a major **≥**
 `MIN_SUPPORTED_OPENCODE_MAJOR`. If that constant ever exceeds 2 the fixtures must be bumped in the

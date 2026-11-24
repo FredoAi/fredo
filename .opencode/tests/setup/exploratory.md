@@ -59,4 +59,8 @@
 - [ ] E-8: **Install destination is a file, not a dir / dangling case.** Replace
       `~\.config\opencode\plugins\fredo.js` with a directory of the same name, then run
       `--install-plugin`. Is the failure loud and cause-naming (no silent skip, no partial
-      write)? A silent success promotes to F-14. Restore the file afterwards.
+      write)? A silent success promotes to F-14. **Non-destructive shape first (G-462):** the
+      destination is a *derived* file (its bytes are `apps/opencode-plugin/dist/index.js`), so the
+      pre-state to record is the file's hash — never a user-authored file — and it is restored by
+      re-running `fredo setup --install-plugin` (a real write, since the directory made it absent)
+      with no data loss. Restore the file afterwards either way.
