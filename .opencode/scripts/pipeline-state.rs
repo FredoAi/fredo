@@ -986,7 +986,13 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
                         // was merged — the anchor `verification_status` falls back to
                         // when `prune` already deleted the `spec/<N>` ref (#3197).
                         let oid = pr.get("headRefOid").and_then(|v| v.as_str()).unwrap_or("mock-sha");
-                        nums.push(serde_json::json!({ "number": n, "headRefOid": oid }));
+                        // `url` is what `maint-pr`'s merged-PR reconciliation records
+                        // on the `maint-pr` event (#3192).
+                        nums.push(serde_json::json!({
+                            "number": n,
+                            "headRefOid": oid,
+                            "url": format!("https://github.com/{}/pull/{}", mock_repo_name(), n),
+                        }));
                     }
                 }
             }
@@ -1083,6 +1089,15 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
                 pr["state"] = serde_json::json!("MERGED");
             }
             mock_write_pr(n, &pr)?;
+            // #3192: model the exact live shape — the merge LANDED remotely but the
+            // command still exited non-zero on its LOCAL post-merge step (gh's
+            // `--delete-branch` checkout refused). The machine must verify the PR's
+            // STATE, not trust the exit code.
+            if mock_file(&["maint-merge-command-error"]).exists() {
+                anyhow::bail!(
+                    "failed to run git: error: Your local changes to the following files would be overwritten by checkout:\n\tapps/tauri/src-tauri/Cargo.toml"
+                );
+            }
             Ok(String::new())
         }
         _ => anyhow::bail!("mock gh pr: unsupported op `{}`", op),
@@ -1436,7 +1451,29 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                         out.push_str(&format!(" M {}\n", a));
                     }
                 }
-                return Ok(out.trim_end().to_string());
+                // Only a PATHSPEC-scoped call produces output; a full status falls
+                // through to the union of the #3192 dirty markers below.
+                if !out.is_empty() {
+                    return Ok(out.trim_end().to_string());
+                }
+            }
+            // #3192: the FULL working-tree dirty set (a `git status --porcelain` with
+            // no pathspec) is modelled by two markers — `dirty-content` (REAL content
+            // changes) and `dirty-eol-only` (EOL-only artefacts with no content
+            // change). Both report as modified here; `git diff --numstat` /
+            // `--ignore-cr-at-eol` tell them apart below.
+            {
+                let mut out = String::new();
+                for marker in ["dirty-content", "dirty-eol-only"] {
+                    if let Some(raw) = mock_read(&mock_file(&[marker])) {
+                        for l in raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                            out.push_str(&format!(" M {}\n", l));
+                        }
+                    }
+                }
+                if !out.is_empty() {
+                    return Ok(out.trim_end().to_string());
+                }
             }
             Ok(String::new())
         }
@@ -1553,6 +1590,11 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // `maint-base-diverged` marker models main having moved a gate-edited
             // path, driving the loud-failure (G-1976) branch deterministically.
             if args.iter().any(|a| *a == "--name-only") {
+                // #3192: the FULL HEAD↔origin/main changed set (`maint-pr`'s checkout
+                // cleanliness check) — content = one path per line.
+                if mock_file(&["head-diverged"]).exists() {
+                    return Ok(mock_read(&mock_file(&["head-diverged"])).unwrap_or_default().trim().to_string());
+                }
                 // align-root: the paths whose content differs between HEAD and the
                 // target commit (content = one path per line). Intersected with
                 // `align-dirty`, this models the overwrite-conflict refusal.
@@ -1563,6 +1605,27 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                     return Ok("docs/ARCHITECTURE.md".to_string());
                 }
                 return Ok(String::new());
+            }
+            // #3192: the EOL-only distinction. `git diff --numstat -- <path>` and
+            // `git diff --ignore-cr-at-eol -- <path>`: a path listed in the
+            // `dirty-eol-only` marker carries NO content change (both outputs empty);
+            // every other path reports a real change — default-to-real is the fail
+            // closed direction.
+            if args.iter().any(|a| *a == "--numstat" || *a == "--ignore-cr-at-eol") {
+                let path = args.iter().position(|a| *a == "--").and_then(|i| args.get(i + 1)).copied().unwrap_or("");
+                let eol_only = mock_read(&mock_file(&["dirty-eol-only"]))
+                    .map(|raw| raw.lines().any(|l| l.trim() == path))
+                    .unwrap_or(false);
+                if eol_only {
+                    return Ok(String::new());
+                }
+                if args.iter().any(|a| *a == "--numstat") {
+                    return Ok(format!("1\t0\t{}", path));
+                }
+                return Ok(format!(
+                    "diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-a\n+b\n",
+                    p = path
+                ));
             }
             // git diff --quiet <branch> origin/main — the G-421 squash signature
             // check. Success (exit 0) means the trees are identical. Modelled from
@@ -2980,6 +3043,27 @@ fn porcelain_path(line: &str) -> Option<String> {
     if p.is_empty() { None } else { Some(p.to_string()) }
 }
 
+/// True when `path` carries a **real content change** in the working tree.
+///
+/// git refuses to switch branches when a dirty path would be overwritten. An
+/// **EOL-only artefact** (a CRLF/autocrlf rewrite, build-generated churn such as
+/// `apps/tauri/src-tauri/gen/schemas/*` or `Cargo.toml`) shows up in `git status`
+/// yet carries **no content change at all**: `git diff --numstat` is empty and the
+/// `--ignore-cr-at-eol` patch is empty. Such a path cannot be overwritten
+/// meaningfully, so it must never block a checkout nor be named as the reason for a
+/// refusal (#3192). Any answer other than "both diffs are empty" — including git
+/// failing to answer — counts as a real change (fail closed).
+fn path_has_content_change(path: &str) -> bool {
+    match run_cmd("git", &["diff", "--numstat", "--", path]) {
+        Ok(out) if out.trim().is_empty() => {}
+        _ => return true,
+    }
+    match run_cmd("git", &["diff", "--ignore-cr-at-eol", "--", path]) {
+        Ok(out) => !out.trim().is_empty(),
+        Err(_) => true,
+    }
+}
+
 /// **`align-root`** — put the repo root ON the spec tip, safely, so the
 /// `implementation → testing` serving-currency guard (G-052) is satisfied without a
 /// hand-run preserve/align/restore dance.
@@ -3093,16 +3177,40 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
 ///   - the pipeline's own edits — `docs/agentic-pipeline/`, `.opencode/skills/`,
 ///     `.opencode/scripts/`, `.opencode/pipeline.json`, `opencode.json`; and
 ///   - the product docs — ARCHITECTURE/CLI_GUIDE/SETUP/SECURITY/FAQ.
-/// The PR is FORCE-merged as the privileged writer (`gh pr merge --admin --squash
-/// --delete-branch`) — the repo has auto-merge DISABLED (`allow_auto_merge: false`),
-/// so `--auto` fails outright, and the human chose the admin bypass (it SKIPS the
-/// required `validate` status check). `gh` applies the merge synchronously; the
-/// machine then VERIFIES the PR is actually MERGED and only then records the
-/// `maint-pr` event (`merged: true`). A PR that is not MERGED (closed unmerged) or a
-/// bounded timeout is an ERROR — the post-audit gate must fail so `done` stays
-/// unreachable. An empty change set is a NO-OP (never fatal): no PR, no merged event.
+/// The PR is FORCE-merged as the privileged writer (`gh pr merge --admin --squash`)
+/// — the repo has auto-merge DISABLED (`allow_auto_merge: false`), so `--auto` fails
+/// outright, and the human chose the admin bypass (it SKIPS the required `validate`
+/// status check). `--delete-branch` is deliberately NOT passed: gh implements it with
+/// a LOCAL checkout of the base branch in the SERVING checkout, and when that
+/// checkout refuses (an EOL-only artefact — #3192) gh exits non-zero AFTER the remote
+/// merge already landed, reporting failure for a merge that succeeded. The remote
+/// head is removed by the repo's `delete_branch_on_merge` and the local ref is swept
+/// best-effort, so the merge step never moves the serving checkout.
+///
+/// **Fail-closed correctness (#3192):** the merge command's exit status is NOT the
+/// verdict — the PR's STATE is. After any merge-command outcome the machine verifies
+/// `gh pr view <n> --json state`; a MERGED PR records success (with
+/// `merge_cmd_error: true` when the command complained), a PR that is not MERGED is
+/// an ERROR (closed unmerged, or the bounded timeout). So a landed merge is never
+/// reported as a failure and an unlanded one is never reported as success.
+///
+/// **Reconciliation / idempotency (#3192):** when there is nothing left to commit,
+/// the machine first asks GitHub whether a `maint/<N>` PR is already MERGED — a merge
+/// that landed but was never recorded must be recoverable, or the success gate can
+/// never be satisfied and `done` is unreachable. A merged PR records the `maint-pr`
+/// event (`merged: true`, `reconciled: true`, with the PR number/url). Only when
+/// there is genuinely nothing to merge AND no merged maint PR is a NO-OP printed —
+/// and a NO-OP records no event (it is not an outcome).
+///
 /// An already-open `maint/<N>` PR (a failed earlier attempt) is closed and its stale
 /// head dropped before a clean PR is opened and merged (idempotent recovery).
+///
+/// **Checkout cleanliness (#3192):** `git checkout -B maint/<N> origin/main`
+/// rewrites EVERY path that differs between HEAD and `origin/main`, so the refusal
+/// set is the full dirty × changed intersection (not just the post-audit paths). An
+/// EOL-only path — `git diff --numstat` empty AND the `--ignore-cr-at-eol` patch
+/// empty — is exempt and restored losslessly from HEAD; a path with a REAL content
+/// change still refuses, and is named.
 fn post_audit_maint_pr(
     issue: u32,
     actor: &str,
@@ -3128,12 +3236,46 @@ fn post_audit_maint_pr(
     let mut st: Vec<&str> = vec!["status", "--porcelain", "--"];
     st.extend(PATHS.iter().copied());
     let dirty = run_cmd("git", &st)?;
+    let branch = format!("maint/{}", issue);
     if dirty.trim().is_empty() {
-        println!("NO-OP: no post-audit changes for #{} — nothing to open a SPEC MAINT PR for", issue);
-        append_event_attrs(issue, "maint-pr", actor, phase, "success", &format!("no post-audit changes to sync for #{}", issue), &[("merged", "false"), ("noop", "true")])?;
+        // Nothing left to commit. Two very different states reach this point:
+        //
+        //  - a `maint/<N>` PR already MERGED (#3192): the merge LANDED but the gate
+        //    event was never recorded (the merge command failed on its local
+        //    post-merge step AFTER the remote merge). Record the merge and satisfy
+        //    the success gate — this is the reconciliation, and it must run BEFORE
+        //    the NO-OP verdict or the gate is permanently unreachable.
+        //  - genuinely nothing merged and nothing to merge: a NO-OP. It records NO
+        //    event — a NO-OP is not an outcome, and recording one would claim a
+        //    maintenance sync that never happened.
+        if let Some((pr_n, pr_url)) = find_merged_maint_pr(issue)? {
+            println!(
+                "SPEC MAINT PR ALREADY MERGED: {} ({}) — no post-audit changes left to sync; recording the post-audit gate event (reconciled)",
+                pr_url, branch
+            );
+            append_event_attrs(
+                issue,
+                "maint-pr",
+                actor,
+                phase,
+                "success",
+                &format!("reconciled already-merged SPEC MAINT PR {} for #{}", pr_url, issue),
+                &[
+                    ("branch", branch.as_str()),
+                    ("pr", pr_n.as_str()),
+                    ("url", pr_url.as_str()),
+                    ("merged", "true"),
+                    ("reconciled", "true"),
+                ],
+            )?;
+            return Ok(());
+        }
+        println!(
+            "NO-OP: no post-audit changes for #{} — nothing to open a SPEC MAINT PR for (no merged {} PR exists either, so the post-audit gate is NOT satisfied)",
+            issue, branch
+        );
         return Ok(());
     }
-    let branch = format!("maint/{}", issue);
     // Base the branch on the CURRENT `origin/main`, NOT `HEAD` (G-406 / #3075).
     //
     // The gate runs with the repo root on the spec branch (`doc-sync` Step 1), and
@@ -3144,10 +3286,73 @@ fn post_audit_maint_pr(
     // docs) and conflicts whenever both sides changed a file differently. Base on
     // `origin/main` so the PR carries ONLY the post-audit paths.
     run_cmd("git", &["fetch", "origin", "main"])?;
-    // Safety (G-1976): switching the base rewrites every path that differs between
-    // HEAD and `origin/main`. If one of those paths also carries a pending
-    // working-tree edit, the checkout would refuse — and a forced one would lose
-    // the edit. Fail loudly instead of silently discarding the gate's edits.
+    // --- Checkout cleanliness: EVERY dirty path, not just PATHS (#3192) ---------
+    // `git checkout -B maint/<N> origin/main` rewrites every path that differs
+    // between HEAD and `origin/main`, so the refusal set is the FULL dirty × changed
+    // intersection — an uncommitted build artefact outside PATHS (e.g.
+    // `apps/tauri/src-tauri/gen/schemas/*`, `apps/tauri/src-tauri/Cargo.toml`)
+    // blocks the checkout just the same. Switching the base rewrites those paths;
+    // a forced checkout would discard the pending edit.
+    //
+    // An **EOL-only artefact** is exempt: `git diff --numstat` reports nothing and
+    // the `--ignore-cr-at-eol` patch is empty, so the path carries no content change
+    // and cannot be overwritten meaningfully. It is restored losslessly from HEAD so
+    // the checkout cannot trip on it. A path with a REAL content change still
+    // refuses, and is named. Untracked paths (`??`) are always treated as real.
+    let changed_all_raw = run_cmd("git", &["diff", "--name-only", "HEAD", "origin/main"])?;
+    let changed_all: Vec<String> = changed_all_raw
+        .lines()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    let dirty_all_raw = run_cmd("git", &["status", "--porcelain"])?;
+    let dirty_all: Vec<(String, String)> = dirty_all_raw
+        .lines()
+        .filter(|line| line.len() >= 4)
+        .map(|line| (line.get(..2).unwrap_or("").trim().to_string(), porcelain_path(line).unwrap_or_default()))
+        .filter(|(_, p)| !p.is_empty())
+        .collect();
+    let mut real_dirty: Vec<String> = Vec::new();
+    let mut eol_only: Vec<String> = Vec::new();
+    for (code, path) in &dirty_all {
+        if !changed_all.iter().any(|c| c == path) {
+            continue;
+        }
+        if code.contains('?') || path_has_content_change(path) {
+            real_dirty.push(path.clone());
+        } else {
+            eol_only.push(path.clone());
+        }
+    }
+    real_dirty.sort();
+    real_dirty.dedup();
+    eol_only.sort();
+    eol_only.dedup();
+    if !real_dirty.is_empty() {
+        anyhow::bail!(
+            "REFUSED: building the SPEC MAINT PR for #{} on origin/main would overwrite uncommitted changes in {} path(s): {}. These carry REAL content changes (`git diff --numstat` is non-empty). Commit, stash, or move them (under .opencode/tmp/{}/) before re-running `maint-pr` — the machine never forces a checkout and never discards your work. (An EOL-only artefact — `--numstat` empty AND the `--ignore-cr-at-eol` patch empty — is exempt and never blocks.)",
+            issue,
+            real_dirty.len(),
+            real_dirty.join(", "),
+            issue
+        );
+    }
+    if !eol_only.is_empty() {
+        println!(
+            "NOTE: ignoring {} EOL-only artefact path(s) — no content change (`git diff --numstat` empty, `--ignore-cr-at-eol` patch empty), so nothing can be overwritten: {}. Restored losslessly from HEAD.",
+            eol_only.len(),
+            eol_only.join(", ")
+        );
+        for p in &eol_only {
+            // Lossless by definition: there is no content change to discard. Restoring
+            // makes the subsequent checkout clean instead of tripping over a stat-only
+            // entry. Best-effort — an untracked path is never exempt.
+            let _ = run_cmd("git", &["checkout", "HEAD", "--", p]);
+        }
+    }
+    // Safety (G-1976): the post-audit paths specifically. Still refuses a REAL
+    // pending edit on a path `main` changed (never clobbers); EOL-only paths are
+    // exempt by the same rule as above.
     let mut diff_args: Vec<&str> = vec!["diff", "--name-only", "HEAD", "origin/main", "--"];
     diff_args.extend(PATHS.iter().copied());
     let base_changed = run_cmd("git", &diff_args)?;
@@ -3164,11 +3369,24 @@ fn post_audit_maint_pr(
         .collect();
     clobbered.sort();
     clobbered.dedup();
-    if !clobbered.is_empty() {
+    let (clobbered_real, clobbered_eol): (Vec<String>, Vec<String>) = clobbered
+        .into_iter()
+        .partition(|p| path_has_content_change(p));
+    if !clobbered_eol.is_empty() {
+        println!(
+            "NOTE: ignoring {} EOL-only artefact path(s) on post-audit paths — no content change, exempt from the G-1976 refusal: {}",
+            clobbered_eol.len(),
+            clobbered_eol.join(", ")
+        );
+        for p in &clobbered_eol {
+            let _ = run_cmd("git", &["checkout", "HEAD", "--", p]);
+        }
+    }
+    if !clobbered_real.is_empty() {
         anyhow::bail!(
-            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. Preserve them (commit, or copy under .opencode/tmp/{}/) and reconcile before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed",
+            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. These carry REAL content changes (`git diff --numstat` non-empty); preserve them (commit, or copy under .opencode/tmp/{}/) and reconcile before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed. (EOL-only artefacts are exempt and never named here.)",
             issue,
-            clobbered.join(", "),
+            clobbered_real.join(", "),
             issue
         );
     }
@@ -3231,11 +3449,46 @@ fn post_audit_maint_pr(
     let pr_n = url.rsplit('/').next().unwrap_or("").to_string();
     // FORCE-merge as the privileged writer (`--admin`): the repo has auto-merge
     // DISABLED (`allow_auto_merge: false`), so `--auto` fails outright. The admin
-    // bypass SKIPS the required `validate` status check — the human's call. `gh`
-    // applies the merge synchronously; `await_maint_pr_merged` then VERIFIES the PR
-    // is actually MERGED (it resolves on the first poll).
-    run_gh(&["pr", "merge", &pr_n, "--admin", "--squash", "--delete-branch"])?;
-    await_maint_pr_merged(&pr_n)?;
+    // bypass SKIPS the required `validate` status check — the human's call.
+    //
+    // NOT `--delete-branch` (#3192): gh implements that flag with a LOCAL `git
+    // checkout` of the base branch in the SERVING checkout to delete the head ref.
+    // When that checkout refuses — an EOL-only artefact (#3192:
+    // `apps/tauri/src-tauri/Cargo.toml`) — gh exits non-zero AFTER the remote merge
+    // already landed, so the step reported failure for a merge that SUCCEEDED. The
+    // remote head is removed by the repo's `delete_branch_on_merge`; the local ref is
+    // swept best-effort below. The merge step never moves the serving checkout.
+    //
+    // Fail-closed correctness: the command's exit status is NOT the verdict — the
+    // PR's STATE is. `await_maint_pr_merged` verifies it; a MERGED PR records
+    // success (flagged when the command complained), anything else errors.
+    let merge_cmd = run_gh(&["pr", "merge", &pr_n, "--admin", "--squash"]);
+    await_maint_pr_merged(&pr_n).map_err(|e| match &merge_cmd {
+        Ok(_) => e,
+        Err(me) => anyhow::anyhow!("{} (the merge command also failed: {})", e, me),
+    })?;
+    let merge_cmd_error = match merge_cmd {
+        Ok(_) => false,
+        Err(me) => {
+            println!(
+                "NOTE: `gh pr merge` reported an error but the PR is MERGED — the merge landed remotely; recording success ({})",
+                me
+            );
+            true
+        }
+    };
+    // Best-effort head hygiene — never fatal, never a checkout.
+    let _ = run_cmd("git", &["push", "origin", "--delete", &branch]);
+    let _ = run_cmd("git", &["branch", "-D", &branch]);
+    let mut attrs: Vec<(&str, &str)> = vec![
+        ("branch", branch.as_str()),
+        ("pr", pr_n.as_str()),
+        ("url", url.as_str()),
+        ("merged", "true"),
+    ];
+    if merge_cmd_error {
+        attrs.push(("merge_cmd_error", "true"));
+    }
     append_event_attrs(
         issue,
         "maint-pr",
@@ -3243,11 +3496,7 @@ fn post_audit_maint_pr(
         phase,
         "success",
         &format!("merged SPEC MAINT PR {} for #{}", url, issue),
-        &[
-            ("branch", branch.as_str()),
-            ("pr", pr_n.as_str()),
-            ("merged", "true"),
-        ],
+        &attrs,
     )?;
     println!("SPEC MAINT PR MERGED: {} ({})", url, branch);
     Ok(())
@@ -3292,6 +3541,49 @@ fn await_maint_pr_merged(pr: &str) -> anyhow::Result<()> {
     )
 }
 
+/// The most recent **MERGED** SPEC MAINT PR already on GitHub for `issue`, as
+/// `(pr_number, url)` — the anchor for `maint-pr`'s reconciliation (#3192).
+///
+/// A merge can LAND without its event being recorded: `gh pr merge --delete-branch`
+/// merged remotely, then failed on its local post-merge checkout, and the action
+/// errored — so the gate could never be satisfied and `done` was unreachable. The PR
+/// record carries `headRefName` even after the head branch is deleted by
+/// `delete_branch_on_merge`, so the merge stays discoverable.
+fn find_merged_maint_pr(issue: u32) -> anyhow::Result<Option<(String, String)>> {
+    let branch = format!("maint/{}", issue);
+    let out = run_gh(&["pr", "list", "--head", &branch, "--state", "merged", "--json", "number,url"])?;
+    let mut merged: Vec<(u64, String)> = serde_json::from_str::<serde_json::Value>(&out)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let n = p.get("number")?.as_u64()?;
+                    let url = p.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                    Some((n, url))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Most recent (highest number) wins.
+    merged.sort_by_key(|(n, _)| *n);
+    match merged.pop() {
+        Some((n, url)) => {
+            let url = if url.is_empty() {
+                run_gh(&["pr", "view", &n.to_string(), "--json", "url"])
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_else(|| format!("#{}", n))
+            } else {
+                url
+            };
+            Ok(Some((n.to_string(), url)))
+        }
+        None => Ok(None),
+    }
+}
+
 /// The success-only post-audit gate: leaving `post-audit` for `cleanup` (the road
 /// to `done`) requires the SPEC MAINT PR to have MERGED. Ok iff the issue's event
 /// log carries a `maint-pr` event with `merged: true`. A restart exit
@@ -3306,7 +3598,7 @@ fn maint_pr_merged(issue: u32) -> anyhow::Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "no merged SPEC MAINT PR recorded — run `maint-pr` (it opens ONE `maint/<N>` PR, force-merges it as the privileged writer (`--admin`), and records a `maint-pr` event with merged:true) before `post-audit → cleanup`"
+            "no merged SPEC MAINT PR recorded — run `maint-pr` (it opens ONE `maint/<N>` PR, force-merges it as the privileged writer (`--admin`), and records a `maint-pr` event with merged:true). When a `maint/<N>` PR already MERGED but its event was never recorded, re-running `maint-pr` reconciles it: nothing left to commit + a merged maint PR records the event instead of a NO-OP. Required before `post-audit → cleanup`"
         ))
     }
 }
