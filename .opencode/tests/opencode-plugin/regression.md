@@ -26,9 +26,33 @@
 - [ ] R-14: Log events unchanged - `session.created`, `session.idle`, `session.error`, `api_request`, `api_error`, `tool_result`, `user_prompt` still emitted with their attribute sets (`telemetry-constants.ts:92-101`); only the two gen_ai event names move to span events
 - [ ] R-15: Plugin builds + typechecks - `bun build` and `tsc --noEmit` exit 0
 
+## Spec #3197 additions (OpenCode 2 / V2 port — nothing below may change)
+
+- [ ] R-16: `apps/tauri/src-tauri/src/infrastructure/rtdb/attrs.rs` is **byte-identical to `main`** —
+  `scripts/verify-contract-immutable.ps1` prints `PATH=attrs.rs STATUS=IDENTICAL`.
+- [ ] R-17: `apps/tauri/src-tauri/src/infrastructure/rtdb/ingest.rs` is **byte-identical to `main`** —
+  same script prints `PATH=ingest.rs STATUS=IDENTICAL` and `CONTRACT-DIFF-EMPTY: true`.
+- [ ] R-18: Mission Monitor is untouched and renders the ported rows unchanged — no `apps/ui/` file
+  appears in the spec diff, and the F-31 render of a live V2 session succeeds with the panel's
+  existing list/chat/tool/token surfaces.
+- [ ] R-19: the classifier's mapping is unchanged — operation-name-driven classification
+  (`run_agent`/`chat`/`execute_tool`), session identity precedence, parent precedence
+  (link → `session.parent_id`), payload projection and the drop rule for unclassifiable spans.
+- [ ] R-20: the emitted contract vocabulary is unchanged — V1 key set (`fredo.session` / `fredo.llm` /
+  `fredo.tool.<name>` span names; `gen_ai.operation.name`/`provider.name`/`request.model`/
+  `input.messages`/`output.messages`/`usage.*`/`tool.*`; the flat Fredo-native attributes; the nine
+  log bodies incl. `commit` and `tool_decision`; the metric names; `service.name=fredo-opencode-plugin`).
+  The earlier rows R-1..R-15 encode this baseline — their `file:line` citations are V1-era and are
+  historical; assert the KEY VOCABULARY, not the line numbers.
+- [ ] R-21: the build surface is unchanged — one `bun build src/index.ts --outdir dist --target bun`
+  script, run as `pnpm --filter @fredo/fredo-opencode-plugin build`, producing
+  `apps/opencode-plugin/dist/index.js` as the single artifact.
+
 ## Overlapping suites
 
 - `otlp-genai/regression.md` - Rust adapter extraction paths that consume these attributes
+- `mission-monitor/regression.md` - the row consumers (R-21 classifier mapping, R-45/R-53 provider
+  attribution + render) that this port must leave unchanged
 - `apps/ui` mission-monitor vitest suites - ECE consumers of `turnInputTokens`/`turnOutputTokens` etc.
 
 ## Origin
