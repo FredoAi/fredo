@@ -293,3 +293,19 @@ Cold-restarted the dev instance so the round-2 Rust fix `b303ba9` was built+serv
   `terminalMode.test.ts` = 3 tests; 5/5 green.
 - (The #3051 C-5 teardown was not required — the fixture session is rooted at
   `.opencode\tests\terminal\fixtures\workdir-a`; record cleanup deferred to the env teardown.)
+
+## #3198 — shared capture + isolation (quick paths)
+
+> Seeded at triage for Spec #3198. Quick paths only; full assertions live in the named
+> `functional.md` rows. Evidence is LIVE; F-90/F-94 carry the #3197 precondition.
+
+- [ ] S-30: **Default launch still empty of wiring (quick path)** — launch a session, read the
+      `opencode` CommandLine from `process-hygiene.ps1 -List`. EXPECTED: no `--standalone`, no
+      receiver argument. Full assertions F-89 (static pin) / F-95.
+- [ ] S-31: **Isolated launch lands in its own store (quick path, after #3197)** — boot with
+      `-RequireIsolation -EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"`, run one turn, query that env's
+      `telemetry_spans`. EXPECTED: ≥1 row for the session; the shared store has none. Full
+      assertions F-93/F-94.
+- [ ] S-32: **Refused launch copy (quick path)** — spawn with
+      `testOverride:{binary:'…\apps\tauri\src-tauri\Cargo.toml'}`. EXPECTED: the in-window
+      message names the cause + "reopen Terminal", NOT "not found in PATH". Full assertions F-92.
