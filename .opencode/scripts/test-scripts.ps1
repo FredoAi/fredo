@@ -7,6 +7,11 @@ param(
 # never touch the real GitHub. All `gh`/`git` interactions go through the helpers
 # below, which read/write the same JSON store the state machine uses.
 $env:FREDO_MOCK_GH = "1"
+# Explicit opt-in for the worktree actions (#3197): a real developer session must
+# NEVER be satisfied by the simulator (a mocked `git worktree add` reports success
+# with nothing on disk), so create/remove-worktree refuse when FREDO_MOCK_GH=1 is
+# set without this opt-in. The harness sets it; one test removes it to pin the guard.
+$env:FREDO_MOCK_WORKTREE = "1"
 $env:FREDO_MOCK_STORE = Join-Path $env:TEMP ("fredo-mock-repo-" + [Guid]::NewGuid().ToString("N"))
 $env:FREDO_MOCK_REPO = "fredo/mock"
 New-Item -ItemType Directory -Path $env:FREDO_MOCK_STORE -Force | Out-Null
@@ -572,6 +577,103 @@ Test-Script "Create-worktree reuses an existing worktree (.git marker) (G-201)" 
     return "existing worktree reused"
   } finally {
     Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# ── #3197: the worktree actions must be HONEST ───────────────────────────────
+# A developer was told "WORKTREE CREATED (detached at origin/spec/3197)" while
+# nothing existed on disk (no `.git`, no registration, `git rev-parse
+# --show-toplevel` from inside it returned the MAIN checkout). It committed into
+# the shared root checkout while other sessions used it, and its teardown was then
+# blocked by ANOTHER agent's dirt because `git -C <plain dir>` answers for the
+# enclosing repo. The action may only report success on VERIFIED reality, and may
+# only judge a tree's dirt from inside THAT tree.
+
+# A stray FREDO_MOCK_GH=1 in a REAL session must not satisfy a worktree action at
+# all: the simulator's git cannot create a real worktree, so the action refuses
+# rather than printing a verified-looking success.
+Test-Script "Worktree actions refuse the offline simulator unless the harness opts in (#3197)" {
+  Remove-Item Env:\FREDO_MOCK_WORKTREE -ErrorAction SilentlyContinue
+  try {
+    $c = & rust-script $ps --issue $TestIssue --agent developer --action create-worktree 2>&1
+    $cStr = if ($c -is [array]) { $c -join "`n" } else { "$c" }
+    if ($LASTEXITCODE -eq 0) { throw "create-worktree must refuse under FREDO_MOCK_GH=1, got exit 0: $cStr" }
+    if ($cStr -match "WORKTREE CREATED") { throw "must never print WORKTREE CREATED: $cStr" }
+    if ($cStr -notmatch "OFFLINE VALIDATION mode") { throw "Expected the simulator refusal, got: $cStr" }
+    $r = & rust-script $ps --issue $TestIssue --agent developer --action remove-worktree 2>&1
+    $rStr = if ($r -is [array]) { $r -join "`n" } else { "$r" }
+    if ($LASTEXITCODE -eq 0) { throw "remove-worktree must refuse under FREDO_MOCK_GH=1, got exit 0: $rStr" }
+    if ($rStr -notmatch "OFFLINE VALIDATION mode") { throw "Expected the simulator refusal, got: $rStr" }
+    return "both worktree actions refuse the simulator without the opt-in"
+  } finally {
+    $env:FREDO_MOCK_WORKTREE = "1"
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Lever: the mock `worktree add` exits 0 and creates nothing (the exact #3197
+# symptom). The action must refuse to call that success.
+Test-Script "Create-worktree refuses success when git creates nothing (#3197)" {
+  $url = Mock-IssueCreate "temp: wt 3197 noop" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-3197-noop-$n"
+  [System.IO.File]::WriteAllText((Mock-StorePath "worktree-add-noop"), "1", [System.Text.UTF8Encoding]::new($false))
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "create-worktree must fail when git creates nothing, got exit 0: $outStr" }
+    if ($outStr -match "WORKTREE CREATED") { throw "must not print WORKTREE CREATED: $outStr" }
+    if ($outStr -notmatch "BLOCKED: create-worktree") { throw "Expected a BLOCKED: create-worktree line, got: $outStr" }
+    if ($outStr -notmatch "created nothing|no directory exists") { throw "Expected the 'nothing created' reason, got: $outStr" }
+    if (Test-Path $wt) { throw "no worktree dir should exist at $wt" }
+    # The append-only record must not claim the success either.
+    $log = Join-Path ".opencode/state/issues" "$n.jsonl"
+    if (-not (Test-Path $log)) { throw "event log missing for $n" }
+    $lines = Get-Content $log
+    $succ = @($lines | Where-Object { $_ -match '"event_name":"create-worktree"' -and $_ -match '"outcome":"success"' })
+    if ($succ.Count -ne 0) { throw "the record must not claim a create-worktree success: $($succ -join '; ')" }
+    $fail = @($lines | Where-Object { $_ -match '"event_name":"create-worktree"' -and $_ -match '"outcome":"failed"' })
+    if ($fail.Count -eq 0) { throw "a failed create-worktree event must be recorded" }
+    return "success refused + failure recorded"
+  } finally {
+    Remove-Item (Mock-StorePath "worktree-add-noop") -Force -ErrorAction SilentlyContinue
+    if (Test-Path $wt) { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Lever: the mock `worktree add` fails. git's own words must reach the agent.
+Test-Script "Create-worktree surfaces a git failure as an error, never success (#3197)" {
+  $url = Mock-IssueCreate "temp: wt 3197 fail" "scratch" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+  $wt = Join-Path $env:TEMP "fredo-wt-3197-fail-$n"
+  [System.IO.File]::WriteAllText((Mock-StorePath "worktree-add-fail"), "1", [System.Text.UTF8Encoding]::new($false))
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action create-worktree --worktree-path $wt 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "create-worktree must fail when git fails, got exit 0: $outStr" }
+    if ($outStr -match "WORKTREE CREATED") { throw "must not print WORKTREE CREATED: $outStr" }
+    if ($outStr -notmatch "worktree add failed") { throw "Expected the 'worktree add failed' error, got: $outStr" }
+    if ($outStr -notmatch "simulated failure") { throw "Expected git's own stderr in the error, got: $outStr" }
+    $log = Join-Path ".opencode/state/issues" "$n.jsonl"
+    $lines = if (Test-Path $log) { Get-Content $log } else { @() }
+    $succ = @($lines | Where-Object { $_ -match '"event_name":"create-worktree"' -and $_ -match '"outcome":"success"' })
+    if ($succ.Count -ne 0) { throw "the record must not claim a create-worktree success: $($succ -join '; ')" }
+    return "git stderr surfaced, no success recorded"
+  } finally {
+    Remove-Item (Mock-StorePath "worktree-add-fail") -Force -ErrorAction SilentlyContinue
+    if (Test-Path $wt) { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
     Mock-Cleanup $n
     $global:LASTEXITCODE = 0
   }
@@ -1869,6 +1971,93 @@ Test-Script "remove-worktree cleans gitignored artifacts before removal" {
   } finally {
     if (Test-Path $wt) { Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue }
     Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3197: removal must judge THAT worktree. `git -C <plain dir>` resolves the
+# ENCLOSING checkout, so an unverified path made one agent's teardown read the main
+# checkout's dirt — another agent's in-flight edits — and refuse.
+Test-Script "remove-worktree drains its own dirt, never the enclosing checkout (#3197)" {
+  $url = Mock-IssueCreate "temp: wt 3197 dirty" "remove-wt-dirty scratch" ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  $wt = Join-Path $env:TEMP "fredo-wt-3197-dirty-$n"
+  try {
+    # A REAL-shaped worktree: `.git` marker + registration (the mock mirrors git).
+    & rust-script $ps --action mock-git --gitargs "worktree add --detach $wt $TestIssue" 2>&1 | Out-Null
+    if (-not (Test-Path (Join-Path $wt ".git"))) { throw "mock worktree must carry a .git marker at $wt" }
+    # Lever: THIS worktree reports uncommitted changes (and only this one).
+    [System.IO.File]::WriteAllText((Mock-StorePath "worktree-dirty"), $wt, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $n --agent developer --action remove-worktree --worktree-path $wt 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "remove-worktree must refuse a dirty worktree, got exit 0: $outStr" }
+    if ($outStr -notmatch "uncommitted changes") { throw "Expected the dirty refusal, got: $outStr" }
+    if (-not (Test-Path $wt)) { throw "a dirty worktree must survive its refused removal" }
+    # Clean it up: the same tree must now be removable (the guard is not sticky).
+    Remove-Item (Mock-StorePath "worktree-dirty") -Force -ErrorAction SilentlyContinue
+    $out2 = & rust-script $ps --issue $n --agent developer --action remove-worktree --worktree-path $wt 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "clean worktree removal failed: $out2Str" }
+    if (Test-Path $wt) { throw "worktree should be gone after the clean removal" }
+    return "dirty refused, clean removed, enclosing checkout never consulted"
+  } finally {
+    Remove-Item (Mock-StorePath "worktree-dirty") -Force -ErrorAction SilentlyContinue
+    if (Test-Path $wt) { Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue }
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A plain directory inside the repo (a crashed create) is NOT a worktree: there is
+# no tracked work to protect, so it is swept inside the pipeline-owned .worktrees
+# root — never removed by asking the enclosing checkout whether it is dirty.
+Test-Script "remove-worktree sweeps unregistered .worktrees debris (#3197)" {
+  $url = Mock-IssueCreate "temp: wt 3197 debris" "remove-wt-debris scratch" ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  $plain = Join-Path ".worktrees" ("3197-plain-" + $n)
+  New-Item -ItemType Directory -Path $plain -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $plain "junk.txt"), "x", [System.Text.UTF8Encoding]::new($false))
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action remove-worktree --worktree-path $plain 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "debris removal should succeed: $outStr" }
+    if ($outStr -match "uncommitted changes") { throw "must never judge the enclosing checkout's dirt: $outStr" }
+    if (Test-Path $plain) { throw "unregistered debris should be swept: $plain" }
+    return "debris swept without judging the enclosing checkout"
+  } finally {
+    if (Test-Path $plain) { Remove-Item -Recurse -Force $plain -ErrorAction SilentlyContinue }
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Outside the pipeline-owned .worktrees root a non-worktree path is refused: a
+# mistyped --worktree-path must not delete an unrelated directory.
+Test-Script "remove-worktree refuses a non-worktree path outside .worktrees (#3197)" {
+  $url = Mock-IssueCreate "temp: wt 3197 outside" "remove-wt-outside scratch" ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $n = [int]$m.Groups[1].Value
+  $wt = Join-Path $env:TEMP "fredo-wt-3197-outside-$n"
+  New-Item -ItemType Directory -Path $wt -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $wt "keep.txt"), "keep", [System.Text.UTF8Encoding]::new($false))
+  try {
+    $out = & rust-script $ps --issue $n --agent developer --action remove-worktree --worktree-path $wt 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "must refuse a non-worktree path outside .worktrees, got exit 0: $outStr" }
+    if ($outStr -notmatch "not a worktree root") { throw "Expected the 'not a worktree root' refusal, got: $outStr" }
+    if (-not (Test-Path (Join-Path $wt "keep.txt"))) { throw "the unrelated directory must be left intact" }
+    return "non-worktree path refused, directory intact"
+  } finally {
+    if (Test-Path $wt) { Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue }
+    Mock-Cleanup $n
     $global:LASTEXITCODE = 0
   }
 }

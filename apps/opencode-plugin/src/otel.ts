@@ -5,12 +5,25 @@
  * gRPC exporters. HTTP/protobuf and HTTP/JSON are accepted by config but currently
  * only gRPC exporters are wired (future enhancement).
  *
+ * NO PROCESS-GLOBAL REGISTRATION (Spec #3197 round 2, F-1). The plugin is a GUEST
+ * in the OpenCode host process and must never claim the host's process-wide OTel
+ * API — it builds its own provider instances and every tracer/meter/logger handle
+ * is taken FROM those instances (`tracerProvider.getTracer`,
+ * `meterProvider.getMeter`, `loggerProvider.getLogger`). The previous
+ * `setGlobal*Provider` calls were the round-1 blocker: the api's global slot
+ * (`globalThis[Symbol.for("opentelemetry.js.api.<major>")]`) is first-wins AND
+ * version-exact, and the host owns it before this plugin's `setup` runs — the
+ * host's api is 1.9.0 while this plugin's is 1.9.1, so BOTH gates refused the
+ * registration and `trace.getTracer` resolved the HOST's provider (or a
+ * delegate-less proxy). The plugin's `BatchSpanProcessor` then never saw a span
+ * while the log half passed only by the `api-logs` duplicate-registration
+ * coincidence (it returns the existing provider instead of failing). Removing the
+ * globals removes that host side effect for all three signals.
+ *
  * Stripped from the reference: no auth headers, no dynamic headers, no custom
  * resource/span attributes beyond service.name and version.
  */
 
-import { logs } from "@opentelemetry/api-logs";
-import { metrics, trace } from "@opentelemetry/api";
 import { LoggerProvider, BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -19,6 +32,7 @@ import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { DEFAULT_BSP_SCHEDULE_DELAY_MS } from "./telemetry-constants";
 import type { Instruments } from "./types";
 
 /** Handles returned by `setupOtel`, used for graceful shutdown. */
@@ -28,6 +42,16 @@ export type OtelProviders = {
   tracerProvider: BasicTracerProvider;
 };
 
+/**
+ * Upper bound on the process-exit flush (Spec #3197 round 2, F-2/NFR-1).
+ *
+ * The exit hook exists for the tail the terminal flush could not finish before
+ * the CLI returned. It must never hold the HOST process open, so the wait is
+ * bounded; a loopback export normally completes in a few milliseconds and the
+ * timer is cleared as soon as it does.
+ */
+const EXIT_FLUSH_TIMEOUT_MS = 2_000;
+
 export async function forceFlushOtel(providers: OtelProviders) {
   await Promise.allSettled([
     providers.meterProvider.forceFlush(),
@@ -36,10 +60,42 @@ export async function forceFlushOtel(providers: OtelProviders) {
   ]);
 }
 
+/** Flushes the plugin's providers, bounded by `EXIT_FLUSH_TIMEOUT_MS`. */
+async function flushBounded(providers: OtelProviders): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, EXIT_FLUSH_TIMEOUT_MS);
+  });
+  await Promise.race([forceFlushOtel(providers), bound]);
+  if (timer) clearTimeout(timer);
+}
+
+/**
+ * Registers a `beforeExit` flush and returns the function that removes it.
+ *
+ * `beforeExit` fires when the event loop would otherwise empty: the flush it
+ * starts is asynchronous and re-arms the loop, so a pending export finishes
+ * before the process goes away. Deliberately NOT `SIGINT`/`SIGTERM` — a signal
+ * listener in a guest plugin suppresses the host's own default handling (an
+ * operator's SIGTERM would stop terminating the process unless the plugin called
+ * `process.exit()`, which would kill a host it does not own).
+ */
+export function registerExitFlush(providers: OtelProviders): () => void {
+  const onBeforeExit = () => {
+    void flushBounded(providers);
+  };
+  process.once("beforeExit", onBeforeExit);
+  return () => {
+    process.off("beforeExit", onBeforeExit);
+  };
+}
+
 /**
  * Initialises the OTel SDK — creates a MeterProvider, LoggerProvider, and
- * BasicTracerProvider backed by OTLP gRPC exporters pointed at `endpoint`,
- * and registers them as the global providers.
+ * BasicTracerProvider backed by OTLP gRPC exporters pointed at `endpoint`.
+ *
+ * The returned instances are the ONLY source of tracer/meter/logger handles:
+ * nothing here is registered globally (see the file header).
  */
 export async function setupOtel(
   endpoint: string,
@@ -68,7 +124,6 @@ export async function setupOtel(
       }),
     ],
   });
-  metrics.setGlobalMeterProvider(meterProvider);
 
   const loggerProvider = new LoggerProvider({
     resource,
@@ -78,20 +133,27 @@ export async function setupOtel(
       }),
     ],
   });
-  logs.setGlobalLoggerProvider(loggerProvider);
 
   const tracerProvider = new BasicTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(traceExporter)],
+    // Explicit cadence — the SDK default (5 s) outlives a short `run`-mode
+    // session, so the last span ended would never be due while the host lives.
+    spanProcessors: [
+      new BatchSpanProcessor(traceExporter, {
+        scheduledDelayMillis: DEFAULT_BSP_SCHEDULE_DELAY_MS,
+      }),
+    ],
   });
-  trace.setGlobalTracerProvider(tracerProvider);
 
   return { meterProvider, loggerProvider, tracerProvider };
 }
 
-/** Creates all metric instruments using the global MeterProvider. Metric names are prefixed with `prefix`. */
-export function createInstruments(prefix: string): Instruments {
-  const meter = metrics.getMeter("com.fredo.opencode");
+/**
+ * Creates all metric instruments from `meterProvider` — the plugin's OWN meter
+ * provider (never the api's global meter). Metric names are prefixed with `prefix`.
+ */
+export function createInstruments(prefix: string, meterProvider: MeterProvider): Instruments {
+  const meter = meterProvider.getMeter("com.fredo.opencode");
   return {
     sessionCounter: meter.createCounter(`${prefix}session.count`, {
       unit: "{session}",

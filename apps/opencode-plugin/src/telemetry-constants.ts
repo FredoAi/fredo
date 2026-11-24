@@ -75,7 +75,12 @@ export const ATTR_CHILD_OUTPUT_TOKENS = "child_output_tokens" as const;
 
 /** Configuration accepted via plugin options tuple in opencode.json. */
 export interface FredoPluginOptions {
-  /** Enable telemetry export. Default: false (requires env var). */
+  /**
+   * Capture switch. `false` is the highest-precedence opt-out (Spec #3197:
+   * capture is DEFAULT-ON; `true` is an explicit opt-in that overrides the
+   * environment opt-outs). Omit to let `FREDO_TELEMETRY` /
+   * `OPENCODE_ENABLE_TELEMETRY` decide — see `config.ts` → `isTelemetryEnabled`.
+   */
   enabled?: boolean;
   /** OTLP collector endpoint URL. Default: "http://localhost:4317". */
   endpoint?: string;
@@ -144,6 +149,19 @@ export const DEFAULT_PROTOCOL: "grpc" = "grpc";
 export const DEFAULT_METRIC_PREFIX = "fredo.";
 export const DEFAULT_METRICS_INTERVAL_MS = 5000;
 export const DEFAULT_LOGS_INTERVAL_MS = 1000;
+
+/**
+ * Span batch-export cadence for `BatchSpanProcessor` (Spec #3197 round 2, F-2).
+ *
+ * The SDK default is 5000 ms, which is longer than a short-lived `opencode run`
+ * session lives: the session span is the LAST span ended before the CLI exits,
+ * so on the default cadence its export is never due while the process exists.
+ * 1000 ms matches the log processor's cadence and bounds that loss window; the
+ * deterministic terminal flush (`handle*` → `closeSession` → `forceFlushOtel`)
+ * is what actually guarantees the tail, this only shortens the exposure for a
+ * process that dies without running the flush.
+ */
+export const DEFAULT_BSP_SCHEDULE_DELAY_MS = 1000;
 
 /**
  * Contract stub: every plugin module that creates spans MUST use these names.

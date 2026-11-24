@@ -420,7 +420,10 @@
                 { "action": "external_directory", "resource": "~/AppData/Roaming/com.fredo.app/**", "effect": "allow" },
                 { "action": "external_directory", "resource": "~/AppData/Local/com.fredo.app/**", "effect": "allow" },
                 { "action": "external_directory", "resource": "~/.config/opencode/plugins/**", "effect": "allow" },
-                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" }
+                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" },
+                { "action": "shell", "resource": "opencode*", "effect": "allow" },
+                { "action": "shell", "resource": "Get-FileHash*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/tests/*", "effect": "allow" }
             ]
         },
         "machinist": {
@@ -469,7 +472,10 @@
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
                 { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" }
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "edit", "resource": "docs/agentic-pipeline/permissions.md", "effect": "allow" },
+                { "action": "shell", "resource": "git worktree list*", "effect": "allow" },
+                { "action": "shell", "resource": "git rev-parse*", "effect": "allow" }
             ]
         },
         "toolsmith": {
