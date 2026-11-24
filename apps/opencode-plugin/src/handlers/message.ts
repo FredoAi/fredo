@@ -160,9 +160,12 @@ export function handleStepStarted(
     // `session.created.data.agent` is optional; the step carries it authoritatively.
     setSessionAgent(sessionID, agent, ctx);
     const previousTurn = ctx.sessionTurns.get(sessionID);
+    // The step's model is authoritative (Spec #3197 round 2, F-3): a turn that
+    // began without one — the run-mode shape, where the prompt arrives before any
+    // step — must be repaired here, not left on the `unknown` placeholder.
     setBoundedMap(ctx.sessionTurns, sessionID, {
       ...(previousTurn?.prompt ? { prompt: previousTurn.prompt } : {}),
-      model: previousTurn?.model ?? (model ? `${model.providerID}/${model.id}` : undefined),
+      model: model ? `${model.providerID}/${model.id}` : previousTurn?.model,
     });
   }
   const modelID = model?.id ?? "unknown";

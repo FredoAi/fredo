@@ -15,12 +15,16 @@
  *   `node_modules/@opencode/client/dist/promise/generated/types.d.ts`
  *   (`EventSubscribeOutput = V2Event` :5575, `V2Event` :3973).
  *
- * WHAT THIS FILE DOES IN ST-1
+ * WHAT THIS FILE DOES
  *   · defines the V2 plugin (`Plugin.define({ id: "fredo", setup })`),
  *   · resolves config with capture DEFAULT-ON and the `FREDO_TELEMETRY` opt-out,
- *   · sets the OTel SDK up exactly as before (`otel.ts` untouched),
+ *   · builds the plugin's OWN OTel providers (no global registration, F-1) and
+ *     takes the tracer/meter/logger FROM those instances,
+ *   · registers a bounded `beforeExit` flush for the batch tail (F-2),
+ *   · registers every session from its FIRST observed event, because this host
+ *     never delivers `session.created` on its `run` path (F-3),
  *   · runs ONE detached subscription loop with an `AbortController` cleanup,
- *   · hands every event to the typed handler skeletons (which emit NOTHING yet),
+ *   · hands every event to the typed handler for its type,
  *   · honours `FREDO_CAPTURE_EVENTS` (one JSON line `{type, event}` per event).
  *
  * There is deliberately NO V1 (hooks-object) export and no `--external` bundle
@@ -33,15 +37,15 @@
 
 import { Plugin } from "@opencode/plugin";
 import { appendFileSync } from "node:fs";
-import { ROOT_CONTEXT, trace, type Span, type SpanContext } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { ROOT_CONTEXT, type Span, type SpanContext } from "@opentelemetry/api";
 import pkg from "../package.json" with { type: "json" };
 import { loadConfig } from "./config";
 import { pluginLog } from "./log";
 import { probeEndpoint } from "./probe";
-import { setupOtel, createInstruments, forceFlushOtel } from "./otel";
+import { setupOtel, createInstruments, forceFlushOtel, registerExitFlush } from "./otel";
 import { remoteParentContext } from "./trace-context";
 import {
+  ensureSessionRegistered,
   handleSessionCreated,
   handleSessionInboxEnqueued,
   handleExecutionStarted,
@@ -49,6 +53,7 @@ import {
   handleExecutionFailed,
   handleExecutionInterrupted,
   handleSessionIdle,
+  type SessionSeed,
 } from "./handlers/session";
 import {
   handleStepStarted,
@@ -119,17 +124,58 @@ function captureEventTo(path: string, event: V2Event): void {
 }
 
 /**
- * Routes one V2 event: capture (when the lever is armed), then dispatch to the
- * typed handler for its type. Unhandled types are ignored deliberately — the
- * subscription is unfiltered, so the host may deliver events this plugin has no
- * opinion about.
+ * The session bootstrap seed carried by an event (Spec #3197 round 2, F-3).
  *
- * ST-1 invariant: every branch below lands in a NO-OP skeleton, so this
- * function emits nothing.
+ * `session.created` is NOT delivered on this host's `run` path (0 occurrences in
+ * three real captures), so `sessionTotals` — written only at creation — was never
+ * seeded for a run-mode session and every created-time effect (model on the turn
+ * root, `total_tokens`/`total_cost_usd`/`total_messages` at close, the duration /
+ * inference-call / tool-call metrics, the `session.created` log body) was lost.
+ * Every `session.*` event therefore contributes whatever identity it carries, and
+ * `ensureSessionRegistered` seeds the totals once from the FIRST one observed:
+ *   · `session.created` — agent, model, parentID (the full set);
+ *   · `session.step.started` — agent + model (authoritative on this host);
+ *   · every other session event — just the id (it still registers the session).
+ */
+function sessionSeedOf(event: V2Event): SessionSeed | undefined {
+  if (!("data" in event)) return undefined;
+  const sessionID = (event.data as { sessionID?: unknown }).sessionID;
+  if (typeof sessionID !== "string" || sessionID.length === 0) return undefined;
+
+  const seed: SessionSeed = { sessionID, createdAt: event.created };
+  if (event.type === "session.created") {
+    const data = event.data;
+    if (data.agent) seed.agent = data.agent;
+    if (data.model) seed.model = `${data.model.providerID}/${data.model.id}`;
+    if (data.parentID) seed.parentID = data.parentID;
+  } else if (event.type === "session.step.started") {
+    const data = event.data;
+    if (data.agent) seed.agent = data.agent;
+    if (data.model) seed.model = `${data.model.providerID}/${data.model.id}`;
+  }
+  return seed;
+}
+
+/**
+ * Routes one V2 event: capture (when the lever is armed), bootstrap the session,
+ * then dispatch to the typed handler for its type. Unhandled types are ignored
+ * deliberately — the subscription is unfiltered, so the host may deliver events
+ * this plugin has no opinion about.
+ *
+ * The bootstrap runs BEFORE dispatch so a session whose `session.created` never
+ * arrives is registered (exactly once) by its first observed event; when the host
+ * does deliver `session.created` the bootstrap and the handler share the same
+ * `ensureSessionRegistered`, so the effect still happens exactly once and in the
+ * same order as before.
  */
 export function handleV2Event(event: V2Event, ctx: HandlerContext): void {
   const capturePath = process.env["FREDO_CAPTURE_EVENTS"];
   if (capturePath) captureEventTo(capturePath, event);
+
+  if (event.type.startsWith("session.")) {
+    const seed = sessionSeedOf(event);
+    if (seed) ensureSessionRegistered(seed, ctx);
+  }
 
   switch (event.type) {
     case "session.created":
@@ -243,9 +289,16 @@ export const fredoPluginDefinition = Plugin.define({
     );
     const { meterProvider, loggerProvider, tracerProvider } = providers;
 
-    const instruments = createInstruments(config.metricPrefix);
-    const otelLogger = logs.getLogger("com.fredo.opencode");
-    const tracer = trace.getTracer("com.fredo.opencode");
+    // Process-exit safety net for the batch tail (F-2): the CLI returns right
+    // after the last session event, so anything the terminal flush did not
+    // finish is flushed on `beforeExit`. Bounded, and removed on cleanup.
+    const unregisterExitFlush = registerExitFlush(providers);
+
+    // Every handle comes from the plugin's OWN provider instances — never from
+    // the api's process-global registries, which this host owns (F-1).
+    const instruments = createInstruments(config.metricPrefix, meterProvider);
+    const otelLogger = loggerProvider.getLogger("com.fredo.opencode");
+    const tracer = tracerProvider.getTracer("com.fredo.opencode");
     const remoteContext = remoteParentContext(config.traceparent, config.tracestate);
     if (config.traceparent && !remoteContext) {
       pluginLog("warn", "invalid traceparent ignored", {
@@ -274,6 +327,7 @@ export const fredoPluginDefinition = Plugin.define({
     const pendingSubagentInstructions = new Map<string, string>();
     const messageMeta = new Map<string, MessageMeta>();
     const pendingChildCompletions = new Map<string, PendingChildCompletion>();
+    const registeredSessions = new Set<string>();
 
     const ctx: HandlerContext = {
       log: pluginLog,
@@ -303,10 +357,12 @@ export const fredoPluginDefinition = Plugin.define({
       pendingSubagentInstructions,
       messageMeta,
       pendingChildCompletions,
+      registeredSessions,
       suppressParentRouting: SUPPRESS_PARENT_ROUTING,
-      // `session.idle` flush seam (ST-2) — the exporter flush point V1 performed
-      // inline at `session.idle`/`session.error`.
-      onIdleFlush: () => forceFlushOtel(providers),
+      // Deterministic exporter flush, bound to EVERY terminal session close
+      // (execution.succeeded|failed|interrupted and session.idle) rather than to
+      // the `session.idle` EVENT, which this host never delivers (F-2).
+      onExporterFlush: () => forceFlushOtel(providers),
     };
 
     // ── Detached event loop ──────────────────────────────────────────────
@@ -342,6 +398,7 @@ export const fredoPluginDefinition = Plugin.define({
     return async () => {
       if (cleanedUp) return;
       cleanedUp = true;
+      unregisterExitFlush();
       controller.abort();
       await forceFlushOtel(providers);
       await Promise.allSettled([

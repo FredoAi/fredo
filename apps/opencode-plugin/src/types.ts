@@ -266,6 +266,16 @@ export type HandlerContext = {
   /** Child-completion snapshots keyed by PARENT session id (Spec #2745 R-2). */
   pendingChildCompletions: Map<string, PendingChildCompletion>;
   /**
+   * Sessions already REGISTERED (Spec #3197 round 2, F-3) — the exactly-once guard
+   * for `ensureSessionRegistered`.
+   *
+   * Deliberately separate from `sessionTotals`: the close path DELETES a session's
+   * totals, so a later event of the same session would otherwise emit a SECOND
+   * `session.created` body and count it twice. Bounded like every other map
+   * (oldest-first eviction at `MAX_PENDING`) via `setBoundedSet`.
+   */
+  registeredSessions: Set<string>;
+  /**
    * Spec #2768 ST-1 TEST SEAM: when true (FREDO_SUPPRESS_PARENT_ROUTING=1 in
    * the plugin host environment, read ONCE at plugin init), the plugin never
    * stamps the self-carried `session.parent_id` routing attribute nor runs the
@@ -276,9 +286,13 @@ export type HandlerContext = {
    */
   suppressParentRouting: boolean;
   /**
-   * Flush seam for `session.idle` (Spec #3197 ST-2): `otel.ts` →
-   * `forceFlushOtel`, wired by `index.ts` to the live providers. Absent in unit
-   * contexts, so the flush is optional and never a hard dependency of a handler.
+   * Exporter flush seam (Spec #3197 round 2, F-2): `otel.ts` →
+   * `forceFlushOtel`, wired by `index.ts` to the live providers. Called from
+   * `closeSession`, i.e. on EVERY terminal session close
+   * (`execution.succeeded` / `.failed` / `.interrupted`, and `session.idle`) —
+   * deliberately not bound to the `session.idle` EVENT, which this host never
+   * delivers on its `run` path. Absent in unit contexts, so the flush is
+   * optional and never a hard dependency of a handler.
    */
-  onIdleFlush?: () => Promise<void> | void;
+  onExporterFlush?: () => Promise<void> | void;
 };

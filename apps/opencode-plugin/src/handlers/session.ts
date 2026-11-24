@@ -57,6 +57,7 @@ import {
   getSessionAgentMeta,
   resolveSessionTraceContext,
   setBoundedMap,
+  setBoundedSet,
 } from "../util";
 import {
   ATTR_OP_NAME,
@@ -76,7 +77,6 @@ import { MAX_CHILD_COMPLETIONS } from "../types";
 import type {
   HandlerContext,
   PendingChildCompletion,
-  SessionAgentType,
   SessionTotals,
   V2EventOf,
 } from "../types";
@@ -153,9 +153,115 @@ function storeSessionSpan(sessionID: string, span: Span, ctx: HandlerContext): v
 }
 
 /**
- * `session.created` — registers session identity and emits the session log +
- * counter. A CHILD session additionally opens its `fredo.session` span with the
- * child→parent link; a primary session's span opens at its first prompt.
+ * The identity a session's first observed event carries (Spec #3197 round 2, F-3).
+ *
+ * Every field except the id is optional: the bootstrap seeds whatever the payload
+ * knows and later events repair the rest (`setSessionAgent` from
+ * `session.step.started`, the turn model from `sessionTurns`).
+ */
+export type SessionSeed = {
+  sessionID: string;
+  /** `event.created` of the first observed event — the session's start time. */
+  createdAt: number;
+  agent?: string;
+  /** `"<providerID>/<modelID>"` — the V1 `model` attribute form. */
+  model?: string;
+  parentID?: string;
+};
+
+/**
+ * THE one created-time registration (Spec #3197 round 2, F-3): seeds the session
+ * totals, counts the session, remembers the session's model, and emits the
+ * `session.created` log body — exactly once per session.
+ *
+ * `session.created` is never delivered on this host's `run` path (0 occurrences
+ * across three real captures), and `sessionTotals` is what every other created-
+ * time effect reads: the close path's `total_tokens` / `total_cost_usd` /
+ * `total_messages` and the duration / inference-call / tool-call metrics, plus
+ * the turn root's `model`. So this function is called from `handleV2Event` for
+ * EVERY `session.*` event as well as from `handleSessionCreated`; the
+ * `registeredSessions` set is the exactly-once guard (a close deletes the
+ * totals, so the totals alone cannot carry it), which means a host that DOES
+ * deliver `session.created` produces the identical single registration.
+ */
+export function ensureSessionRegistered(
+  seed: SessionSeed,
+  ctx: HandlerContext,
+): SessionTotals | undefined {
+  const sessionID = seed.sessionID;
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (existing) return existing;
+  // Already registered once: its totals were deleted by the close path, so a
+  // later event of the same session must NOT emit a second `session.created`
+  // body nor count the session twice (one session ⇒ one registration).
+  if (ctx.registeredSessions.has(sessionID)) return undefined;
+  setBoundedSet(ctx.registeredSessions, sessionID);
+
+  let totals: SessionTotals = {
+    startMs: seed.createdAt,
+    tokens: 0,
+    cost: 0,
+    messages: 0,
+    agent: seed.agent ?? "unknown",
+    agentType: seed.parentID ? "subagent" : "primary",
+    inferenceCalls: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    outputTokens: 0,
+    ...(seed.parentID ? { parentId: seed.parentID } : {}),
+  };
+  setBoundedMap(ctx.sessionTotals, sessionID, totals);
+
+  // `session.created` carries the session's model; remember it so the prompt log
+  // and the turn-root span can name it before the first step resolves one.
+  if (seed.model) {
+    const previousTurn = ctx.sessionTurns.get(sessionID);
+    setBoundedMap(ctx.sessionTurns, sessionID, {
+      ...(previousTurn?.prompt ? { prompt: previousTurn.prompt } : {}),
+      model: seed.model,
+    });
+  }
+
+  // A session first observed AFTER its creation can still resolve a parent
+  // through the retained V1 pending-`task` scan. That scan's temporal-origin
+  // guard reads this session's start time, so it needs the totals to exist
+  // first; the seam (`FREDO_SUPPRESS_PARENT_ROUTING`) is honoured inside.
+  if (!seed.parentID) {
+    const resolvedParent = routingParentSessionId(sessionID, ctx);
+    if (resolvedParent) totals = ctx.sessionTotals.get(sessionID) ?? totals;
+  }
+
+  const isSubagent = totals.agentType === "subagent";
+  ctx.instruments.sessionCounter.add(1, {
+    [ATTR_SESSION_ID]: sessionID,
+    [ATTR_IS_SUBAGENT]: isSubagent,
+  });
+
+  ctx.emitLog({
+    severityNumber: SeverityNumber.INFO,
+    severityText: "INFO",
+    timestamp: seed.createdAt,
+    observedTimestamp: Date.now(),
+    body: LOG_SESSION_CREATED,
+    attributes: {
+      "event.name": LOG_SESSION_CREATED,
+      [ATTR_SESSION_ID]: sessionID,
+      [ATTR_IS_SUBAGENT]: isSubagent,
+      ...agentAttrs(totals.agent, totals.agentType),
+    },
+  });
+  ctx.log("info", "otel: session.created", { sessionID, createdAt: seed.createdAt, isSubagent });
+  return totals;
+}
+
+/**
+ * `session.created` — registers session identity (delegated to
+ * `ensureSessionRegistered`) and, for a CHILD session, opens its `fredo.session`
+ * span with the child→parent link. A primary session's span opens at its first
+ * prompt.
  */
 export function handleSessionCreated(
   event: V2EventOf<"session.created">,
@@ -163,95 +269,56 @@ export function handleSessionCreated(
 ): void {
   const data = event.data;
   const sessionID = data.sessionID;
-  const createdAt = event.created;
 
-  // R-1.4: V2 carries the parent DIRECTLY on the payload (types.d.ts:3351).
-  // The V1 pending-`task` scan is only the fallback for a payload that omits it
-  // (and is skipped entirely under the FREDO_SUPPRESS_PARENT_ROUTING seam).
-  let parentID: string | undefined = data.parentID;
-  if (!parentID) parentID = routingParentSessionId(sessionID, ctx);
-
-  const isSubagent = !!parentID;
-  const agentType: SessionAgentType = isSubagent ? "subagent" : "primary";
-  const agent = data.agent ?? "unknown";
-
-  ctx.instruments.sessionCounter.add(1, {
-    [ATTR_SESSION_ID]: sessionID,
-    [ATTR_IS_SUBAGENT]: isSubagent,
-  });
-
-  const existingTotals = ctx.sessionTotals.get(sessionID);
-  const totals: SessionTotals = {
-    startMs: existingTotals?.startMs ?? createdAt,
-    tokens: existingTotals?.tokens ?? 0,
-    cost: existingTotals?.cost ?? 0,
-    messages: existingTotals?.messages ?? 0,
-    agent: existingTotals?.agent ?? agent,
-    agentType,
-    inferenceCalls: existingTotals?.inferenceCalls ?? 0,
-    toolCalls: existingTotals?.toolCalls ?? 0,
-    inputTokens: existingTotals?.inputTokens ?? 0,
-    cacheReadTokens: existingTotals?.cacheReadTokens ?? 0,
-    cacheWriteTokens: existingTotals?.cacheWriteTokens ?? 0,
-    reasoningTokens: existingTotals?.reasoningTokens ?? 0,
-    outputTokens: existingTotals?.outputTokens ?? 0,
-    ...(parentID ? { parentId: parentID } : {}),
-    ...(existingTotals?.instruction ? { instruction: existingTotals.instruction } : {}),
-  };
-  setBoundedMap(ctx.sessionTotals, sessionID, totals);
-
-  // `session.created` carries the session's model; remember it so the prompt log
-  // and the turn-root span can name it before the first step resolves one.
-  if (data.model) {
-    const previousTurn = ctx.sessionTurns.get(sessionID);
-    setBoundedMap(ctx.sessionTurns, sessionID, {
-      ...(previousTurn?.prompt ? { prompt: previousTurn.prompt } : {}),
-      model: `${data.model.providerID}/${data.model.id}`,
-    });
-  }
-
-  if (parentID) {
-    const parentSpanContext = resolveParentSpanContext(parentID, ctx);
-    const spanLink = parentSpanContext
-      ? createParentSpanLink(parentSpanContext, parentID)
-      : undefined;
-
-    const sessionSpan = ctx.tracer.startSpan(
-      `${ctx.tracePrefix}session`,
-      {
-        startTime: createdAt,
-        attributes: {
-          ...genAiOpNameAttr(OP_NAME_SESSION),
-          ...genAiConversationAttr(sessionID),
-          ...genAiAgentNameAttr(agent),
-          [ATTR_SESSION_ID]: sessionID,
-          // Seam-guarded self-carried routing (FREDO_SUPPRESS_PARENT_ROUTING).
-          ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: parentID }),
-          agent,
-          [ATTR_AGENT_TYPE]: agentType,
-          [ATTR_IS_SUBAGENT]: isSubagent,
-        },
-        ...(spanLink ? { links: [spanLink] } : {}),
-      },
-      resolveSessionTraceContext(parentID, ctx),
-    );
-    storeSessionSpan(sessionID, sessionSpan, ctx);
-  }
-
-  ctx.emitLog({
-    severityNumber: SeverityNumber.INFO,
-    severityText: "INFO",
-    timestamp: createdAt,
-    observedTimestamp: Date.now(),
-    body: LOG_SESSION_CREATED,
-    attributes: {
-      "event.name": LOG_SESSION_CREATED,
-      [ATTR_SESSION_ID]: sessionID,
-      [ATTR_IS_SUBAGENT]: isSubagent,
-      ...agentAttrs(agent, agentType),
+  // R-1.4: V2 carries the parent DIRECTLY on the payload (types.d.ts:3351). The
+  // V1 pending-`task` scan is only the fallback for a payload that omits it (and
+  // is skipped entirely under the FREDO_SUPPRESS_PARENT_ROUTING seam) — both
+  // live in `ensureSessionRegistered`, so the bootstrap path gets the same rule.
+  const totals = ensureSessionRegistered(
+    {
+      sessionID,
+      createdAt: event.created,
+      ...(data.agent ? { agent: data.agent } : {}),
+      ...(data.model ? { model: `${data.model.providerID}/${data.model.id}` } : {}),
+      ...(data.parentID ? { parentID: data.parentID } : {}),
     },
-  });
-  ctx.log("info", "otel: session.created", { sessionID, createdAt, isSubagent });
+    ctx,
+  );
+  if (!totals) return;
+
+  const parentID = totals.parentId;
+  if (!parentID) return;
+  // One span per session: a session whose span already opened on an earlier
+  // event must never get a second one when its creation event arrives late.
+  if (ctx.sessionSpans.has(sessionID)) return;
+
+  const agentType = totals.agentType;
+  const isSubagent = agentType === "subagent";
+  const parentSpanContext = resolveParentSpanContext(parentID, ctx);
+  const spanLink = parentSpanContext
+    ? createParentSpanLink(parentSpanContext, parentID)
+    : undefined;
+
+  const sessionSpan = ctx.tracer.startSpan(
+    `${ctx.tracePrefix}session`,
+    {
+      startTime: totals.startMs,
+      attributes: {
+        ...genAiOpNameAttr(OP_NAME_SESSION),
+        ...genAiConversationAttr(sessionID),
+        ...genAiAgentNameAttr(totals.agent),
+        [ATTR_SESSION_ID]: sessionID,
+        // Seam-guarded self-carried routing (FREDO_SUPPRESS_PARENT_ROUTING).
+        ...(ctx.suppressParentRouting ? {} : { [ATTR_PARENT_SESSION_ID]: parentID }),
+        agent: totals.agent,
+        [ATTR_AGENT_TYPE]: agentType,
+        [ATTR_IS_SUBAGENT]: isSubagent,
+      },
+      ...(spanLink ? { links: [spanLink] } : {}),
+    },
+    resolveSessionTraceContext(parentID, ctx),
+  );
+  storeSessionSpan(sessionID, sessionSpan, ctx);
 }
 
 /**
@@ -274,7 +341,14 @@ export function handleSessionInboxEnqueued(
   const { agentName, agentType } = getSessionAgentMeta(sessionID, ctx);
   const model = ctx.sessionTurns.get(sessionID)?.model ?? "unknown";
 
-  setBoundedMap(ctx.sessionTurns, sessionID, { prompt: promptText, model });
+  // Never persist the `unknown` PLACEHOLDER as the turn's model: a session
+  // bootstrapped from `session.inbox.enqueued` has no model yet, and writing
+  // "unknown" here would mask the real one the first `session.step.started`
+  // carries (Spec #3197 round 2, F-3).
+  setBoundedMap(ctx.sessionTurns, sessionID, {
+    prompt: promptText,
+    ...(model !== "unknown" ? { model } : {}),
+  });
 
   const existing = ctx.sessionSpans.get(sessionID);
   const promptAttrs = {
@@ -412,7 +486,34 @@ export function handleExecutionInterrupted(
   });
 }
 
-/** `session.idle` — flush point: closes anything still open, then flushes the exporters. */
+/**
+ * The ONE exporter-flush seam (Spec #3197 round 2, F-2 — NFR-6, one rule).
+ *
+ * Fire-and-forget by construction: the caller is a session handler on the user's
+ * event loop, so a failed or hung export may never delay or fail the session
+ * (NFR-1). Rejections are swallowed; the promise is never awaited here.
+ */
+function flushExporters(ctx: HandlerContext): void {
+  try {
+    const flushed = ctx.onExporterFlush?.();
+    if (flushed && typeof (flushed as Promise<void>).catch === "function") {
+      (flushed as Promise<void>).catch(() => {
+        // A failing flush must never surface (NFR-1).
+      });
+    }
+  } catch {
+    // Never let the flush seam break the event loop (NFR-1).
+  }
+}
+
+/**
+ * `session.idle` — closes anything still open, then flushes.
+ *
+ * The flush itself is NOT bound to this event: this host never delivers
+ * `session.idle` on its `run` path, so every terminal close flushes (see
+ * `closeSession`). Keeping the call here too costs nothing — a close with
+ * nothing open is a no-op and the flush is idempotent.
+ */
 export function handleSessionIdle(
   event: V2EventOf<"session.idle">,
   ctx: HandlerContext,
@@ -428,16 +529,6 @@ export function handleSessionIdle(
     sweepMessage: "session idled before tool/message completed",
   });
 
-  try {
-    const flushed = ctx.onIdleFlush?.();
-    if (flushed && typeof (flushed as Promise<void>).catch === "function") {
-      (flushed as Promise<void>).catch(() => {
-        // A failing flush must never surface (NFR-1).
-      });
-    }
-  } catch {
-    // Never let the flush seam break the event loop (NFR-1).
-  }
   ctx.log("debug", "otel: session.idle", { sessionID: event.data.sessionID });
 }
 
@@ -461,9 +552,22 @@ type CloseOptions = {
  *   2. sweep still-open tool/message spans (never orphan one);
  *   3. record the session metrics exactly once (guarded by the totals delete);
  *   4. stamp the final attribute set, status, exception event, then `.end()`;
- *   5. emit the terminal log record.
+ *   5. emit the terminal log record;
+ *   6. flush the exporters — the deterministic batch-tail flush (F-2) that runs
+ *      on the events this host DOES deliver (`session.execution.succeeded` /
+ *      `.failed` / `.interrupted`), never only on the `session.idle` event.
  */
 function closeSession(sessionID: string, ctx: HandlerContext, options: CloseOptions): void {
+  closeSessionEmission(sessionID, ctx, options);
+  flushExporters(ctx);
+}
+
+/** The emission half of `closeSession` — every branch before the exporter flush. */
+function closeSessionEmission(
+  sessionID: string,
+  ctx: HandlerContext,
+  options: CloseOptions,
+): void {
   const totals = ctx.sessionTotals.get(sessionID);
   const liveSessionSpan = ctx.sessionSpans.get(sessionID);
   const sessionOutput = collectSessionOutput(sessionID, ctx);
@@ -526,10 +630,15 @@ function closeSession(sessionID: string, ctx: HandlerContext, options: CloseOpti
   const sessionSpan = liveSessionSpan;
   if (sessionSpan) {
     if (totals) {
+      // The turn model is authoritative once a step resolved it: a session whose
+      // `session.created` never arrived opened its turn root with `model=unknown`
+      // and this is where it becomes the real `<provider>/<model>` (F-3).
+      const turnModel = ctx.sessionTurns.get(sessionID)?.model;
       sessionSpan.setAttributes({
         ...genAiAgentNameAttr(totals.agent),
         agent: totals.agent,
         [ATTR_AGENT_TYPE]: totals.agentType,
+        ...(turnModel ? { [ATTR_MODEL]: turnModel } : {}),
         [ATTR_TOTAL_TOKENS]: totals.tokens,
         [ATTR_TOTAL_COST]: totals.cost,
         [ATTR_TOTAL_MESSAGES]: totals.messages,

@@ -151,6 +151,19 @@ export const DEFAULT_METRICS_INTERVAL_MS = 5000;
 export const DEFAULT_LOGS_INTERVAL_MS = 1000;
 
 /**
+ * Span batch-export cadence for `BatchSpanProcessor` (Spec #3197 round 2, F-2).
+ *
+ * The SDK default is 5000 ms, which is longer than a short-lived `opencode run`
+ * session lives: the session span is the LAST span ended before the CLI exits,
+ * so on the default cadence its export is never due while the process exists.
+ * 1000 ms matches the log processor's cadence and bounds that loss window; the
+ * deterministic terminal flush (`handle*` → `closeSession` → `forceFlushOtel`)
+ * is what actually guarantees the tail, this only shortens the exposure for a
+ * process that dies without running the flush.
+ */
+export const DEFAULT_BSP_SCHEDULE_DELAY_MS = 1000;
+
+/**
  * Contract stub: every plugin module that creates spans MUST use these names.
  * Every adapter module that processes spans MUST handle these names.
  */

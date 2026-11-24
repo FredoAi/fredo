@@ -25,12 +25,16 @@
  *     Fredo keys those modules do not export are declared once in `FLAT` below,
  *     with the reason).
  *
- * The two driven scenarios, one conversation each, through `handleV2Event`:
+ * The three driven scenarios, one conversation each, through `handleV2Event`:
  *   A. a PRIMARY session with two model turns (one OK, one FAILED), a successful
  *      shell tool call carrying a `git commit`, a FAILED tool call, a permission
  *      accept, and a clean execution end;
  *   B. an INTERRUPTED run (interrupted mid-turn with an OPEN LLM span and an OPEN
- *      tool span) — the sweep path that must close everything with ERROR.
+ *      tool span) — the sweep path that must close everything with ERROR;
+ *   C. the RUN-MODE shape this host actually delivers (round-1 capture
+ *      `ac1-events-r1.jsonl`: 48 events, `session.created` and `session.idle`
+ *      both ABSENT) — the session is bootstrapped from its first prompt and must
+ *      still carry both preserved bodies and its close-time totals (F-2/F-3).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -250,8 +254,9 @@ function harness(): Harness {
     pendingSubagentInstructions: new Map(),
     messageMeta: new Map(),
     pendingChildCompletions: new Map(),
+    registeredSessions: new Set(),
     suppressParentRouting: false,
-    onIdleFlush: () => {},
+    onExporterFlush: () => {},
   } as unknown as HandlerContext;
 
   return { ctx, spans, logs, metrics };
@@ -855,8 +860,179 @@ describe("contract B: interrupted run", () => {
   });
 });
 
-// ── The classification contract (R-3.1) ────────────────────────────────────
+// ── Scenario C — the run-mode shape (no `session.created`, no `session.idle`) ──
+//
+// Scenario C is the shape the V2 host really delivers: `ac1-events-r1.jsonl`
+// holds 48 events and contains NO `session.created` and NO `session.idle`. The
+// session is therefore registered by its first PROMPT and closed by
+// `session.execution.succeeded`. This is the discrimination pin for F-2/F-3: if a
+// later live round shows `session.created` / `session.idle` absent again, the
+// cause is wire loss, not a handler gap.
 
+const RUN = "ses_run_mode";
+const RUN_MESSAGE = "msg_run_turn";
+const RUN_CALL = "call-run-read";
+
+const runInbox: V2EventOf<"session.inbox.enqueued"> = {
+  id: "evt-run-inbox",
+  created: 3_010,
+  type: "session.inbox.enqueued",
+  durable,
+  data: {
+    sessionID: RUN,
+    inboxID: "msg_run_user",
+    item: { type: "user", payload: { text: "read the file" }, delivery: "queue" },
+  },
+};
+
+const runStepStarted: V2EventOf<"session.step.started"> = {
+  id: "evt-run-step-started",
+  created: 3_020,
+  type: "session.step.started",
+  durable,
+  data: {
+    sessionID: RUN,
+    assistantMessageID: RUN_MESSAGE,
+    agent: "build",
+    model: { id: "claude-sonnet", providerID: "anthropic" },
+    started: 3_020,
+  },
+};
+
+const runStepEnded: V2EventOf<"session.step.ended"> = {
+  id: "evt-run-step-ended",
+  created: 3_100,
+  type: "session.step.ended",
+  durable: durable2,
+  data: {
+    sessionID: RUN,
+    assistantMessageID: RUN_MESSAGE,
+    finish: "tool-calls",
+    cost: 0.01,
+    tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+  },
+};
+
+const runToolInputStarted: V2EventOf<"session.tool.input.started"> = {
+  id: "evt-run-input-started",
+  created: 3_110,
+  type: "session.tool.input.started",
+  durable,
+  data: { sessionID: RUN, assistantMessageID: RUN_MESSAGE, id: RUN_CALL, name: "read" },
+};
+
+const runToolCalled: V2EventOf<"session.tool.called"> = {
+  id: "evt-run-called",
+  created: 3_120,
+  type: "session.tool.called",
+  durable,
+  data: {
+    sessionID: RUN,
+    assistantMessageID: RUN_MESSAGE,
+    id: RUN_CALL,
+    input: { path: "a.ts" },
+    executed: true,
+  },
+};
+
+const runToolSuccess: V2EventOf<"session.tool.success"> = {
+  id: "evt-run-success",
+  created: 3_140,
+  type: "session.tool.success",
+  durable: durableToolTerminal,
+  data: {
+    sessionID: RUN,
+    assistantMessageID: RUN_MESSAGE,
+    id: RUN_CALL,
+    content: [{ type: "text", text: "ok" }],
+    executed: true,
+  },
+};
+
+const runExecutionSucceeded: V2EventOf<"session.execution.succeeded"> = {
+  id: "evt-run-succeeded",
+  created: 3_200,
+  type: "session.execution.succeeded",
+  durable: durable2,
+  data: { sessionID: RUN },
+};
+
+/** Scenario C — the run-mode delivery order (`session.created` never arrives). */
+const RUN_MODE_SESSION: V2Event[] = [
+  runInbox,
+  runStepStarted,
+  runStepEnded,
+  runToolInputStarted,
+  runToolCalled,
+  runToolSuccess,
+  runExecutionSucceeded,
+];
+
+describe("contract C: run-mode session (no session.created, no session.idle)", () => {
+  const h = drive(RUN_MODE_SESSION);
+
+  test("both preserved bodies the store was missing are emitted exactly once", () => {
+    expect(bodyNames(h.logs)).toEqual(
+      [
+        LOG_SESSION_CREATED,
+        LOG_USER_PROMPT,
+        LOG_API_REQUEST,
+        LOG_TOOL_RESULT,
+        LOG_SESSION_IDLE,
+      ].sort(),
+    );
+  });
+
+  test("the bootstrap registers the session exactly once (one body, one count)", () => {
+    // 7 events, 6 of them `session.*`: the registration must not repeat.
+    expect(h.logs.filter((record) => record.body === LOG_SESSION_CREATED)).toHaveLength(1);
+    expect(
+      h.metrics.filter((m) => m.name === `${DEFAULT_METRIC_PREFIX}${METRIC_SESSION_COUNT}`),
+    ).toHaveLength(1);
+  });
+
+  test("the session span keeps the frozen A key set and carries the close-time totals", () => {
+    const session = spanNamed(h, SPAN_SESSION);
+    expect(keysOf(session)).toEqual(
+      [
+        FLAT.agent,
+        ATTR_AGENT_TYPE,
+        GEN_AI_AGENT_NAME,
+        GEN_AI_CONVERSATION_ID,
+        GEN_AI_INPUT_MESSAGES,
+        ATTR_OP_NAME,
+        ATTR_IS_SUBAGENT,
+        ATTR_MODEL,
+        FLAT.prompt,
+        ATTR_SESSION_ID,
+        ATTR_TOTAL_COST,
+        ATTR_TOTAL_MESSAGES,
+        ATTR_TOTAL_TOKENS,
+      ].sort(),
+    );
+    // The values the round-1 store could not produce for a run-mode session.
+    expect(session.attributes[ATTR_MODEL]).toBe("anthropic/claude-sonnet");
+    expect(session.attributes[ATTR_TOTAL_TOKENS]).toBe(15);
+    expect(session.attributes[ATTR_TOTAL_COST]).toBe(0.01);
+    expect(session.attributes[ATTR_TOTAL_MESSAGES]).toBe(1);
+    expect(session.attributes[ATTR_OP_NAME]).toBe(OP_NAME_SESSION);
+    expect(session.status?.code).toBe(SpanStatusCode.OK);
+    expect(session.ended).toBe(true);
+  });
+
+  test("one span per session, and every span of the run is closed", () => {
+    expect(h.spans.map((span) => span.name)).toEqual([
+      SPAN_SESSION,
+      SPAN_LLM,
+      `${SPAN_TOOL_PREFIX}read`,
+    ]);
+    expect(h.spans.every((span) => span.ended)).toBe(true);
+    expect(h.ctx.sessionSpans.size).toBe(0);
+    expect(h.ctx.sessionTotals.size).toBe(0);
+  });
+});
+
+// ── The classification contract (R-3.1) ────────────────────────────────────
 describe("classification contract", () => {
   const h = drive(PRIMARY_SESSION);
 

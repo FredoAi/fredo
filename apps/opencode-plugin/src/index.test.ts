@@ -89,8 +89,9 @@ function recordingContext(): { ctx: HandlerContext; calls: string[] } {
     pendingSubagentInstructions: new Map(),
     messageMeta: new Map(),
     pendingChildCompletions: new Map(),
+    registeredSessions: new Set(),
     suppressParentRouting: false,
-    onIdleFlush: record("otel.flush"),
+    onExporterFlush: record("otel.flush"),
   } as unknown as HandlerContext;
 
   return { ctx, calls };

@@ -43,6 +43,20 @@ export function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, maxSize: n
 }
 
 /**
+ * Inserts `value` into `set`, evicting the OLDEST entry first when the set has
+ * reached capacity — the Set counterpart of `setBoundedMap` (Spec #3197 round 2,
+ * F-3). `registeredSessions` uses it so the exactly-once registration guard stays
+ * bounded in a long-lived plugin host.
+ */
+export function setBoundedSet<T>(set: Set<T>, value: T, maxSize: number = MAX_PENDING) {
+  if (!set.has(value) && set.size >= maxSize) {
+    const first = set.values().next();
+    if (!first.done) set.delete(first.value);
+  }
+  set.add(value);
+}
+
+/**
  * Builds the fredo-native flat attributes carrying a child-completion snapshot
  * onto the parent's `fredo.tool.task` span (Spec #2745 R-2). Deliberately NOT
  * `gen_ai.*` keys — the OTel GenAI registry defines no child-completion aggregate

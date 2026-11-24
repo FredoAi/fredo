@@ -81,8 +81,9 @@ function harness(): { ctx: HandlerContext; logs: LogRecord[]; spans: RecordedSpa
     pendingSubagentInstructions: new Map(),
     messageMeta: new Map(),
     pendingChildCompletions: new Map(),
+    registeredSessions: new Set(),
     suppressParentRouting: false,
-    onIdleFlush: () => {},
+    onExporterFlush: () => {},
   } as unknown as HandlerContext;
 
   return { ctx, logs, spans };

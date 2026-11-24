@@ -31,8 +31,9 @@ import {
   resolveParentSessionId,
   routingParentSessionId,
 } from "./session";
-import { handleStepStarted } from "./message";
+import { handleStepStarted, handleStepEnded } from "./message";
 import { handleToolCalled, handleToolInputStarted } from "./tool";
+import { handleV2Event } from "../index";
 import {
   ATTR_SESSION_ID,
   ATTR_AGENT_TYPE,
@@ -173,8 +174,9 @@ function harness(): {
     pendingSubagentInstructions: new Map(),
     messageMeta: new Map(),
     pendingChildCompletions: new Map(),
+    registeredSessions: new Set(),
     suppressParentRouting: false,
-    onIdleFlush: () => {
+    onExporterFlush: () => {
       state.flushes += 1;
     },
   } as unknown as HandlerContext;
@@ -281,6 +283,23 @@ function stepStarted(sessionID: string, created: number): V2EventOf<"session.ste
       agent: "build",
       model: { id: "claude-sonnet", providerID: "anthropic" },
       started: created,
+    },
+  };
+}
+
+/** The step's terminal, carrying usage — the source of the session totals. */
+function stepEnded(sessionID: string, created: number): V2EventOf<"session.step.ended"> {
+  return {
+    id: `evt-step-ended-${sessionID}`,
+    created,
+    type: "session.step.ended",
+    durable,
+    data: {
+      sessionID,
+      assistantMessageID: "msg_a",
+      finish: "stop",
+      cost: 0.01,
+      tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
     },
   };
 }
@@ -573,15 +592,103 @@ describe("session.idle", () => {
 
   test("a throwing flush seam never surfaces (NFR-1)", () => {
     const h = harness();
-    h.ctx.onIdleFlush = () => {
+    h.ctx.onExporterFlush = () => {
       throw new Error("flush exploded");
     };
     expect(() => handleSessionIdle(idle(SESSION, 200), h.ctx)).not.toThrow();
   });
 });
 
-// ── Parent resolution ───────────────────────────────────────────────────────
+// ── F-2: the batch tail flushes on the events this host DELIVERS ────────────
+//
+// `session.idle` appears in no real capture (round-1 evidence: three captures,
+// zero occurrences), so binding the flush to it lost the tail. These pins make
+// the flush a property of the TERMINAL CLOSE, whichever terminal produced it.
 
+describe("F-2: every terminal close flushes the exporters", () => {
+  test("session.execution.succeeded flushes", () => {
+    const h = harness();
+    handleSessionCreated(sessionCreated(SESSION, 100), h.ctx);
+    handleSessionInboxEnqueued(inboxEnqueued(SESSION, 101, "hi"), h.ctx);
+    expect(h.flushes()).toBe(0);
+    handleExecutionSucceeded(executionSucceeded(SESSION, 200), h.ctx);
+    expect(h.flushes()).toBe(1);
+  });
+
+  test("session.execution.failed flushes", () => {
+    const h = harness();
+    handleSessionCreated(sessionCreated(SESSION, 100), h.ctx);
+    handleExecutionFailed(executionFailed(SESSION, 200), h.ctx);
+    expect(h.flushes()).toBe(1);
+  });
+
+  test("session.execution.interrupted flushes", () => {
+    const h = harness();
+    handleSessionCreated(sessionCreated(SESSION, 100), h.ctx);
+    handleExecutionInterrupted(executionInterrupted(SESSION, 200), h.ctx);
+    expect(h.flushes()).toBe(1);
+  });
+});
+
+// ── F-3: the run-mode shape (no `session.created` ever delivered) ────────────
+//
+// Discrimination step: these pin that BOTH preserved bodies and the close-time
+// totals are produced from the events this host actually emits. If a live round
+// still shows them absent, the cause is wire loss, not a handler gap.
+
+describe("F-3: a session whose session.created never arrives", () => {
+  test("registers exactly once, however many session events follow", () => {
+    const h = harness();
+    handleV2Event(stepStarted(SESSION, 110), h.ctx);
+    handleV2Event(stepStarted(SESSION, 120), h.ctx);
+    handleV2Event(inboxEnqueued(SESSION, 130, "later prompt"), h.ctx);
+
+    expect(h.logs.filter((record) => record.body === LOG_SESSION_CREATED)).toHaveLength(1);
+    expect(h.metrics.filter((m) => m.name === "fredo.session.count")).toHaveLength(1);
+    expect(h.ctx.sessionTotals.get(SESSION)!.agent).toBe("build");
+  });
+
+  test("a session that already closed is not registered a second time", () => {
+    const h = harness();
+    handleV2Event(inboxEnqueued(SESSION, 101, "first"), h.ctx);
+    handleV2Event(executionSucceeded(SESSION, 200), h.ctx);
+    // A later turn of the SAME session (the interactive shape): the close
+    // deleted the totals, so the registration guard is what keeps this to one
+    // `session.created` body and one `fredo.session.count`.
+    handleV2Event(inboxEnqueued(SESSION, 300, "second"), h.ctx);
+
+    expect(h.logs.filter((record) => record.body === LOG_SESSION_CREATED)).toHaveLength(1);
+    expect(h.metrics.filter((m) => m.name === "fredo.session.count")).toHaveLength(1);
+    expect(h.flushes()).toBe(1);
+  });
+
+  test("inbox-first: the turn root carries the real model and the close totals", () => {
+    const h = harness();
+    // The live run-mode order: the prompt arrives BEFORE the first step.
+    handleV2Event(inboxEnqueued(SESSION, 101, "hi"), h.ctx);
+    handleV2Event(stepStarted(SESSION, 110), h.ctx);
+    handleV2Event(stepEnded(SESSION, 160), h.ctx);
+    handleV2Event(executionSucceeded(SESSION, 200), h.ctx);
+
+    const span = h.spans.find((s) => s.name === "fredo.session")!;
+    expect(span.ended).toBe(true);
+    expect(span.status?.code).toBe(SpanStatusCode.OK);
+    // `model` is unknown at creation (no `session.created`), repaired by the step.
+    expect(span.attributes[ATTR_MODEL]).toBe("anthropic/claude-sonnet");
+    expect(span.attributes[ATTR_TOTAL_TOKENS]).toBe(15);
+    expect(span.attributes[ATTR_TOTAL_COST]).toBe(0.01);
+    expect(span.attributes[ATTR_TOTAL_MESSAGES]).toBe(1);
+    // Both preserved bodies the round-1 store was missing, from the events that
+    // DO arrive — and exactly one of each.
+    expect(bodies(h.logs).filter((body) => body === LOG_SESSION_CREATED)).toHaveLength(1);
+    expect(bodies(h.logs).filter((body) => body === LOG_SESSION_IDLE)).toHaveLength(1);
+    expect(bodies(h.logs)).not.toContain(LOG_SESSION_ERROR);
+    // The tail is flushed at the terminal close, not by a `session.idle` event.
+    expect(h.flushes()).toBe(1);
+  });
+});
+
+// ── Parent resolution ───────────────────────────────────────────────────────
 describe("resolveParentSessionId", () => {
   test("returns the direct V2 parentID (no scan needed)", () => {
     const h = harness();
