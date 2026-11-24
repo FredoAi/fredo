@@ -143,13 +143,17 @@
   (`tauri_webview_execute_js` → `__TAURI__.core.invoke('check_all_setup')`).
   **Expected:** `opencode.status == "error"` (NEVER `"ok"`, NEVER `"missing"`); `detail`
   contains the shim's `1.15.5`, contains the rendered `MIN_SUPPORTED_OPENCODE_MAJOR` digit,
-  and contains the literal `opencode upgrade --major`; `opencode_version` is present and
+  contains the literal `opencode upgrade` **and** the literal `fredo setup --check`, and
+  contains **no** `--major` (the installed runtime has no such flag — ST-1 probe:
+  `opencode upgrade --help`); `opencode_version` is present and
   contains `1.15.5`; `can_proceed == false`; the `plugin`/`plugin-install` step is
   `skipped` or `blocked` (never `needed`/`ok`); the Setup surface RENDERS that same `detail`
   text (DOM snapshot contains it) and shows no success state.
-  - **Edge:** never assert the surrounding prose — assert the three tokens above (the
-    template is ST-1's `OPENCODE_VERSION_UNSUPPORTED_MSG`, unit-pinned). The `.cmd` fixture
-    also proves the `cmd.exe /C` rule. Wizard leg and `get_setup_plan` leg must agree.
+  - **Edge:** never assert the surrounding prose — assert the tokens above plus the `--major`
+    absence (the template is ST-1's `OPENCODE_VERSION_UNSUPPORTED_MSG`, rendered from
+    `OPENCODE_UPGRADE_COMMAND`, unit-pinned). A message naming `--major` is a FAIL even if it
+    also names `opencode upgrade`. The `.cmd` fixture also proves the `cmd.exe /C` rule. Wizard
+    leg and `get_setup_plan` leg must agree.
 
 - [ ] **F-10 (R-1a / AC1 — CLI twin; runnable pre-#3197, needs the ST-1 forwarder).**
   `powershell -File .opencode/scripts/setup-version-shim.ps1 -Mode Cli

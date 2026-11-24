@@ -18,7 +18,8 @@
 - [ ] S-7: **V1 gate quick path** — boot with `-EnvVar "PATH=…\fixtures\shim-opencode-1x"`
       (`dev-env.ps1 -Action Up -Spec 3198 -EnvId spec3198 -EnvSlot <n>`), open the Setup
       surface. EXPECTED: the OpenCode step shows an ERROR naming the found version and
-      `opencode upgrade --major`; no success state, no plugin write. Full assertions F-9/F-13.
+      `opencode upgrade` + `fredo setup --check` (and **no** `--major`); no success state, no
+      plugin write. Full assertions F-9/F-13.
 - [ ] S-8: **V2 install quick path (after #3197)** — `fredo setup --install-plugin` on a real
       2.x host. EXPECTED: one `[fredo]` line naming `…\.config\opencode\plugins\fredo.js` and
       "global"; the installed hash equals `apps/opencode-plugin/dist/index.js`. Full
