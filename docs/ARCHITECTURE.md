@@ -189,9 +189,9 @@ src-tauri/src/
 |   +-- settings/               — Persistent KV settings (SQLite)
 |   |   +-- mod.rs              — SettingsApplication
 |   |   +-- commands.rs         — save_setting, get_setting
-|   +-- setup/                  — CLI detection, PATH management, OTel config, three-file model acquisition, Companion readiness
+|   +-- setup/                  — OpenCode 2 version gate, PATH management, global plugin install (no OTLP env config), three-file model acquisition, Companion readiness
 |   |   +-- mod.rs              — SetupApplication
-|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness
+|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness (`check_all_setup`/`get_setup_plan`/`install_plugin` gate on `MIN_SUPPORTED_OPENCODE_MAJOR`; `install_plugin` copies the one artifact to the global plugins dir via `infrastructure::opencode_service::install_plugin_file` and restarts the background service when it wrote bytes and one is running; `configure_otel` is a not-required no-op)
 |   |   +-- model_download_state.rs — pure required-file manifest (pinned URLs/sizes/SHA-256), on-disk classifier, complete-iff-all-present aggregator
 |   |   +-- model_download.rs   — streamed acquisition engine (HTTP Range resume, streaming SHA-256, bounded retry/backoff)
 |   +-- screenshot/             — Screen capture (xcap)
@@ -1164,15 +1164,15 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `write_pty_input` | terminal | Write keyboard input to PTY |
 | `resize_pty` | terminal | Resize PTY to new rows/cols |
 | `close_terminal_window` | terminal | Kill child, release PTY, close window |
-| `check_cli_installations` | setup | Check if `opencode` is on PATH |
-| `install_plugin` | setup | Install OpenCode plugin |
+| `check_cli_installations` | setup | Detect the OpenCode CLI and its major — `opencode: false` when the major is below the supported minimum or cannot be determined — plus the global Fredo plugin's presence |
+| `install_plugin` | setup | Copy the plugin artifact into the global plugins directory (`~/.config/opencode/plugins/fredo.js`), gated on OpenCode 2 and failing loud when the artifact is absent; the copy is hash-guarded (an unchanged re-install writes nothing) and, when it wrote bytes while OpenCode's background service is running, it restarts that service through the runtime's own `opencode service restart`; returns the one `[fredo] …` line naming the resolved file (plus the restart-outcome line when a restart ran) |
 | `get_plugin_source_path` | setup | Return bundled plugin source path |
 | `check_fredo_in_path` | setup | Check if `fredo` is on PATH |
 | `add_fredo_to_path` | setup | Add Fredo to system PATH |
-| `check_otel_configured` | setup | Check OTLP exporter config |
-| `configure_otel` | setup | Write OTLP exporter config |
-| `get_setup_plan` | setup | List pending setup steps |
-| `check_all_setup` | setup | Run all setup checks |
+| `check_otel_configured` | setup | Report whether the capture point (the global Fredo plugin) is installed |
+| `configure_otel` | setup | Not required — idempotent no-op; writes no environment variable |
+| `get_setup_plan` | setup | List pending setup steps (`skipped` / `needed` / `blocked`) carrying the OpenCode version-gate message |
+| `check_all_setup` | setup | Run all setup checks (`opencode` = `error` with the gate message; `otel` = `ok`, not required) |
 | `run_setup_step` | setup | Execute a single setup step |
 | `check_model_files` | setup | Report per-file state for the three required model files (legacy `gguf_exists`/`mmproj_exists` fields preserved) |
 | `download_model` | setup | Download the three required model files with per-file progress, skip-present, HTTP `Range` resume, and streaming SHA-256 verification |

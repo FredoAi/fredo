@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::infrastructure::companion::models::{
@@ -7,6 +8,12 @@ use crate::infrastructure::companion::models::{
 };
 #[cfg(test)]
 use crate::infrastructure::companion::models::default_manifest;
+use crate::infrastructure::opencode_service;
+use crate::infrastructure::opencode_version::{
+    self, is_plugin_installed, plugin_artifact_path, plugin_install_path, plugin_installed_message,
+    plugins_dir, resolve_plugin_source_dir, version_message, OpenCodeVersion,
+    MIN_SUPPORTED_OPENCODE_MAJOR, OPENCODE_INSTALL_DOCS_URL,
+};
 use super::model_download::{
     download_missing_files, DownloadProgress, ModelDownloadOutcome, ProgressReporter,
     ReqwestTransport, SystemClock,
@@ -17,8 +24,14 @@ use super::model_download_state::{is_step_complete, probe_files, FileState, Mode
 
 #[derive(Serialize, Deserialize)]
 pub struct CliCheckResult {
+    /// `false` when the CLI is absent **or** its major is below
+    /// [`MIN_SUPPORTED_OPENCODE_MAJOR`] — an installed-but-unusable binary.
     pub opencode: bool,
     pub opencode_plugin_installed: bool,
+    /// The probe's trimmed version token (`2.4.1`). An **ABSENT KEY** when the
+    /// version could not be determined — never `null`, never `""` (G-413).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -46,8 +59,14 @@ pub struct SetupPlanStep {
 #[derive(Serialize, Deserialize)]
 pub struct SetupPlan {
     pub steps: Vec<SetupPlanStep>,
+    /// `false` on R-1a (too old) and R-1b (undetermined) — the gate's answer.
     pub can_proceed: bool,
     pub opencode_docs_url: String,
+    /// ABSENT KEY when undetermined (G-413).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_version: Option<String>,
+    /// [`MIN_SUPPORTED_OPENCODE_MAJOR`], rendered so the wizard never hard-codes it.
+    pub opencode_min_major: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,10 +78,16 @@ pub struct StepStatus {
 #[derive(Serialize, Deserialize)]
 pub struct CheckAllSetupResult {
     pub fredo_path: StepStatus,
+    /// `error` carries the rendered version message (R-1a/R-1b).
     pub opencode: StepStatus,
     pub plugin: StepStatus,
     pub model: StepStatus,
+    /// `ok` + the not-required detail on OpenCode 2 (R-2c) — never `missing`.
     pub otel: StepStatus,
+    /// ABSENT KEY when undetermined (G-413).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opencode_version: Option<String>,
+    pub opencode_min_major: u32,
 }
 
 /// Extended `check_model_files` result. The legacy snake_case fields are
@@ -95,102 +120,197 @@ pub type ModelDownloadResult = ModelDownloadOutcome;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn is_binary_available(name: &str) -> bool {
-    #[cfg(target_os = "windows")]
-    let finder = "where";
-    #[cfg(not(target_os = "windows"))]
-    let finder = "which";
+/// R-2c: OpenCode 2 needs **no** receiver configuration. Since #3197 the capture
+/// point is one global plugin, so the telemetry step is not-required rather than
+/// missing — and no persistent variable is written anywhere.
+pub const OTEL_NOT_REQUIRED_MSG: &str =
+    "Not required — OpenCode telemetry is captured by the global Fredo plugin; \
+     no OpenCode environment variables are needed.";
 
-    std::process::Command::new(finder)
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// R-2e: the bounded `otel` claim. It states the **mechanism** — how the plugin
+/// reaches the runtime — instead of a bare "configured": with no service-age or
+/// health surface, the check path cannot re-derive staleness across processes, so
+/// it says what is true and where the guarantee is made (at install time).
+pub const OTEL_CAPTURE_MECHANISM_MSG: &str =
+    "Plugin installed. OpenCode loads it when its background service starts; \
+     setup restarts the service after installing.";
+
+/// The process-local outcome of the last plugin install **in this process**
+/// (ST-A3). It is the only cross-step fact the check path can honestly use: a
+/// restart that failed in this process must never be reported as `ok`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// No install has run in this process, or it ran and needed no restart.
+    Unknown,
+    /// The install wrote bytes and the background service was restarted.
+    Restarted,
+    /// The restart failed. Carries the rendered failure message so the `otel`
+    /// step can name the cause instead of inventing one.
+    Failed {
+        /// The rendered restart-failure message (plugin installed, capture not).
+        message: String,
+    },
 }
 
-fn opencode_plugins_dir(home: &Path) -> PathBuf {
-    home.join(".config").join("opencode").join("plugins")
-}
+/// The last install outcome for this process.
+static LAST_INSTALL: Mutex<InstallOutcome> = Mutex::new(InstallOutcome::Unknown);
 
-/// The plugin file is installed as a flat .js file directly in the plugins directory,
-/// which is how OpenCode discovers local plugins (not in subdirectories).
-fn opencode_plugin_file(home: &Path) -> PathBuf {
-    opencode_plugins_dir(home).join("fredo.js")
-}
-
-fn is_opencode_plugin_installed(home: &Path) -> bool {
-    // OpenCode discovers local plugins as flat .js files in the plugins directory.
-    // No config registration needed — local plugins are auto-loaded from the directory.
-    opencode_plugin_file(home).exists()
-}
-
-/// Write OTEL environment variables into OpenCode's configuration
-/// so OpenCode pushes telemetry to the Fredo embedded gRPC receiver on 127.0.0.1:4317.
-///
-/// Persistence strategy:
-///   • Windows  — sets User-level env vars via `setx` (survives new shells/sessions).
-///   • Unix/Mac — appends export lines to ~/.zshrc, ~/.bashrc, and ~/.profile
-///               (guarded by a sentinel comment so re-runs are idempotent).
-fn configure_opencode_otel(_home: &PathBuf) -> Result<(), String> {
-    let vars = [
-        ("OPENCODE_ENABLE_TELEMETRY",  "1"),
-        ("OPENCODE_OTLP_ENDPOINT",     "http://localhost:4317"),
-        ("OPENCODE_OTLP_PROTOCOL",     "grpc"),
-    ];
-
-    #[cfg(target_os = "windows")]
-    {
-        for (key, val) in &vars {
-            let status = std::process::Command::new("setx")
-                .args([key, val])
-                .status()
-                .map_err(|e| format!("setx failed for {key}: {e}"))?;
-            if !status.success() {
-                return Err(format!("setx returned non-zero for {key}"));
-            }
-        }
-        Ok(())
+/// Record what this process's install did — called by the in-app command and by
+/// the `fredo setup --install-plugin` twin, so both surfaces read one record.
+pub fn record_install_outcome(outcome: InstallOutcome) {
+    match LAST_INSTALL.lock() {
+        Ok(mut slot) => *slot = outcome,
+        // A poisoned lock must never turn into a claim: reading it falls back to
+        // `Unknown`, and a failed write here cannot invent a success.
+        Err(poisoned) => *poisoned.into_inner() = outcome,
     }
+}
 
+/// The recorded outcome, cloned out of the lock.
+fn last_install_outcome() -> InstallOutcome {
+    match LAST_INSTALL.lock() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// The ONE `otel` claim both setup surfaces render — `(status, detail)`, PURE
+/// over the record and the install flag so the whole table is unit-tested without
+/// touching process-global state (G-222).
+///
+/// - a restart that FAILED is an `error` carrying that failure's message — the
+///   false green this slice removes;
+/// - an installed plugin reports the mechanism, never a bare "configured";
+/// - a machine without the plugin keeps today's not-required wording (the
+///   `plugin` step owns that state).
+pub fn otel_status_for(outcome: &InstallOutcome, plugin_installed: bool) -> (&'static str, String) {
+    match outcome {
+        InstallOutcome::Failed { message } => ("error", message.clone()),
+        _ if plugin_installed => ("ok", OTEL_CAPTURE_MECHANISM_MSG.to_string()),
+        _ => ("ok", OTEL_NOT_REQUIRED_MSG.to_string()),
+    }
+}
+
+/// [`otel_status_for`] over this process's recorded install outcome.
+pub fn otel_status(plugin_installed: bool) -> (&'static str, String) {
+    otel_status_for(&last_install_outcome(), plugin_installed)
+}
+
+/// `true` only when the capture point is in place AND this process knows the
+/// restart did not fail — file presence alone is not "configured" (ST-A3).
+fn otel_configured_for(outcome: &InstallOutcome, plugin_installed: bool) -> bool {
+    plugin_installed && !matches!(outcome, InstallOutcome::Failed { .. })
+}
+
+/// The `opencode_version` wire value for a probe result. `None` — an ABSENT KEY,
+/// never `null`/`""` — when the version could not be determined (G-413).
+fn version_wire(version: &OpenCodeVersion) -> Option<String> {
+    version.raw().map(str::to_string)
+}
+
+/// (a) The CLI-check payload, pure over the probe so the gate is unit-testable
+/// without spawning `opencode` (G-222). A CLI that is too old, or whose version
+/// cannot be determined, is **not** `opencode: true`: the wizard would otherwise
+/// render a 1.x machine as done.
+fn cli_check_result_for(version: &OpenCodeVersion, plugin_installed: bool) -> CliCheckResult {
+    let opencode = version.is_supported();
+    CliCheckResult {
+        opencode,
+        // An installed-but-unusable CLI never reports a usable plugin.
+        opencode_plugin_installed: opencode && plugin_installed,
+        opencode_version: version_wire(version),
+    }
+}
+
+/// (b) The `opencode` step. R-1a and R-1b both land on `error` carrying the
+/// rendered gate message; only a supported major reads `ok`.
+fn opencode_step_for(version: &OpenCodeVersion) -> StepStatus {
+    match version_message(version) {
+        None => StepStatus {
+            status: "ok".into(),
+            detail: Some("OpenCode CLI is installed.".into()),
+        },
+        Some(detail) => StepStatus {
+            status: "error".into(),
+            detail: Some(detail),
+        },
+    }
+}
+
+/// (b) The `plugin` step. A CLI that cannot run the plugin gates this step as
+/// `error` — never `missing`, which would read as "install the plugin" on a
+/// machine whose real problem is the CLI itself.
+fn plugin_step_for(supported: bool, installed: bool) -> StepStatus {
+    if !supported {
+        StepStatus {
+            status: "error".into(),
+            detail: Some("OpenCode CLI is not usable — cannot verify the plugin.".into()),
+        }
+    } else if installed {
+        StepStatus {
+            status: "ok".into(),
+            detail: Some("Fredo plugin is installed.".into()),
+        }
+    } else {
+        StepStatus {
+            status: "missing".into(),
+            detail: Some("Fredo plugin not installed.".into()),
+        }
+    }
+}
+
+/// (b) The `otel` step — R-2c's not-required state, bounded by ST-A3: a restart
+/// this process knows FAILED is an `error` naming the failure; otherwise the
+/// detail states the capture mechanism, never a bare "configured".
+fn otel_step(plugin_installed: bool) -> StepStatus {
+    otel_step_for(&last_install_outcome(), plugin_installed)
+}
+
+/// The pure core of [`otel_step`]: the step over an EXPLICIT record, so the whole
+/// table is unit-tested without touching process-global state (G-222).
+fn otel_step_for(outcome: &InstallOutcome, plugin_installed: bool) -> StepStatus {
+    let (status, detail) = otel_status_for(outcome, plugin_installed);
+    StepStatus {
+        status: status.into(),
+        detail: Some(detail),
+    }
+}
+
+/// (c) The `plugin-install` plan command: the **copy alone**. No environment
+/// assignment of any kind — setup writes no persistent variable any more (R-2c)
+/// — and the destination is ST-1's flat global `fredo.js`, so the filename has
+/// ONE source. Never a command when the gate failed (R-1c) or the plugin is
+/// already present.
+fn plugin_install_command(
+    supported: bool,
+    installed: bool,
+    artifact: &Path,
+    destination: &Path,
+) -> Option<String> {
+    if !supported || installed {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some(format!(
+            "copy \"{}\" \"{}\"",
+            artifact.display(),
+            destination.display()
+        ))
+    }
     #[cfg(not(target_os = "windows"))]
     {
-        let sentinel = "# fredo-otel-opencode";
-        let block = {
-            let mut s = format!("\n{sentinel}\n");
-            for (key, val) in &vars {
-                s.push_str(&format!("export {key}={val}\n"));
-            }
-            s
-        };
+        Some(format!("cp {} {}", artifact.display(), destination.display()))
+    }
+}
 
-        let rc_files = ["~/.zshrc", "~/.bashrc", "~/.profile"];
-        for rc in &rc_files {
-            let expanded = rc.replacen("~", &home.to_string_lossy(), 1);
-            let path = std::path::Path::new(&expanded);
-            // Only touch files that exist, except .profile which we always create
-            if !path.exists() && *rc != "~/.profile" {
-                continue;
-            }
-            let current = if path.exists() {
-                std::fs::read_to_string(path)
-                    .map_err(|e| format!("Could not read {rc}: {e}"))?
-            } else {
-                String::new()
-            };
-            // Idempotent: skip if sentinel already present
-            if current.contains(sentinel) {
-                continue;
-            }
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|e| format!("Could not open {rc}: {e}"))?;
-            use std::io::Write;
-            file.write_all(block.as_bytes())
-                .map_err(|e| format!("Could not write {rc}: {e}"))?;
-        }
-        Ok(())
+/// A failed install whose `error` is the user-facing cause (never an empty
+/// `output` that reads as success).
+fn install_failure(error: String) -> InstallResult {
+    InstallResult {
+        success: false,
+        output: String::new(),
+        error: Some(error),
     }
 }
 
@@ -221,27 +341,27 @@ pub fn get_plugin_source_path(app: AppHandle) -> Result<String, String> {
     Ok(stripped.replace('\\', "/"))
 }
 
-/// Check whether OpenCode CLI is installed and whether the Fredo plugin is present.
+/// Check whether OpenCode CLI is installed **and supported**, and whether the
+/// Fredo plugin is present.
 #[tauri::command]
 pub fn check_cli_installations(app: AppHandle) -> CliCheckResult {
     let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let opencode = is_binary_available("opencode");
-    CliCheckResult {
-        opencode_plugin_installed: opencode && is_opencode_plugin_installed(&home),
-        opencode,
-    }
+    let version = opencode_version::probe();
+    cli_check_result_for(&version, is_plugin_installed(&home))
 }
 
 /// Returns a setup plan with steps for fredo-path, opencode-cli, and plugin-install.
 /// Status is "skipped", "needed", or "blocked" based on detection results.
 #[tauri::command]
 pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
-    let cli = check_cli_installations(app.clone());
     let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let version = opencode_version::probe();
     let fredo_status = check_fredo_in_path();
-    let plugin_installed = is_opencode_plugin_installed(&home);
+    let plugin_installed = is_plugin_installed(&home);
 
-    let opencode_available = cli.opencode;
+    // The gate: an installed-but-too-old (or undeterminable) CLI cannot proceed
+    // (R-1a/R-1b), and no plugin step may run — let alone copy — behind it (R-1c).
+    let opencode_available = version.is_supported();
     let can_proceed = opencode_available;
 
     // Determine plugin source path for command strings (workspace-first,
@@ -253,12 +373,11 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
         let workspace = ws.canonicalize().unwrap_or(ws);
         let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
         let prod = resource_dir.join("plugin");
-        let src = if workspace.exists() {
+        if workspace.exists() {
             workspace
         } else {
             prod
-        };
-        src.to_string_lossy().into_owned()
+        }
     };
 
     // Build steps
@@ -309,17 +428,19 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
         id: "opencode-cli".to_string(),
         label: "Install OpenCode CLI".to_string(),
         status: opencode_cli_status.to_string(),
-        command: Some("https://opencode.ai/docs/install".to_string()),
-        detail: if opencode_available {
-            Some("OpenCode CLI is installed.".to_string())
-        } else {
-            Some("OpenCode CLI is required to proceed. Install from https://opencode.ai/docs/install".to_string())
-        },
+        command: Some(OPENCODE_INSTALL_DOCS_URL.to_string()),
+        // On a 1.x machine the CLI IS installed: this detail is the gate message
+        // (found version + required major + the bare upgrade verb), never an
+        // "Install from …" line that is false for a binary that exists (R-1a).
+        detail: Some(match version_message(&version) {
+            None => "OpenCode CLI is installed.".to_string(),
+            Some(message) => message,
+        }),
     });
 
     // Step 3: plugin-build
-    let plugin_src_path = std::path::Path::new(&plugin_src);
-    let needs_plugin_build = !plugin_src_path.join("dist").join("index.js").exists();
+    let artifact = plugin_artifact_path(&plugin_src);
+    let needs_plugin_build = !artifact.exists();
     let plugin_build_status = if !opencode_available {
         "blocked"
     } else if !needs_plugin_build {
@@ -344,7 +465,7 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
             }
         },
         detail: if !opencode_available {
-            Some("Install OpenCode CLI first to enable plugin build.".to_string())
+            Some("OpenCode CLI is not usable — fix the OpenCode step first.".to_string())
         } else if !needs_plugin_build {
             Some("Plugin dist already built.".to_string())
         } else {
@@ -360,31 +481,12 @@ pub fn get_setup_plan(app: AppHandle) -> SetupPlan {
     } else {
         "needed"
     };
-    let plugin_command = if !opencode_available || plugin_installed {
-        None
-    } else {
-        #[cfg(target_os = "windows")]
-        {
-            let src = plugin_src.replace('/', "\\");
-            Some(format!(
-                "copy \"{src}\\dist\\index.js\" \"%USERPROFILE%\\.config\\opencode\\plugins\\fredo.js\"\n\
-set OPENCODE_ENABLE_TELEMETRY=1\n\
-set OPENCODE_OTLP_ENDPOINT=http://localhost:4317\n\
-set OPENCODE_OTLP_PROTOCOL=grpc\n\
-rem Persist for future terminals:\n\
-setx OPENCODE_ENABLE_TELEMETRY 1\n\
-setx OPENCODE_OTLP_ENDPOINT http://localhost:4317\n\
-setx OPENCODE_OTLP_PROTOCOL grpc"
-            ))
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Some(format!(
-                "cp {plugin_src}/dist/index.js ~/.config/opencode/plugins/fredo.js\n\
-export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localhost:4317\nexport OPENCODE_OTLP_PROTOCOL=grpc"
-            ))
-        }
-    };
+    let plugin_command = plugin_install_command(
+        opencode_available,
+        plugin_installed,
+        &artifact,
+        &plugin_install_path(&home),
+    );
     steps.push(SetupPlanStep {
         id: "plugin-install".to_string(),
         label: "Install Fredo Plugin".to_string(),
@@ -393,7 +495,7 @@ export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localho
         detail: if plugin_installed {
             Some("Fredo plugin is already installed.".to_string())
         } else if !opencode_available {
-            Some("Install OpenCode CLI first to enable plugin installation.".to_string())
+            Some("OpenCode CLI is not usable — fix the OpenCode step first.".to_string())
         } else {
             None
         },
@@ -402,171 +504,140 @@ export OPENCODE_ENABLE_TELEMETRY=1\nexport OPENCODE_OTLP_ENDPOINT=http://localho
     SetupPlan {
         steps,
         can_proceed,
-        opencode_docs_url: "https://opencode.ai/docs/install".to_string(),
+        opencode_docs_url: OPENCODE_INSTALL_DOCS_URL.to_string(),
+        opencode_version: version_wire(&version),
+        opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
     }
 }
 
 /// Install the Fredo plugin for OpenCode.
-/// Builds the plugin via `bun build` if dist/index.js is missing, then copies
-/// plugin.json, package.json, and dist/index.js to ~/.config/opencode/plugins/fredo/
-/// and registers fredo in opencode.json config.
+///
+/// The install is ONE pass (R-2a): copy the artifact #3197 produced to the flat
+/// global `fredo.js`, then — when this invocation actually wrote new bytes and an
+/// OpenCode background service is running — restart that service through the
+/// runtime's own `opencode service restart` verb so the running server loads the
+/// plugin (R-2e). The copy is hash-guarded (`opencode_service::install_plugin_file`
+/// — the SAME rule the CLI twin calls), so an unchanged re-install writes nothing
+/// and restarts nothing (NFR-1). The version gate runs FIRST, so a refused install
+/// touches nothing — no directory create, no overwrite (R-1c) — and a missing
+/// artifact fails loud instead of reporting a silent skip. No persistent
+/// environment value is written (R-2c).
 #[tauri::command]
 pub async fn install_plugin(app: AppHandle) -> InstallResult {
+    // R-1a / R-1b / R-1c: gate before any filesystem work.
+    let version = opencode_version::probe();
+    if let Some(message) = version_message(&version) {
+        tracing::warn!("install_plugin early-exit [version-gate]: {message}");
+        return install_failure(message);
+    }
+
     let home = match app.path().home_dir() {
         Ok(h)  => h,
         Err(e) => {
             let err = format!("Could not resolve home directory: {e}");
             tracing::warn!("install_plugin early-exit [home-dir]: {err}");
-            return InstallResult {
-                success: false,
-                output: String::new(),
-                error: Some(err),
-            };
+            return install_failure(err);
         }
     };
 
     // Workspace-first: prefer the adjacent checkout (dev/debug machines); fall back
     // to the bundled resource dir only for packaged deployments (issue #2758 F1).
-    let (src_dir, src_label) = {
-        let ws = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("apps/opencode-plugin");
-        let workspace = ws.canonicalize().unwrap_or(ws);
-        let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let prod = resource_dir.join("plugin");
-        if workspace.exists() {
-            (workspace, "workspace")
-        } else {
-            (prod, "resource-dir")
+    let src_dir = match resolve_plugin_source_dir(Some(&app)) {
+        Ok(dir) => dir,
+        Err(err) => {
+            tracing::warn!("install_plugin early-exit [missing-src]: {err}");
+            return install_failure(err);
         }
     };
-    tracing::info!(
-        "install_plugin resolved source ({src_label}): {}",
-        src_dir.display()
-    );
+    tracing::info!("install_plugin resolved source: {}", src_dir.display());
 
-    if !src_dir.exists() {
-        let err = format!("Plugin source directory not found: {}", src_dir.display());
-        tracing::warn!("install_plugin early-exit [missing-src]: {err}");
-        return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(err),
-        };
+    // The artifact is #3197's build output — never built here. A missing artifact
+    // is a loud failure: silently skipping the copy would report success with
+    // nothing installed.
+    let artifact = plugin_artifact_path(&src_dir);
+    if !artifact.exists() {
+        let err = format!(
+            "Plugin artifact not found: {} (build it with `bun build src/index.ts --outdir dist --target bun`)",
+            artifact.display()
+        );
+        tracing::warn!("install_plugin early-exit [missing-artifact]: {err}");
+        return install_failure(err);
     }
 
-    // Build step: run `bun build` if dist/index.js is missing
-    let dist_index_js = src_dir.join("dist").join("index.js");
-    let needs_build = !dist_index_js.exists();
-    tracing::info!(
-        "install_plugin build gate: needs_build={needs_build}, artifact={}",
-        dist_index_js.display()
-    );
-    if needs_build {
-        tracing::info!("install_plugin running `bun build` in {}", src_dir.display());
-        let build_output = std::process::Command::new("bun")
-            .args(["build", "src/index.ts", "--outdir", "dist", "--target", "bun"])
-            .current_dir(&src_dir)
-            .output();
-
-        match build_output {
-            Ok(output) if output.status.success() => {
-                tracing::info!("install_plugin `bun build` succeeded");
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let err = format!(
-                    "bun build failed with exit code {:?}\nstdout: {}\nstderr: {}",
-                    output.status.code(),
-                    stdout,
-                    stderr
-                );
-                tracing::warn!("install_plugin early-exit [bun-build-nonzero]: {err}");
-                return InstallResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(err),
-                };
-            }
-            Err(e) => {
-                let err = format!("Failed to run bun build: {e}");
-                tracing::warn!("install_plugin early-exit [bun-build-spawn]: {err}");
-                return InstallResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(err),
-                };
-            }
-        }
-    }
-
-    // OpenCode discovers local plugins as flat .js files in the plugins directory.
-    // Copy dist/index.js as fredo.js (flat file for auto-discovery).
-    let plugins_dir = opencode_plugins_dir(&home);
-    if let Err(e) = std::fs::create_dir_all(&plugins_dir) {
-        let err = format!("Could not create plugins directory {}: {e}", plugins_dir.display());
+    // OpenCode discovers local plugins as flat .js files in the global plugins
+    // directory; the destination comes from ST-1's helpers so the filename has
+    // one source.
+    let plugins_directory = plugins_dir(&home);
+    if let Err(e) = std::fs::create_dir_all(&plugins_directory) {
+        let err = format!(
+            "Could not create plugins directory {}: {e}",
+            plugins_directory.display()
+        );
         tracing::warn!("install_plugin early-exit [plugins-dir-create]: {err}");
-        return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(err),
-        };
+        return install_failure(err);
     }
     tracing::info!(
         "install_plugin plugins directory ready: {}",
-        plugins_dir.display()
+        plugins_directory.display()
     );
 
-    let dest_file = opencode_plugin_file(&home);
-    let copied_bytes = match std::fs::copy(&dist_index_js, &dest_file) {
-        Ok(n) => n,
+    let dest_file = plugin_install_path(&home);
+    // ONE hash-guarded copy rule, shared with the CLI twin (ST-A2): the bytes are
+    // written only when they differ, so an unchanged re-install is a no-op —
+    // which is also why it must not restart anything.
+    let wrote_bytes = match opencode_service::install_plugin_file(&artifact, &dest_file) {
+        Ok(wrote_bytes) => wrote_bytes,
         Err(e) => {
             let err = format!("Failed to copy plugin to {}: {e}", dest_file.display());
             tracing::warn!("install_plugin early-exit [copy]: {err}");
-            return InstallResult {
-                success: false,
-                output: String::new(),
-                error: Some(err),
-            };
+            return install_failure(err);
         }
     };
     tracing::info!(
-        "install_plugin copied {copied_bytes} bytes -> {}",
+        "install_plugin destination {} (wrote_bytes={wrote_bytes})",
         dest_file.display()
     );
 
-    // Configure OTEL env vars so OpenCode sends telemetry to Fredo.
-    // Deferred OFF the reply critical path: setx only affects FUTURE processes,
-    // so running it after this command replies never changes behavior — but a
-    // slow/hung setx child-process wait can no longer stall the invoke reply
-    // path (E1, issue #2758). Completion (or failure) is logged via tracing.
-    let home_for_otel = home.clone();
-    tauri::async_runtime::spawn(async move {
-        let otel_result =
-            tauri::async_runtime::spawn_blocking(move || configure_opencode_otel(&home_for_otel))
-                .await;
-        let otel_result = match otel_result {
-            Ok(r) => r,
-            Err(e) => Err(format!("OTEL configuration task failed to complete: {e}")),
-        };
-        match &otel_result {
-            Ok(()) => tracing::info!(
-                "OpenCode OTEL env configured — applies to future opencode processes"
-            ),
-            Err(e) => tracing::warn!("Could not write OpenCode OTEL config: {e}"),
-        }
-    });
+    // R-2b: the one `[fredo] `-prefixed success line, naming the resolved
+    // destination and stating the install is global (ST-1 renders it from
+    // `PLUGIN_INSTALLED_GLOBAL_MSG`, so the copy and the constant cannot drift).
+    let output = plugin_installed_message(&dest_file);
 
-    // Self-describing result so callers can distinguish completed installs from
-    // early-exits machine-readably even under fire-and-forget invocation (#2758 F2).
-    let output = format!(
-        "Installed plugin to {} (source-dir: {}, copied {copied_bytes} bytes)",
-        dest_file.display(),
-        src_label,
-    );
-    tracing::info!("install_plugin completed: {output}");
-    InstallResult { success: true, output, error: None }
+    // R-2e: restart the background service IFF this invocation wrote bytes AND a
+    // service is running. The runtime's own verb is the only lifecycle action —
+    // Fredo never signals or kills a process it does not own.
+    if !opencode_service::restart_needed(wrote_bytes, &opencode_service::probe()) {
+        record_install_outcome(InstallOutcome::Unknown);
+        tracing::info!("install_plugin completed: {output}");
+        return InstallResult { success: true, output, error: None };
+    }
+
+    match opencode_service::restart() {
+        Ok(()) => {
+            record_install_outcome(InstallOutcome::Restarted);
+            let restarted = opencode_service::restarted_message();
+            tracing::info!("install_plugin restarted the OpenCode background service");
+            InstallResult {
+                success: true,
+                output: format!("{output}\n{restarted}"),
+                error: None,
+            }
+        }
+        Err(detail) => {
+            // The COPY stands — only the capture outcome failed, and the message
+            // says so. Reporting `success: true` here would be the false green.
+            let message = opencode_service::restart_failed_message(&detail);
+            record_install_outcome(InstallOutcome::Failed {
+                message: message.clone(),
+            });
+            tracing::warn!("install_plugin restart failed: {message}");
+            InstallResult {
+                success: false,
+                output,
+                error: Some(message),
+            }
+        }
+    }
 }
 
 /// Returns whether the `fredo` binary is reachable in PATH and the path of the
@@ -767,76 +838,44 @@ if ($current -split ';' | Where-Object {{ $_ -eq $Dir }}) {{
 }
 
 // ── OTel telemetry configuration commands ────────────────────────────────────
+//
+// Since #3197 the capture point is the ONE global plugin, so these commands stay
+// in the wire surface by name but configure nothing: telemetry needs no
+// per-machine environment.
 
 #[derive(Serialize)]
 pub struct OtelStatus {
-    /// Whether OpenCode OTEL env vars are present (shell profiles on Unix,
-    /// User env vars on Windows).
+    /// Whether the telemetry capture point is in place — the installed Fredo
+    /// plugin (the retired environment-presence probe is gone; R-2c).
     pub opencode_configured: bool,
 }
 
-/// Check whether Fredo OTEL telemetry is already configured for OpenCode.
+/// Check whether Fredo telemetry is in place for OpenCode: the global plugin.
+///
+/// R-2e (ST-A3): file presence alone is not "configured" — a restart this process
+/// knows failed reads `false`, so the step cannot claim capture it does not have.
 #[tauri::command]
 pub fn check_otel_configured(app: AppHandle) -> OtelStatus {
-    let _home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-    let opencode_configured = {
-        #[cfg(target_os = "windows")]
-        {
-            // setx writes to HKCU\Environment in the registry — the current process
-            // env is never updated, so we must query the registry directly.
-            std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile", "-Command",
-                    "[System.Environment]::GetEnvironmentVariable('OPENCODE_ENABLE_TELEMETRY', 'User')",
-                ])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-                .unwrap_or(false)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            // Check current process env first (fast path), then shell profiles
-            // for the sentinel written by configure_opencode_otel.
-            std::env::var("OPENCODE_ENABLE_TELEMETRY").map(|v| v == "1").unwrap_or(false)
-            || [".zshrc", ".bashrc", ".profile"].iter().any(|rc| {
-                let p = _home.join(rc);
-                std::fs::read_to_string(p)
-                    .map(|c| c.contains("# fredo-otel-opencode"))
-                    .unwrap_or(false)
-            })
-        }
-    };
-
-    OtelStatus { opencode_configured }
+    let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    OtelStatus {
+        opencode_configured: otel_configured_for(
+            &last_install_outcome(),
+            is_plugin_installed(&home),
+        ),
+    }
 }
 
-/// Explicitly configure OTEL telemetry for OpenCode.
-/// Called from the Setup wizard's telemetry step.
+/// Explicitly configure telemetry for OpenCode.
+///
+/// An idempotent **no-op**: it writes nothing (no user-env write, no shell-profile
+/// append — R-2c) and reports the not-required message. Kept as a command because
+/// the wizard's telemetry step still invokes it by name.
 #[tauri::command]
-pub fn configure_otel(app: AppHandle) -> InstallResult {
-    let home = match app.path().home_dir() {
-        Ok(h)  => h,
-        Err(e) => return InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("Could not resolve home directory: {e}")),
-        },
-    };
-
-    match configure_opencode_otel(&home) {
-        Ok(())  => {
-            #[cfg(target_os = "windows")]
-            let msg = "OpenCode: OTEL env vars set via setx (persistent user env).".to_string();
-            #[cfg(not(target_os = "windows"))]
-            let msg = "OpenCode: OTEL export lines written to ~/.zshrc / ~/.bashrc / ~/.profile.".to_string();
-            InstallResult { success: true, output: msg, error: None }
-        }
-        Err(e)  => InstallResult {
-            success: false,
-            output: String::new(),
-            error: Some(format!("OpenCode: {e}")),
-        },
+pub fn configure_otel(_app: AppHandle) -> InstallResult {
+    InstallResult {
+        success: true,
+        output: OTEL_NOT_REQUIRED_MSG.to_string(),
+        error: None,
     }
 }
 
@@ -855,8 +894,8 @@ fn legacy_path(files: &[ModelFileStatus], id: &str) -> Option<String> {
 #[tauri::command]
 pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
     let home = app.path().home_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let bin_is_available = is_binary_available("opencode");
-    let plugin_installed = is_opencode_plugin_installed(&home);
+    let version = opencode_version::probe();
+    let plugin_installed = is_plugin_installed(&home);
 
     // fredo-path
     let fredo_status = check_fredo_in_path();
@@ -866,21 +905,12 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
         StepStatus { status: "missing".into(), detail: Some(format!("Not in PATH. Binary at: {}", fredo_status.binary_path)) }
     };
 
-    // opencode
-    let opencode = if bin_is_available {
-        StepStatus { status: "ok".into(), detail: Some("OpenCode CLI is installed.".into()) }
-    } else {
-        StepStatus { status: "missing".into(), detail: Some("OpenCode CLI not found. Install from https://opencode.ai/docs/install.".into()) }
-    };
+    // opencode — R-1a/R-1b: an installed-but-too-old (or undeterminable) CLI is
+    // `error` with the rendered gate message, never `ok` and never `missing`.
+    let opencode = opencode_step_for(&version);
 
     // plugin
-    let plugin = if !bin_is_available {
-        StepStatus { status: "error".into(), detail: Some("OpenCode CLI not installed — cannot verify plugin.".into()) }
-    } else if plugin_installed {
-        StepStatus { status: "ok".into(), detail: Some("Fredo plugin is installed.".into()) }
-    } else {
-        StepStatus { status: "missing".into(), detail: Some("Fredo plugin not installed.".into()) }
-    };
+    let plugin = plugin_step_for(version.is_supported(), plugin_installed);
 
     // model — derived from the same 3-file manifest as the acquisition surfaces,
     // so this step can never report ok on a partial/truncated set.
@@ -911,37 +941,19 @@ pub fn check_all_setup(app: AppHandle) -> CheckAllSetupResult {
         }
     };
 
-    // otel
-    let otel_configured = {
-        #[cfg(target_os = "windows")]
-        {
-            std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile", "-Command",
-                    "[System.Environment]::GetEnvironmentVariable('OPENCODE_ENABLE_TELEMETRY', 'User')",
-                ])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-                .unwrap_or(false)
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::env::var("OPENCODE_ENABLE_TELEMETRY").map(|v| v == "1").unwrap_or(false)
-                || [".zshrc", ".bashrc", ".profile"].iter().any(|rc| {
-                    let p = home.join(rc);
-                    std::fs::read_to_string(p)
-                        .map(|c| c.contains("# fredo-otel-opencode"))
-                        .unwrap_or(false)
-                })
-        }
-    };
-    let otel = if otel_configured {
-        StepStatus { status: "ok".into(), detail: Some("OTEL telemetry configured.".into()) }
-    } else {
-        StepStatus { status: "missing".into(), detail: Some("OpenCode OTEL not configured.".into()) }
-    };
+    // otel — R-2c's not-required state, bounded by R-2e: an install this process
+    // knows failed reports `error`, and the mechanism is never a bare "configured".
+    let otel = otel_step(plugin_installed);
 
-    CheckAllSetupResult { fredo_path, opencode, plugin, model, otel }
+    CheckAllSetupResult {
+        fredo_path,
+        opencode,
+        plugin,
+        model,
+        otel,
+        opencode_version: version_wire(&version),
+        opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
+    }
 }
 
 /// Run a single setup step by ID.
@@ -1202,11 +1214,13 @@ mod tests {
         let original = CliCheckResult {
             opencode: true,
             opencode_plugin_installed: false,
+            opencode_version: Some("2.4.1".into()),
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: CliCheckResult = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.opencode, original.opencode);
         assert_eq!(deserialized.opencode_plugin_installed, original.opencode_plugin_installed);
+        assert_eq!(deserialized.opencode_version, Some("2.4.1".into()));
     }
 
     #[test]
@@ -1293,13 +1307,20 @@ mod tests {
         let original = SetupPlan {
             steps: vec![step],
             can_proceed: true,
-            opencode_docs_url: "https://opencode.ai/docs/install".into(),
+            opencode_docs_url: OPENCODE_INSTALL_DOCS_URL.into(),
+            opencode_version: Some("2.4.1".into()),
+            opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: SetupPlan = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.steps.len(), 1);
         assert!(deserialized.can_proceed);
-        assert_eq!(deserialized.opencode_docs_url, "https://opencode.ai/docs/install");
+        assert_eq!(deserialized.opencode_docs_url, OPENCODE_INSTALL_DOCS_URL);
+        assert_eq!(deserialized.opencode_version, Some("2.4.1".into()));
+        assert_eq!(
+            deserialized.opencode_min_major,
+            MIN_SUPPORTED_OPENCODE_MAJOR
+        );
     }
 
     #[test]
@@ -1322,6 +1343,8 @@ mod tests {
             plugin: StepStatus { status: "missing".into(), detail: Some("Not installed".into()) },
             model: StepStatus { status: "missing".into(), detail: Some("No model files".into()) },
             otel: StepStatus { status: "missing".into(), detail: Some("Not configured".into()) },
+            opencode_version: Some("2.4.1".into()),
+            opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
         };
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: CheckAllSetupResult = serde_json::from_str(&json).unwrap();
@@ -1330,6 +1353,326 @@ mod tests {
         assert_eq!(deserialized.plugin.status, "missing");
         assert_eq!(deserialized.model.status, "missing");
         assert_eq!(deserialized.otel.status, "missing");
+        assert_eq!(deserialized.opencode_version, Some("2.4.1".into()));
+        assert_eq!(
+            deserialized.opencode_min_major,
+            MIN_SUPPORTED_OPENCODE_MAJOR
+        );
+    }
+
+    // ── Spec #3198 ST-2: the OpenCode-2 gate, the global install, no writer ──
+
+    fn supported_version() -> OpenCodeVersion {
+        OpenCodeVersion::Supported {
+            raw: "2.4.1".to_string(),
+            major: MIN_SUPPORTED_OPENCODE_MAJOR,
+        }
+    }
+
+    fn too_old_version() -> OpenCodeVersion {
+        OpenCodeVersion::Unsupported {
+            raw: "1.15.5".to_string(),
+            major: MIN_SUPPORTED_OPENCODE_MAJOR - 1,
+        }
+    }
+
+    fn undetermined_version() -> OpenCodeVersion {
+        OpenCodeVersion::Undetermined {
+            detail: "`opencode --version` exited with 1".to_string(),
+        }
+    }
+
+    /// (a) A supported CLI keeps `opencode: true` and carries the version token.
+    #[test]
+    fn cli_check_serializes_a_supported_cli_with_its_version() {
+        let result = cli_check_result_for(&supported_version(), true);
+        assert!(result.opencode);
+        assert!(result.opencode_plugin_installed);
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["opencode"], serde_json::json!(true));
+        assert_eq!(
+            json.get("opencode_version").and_then(|v| v.as_str()),
+            Some("2.4.1")
+        );
+    }
+
+    /// (a) A 1.x CLI is INSTALLED but unusable: `opencode` flips to false, the
+    /// found version is still reported, and no usable plugin is claimed.
+    #[test]
+    fn cli_check_serializes_a_too_old_cli_as_unusable() {
+        let result = cli_check_result_for(&too_old_version(), true);
+        assert!(!result.opencode, "a 1.x CLI must not read as usable");
+        assert!(!result.opencode_plugin_installed);
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["opencode"], serde_json::json!(false));
+        assert_eq!(
+            json.get("opencode_version").and_then(|v| v.as_str()),
+            Some("1.15.5")
+        );
+    }
+
+    /// (g) + G-413: an undetermined version is an ABSENT KEY on every setup
+    /// payload — never `null`, never `""`.
+    #[test]
+    fn every_setup_payload_omits_the_version_key_when_undetermined() {
+        let version = undetermined_version();
+
+        let cli_json = serde_json::to_value(cli_check_result_for(&version, false)).unwrap();
+        assert!(
+            cli_json.get("opencode_version").is_none(),
+            "cli check: absent key, not null: {cli_json}"
+        );
+
+        let all = CheckAllSetupResult {
+            fredo_path: StepStatus { status: "ok".into(), detail: None },
+            opencode: opencode_step_for(&version),
+            plugin: plugin_step_for(false, false),
+            model: StepStatus { status: "ok".into(), detail: None },
+            otel: otel_step(false),
+            opencode_version: version_wire(&version),
+            opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
+        };
+        let all_json = serde_json::to_value(&all).unwrap();
+        assert!(
+            all_json.get("opencode_version").is_none(),
+            "check_all_setup: absent key, not null: {all_json}"
+        );
+        // snake_case wire (these structs carry no rename_all) + the constant.
+        assert_eq!(
+            all_json["opencode_min_major"],
+            serde_json::json!(MIN_SUPPORTED_OPENCODE_MAJOR)
+        );
+        assert_eq!(all_json["opencode"]["status"], serde_json::json!("error"));
+
+        let plan = SetupPlan {
+            steps: Vec::new(),
+            can_proceed: false,
+            opencode_docs_url: OPENCODE_INSTALL_DOCS_URL.to_string(),
+            opencode_version: version_wire(&version),
+            opencode_min_major: MIN_SUPPORTED_OPENCODE_MAJOR,
+        };
+        let plan_json = serde_json::to_value(&plan).unwrap();
+        assert!(
+            plan_json.get("opencode_version").is_none(),
+            "setup plan: absent key, not null: {plan_json}"
+        );
+        assert_eq!(plan_json["can_proceed"], serde_json::json!(false));
+    }
+
+    /// (b) R-1a: `error` with the gate message — found version, the RENDERED
+    /// minimum, the bare upgrade verb — and no flag the runtime rejects.
+    #[test]
+    fn the_too_old_step_is_an_error_naming_the_version_and_the_bare_upgrade() {
+        let step = opencode_step_for(&too_old_version());
+        assert_eq!(step.status, "error");
+        let detail = step.detail.expect("a gate detail");
+        assert!(detail.contains("1.15.5"), "{detail}");
+        assert!(
+            detail.contains(&format!("{MIN_SUPPORTED_OPENCODE_MAJOR}.x")),
+            "the minimum is rendered from the constant: {detail}"
+        );
+        assert!(detail.contains("opencode upgrade"), "{detail}");
+        assert!(detail.contains("fredo setup --check"), "{detail}");
+        assert!(!detail.contains("--major"), "{detail}");
+        // Never the false install framing for a binary that IS installed.
+        assert!(!detail.contains("Install from"), "{detail}");
+        assert!(!detail.contains("not found"), "{detail}");
+    }
+
+    /// (b) R-1b: an undeterminable version is `error` naming the probe's own
+    /// failure and the diagnostic command — never `ok`, never "not installed".
+    #[test]
+    fn the_undetermined_step_is_an_error_naming_the_probe_failure() {
+        let step = opencode_step_for(&undetermined_version());
+        assert_eq!(step.status, "error");
+        let detail = step.detail.expect("an error detail");
+        assert!(detail.contains("exited with 1"), "{detail}");
+        assert!(detail.contains("opencode --version"), "{detail}");
+        assert!(!detail.contains("not installed"), "{detail}");
+    }
+
+    #[test]
+    fn a_supported_cli_yields_an_ok_opencode_step() {
+        let step = opencode_step_for(&supported_version());
+        assert_eq!(step.status, "ok");
+        assert_eq!(step.detail.as_deref(), Some("OpenCode CLI is installed."));
+    }
+
+    /// (b) The plugin step is gated by the CLI, never `missing` on a bad CLI.
+    #[test]
+    fn the_plugin_step_is_gated_by_the_cli() {
+        assert_eq!(plugin_step_for(false, false).status, "error");
+        assert_eq!(plugin_step_for(true, true).status, "ok");
+        assert_eq!(plugin_step_for(true, false).status, "missing");
+    }
+
+    /// (b) R-2c/R-2e: an installed plugin is `ok` and its detail states the
+    /// MECHANISM (how the plugin reaches the runtime) — never a bare
+    /// "configured", and never `missing` (which would send the user looking for
+    /// environment variables).
+    #[test]
+    fn the_otel_step_states_the_capture_mechanism_for_an_installed_plugin() {
+        let step = otel_step(true);
+        assert_eq!(step.status, "ok");
+        let detail = step.detail.expect("a detail");
+        assert!(detail.contains("restarts the service"), "{detail}");
+        assert!(detail.contains("background service"), "{detail}");
+        assert!(
+            !detail.contains("configured"),
+            "the false-green wording is gone: {detail}"
+        );
+    }
+
+    /// (b) R-2e: a restart this process knows FAILED is an `error` carrying that
+    /// failure's message — the false green the slice removes — and the failure is
+    /// reported even though the file IS installed.
+    #[test]
+    fn a_failed_restart_is_an_error_naming_the_failure() {
+        let message = crate::infrastructure::opencode_service::restart_failed_message(
+            "exit 2: the service did not respond",
+        );
+        let outcome = InstallOutcome::Failed {
+            message: message.clone(),
+        };
+        let step = otel_step_for(&outcome, true);
+        assert_eq!(step.status, "error");
+        assert_eq!(step.detail.as_deref(), Some(message.as_str()));
+        // Never `ok` on a failed restart, even though the plugin file is present.
+        assert_ne!(step.status, "ok");
+    }
+
+    /// (b) ST-A3's table: the record decides `error` vs `ok`, and file presence
+    /// alone is never "configured" once a restart failed.
+    #[test]
+    fn the_otel_claim_follows_the_record_and_the_install_flag() {
+        let failure = "the restart failed".to_string();
+        let failed = InstallOutcome::Failed {
+            message: failure.clone(),
+        };
+
+        // Unknown + installed ⇒ the mechanism, `ok`.
+        let (status, detail) = otel_status_for(&InstallOutcome::Unknown, true);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_CAPTURE_MECHANISM_MSG);
+
+        // Restarted + installed ⇒ the same mechanism claim.
+        let (status, detail) = otel_status_for(&InstallOutcome::Restarted, true);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_CAPTURE_MECHANISM_MSG);
+
+        // Failed ⇒ `error` with the failure message, installed or not.
+        for installed in [true, false] {
+            let (status, detail) = otel_status_for(&failed, installed);
+            assert_eq!(status, "error", "a failed restart is never ok");
+            assert_eq!(detail, failure);
+        }
+
+        // No plugin installed and no recorded failure ⇒ today's not-required copy
+        // (the `plugin` step owns the missing state).
+        let (status, detail) = otel_status_for(&InstallOutcome::Unknown, false);
+        assert_eq!(status, "ok");
+        assert_eq!(detail, OTEL_NOT_REQUIRED_MSG);
+
+        // `check_otel_configured`: presence AND no known failure.
+        assert!(otel_configured_for(&InstallOutcome::Unknown, true));
+        assert!(otel_configured_for(&InstallOutcome::Restarted, true));
+        assert!(
+            !otel_configured_for(&failed, true),
+            "file presence alone must stop reading as configured"
+        );
+        assert!(!otel_configured_for(&InstallOutcome::Unknown, false));
+    }
+
+    /// (c) R-2c: the plan's copy command is the COPY ALONE — no environment
+    /// wiring — and it is never offered when the gate failed (R-1c) or the
+    /// plugin is already in place.
+    #[test]
+    fn the_plugin_install_plan_command_is_the_copy_alone() {
+        let artifact = Path::new("/repo/apps/opencode-plugin/dist/index.js");
+        let destination = Path::new("/home/x/.config/opencode/plugins/fredo.js");
+
+        let command = plugin_install_command(true, false, artifact, destination)
+            .expect("a copy command");
+        assert!(command.contains("index.js"), "{command}");
+        assert!(command.contains("fredo.js"), "the flat global file: {command}");
+        // Constructed so this assertion never matches its own source text.
+        let banned = [
+            format!("{}{}", "set", "x"),
+            format!("{} ", "set"),
+            format!("{} ", "export"),
+            format!("{}_", "OPENCODE"),
+        ];
+        for token in &banned {
+            assert!(
+                !command.contains(token.as_str()),
+                "the copy must carry no receiver wiring ({token}): {command}"
+            );
+        }
+
+        assert_eq!(
+            plugin_install_command(false, false, artifact, destination),
+            None,
+            "never copy when the gate failed (R-1c)"
+        );
+        assert_eq!(
+            plugin_install_command(true, true, artifact, destination),
+            None,
+            "no command when the plugin is already installed"
+        );
+    }
+
+    /// (e) The telemetry step is an idempotent report: for a GIVEN record the
+    /// claim does not move between calls, and the not-installed wording keeps
+    /// naming the global plugin and the absence of any environment variable.
+    /// (The record itself is process-global, so this pin drives the pure core —
+    /// G-222 — while the live `otel_step` is a two-line wrapper over it.)
+    #[test]
+    fn the_telemetry_step_reports_the_same_claim_for_the_same_record() {
+        let first = otel_step_for(&InstallOutcome::Unknown, false);
+        let second = otel_step_for(&InstallOutcome::Unknown, false);
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.detail, second.detail);
+        assert_eq!(first.detail.as_deref(), Some(OTEL_NOT_REQUIRED_MSG));
+        assert!(OTEL_NOT_REQUIRED_MSG.contains("environment variables"),
+            "the not-required state must say no variable is needed: {OTEL_NOT_REQUIRED_MSG}");
+        // ... and the installed claim is equally stable.
+        assert_eq!(
+            otel_step_for(&InstallOutcome::Unknown, true).detail,
+            otel_step_for(&InstallOutcome::Unknown, true).detail
+        );
+    }
+
+    /// (f) + R-2c absence guard (G-430): this surface carries no persistent
+    /// environment writer. The raw source is scanned — comments and doc comments
+    /// included, because the AC's predicate is a raw grep — and every banned
+    /// token is CONSTRUCTED here so the guard cannot match its own text. The
+    /// non-vacuity controls prove the universe is the real file and the matcher
+    /// fires on tokens that are present.
+    #[test]
+    fn the_setup_surface_carries_no_persistent_opencode_env_writer() {
+        let source = include_str!("commands.rs");
+
+        assert!(source.len() > 10_000, "the scan universe is the whole file");
+        assert!(
+            source.contains("install_plugin"),
+            "the matcher fires on a token that is present"
+        );
+
+        let banned = [
+            format!("{}{}", "set", "x"),
+            format!("{}-{}-{}", "fredo", "otel", "opencode"),
+            ["OPENCODE", "ENABLE", "TELEMETRY"].join("_"),
+            ["OPENCODE", "OTLP", "ENDPOINT"].join("_"),
+            ["OPENCODE", "OTLP", "PROTOCOL"].join("_"),
+        ];
+        for token in &banned {
+            assert!(
+                !source.contains(token.as_str()),
+                "the retired persistent writer must not survive: {token}"
+            );
+        }
     }
 
     // ── Spec #2855: companion readiness (in-process runtime since #3141) ──

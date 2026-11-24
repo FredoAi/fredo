@@ -326,6 +326,6 @@ is wrong.
 - [ ] E-46: **`--standalone` reality check.** Run `opencode --version` and `opencode --help`
       (granted) and search the help text for `standalone`; then run
       `opencode --standalone --version` and record the exit code + output.
-      EXPECTED: the record states, literally, whether OpenCode 2.x accepts the flag. An argv the
-      runtime rejects must never be presented as a working isolation mechanism (feeds F-93's
-      inert disposition).
+      EXPECTED: the record states, literally, that OpenCode 2.x accepts the flag — ST-1's probe
+      recorded `opencode --help` listing `--standalone` — so a rejected argv on the tested runtime
+      is a FAIL, never a recorded-inert disposition (feeds F-93/F-95).

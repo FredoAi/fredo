@@ -1081,7 +1081,8 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
 > unchanged on the default path (it already sets no `OPENCODE_*`/`OTEL_*` key —
 > `commands.rs:903-905`); what changes is (a) setup no longer persists a receiver address,
 > and (b) an isolated env pins the child's endpoint to its own receiver and launches
-> `--standalone` **iff** OpenCode 2 accepts the flag.
+> `--standalone` — **VERIFIED present** on the installed runtime 2.4.1 (`opencode --help`) — on
+> the isolation path only, never on the default path.
 >
 > **Verification policy: live** for F-90/F-93/F-94/F-95 (a real session + `telemetry_spans`);
 > **static** (committed unit pin) for the negative env/argv halves of F-89/F-91/F-95, which
@@ -1103,11 +1104,12 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
 > guard (`dev-env.ps1:1397-1404` reads the process env, it does not export it), so the
 > AC4 legs pass `-EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"` as well.
 >
-> **`--standalone` is a probe result, not an assumption.** ST-1 records the literal
-> `opencode --help` output in the POSTED `## Developer <ST-id> — verification` comment. The
-> rows below assert the CONTRACT (isolation env ⇒ standalone launch) and RECORD the probe;
-> when the flag is absent the argv element is a recorded-inert disposition with a PO
-> amendment request, never a fabricated PASS on a flag the runtime rejects.
+> **`--standalone` is a VERIFIED runtime fact, not a probe placeholder.** ST-1 recorded
+> `opencode --version` → `opencode v2.4.1` and `opencode --help` listing `--standalone` ("Run with
+> a private server instead of the background service") in the POSTED
+> `## Developer <ST-id> — verification` comment. The rows below therefore assert the CONTRACT
+> (isolation env ⇒ standalone launch) **as a hard expectation**: a missing flag on the tested
+> runtime is a **FAIL**, never a recorded-inert disposition and never a PO-amendment escape.
 
 ## AC3 — Fredo Terminal uses the capture point
 
@@ -1167,11 +1169,10 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
   -EnvSlot <n> -RequireIsolation -EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"`; launch a session;
   `process-hygiene.ps1 -List`; and `Get-Content .opencode/tmp/envs/spec3198-iso/manifest.json`
   for `ports.otlpGrpc`.
-  **Expected, recording the probe:** if ST-1's `opencode --help` record shows the flag, the
-  child's CommandLine contains `--standalone`; if it does not, `--standalone` is ABSENT and
-  the receipt records the inert disposition naming the missing flag (never a PASS on an
-  argv the runtime rejects). In both branches the endpoint pin is asserted by ST-4's unit
-  test (child env = `OPENCODE_ENABLE_TELEMETRY=1`, `OPENCODE_OTLP_PROTOCOL=grpc`,
+  **Expected — one branch only (the flag is VERIFIED to exist in 2.4.1):** the child's
+  CommandLine contains `--standalone`. A CommandLine WITHOUT it is a **FAIL** of this row —
+  there is no inert disposition and no PO amendment. The endpoint pin is asserted by ST-4's
+  unit test (child env = `OPENCODE_ENABLE_TELEMETRY=1`, `OPENCODE_OTLP_PROTOCOL=grpc`,
   `OPENCODE_OTLP_ENDPOINT=http://localhost:{ingest_grpc_port}`) and by the capture landing in
   that receiver (F-94).
   - **Edge:** the ambient `OPENCODE_OTLP_ENDPOINT` is deliberately a DIFFERENT port (a decoy)

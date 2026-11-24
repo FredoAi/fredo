@@ -90,6 +90,8 @@ Opens (or focuses) the Terminal host and, when a session type and/or working dir
 
 > **Window presentation (Spec #2955, generalizing #2947).** Where an app opens is a remembered, per-app setting: **Settings → Apps** lists every app with a **Main window** / **Own window** choice. The default is **Main window** (inside the main Fredo window); **Own window** opens/focuses that app's own native OS window as a per-app singleton. `fredo open-terminal` and `fredo open-app` both honour the choice — in Main-window mode the app opens inside the main Fredo window and **no native window is created**. The per-invocation arguments, printed outcomes, and exit codes below are unchanged in both modes.
 
+> **How OpenCode is launched.** The default path starts OpenCode against its **shared background service** — no per-session receiver wiring, no exported variable — and that process loads the global Fredo plugin, which is the telemetry capture point. `--standalone` (a private server instead of the background service) is added only in an isolated environment (`FREDO_REQUIRE_ENV_ISOLATION`, or a non-default `OPENCODE_OTLP_ENDPOINT`), where the session is also pinned to that environment's own OTLP receiver. It is never the default.
+
 ```bash
 fredo open-terminal [--cli <shell|opencode|copilot>] [--dir <PATH>]
 ```
@@ -253,16 +255,18 @@ Precedence is **CLI flag > environment variable > default**. The daemon never ov
 
 ## Setup (via UI)
 
-OTel configuration and CLI tool detection are handled through the **Fredo Setup** wizard in the Fredo UI — reachable from the **Fredo Setup** launcher tile or **Settings → Fredo Setup** — not via CLI subcommands. Available Tauri commands:
+Setup is driven through the **Fredo Setup** wizard in the Fredo UI — reachable from the **Fredo Setup** launcher tile or **Settings → Fredo Setup** — with the same two actions available from the CLI as `fredo setup --check` (inspect every step) and `fredo setup --install-plugin` (install the plugin). Both paths gate on the installed OpenCode version: **OpenCode 2** is the supported runtime, and on 1.x they name the version they found plus the `opencode upgrade` remedy and install nothing (upgrading is the bare `opencode upgrade`; re-run `fredo setup --check` afterwards). On OpenCode 2 the plugin is copied once into the **global** plugins directory (`~/.config/opencode/plugins/fredo.js`), which is the telemetry capture point — no OTLP environment variable is written. When the copy writes a new bundle and OpenCode's background service is running, the install then restarts that service (`opencode service restart`) so the running server loads the plugin and reports the outcome; if the restart fails the step fails with the remedy, and the installed file stays in place. `fredo setup --install-plugin --no-restart-service` performs the copy without the restart. Available Tauri commands:
 
 | Command | Description |
 |---------|-------------|
-| `check_cli_installations` | Detect OpenCode CLI and Fredo OTLP plugin status |
-| `configure_otel` | Write OTEL env vars for OpenCode |
-| `check_otel_configured` | Check whether OTel is already configured |
+| `check_cli_installations` | Detect the OpenCode CLI and its major (`opencode: false` when the major is below the supported minimum or cannot be determined) and whether the global Fredo OTLP plugin is installed |
+| `configure_otel` | Not required — an idempotent no-op that writes no environment variable (the global plugin is the capture point) |
+| `check_otel_configured` | Report whether the capture point — the global Fredo plugin — is installed |
 | `check_fredo_in_path` | Check if `fredo` binary is in PATH |
 | `add_fredo_to_path` | Add `fredo` binary directory to user PATH |
-| `install_plugin` | Install Fredo OTLP plugin for OpenCode (async — resolves the plugin source workspace-first with fail-loud errors when absent, rebuilds only when the bundled dist is missing/stale, and returns a self-describing result: source label + copied byte count) |
+| `install_plugin` | Copy the plugin artifact into the global plugins directory (`~/.config/opencode/plugins/fredo.js`) — gated on OpenCode 2, fails loud when the artifact is absent, and returns the one `[fredo] … (global …)` line naming the resolved file (async) |
+| `get_setup_plan` | List pending setup steps (`skipped` / `needed` / `blocked`), carrying the version-gate message when OpenCode is installed but unusable |
+| `check_all_setup` | Run all setup checks — the `opencode` step is `error` carrying the version message, and the `otel` step is `ok` with the not-required detail |
 | `get_plugin_source_path` | Get the filesystem path of the plugin source |
 
 ---

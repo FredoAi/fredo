@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, Button, HStack, Icon, Progress, Spinner, Text, VStack,
+  Box, Button, HStack, Icon, Link, Progress, Spinner, Text, VStack,
 } from '@chakra-ui/react';
 import {
   LuBrain, LuCircleCheck, LuCircleX, LuDownload, LuFileWarning,
@@ -15,6 +15,8 @@ type StepStatus = 'checking' | 'idle' | 'running' | 'done' | 'error' | 'skipped'
 interface StepState {
   status: StepStatus;
   detail?: string;
+  /** An adjacent reference link (never inlined into the detail message). */
+  docsUrl?: string;
 }
 
 interface SetupWizardProps {
@@ -44,10 +46,10 @@ const STEPS: StepDef[] = [
   {
     id: 'opencode-cli',
     label: 'OpenCode CLI',
-    description: 'Install OpenCode CLI',
+    description: 'Check the installed OpenCode version',
     icon: LuTerminal,
-    actionLabel: 'Install',
-    actionLabelRunning: 'Installing…',
+    actionLabel: 'Check again',
+    actionLabelRunning: 'Checking…',
   },
   {
     id: 'plugin-build',
@@ -60,7 +62,9 @@ const STEPS: StepDef[] = [
   {
     id: 'plugin-install',
     label: 'Plugin Install',
-    description: 'Install the plugin',
+    // The disclosure BEFORE the click: finishing this step restarts OpenCode's
+    // background service, which ends any turn running on it (R-2e).
+    description: "Install the plugin (restarts OpenCode's background service)",
     icon: LuWrench,
     actionLabel: 'Install',
     actionLabelRunning: 'Installing…',
@@ -112,9 +116,21 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'opencode-cli': {
-      const res = await adapterBridge.invoke<{ opencode: boolean }>('check_cli_installations');
-      if (res?.opencode) return { status: 'done' };
-      return { status: 'idle' };
+      // The version gate is backend-owned. An installed-but-too-old (or
+      // undeterminable) OpenCode must render the backend's own message — never
+      // an "Install" prompt, which would send a user who already has a binary
+      // on PATH to an install page when the honest remedy is one upgrade
+      // command. The docs reference is offered ADJACENT to the message.
+      const res = await adapterBridge.invoke<{
+        steps?: Array<{ id: string; status: string; detail?: string }>;
+        opencode_docs_url?: string;
+      }>('get_setup_plan');
+      const step = res?.steps?.find(s => s.id === 'opencode-cli');
+      if (!step) return { status: 'idle' };
+      if (step.status === 'blocked') {
+        return { status: 'error', detail: step.detail, docsUrl: res?.opencode_docs_url };
+      }
+      return { status: 'done', detail: step.detail };
     }
     case 'plugin-build': {
       const res = await adapterBridge.invoke<{ steps: Array<{ id: string; status: string }> }>('get_setup_plan');
@@ -136,9 +152,17 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'otel-config': {
-      const res = await adapterBridge.invoke<{ opencode_configured: boolean }>('check_otel_configured');
-      if (res?.opencode_configured) return { status: 'done' };
-      return { status: 'idle' };
+      // R-2c/R-2e: the capture point is the global Fredo plugin, so the telemetry
+      // step is NOT REQUIRED rather than missing. The backend owns the wording AND
+      // the state: `error` means a restart this process knows failed (the false
+      // green this slice removes), `ok` carries the capture mechanism. Both are
+      // rendered explicitly so neither falls through by accident.
+      const res = await adapterBridge.invoke<{ otel?: { status: string; detail?: string } }>('check_all_setup');
+      const step = res?.otel;
+      if (!step) return { status: 'idle' };
+      if (step.status === 'error') return { status: 'error', detail: step.detail };
+      if (step.status === 'ok') return { status: 'done', detail: step.detail };
+      return { status: 'idle', detail: step.detail };
     }
     default:
       return { status: 'idle' };
@@ -223,8 +247,10 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
           break;
         }
         case 'opencode-cli': {
-          window.open('https://opencode.ai/docs/install', '_blank');
-          result = { status: 'error', detail: 'OpenCode CLI must be installed manually. The installation guide has been opened in your browser. Re-run setup after installing.' };
+          // Re-probe instead of opening the install page: the gate's remedy is
+          // the command the detail line names, and the docs reference is linked
+          // beside it. Never send a user who HAS a binary to an install page.
+          result = await checkStep('opencode-cli');
           break;
         }
         case 'plugin-build': {
@@ -341,6 +367,21 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
             >
               {state.detail}
             </Text>
+          )}
+
+          {/* Adjacent reference link — carried beside the message, never inside it */}
+          {state.docsUrl && !isRunning && (
+            <Link
+              href={state.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              display="block"
+              fontSize="11px"
+              color="var(--accent-primary)"
+              mb={3}
+            >
+              OpenCode install / upgrade guide
+            </Link>
           )}
 
           {/* Action button or status */}

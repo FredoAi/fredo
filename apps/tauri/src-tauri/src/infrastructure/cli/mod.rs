@@ -30,7 +30,7 @@ pub struct Cli {
 pub enum Commands {
     /// Emit a FredoEvent into the running application
     Emit(EmitArgs),
-    /// Check or perform Fredo setup operations (PATH, plugin, model, OTEL)
+    /// Check or perform Fredo setup operations (PATH, OpenCode version gate, global plugin, model)
     Setup(SetupArgs),
     /// Open a Fredo app window by stable id or display name
     OpenApp(OpenAppArgs),
@@ -227,6 +227,7 @@ mod tests {
             check: false,
             add_to_path: false,
             install_plugin: false,
+            no_restart_service: false,
             download_model: false,
         };
         let cmd = Commands::Setup(args);

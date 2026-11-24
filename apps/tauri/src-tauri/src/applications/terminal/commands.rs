@@ -17,6 +17,10 @@ use crate::applications::terminal::state::{
     TerminalErrorKind, TerminalSession, TerminalSessionStatus, TerminalState, OUTPUT_BUFFER_CAP,
 };
 use crate::infrastructure::app_window::{app_presentation, AppPresentation};
+use crate::infrastructure::env::{
+    isolation_required, shared_endpoint_for, EnvConfig, OPENCODE_OTLP_ENDPOINT_ENV,
+};
+use crate::infrastructure::opencode_version;
 use crate::infrastructure::storage::application_store::DynamicTableStore;
 use crate::infrastructure::storage::SettingsStore;
 
@@ -305,6 +309,121 @@ fn build_pty_command(form: LaunchForm) -> portable_pty::CommandBuilder {
             cmd.arg(target);
             cmd
         }
+    }
+}
+
+// ── The launch contract (Spec #3198 ST-4; R-3a, R-3c, R-3d, R-4a, R-4c) ─────
+//
+// ONE isolation decision owns BOTH halves of a launch — the argv and the child
+// environment — so the two can never be built from disagreeing inputs.
+//
+// The DEFAULT path is the capture point (the shared background service), so it
+// stays wiring-free: no `OPENCODE_*`/`OTEL_*` key and no receiver argument
+// (R-3a/R-4c). An environment that opts OUT of the shared service gets
+// `--standalone` plus its own receiver endpoint pinned on the child, so a stale
+// inherited User-level value cannot shadow the env receiver (R-4a).
+
+/// The argv a session appends when the environment requires isolation.
+///
+/// VERIFIED to exist in the supported runtime (`opencode --help`: "Run with a
+/// private server instead of the background service"), so it is emitted
+/// unconditionally on the isolation path — there is no recorded-inert branch.
+const OPENCODE_STANDALONE_ARG: &str = "--standalone";
+
+/// The `TERM`-family keys every PTY child carries (the pre-existing wiring,
+/// byte-identical).
+const TERM_ENV: (&str, &str) = ("TERM", "xterm-256color");
+const COLORTERM_ENV: (&str, &str) = ("COLORTERM", "truecolor");
+const TERM_PROGRAM_ENV: (&str, &str) = ("TERM_PROGRAM", "fredo");
+
+/// The receiver wiring an ISOLATED session pins (`env::OPENCODE_OTLP_ENDPOINT_ENV`
+/// is the endpoint name's single authority — never a second literal).
+const OPENCODE_ENABLE_TELEMETRY_ENV: &str = "OPENCODE_ENABLE_TELEMETRY";
+const OPENCODE_OTLP_PROTOCOL_ENV: &str = "OPENCODE_OTLP_PROTOCOL";
+const OPENCODE_TELEMETRY_ENABLED_VALUE: &str = "1";
+const OPENCODE_OTLP_PROTOCOL_VALUE: &str = "grpc";
+
+/// The argv this launch appends to the CLI's command line.
+///
+/// `--standalone` for an OpenCode session on the isolation path; nothing at all
+/// otherwise (the default path must stay byte-identical to a bare launch).
+fn launch_argv(cli: SessionKind, isolation_required: bool) -> Vec<String> {
+    match cli {
+        SessionKind::OpenCode if isolation_required => vec![OPENCODE_STANDALONE_ARG.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// The argv a RESUMED session appends: the CLI's own resume flags
+/// ([`resume_args`], byte-identical to `resume.rs:92-106`) followed by
+/// [`launch_argv`] — so the default path's `--session <id>` / `--continue`
+/// argv is unchanged (R-3c).
+fn resume_launch_argv(
+    cli: SessionKind,
+    cli_session_id: Option<&str>,
+    isolation_required: bool,
+) -> Vec<String> {
+    let mut args = resume_args(cli, cli_session_id);
+    args.extend(launch_argv(cli, isolation_required));
+    args
+}
+
+/// The EXACT environment ONE child receives: the `TERM` family always, and — on
+/// the isolation path only — the three receiver keys, with the endpoint rendered
+/// from THIS instance's own `ingest_grpc_port` (never the literal `4317`, which
+/// would pin a slot instance to the wrong receiver — G-452).
+fn child_env(isolation_required: bool, ingest_grpc_port: u16) -> Vec<(&'static str, String)> {
+    let mut vars: Vec<(&'static str, String)> = [TERM_ENV, COLORTERM_ENV, TERM_PROGRAM_ENV]
+        .into_iter()
+        .map(|(key, value)| (key, value.to_string()))
+        .collect();
+
+    if isolation_required {
+        vars.push((
+            OPENCODE_ENABLE_TELEMETRY_ENV,
+            OPENCODE_TELEMETRY_ENABLED_VALUE.to_string(),
+        ));
+        vars.push((
+            OPENCODE_OTLP_PROTOCOL_ENV,
+            OPENCODE_OTLP_PROTOCOL_VALUE.to_string(),
+        ));
+        vars.push((
+            OPENCODE_OTLP_ENDPOINT_ENV,
+            shared_endpoint_for(ingest_grpc_port),
+        ));
+    }
+
+    vars
+}
+
+/// Everything ONE launch adds to the child beyond its binary and its cwd.
+///
+/// `extra_args` is the caller's argv (resume flags plus [`launch_argv`]) and the
+/// isolation fields are the SAME decision that produced it. Packed into one
+/// value so [`spawn_and_wire`] stays under clippy's argument ceiling.
+struct LaunchSpec<'a> {
+    extra_args: &'a [String],
+    isolation_required: bool,
+    ingest_grpc_port: u16,
+}
+
+/// The message shown in the window for a refused launch (R-3d).
+///
+/// For OpenCode, every refusal EXCEPT a missing binary and an invalid working
+/// directory states cause + remedy through `TERMINAL_OPENCODE_BLOCKED_MSG`, so a
+/// bare "Could not start session: …" never reaches the window without telling
+/// the user to reopen Terminal. A genuinely missing binary keeps
+/// `not_found_message` byte-identical (its remedy is an install, and the setup
+/// suite greps that exact text) and an invalid cwd keeps its own copy.
+fn in_window_failure_message(cli: SessionKind, kind: TerminalErrorKind, message: String) -> String {
+    if cli != SessionKind::OpenCode {
+        return message;
+    }
+    match kind {
+        TerminalErrorKind::Launch | TerminalErrorKind::Prereq => {
+            opencode_version::terminal_blocked_message(&message)
+        }
+        _ => message,
     }
 }
 
@@ -739,12 +858,16 @@ fn list_command(bin: &str) -> std::process::Command {
     std::process::Command::new(bin)
 }
 
+/// The `session list` argv — the ST-1 pinned surface, byte-identical to
+/// `opencode session list --format json` (R-3c).
+const LIST_SESSION_ARGS: [&str; 4] = ["session", "list", "--format", "json"];
+
 /// Best-effort, bounded: list OpenCode's sessions (ST-1 pinned
 /// `opencode session list --format json`) and return stdout.
 fn list_opencode_sessions() -> Option<String> {
     let bin = resolve_binary(SessionKind::OpenCode, None).ok()?;
     let mut command = list_command(&bin);
-    command.args(["session", "list", "--format", "json"]);
+    command.args(LIST_SESSION_ARGS);
     match run_bounded(command, Duration::from_millis(CAPTURE_TIMEOUT_MS)) {
         Ok(output) if output.status.success() => {
             Some(String::from_utf8_lossy(&output.stdout).to_string())
@@ -884,7 +1007,7 @@ fn spawn_and_wire(
     session_id: &str,
     form: LaunchForm,
     cwd: &str,
-    extra_args: &[String],
+    spec: LaunchSpec<'_>,
     size: PtySize,
 ) -> Result<bool, (TerminalErrorKind, String)> {
     // ── Open the PTY and spawn ─────────────────────────────────────────────
@@ -897,12 +1020,12 @@ fn spawn_and_wire(
         })?;
 
     let mut cmd = build_pty_command(form);
-    for arg in extra_args {
+    for arg in spec.extra_args {
         cmd.arg(arg);
     }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERM_PROGRAM", "fredo");
+    for (key, value) in child_env(spec.isolation_required, spec.ingest_grpc_port) {
+        cmd.env(key, value.as_str());
+    }
     cmd.cwd(cwd);
 
     tracing::debug!(target: "fredo::terminal", cwd = ?cwd, "spawning child");
@@ -1314,13 +1437,30 @@ async fn spawn_terminal_session_impl(
         Ok(form) => form,
         Err((kind, msg)) => {
             tracing::error!(target: "fredo::terminal", error = %msg, "launch preparation failed");
-            fail_session(&app, &state, &session_id, kind, msg);
+            fail_session(
+                &app,
+                &state,
+                &session_id,
+                kind,
+                in_window_failure_message(cli, kind, msg),
+            );
             return Ok(session_id);
         }
     };
 
+    // ── The launch contract (Spec #3198 ST-4): ONE isolation decision owns the
+    //    argv and the child env, so the two can never disagree. ────────────
+    let env_config = EnvConfig::from_env();
+    let isolated = isolation_required(&env_config);
+    let launch_args = launch_argv(cli, isolated);
+    let spec = LaunchSpec {
+        extra_args: &launch_args,
+        isolation_required: isolated,
+        ingest_grpc_port: env_config.ingest_grpc_port,
+    };
+
     // ── Open the PTY, spawn, and wire the reader/watcher ───────────────────
-    match spawn_and_wire(&app, &state, &session_id, form, &cwd, &[], size) {
+    match spawn_and_wire(&app, &state, &session_id, form, &cwd, spec, size) {
         Ok(true) => {
             // A record is persisted ONLY for a session that actually spawned: a
             // failed launch must never leave a bogus resumable record.
@@ -1330,7 +1470,13 @@ async fn spawn_terminal_session_impl(
         Ok(false) => {}
         Err((kind, msg)) => {
             tracing::error!(target: "fredo::terminal", error = %msg, "spawn failed");
-            fail_session(&app, &state, &session_id, kind, msg);
+            fail_session(
+                &app,
+                &state,
+                &session_id,
+                kind,
+                in_window_failure_message(cli, kind, msg),
+            );
         }
     }
 
@@ -1582,7 +1728,12 @@ pub async fn resume_terminal_session(
 
     let form = match prepare_session(record.cli, &record.work_dir, binary_override, &pwsh, None) {
         Ok(form) => form,
-        Err((kind, msg)) => return Ok(ResumeResult::failure(resume_outcome_for(kind), msg)),
+        Err((kind, msg)) => {
+            return Ok(ResumeResult::failure(
+                resume_outcome_for(kind),
+                in_window_failure_message(record.cli, kind, msg),
+            ))
+        }
     };
 
     // Bounded pre-flight: no resume path may block indefinitely (NFR).
@@ -1593,7 +1744,16 @@ pub async fn resume_terminal_session(
         ));
     }
 
-    let args = resume_args(record.cli, record.cli_session_id.as_deref());
+    // ── The launch contract (Spec #3198 ST-4): the resume flags stay
+    //    byte-identical and the isolation decision adds its own argv + env. ─
+    let env_config = EnvConfig::from_env();
+    let isolated = isolation_required(&env_config);
+    let args = resume_launch_argv(record.cli, record.cli_session_id.as_deref(), isolated);
+    let spec = LaunchSpec {
+        extra_args: &args,
+        isolation_required: isolated,
+        ingest_grpc_port: env_config.ingest_grpc_port,
+    };
 
     // The record exists and passed the pre-flight: reuse its id for the live row.
     {
@@ -1614,7 +1774,7 @@ pub async fn resume_terminal_session(
     };
     emit_sessions_changed(&app, sessions);
 
-    match spawn_and_wire(&app, &state, &session_id, form, &record.work_dir, &args, size) {
+    match spawn_and_wire(&app, &state, &session_id, form, &record.work_dir, spec, size) {
         Ok(true) => {}
         Ok(false) => {
             remove_live_session(&app, &state, &session_id);
@@ -1625,7 +1785,10 @@ pub async fn resume_terminal_session(
         }
         Err((kind, msg)) => {
             remove_live_session(&app, &state, &session_id);
-            return Ok(ResumeResult::failure(resume_outcome_for(kind), msg));
+            return Ok(ResumeResult::failure(
+                resume_outcome_for(kind),
+                in_window_failure_message(record.cli, kind, msg),
+            ));
         }
     }
 
@@ -2217,6 +2380,174 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(argv, vec!["/C".to_string(), r"C:\nvm4w\nodejs\copilot.cmd".to_string()]);
+    }
+
+    // ── The launch contract (Spec #3198 ST-4) ──────────────────────────────
+
+    /// R-4a: the isolation path adds `--standalone` verbatim (VERIFIED to exist
+    /// in the supported runtime — a QA row treats its absence as a FAIL, never a
+    /// licensed inert path).
+    #[test]
+    fn launch_argv_adds_standalone_on_the_isolation_path_only() {
+        assert_eq!(OPENCODE_STANDALONE_ARG, "--standalone");
+        assert_eq!(
+            launch_argv(SessionKind::OpenCode, true),
+            vec!["--standalone".to_string()]
+        );
+
+        // R-3a/R-4c: the DEFAULT path appends nothing at all.
+        assert!(launch_argv(SessionKind::OpenCode, false).is_empty());
+
+        // No other CLI ever receives the flag.
+        for cli in [SessionKind::Copilot, SessionKind::Shell] {
+            assert!(launch_argv(cli, false).is_empty(), "{cli:?} (default)");
+            assert!(launch_argv(cli, true).is_empty(), "{cli:?} (isolated)");
+        }
+    }
+
+    /// R-3c: the resume argv is byte-identical to `resume.rs:92-106` on the
+    /// default path; the isolation flag is only ever APPENDED after it.
+    #[test]
+    fn resume_launch_argv_keeps_the_resume_flags_byte_identical() {
+        assert_eq!(
+            resume_launch_argv(SessionKind::OpenCode, Some("ses_abc"), false),
+            vec!["--session".to_string(), "ses_abc".to_string()]
+        );
+        assert_eq!(
+            resume_launch_argv(SessionKind::OpenCode, None, false),
+            vec!["--continue".to_string()]
+        );
+        assert_eq!(
+            resume_launch_argv(SessionKind::OpenCode, None, true),
+            vec!["--continue".to_string(), "--standalone".to_string()]
+        );
+        assert_eq!(
+            resume_launch_argv(SessionKind::OpenCode, Some("ses_abc"), true),
+            vec![
+                "--session".to_string(),
+                "ses_abc".to_string(),
+                "--standalone".to_string()
+            ]
+        );
+        // A plain shell resumes with no argument either way.
+        assert!(resume_launch_argv(SessionKind::Shell, None, false).is_empty());
+        assert!(resume_launch_argv(SessionKind::Shell, None, true).is_empty());
+    }
+
+    /// R-3c: the listing argv stays `opencode session list --format json`.
+    #[test]
+    fn the_session_list_argv_is_pinned() {
+        assert_eq!(LIST_SESSION_ARGS, ["session", "list", "--format", "json"]);
+    }
+
+    /// R-3a — the NEGATIVE pin. The default path's child env is EXACTLY the
+    /// `TERM` family: Fredo writes no `OPENCODE_*`/`OTEL_*` key, so the shared
+    /// background service stays the capture point and no per-session receiver
+    /// wiring can shadow it.
+    #[test]
+    fn the_default_path_writes_only_the_term_family() {
+        // The port is irrelevant here: the default path must ignore it entirely.
+        let vars = child_env(false, 16002);
+        let keys: Vec<&str> = vars.iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys, vec!["TERM", "COLORTERM", "TERM_PROGRAM"]);
+        assert_eq!(vars[0].1, "xterm-256color");
+        assert_eq!(vars[1].1, "truecolor");
+        assert_eq!(vars[2].1, "fredo");
+        for (key, _) in &vars {
+            assert!(
+                !key.starts_with("OPENCODE_") && !key.starts_with("OTEL_"),
+                "the default path must carry no receiver wiring, found {key}"
+            );
+        }
+    }
+
+    /// R-4a: the isolation path pins the three receiver keys, with the endpoint
+    /// rendered from THIS instance's own `ingest_grpc_port` — never the literal
+    /// `4317` (G-452: a slot instance would otherwise pin the wrong receiver).
+    #[test]
+    fn the_isolation_path_pins_the_receiver_from_this_instances_port() {
+        let port = 16002u16;
+        assert_ne!(port, 4317, "the pin must not be satisfiable by the literal");
+        let vars = child_env(true, port);
+        let map: std::collections::HashMap<&str, &str> =
+            vars.iter().map(|(key, value)| (*key, value.as_str())).collect();
+
+        assert_eq!(map.get("OPENCODE_ENABLE_TELEMETRY"), Some(&"1"));
+        assert_eq!(map.get("OPENCODE_OTLP_PROTOCOL"), Some(&"grpc"));
+        assert_eq!(
+            map.get("OPENCODE_OTLP_ENDPOINT"),
+            Some(&"http://localhost:16002")
+        );
+        // The TERM family is still present on the isolation path.
+        for key in ["TERM", "COLORTERM", "TERM_PROGRAM"] {
+            assert!(map.contains_key(key), "missing {key}");
+        }
+    }
+
+    /// The receiver env NAMES are the binding ones (Names Block), and the
+    /// endpoint name is `env`'s single authority (never a second literal).
+    #[test]
+    fn the_receiver_env_names_are_pinned() {
+        assert_eq!(OPENCODE_ENABLE_TELEMETRY_ENV, "OPENCODE_ENABLE_TELEMETRY");
+        assert_eq!(OPENCODE_OTLP_PROTOCOL_ENV, "OPENCODE_OTLP_PROTOCOL");
+        assert_eq!(OPENCODE_OTLP_ENDPOINT_ENV, "OPENCODE_OTLP_ENDPOINT");
+        assert_eq!(OPENCODE_TELEMETRY_ENABLED_VALUE, "1");
+        assert_eq!(OPENCODE_OTLP_PROTOCOL_VALUE, "grpc");
+    }
+
+    /// R-3d: an OpenCode launch refusal states cause + remedy through
+    /// `TERMINAL_OPENCODE_BLOCKED_MSG`, and is never the bare not-found text.
+    #[test]
+    fn a_refused_opencode_launch_states_the_cause_and_the_remedy() {
+        let cause = "Could not start session: the file is not executable";
+        let message = in_window_failure_message(
+            SessionKind::OpenCode,
+            TerminalErrorKind::Launch,
+            cause.to_string(),
+        );
+        assert!(message.contains(cause), "the cause must survive: {message}");
+        assert!(message.contains("reopen Terminal"), "the remedy: {message}");
+        assert_ne!(message, not_found_message(SessionKind::OpenCode));
+        assert!(!message.contains("not found in PATH"), "{message}");
+        assert!(!message.contains("Install OpenCode"), "{message}");
+    }
+
+    /// R-3d regression invariant: a genuinely MISSING binary keeps
+    /// `not_found_message` byte-identical (the setup suite greps it) and an
+    /// invalid working directory keeps its own copy.
+    #[test]
+    fn a_missing_binary_keeps_the_not_found_text() {
+        let not_found = not_found_message(SessionKind::OpenCode);
+        assert_eq!(
+            in_window_failure_message(
+                SessionKind::OpenCode,
+                TerminalErrorKind::MissingBinary,
+                not_found.clone()
+            ),
+            not_found
+        );
+        let cwd = "Working directory not found: C:/nope".to_string();
+        assert_eq!(
+            in_window_failure_message(
+                SessionKind::OpenCode,
+                TerminalErrorKind::InvalidCwd,
+                cwd.clone()
+            ),
+            cwd
+        );
+    }
+
+    /// R-3d is OpenCode-only: another CLI's failure copy is untouched.
+    #[test]
+    fn other_clis_keep_their_own_failure_copy() {
+        let cause = "Could not start session: boom".to_string();
+        for cli in [SessionKind::Copilot, SessionKind::Shell] {
+            assert_eq!(
+                in_window_failure_message(cli, TerminalErrorKind::Launch, cause.clone()),
+                cause,
+                "{cli:?}"
+            );
+        }
     }
 
     // ── PendingTerminalOpen: cold-launch one-shot handshake (Spec #2940 ST-8) ─
