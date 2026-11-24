@@ -52,7 +52,7 @@ import { publishLauncherRegion } from '../../../../shared/components/companion/c
 import { LauncherCommandBar } from './LauncherCommandBar';
 import type { HoldCue, LauncherEnterMode } from './LauncherCommandBar';
 import { EmptySeat } from './EmptySeat';
-import { AVATAR_SM_CSS, FredoAvatar, resolveCompanionAvatarState, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
+import { AVATAR_SM_CSS, FredoAvatar, resolveCompanionAvatarState, useAvatarParallax, type FredoAvatarState } from '../../../../shared/components/fredo-avatar';
 import {
   CompanionEntity,
   askActiveCompanion,
@@ -678,6 +678,9 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
   });
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  // Subtle pointer parallax, wrapper-owned (whole-element motion never lives in
+  // the shared FredoAvatar - see fredo-avatar.css header, #2850).
+  const avatarParallaxRef = useAvatarParallax<HTMLDivElement>();
   // ── Spec #2883 ST-2 — the launcher-measured reply band ─────────────────────
   // The launcher owns the geometry the seat reply surface must stay inside, so it
   // measures the band and passes it launcher → entity → bubble. Refs (never
@@ -1766,7 +1769,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
                 only the mascot's INTERNAL expression (`data-state` + avatar
                 `state`): thinking/happy/playful/idle — surface-local, never context. */}
             {!companionVisible && (
-              <Box className="fredo-avatar-idle" data-state={desktopState}>
+              <Box ref={avatarParallaxRef} className="fredo-avatar-idle" data-state={desktopState}>
                 <FredoAvatar size="sm" state={desktopState} />
               </Box>
             )}

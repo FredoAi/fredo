@@ -1,4 +1,5 @@
 export { FredoAvatar } from './FredoAvatar';
+export { useAvatarParallax } from './useAvatarParallax';
 export type { FredoAvatarProps, FredoAvatarState } from './FredoAvatar';
 export { FREDO_AVATAR_STATES, isFredoAvatarState } from './fredoAvatarStates';
 export {
