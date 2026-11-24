@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **OpenCode 2 is the supported runtime.** Setup detects the installed OpenCode version:
+  on 1.x it names the version it found and directs you to `opencode upgrade` instead of
+  reporting success (and installs nothing). On 2.x setup installs the Fredo plugin into the
+  global plugins directory (`~/.config/opencode/plugins/`) and no longer writes
+  `OPENCODE_ENABLE_TELEMETRY` / `OPENCODE_OTLP_ENDPOINT` / `OPENCODE_OTLP_PROTOCOL`.
+  Fredo Terminal launches sessions against the shared background service by default;
+  `--standalone` is used only where isolation is required (`FREDO_REQUIRE_ENV_ISOLATION`
+  or a non-default OTLP endpoint). ([#3198](https://github.com/pktron/fredo/issues/3198))
 - **Brand cleanup**: Renamed all remaining "Fredo" references to "Fredo" in active code (asset files, imports, package names, socket paths). ([#17](https://github.com/pktron/fredo/issues/17))
   - `fredo-*.png` assets renamed to `fredo-*.png`
   - `@fredo/code-sandbox` renamed to `@fredo/code-sandbox`

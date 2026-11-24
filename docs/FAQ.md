@@ -18,7 +18,7 @@ Developers and AI practitioners who want a single desktop app that surfaces real
 
 Agents integrate through two paths:
 
-1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) using the OpenTelemetry SDK.
+1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`127.0.0.1:4317`) using the OpenTelemetry SDK. It is a native OpenCode **V2** plugin (`Plugin.define({ id: "fredo", setup })` + `ctx.event.subscribe`; no V1 shim), and capture is on by default.
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools.
 
 Raw telemetry is persisted on receipt and then classified by the **RTDB ingest classifier** into canonical rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) that stream to the frontend as row deliveries. The `fredo` CLI can also inject CLI events through the same classifier path.
@@ -106,19 +106,27 @@ By design. The UI is reactive — it subscribes to row deliveries via `useEventR
 ### How do I configure my agent to send OTLP to Fredo?
 
 **OpenCode:**
+
+Capture is **on by default** — no variable is required. The plugin sends to `http://localhost:4317` (gRPC) unless the endpoint is overridden, and `FREDO_TELEMETRY=0` (also `false` / `off`) opts out.
+
+Fredo supports **OpenCode 2**. Setup detects the installed version: on 1.x it names the version it found and directs you to the bare `opencode upgrade` (then re-run `fredo setup --check`) instead of reporting success, and installs nothing. On 2.x Fredo's Setup wizard (or `fredo setup --install-plugin`) installs the plugin into the global plugins directory (`~/.config/opencode/plugins/`), so it is installed once for the user, not per repository.
+
 ```bash
-# Windows
-setx OPENCODE_ENABLE_TELEMETRY "1"
+# Windows — optional: point at a non-default receiver
 setx OPENCODE_OTLP_ENDPOINT "http://127.0.0.1:4317"
 setx OPENCODE_OTLP_PROTOCOL "grpc"
 
-# Unix
-export OPENCODE_ENABLE_TELEMETRY=1
+# Unix — optional endpoint override
 export OPENCODE_OTLP_ENDPOINT=http://127.0.0.1:4317
 export OPENCODE_OTLP_PROTOCOL=grpc
+
+# Opt out (Windows: setx FREDO_TELEMETRY "0")
+FREDO_TELEMETRY=0
 ```
 
-Or use the Setup Wizard in Fredo's UI to configure automatically.
+`OPENCODE_ENABLE_TELEMETRY=0`/`false` also disables capture; its absence no longer disables anything. The plugin option `enabled: false` in `opencode.json(c)` takes precedence over both environment variables. Or let Fredo's Setup wizard install the plugin for you — it sets no OTLP variable, because the plugin is the capture point.
+
+Fredo Terminal launches OpenCode against its shared background service by default; `--standalone` (a private server) is used only in an isolated environment (`FREDO_REQUIRE_ENV_ISOLATION`, or a non-default `OPENCODE_OTLP_ENDPOINT`), never on the default path.
 
 **GitHub Copilot CLI** (capture is opt-in on the CLI side; Fredo installs nothing):
 

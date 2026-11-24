@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Box, Button, HStack, Icon, Progress, Spinner, Text, VStack,
+  Box, Button, HStack, Icon, Link, Progress, Spinner, Text, VStack,
 } from '@chakra-ui/react';
 import {
   LuBrain, LuCircleCheck, LuCircleX, LuDownload, LuFileWarning,
@@ -15,6 +15,8 @@ type StepStatus = 'checking' | 'idle' | 'running' | 'done' | 'error' | 'skipped'
 interface StepState {
   status: StepStatus;
   detail?: string;
+  /** An adjacent reference link (never inlined into the detail message). */
+  docsUrl?: string;
 }
 
 interface SetupWizardProps {
@@ -44,10 +46,10 @@ const STEPS: StepDef[] = [
   {
     id: 'opencode-cli',
     label: 'OpenCode CLI',
-    description: 'Install OpenCode CLI',
+    description: 'Check the installed OpenCode version (2 is required)',
     icon: LuTerminal,
-    actionLabel: 'Install',
-    actionLabelRunning: 'Installing…',
+    actionLabel: 'Check again',
+    actionLabelRunning: 'Checking…',
   },
   {
     id: 'plugin-build',
@@ -112,9 +114,21 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'opencode-cli': {
-      const res = await adapterBridge.invoke<{ opencode: boolean }>('check_cli_installations');
-      if (res?.opencode) return { status: 'done' };
-      return { status: 'idle' };
+      // The version gate is backend-owned. An installed-but-too-old (or
+      // undeterminable) OpenCode must render the backend's own message — never
+      // an "Install" prompt, which would send a user who already has a binary
+      // on PATH to an install page when the honest remedy is one upgrade
+      // command. The docs reference is offered ADJACENT to the message.
+      const res = await adapterBridge.invoke<{
+        steps?: Array<{ id: string; status: string; detail?: string }>;
+        opencode_docs_url?: string;
+      }>('get_setup_plan');
+      const step = res?.steps?.find(s => s.id === 'opencode-cli');
+      if (!step) return { status: 'idle' };
+      if (step.status === 'blocked') {
+        return { status: 'error', detail: step.detail, docsUrl: res?.opencode_docs_url };
+      }
+      return { status: 'done', detail: step.detail };
     }
     case 'plugin-build': {
       const res = await adapterBridge.invoke<{ steps: Array<{ id: string; status: string }> }>('get_setup_plan');
@@ -136,9 +150,13 @@ async function checkStep(id: string): Promise<StepState> {
       return { status: 'idle' };
     }
     case 'otel-config': {
-      const res = await adapterBridge.invoke<{ opencode_configured: boolean }>('check_otel_configured');
-      if (res?.opencode_configured) return { status: 'done' };
-      return { status: 'idle' };
+      // R-2c: the capture point is the global Fredo plugin, so the telemetry
+      // step is NOT REQUIRED rather than missing. Render the backend's own
+      // not-required wording instead of a bare configured/not-configured flag.
+      const res = await adapterBridge.invoke<{ otel?: { status: string; detail?: string } }>('check_all_setup');
+      const step = res?.otel;
+      if (!step) return { status: 'idle' };
+      return { status: step.status === 'ok' ? 'done' : 'idle', detail: step.detail };
     }
     default:
       return { status: 'idle' };
@@ -223,8 +241,10 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
           break;
         }
         case 'opencode-cli': {
-          window.open('https://opencode.ai/docs/install', '_blank');
-          result = { status: 'error', detail: 'OpenCode CLI must be installed manually. The installation guide has been opened in your browser. Re-run setup after installing.' };
+          // Re-probe instead of opening the install page: the gate's remedy is
+          // the command the detail line names, and the docs reference is linked
+          // beside it. Never send a user who HAS a binary to an install page.
+          result = await checkStep('opencode-cli');
           break;
         }
         case 'plugin-build': {
@@ -341,6 +361,21 @@ const StepCard: React.FC<{ step: StepDef }> = ({ step }) => {
             >
               {state.detail}
             </Text>
+          )}
+
+          {/* Adjacent reference link — carried beside the message, never inside it */}
+          {state.docsUrl && !isRunning && (
+            <Link
+              href={state.docsUrl}
+              target="_blank"
+              rel="noreferrer"
+              display="block"
+              fontSize="11px"
+              color="var(--accent-primary)"
+              mb={3}
+            >
+              OpenCode install / upgrade guide
+            </Link>
           )}
 
           {/* Action button or status */}

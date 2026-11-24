@@ -27,7 +27,8 @@ pub struct SetupArgs {
     #[arg(long)]
     pub add_to_path: bool,
 
-    /// Install Fredo plugin for OpenCode and configure OTEL telemetry
+    /// Install the Fredo plugin for OpenCode into the global plugins directory
+    /// (no OTEL environment is written)
     #[arg(long)]
     pub install_plugin: bool,
 

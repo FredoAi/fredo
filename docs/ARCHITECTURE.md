@@ -6,7 +6,7 @@ Fredo is a **cross-platform desktop application** for working with AI coding age
 
 Agents integrate through two paths:
 
-1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK
+1. **OpenCode OTLP plugin** — the `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to the gRPC receiver (`:4317`) using the OpenTelemetry SDK. It is a native OpenCode **V2** plugin — `Plugin.define({ id: "fredo", setup })` with a `ctx.event.subscribe` loop — and is **V2-only**: there is no V1 hooks-object export, no V1 shim and no dual export
 2. **OTLP receivers** — native gRPC/HTTP collectors that ingest OpenTelemetry spans from OpenCode and compatible tools
 
 OTLP telemetry is persisted **raw on receipt** (spans, metrics, and logs — no span dropped) and then classified by the **RTDB ingest classifier** into typed rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) on the **embedded PostgreSQL cluster** (the shipped default since Spec #2979; the SQLite data path was removed) that stream to the frontend as row deliveries over the `"fredo-stream-event"` IPC channel (the RTDB is the only delivery path; the v1 contract-engine pipeline was deleted). The React UI reacts in real time — no polling.
@@ -29,7 +29,7 @@ Fredo accepts events from two sources. Hook/CLI input is unified into the canoni
 
 | Source | Mechanism | Transport |
 |--------|-----------|-----------|
-| OpenCode OTLP plugin | `fredo-opencode-plugin` exports OTLP directly to `127.0.0.1:4317` | `OtlpGrpc` |
+| OpenCode OTLP plugin | `fredo-opencode-plugin` (OpenCode V2 `Plugin.define` + `ctx.event.subscribe`) exports OTLP directly to `127.0.0.1:4317` | `OtlpGrpc` |
 | OTLP gRPC | `127.0.0.1:4317` (OpenCode spans) | `OtlpGrpc` |
 | OTLP HTTP | `127.0.0.1:4318` (OpenCode spans) | `OtlpHttp` |
 | `fredo emit` CLI | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter` enrich → row classifier | `Hook` |
@@ -189,9 +189,9 @@ src-tauri/src/
 |   +-- settings/               — Persistent KV settings (SQLite)
 |   |   +-- mod.rs              — SettingsApplication
 |   |   +-- commands.rs         — save_setting, get_setting
-|   +-- setup/                  — CLI detection, PATH management, OTel config, three-file model acquisition, Companion readiness
+|   +-- setup/                  — OpenCode 2 version gate, PATH management, global plugin install (no OTLP env config), three-file model acquisition, Companion readiness
 |   |   +-- mod.rs              — SetupApplication
-|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness
+|   |   +-- commands.rs         — check_cli_installations, install_plugin, check_fredo_in_path, add_fredo_to_path, check_otel_configured, configure_otel, get_setup_plan, check_all_setup, run_setup_step, check_model_files, download_model, check_companion_readiness (`check_all_setup`/`get_setup_plan`/`install_plugin` gate on `MIN_SUPPORTED_OPENCODE_MAJOR`; `install_plugin` copies the one artifact to the global plugins dir; `configure_otel` is a not-required no-op)
 |   |   +-- model_download_state.rs — pure required-file manifest (pinned URLs/sizes/SHA-256), on-disk classifier, complete-iff-all-present aggregator
 |   |   +-- model_download.rs   — streamed acquisition engine (HTTP Range resume, streaming SHA-256, bounded retry/backoff)
 |   +-- screenshot/             — Screen capture (xcap)
@@ -963,7 +963,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 
 | Integration | How it works |
 |-------------|-------------|
-| **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
+| **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. It is a native OpenCode **V2** plugin: the module default-exports `Plugin.define({ id: "fredo", setup })` and consumes the host's event stream through `ctx.event.subscribe` — **V2-only**, with no V1 hooks-object export, no V1 shim and no dual export. Capture is **default-on** (the `FREDO_TELEMETRY` opt-out disables it). Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
 | **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`rtdb/ingest.rs`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `rtdb/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
 | **GitHub Copilot CLI OTLP** | The Copilot CLI exports OTLP **HTTP** (plaintext `http://127.0.0.1:4318`; the CLI offers no gRPC) with `OTEL_SERVICE_NAME=copilot-cli` — no Fredo-side configuration. Fredo persists the raw signals and the SAME classifier maps them, attributing `provider = copilot_cli` from the resource `service.name` via the one shared rule. Two Copilot specifics are handled **provider-scoped** (so OpenCode rows stay byte-identical): its `invoke_agent` root is promoted to an agent-session row (an `invoke_agent` span with any other/absent identity still maps to a chat row), and a chat row that *continues* an exchange re-carries that exchange's captured prompt (Copilot splits one turn across two `chat` spans; OpenCode re-emits the prompt on every span). Tool outcome/duration fall back to `error.type` + span timing when the flat OpenCode keys are absent; content is off by default (structural rows only). Enablement + the exact non-silent degradation: `docs/telemetry-reference.md` §4. |
 | **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
@@ -1164,15 +1164,15 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `write_pty_input` | terminal | Write keyboard input to PTY |
 | `resize_pty` | terminal | Resize PTY to new rows/cols |
 | `close_terminal_window` | terminal | Kill child, release PTY, close window |
-| `check_cli_installations` | setup | Check if `opencode` is on PATH |
-| `install_plugin` | setup | Install OpenCode plugin |
+| `check_cli_installations` | setup | Detect the OpenCode CLI and its major — `opencode: false` when the major is below the supported minimum or cannot be determined — plus the global Fredo plugin's presence |
+| `install_plugin` | setup | Copy the plugin artifact into the global plugins directory (`~/.config/opencode/plugins/fredo.js`), gated on OpenCode 2 and failing loud when the artifact is absent; returns the one `[fredo] …` line naming the resolved file |
 | `get_plugin_source_path` | setup | Return bundled plugin source path |
 | `check_fredo_in_path` | setup | Check if `fredo` is on PATH |
 | `add_fredo_to_path` | setup | Add Fredo to system PATH |
-| `check_otel_configured` | setup | Check OTLP exporter config |
-| `configure_otel` | setup | Write OTLP exporter config |
-| `get_setup_plan` | setup | List pending setup steps |
-| `check_all_setup` | setup | Run all setup checks |
+| `check_otel_configured` | setup | Report whether the capture point (the global Fredo plugin) is installed |
+| `configure_otel` | setup | Not required — idempotent no-op; writes no environment variable |
+| `get_setup_plan` | setup | List pending setup steps (`skipped` / `needed` / `blocked`) carrying the OpenCode version-gate message |
+| `check_all_setup` | setup | Run all setup checks (`opencode` = `error` with the gate message; `otel` = `ok`, not required) |
 | `run_setup_step` | setup | Execute a single setup step |
 | `check_model_files` | setup | Report per-file state for the three required model files (legacy `gguf_exists`/`mmproj_exists` fields preserved) |
 | `download_model` | setup | Download the three required model files with per-file progress, skip-present, HTTP `Range` resume, and streaming SHA-256 verification |
