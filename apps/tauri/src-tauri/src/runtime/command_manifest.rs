@@ -174,6 +174,11 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // only — nothing renders it.
     "open_main_window",
     "quit_app",
+    // Spec #3192 ST-2 — the tray. `app_lifecycle_status` reads the `main`
+    // window's presence and the tray's REAL menu items back to the webview
+    // (`trayItems`); the tray itself and its macOS application-menu Quit item are
+    // Rust-side and expose no command.
+    "app_lifecycle_status",
 ];
 
 #[cfg(test)]

@@ -10,9 +10,20 @@
 //!
 //! The exit policy lives at `RunEvent::ExitRequested` in `lib.rs` (see
 //! [`should_prevent_exit`]): the process only refuses to exit while
-//! [`ResidentShellState::tray_installed`] is `true`. A tray that failed to
-//! install therefore degrades to the pre-feature close semantics (X exits)
-//! instead of stranding a windowless process nobody can reach (R-2d).
+//! [`ResidentShellState::tray_installed`] is `true` — on EVERY platform. A tray
+//! that failed to install therefore degrades to the pre-feature close semantics
+//! (X exits) instead of stranding a windowless process nobody can reach (R-2d).
+//!
+//! **macOS quiet-quit correctness (ST-2).** The gate is uniform, so the
+//! platform's own Quit must not depend on it: macOS delivers both "the last
+//! window closed" and "the user quit" as `RunEvent::ExitRequested { code: None }`,
+//! so a prevention based on that code alone could never tell them apart. The menu
+//! layer therefore OWNS the macOS Quit: `infrastructure::tray` replaces the
+//! application menu's Quit item with one whose handler calls [`quit`] — a
+//! programmatic exit (`code: Some(0)`), which the gate always lets through to the
+//! bounded `RunEvent::Exit` teardown. Closing the last window keeps the process
+//! resident on macOS exactly as it does on Windows/Linux (R-1a), and ⌘Q still
+//! exits (R-3).
 //!
 //! `tray_installed` is the ONE piece of policy state: [`ResidentShellState`]
 //! starts `false` and ST-2 flips it to `true` only after the tray icon is really
@@ -43,20 +54,6 @@ pub const MAIN_WINDOW_SIZE: (f64, f64) = (1400.0, 900.0);
 pub const MAIN_WINDOW_MIN_SIZE: (f64, f64) = (900.0, 600.0);
 pub const MAIN_WINDOW_RESIZABLE: bool = true;
 pub const MAIN_WINDOW_MAXIMIZED: bool = true;
-
-/// Whether a `code: None` exit request is also how the platform delivers a
-/// SYSTEM-initiated quit (⌘Q / the macOS app menu).
-///
-/// Tauri exposes no discriminator on `RunEvent::ExitRequested`: macOS delivers
-/// both "the last window closed" and "the user pressed ⌘Q" as `code: None`
-/// (programmatic exits carry `code: Some(_)`). The recorded convergence decision
-/// for this spec is **macOS ⌘Q quits** — a resident process that swallows the
-/// platform's own Quit is a macOS-hostile app, and the tray still *offers* Quit
-/// as AC2 requires. So on macOS the gate never prevents a `None` exit: ⌘Q runs
-/// the bounded `RunEvent::Exit` teardown, and the tray `Quit` (`quit`) remains the
-/// visible exit there. Windows/Linux have no such ambiguity, so the
-/// "last window closed" path stays resident while the tray is installed.
-const SYSTEM_QUIT_SHARES_NONE_CODE: bool = cfg!(target_os = "macos");
 
 /// What [`ensure_main_window`] did, reported to the caller (and, through the
 /// `open_main_window` command, to the webview).
@@ -100,23 +97,19 @@ impl ResidentShellState {
 /// - `code: None` — the last-window-closed path. Prevented ONLY while a tray is
 ///   installed, so the process stays resident and reachable; with no tray the
 ///   pre-feature behaviour (X exits) is preserved (R-2d).
-/// - macOS: a system quit shares `code: None`, so it is never prevented — see
-///   [`SYSTEM_QUIT_SHARES_NONE_CODE`].
+///
+/// This is deliberately the SAME rule on every platform (no macOS carve-out):
+/// Tauri gives no discriminator between "the last window closed" and a
+/// system-initiated quit — macOS reports both as `code: None` — so a code-based
+/// carve-out could only be bought by giving up residency (AC1). The menu layer
+/// owns the platform quit instead: `infrastructure::tray::install_app_menu`
+/// replaces the macOS application-menu Quit item with one whose handler calls
+/// [`quit`], turning ⌘Q into a programmatic exit this gate always lets through.
+/// The residual is the macOS Dock's own Quit (a system terminate with no menu
+/// item involved), which this gate also prevents — the tray `Quit` item stays the
+/// one quit surface there (AC2), never an unquittable process.
 pub fn should_prevent_exit(code: Option<i32>, tray_installed: bool) -> bool {
-    should_prevent_exit_for(code, tray_installed, SYSTEM_QUIT_SHARES_NONE_CODE)
-}
-
-/// The platform-parameterised core of [`should_prevent_exit`], so both platform
-/// branches are pinned by one deterministic test on any host.
-fn should_prevent_exit_for(
-    code: Option<i32>,
-    tray_installed: bool,
-    system_quit_shares_none_code: bool,
-) -> bool {
-    match code {
-        Some(_) => false,
-        None => tray_installed && !system_quit_shares_none_code,
-    }
+    code.is_none() && tray_installed
 }
 
 /// Focus the `main` window, rebuilding it when there is nothing left to focus.
@@ -341,9 +334,11 @@ mod tests {
 
     #[test]
     fn last_window_closed_is_prevented_only_with_a_tray() {
+        // The gate is platform-independent: residency on close holds everywhere,
+        // including macOS, where the menu layer (not this gate) owns ⌘Q.
         assert!(
             should_prevent_exit(None, true),
-            "a None exit with a live tray must keep the process resident"
+            "a None exit with a live tray must keep the process resident on every platform"
         );
         assert!(
             !should_prevent_exit(None, false),
@@ -353,17 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn a_system_quit_sharing_the_none_code_always_exits() {
-        // The macOS rule: a platform that reports ⌘Q as `code: None` must never
-        // be prevented, for either tray state.
-        assert!(!should_prevent_exit_for(None, true, true));
-        assert!(!should_prevent_exit_for(None, false, true));
-        // ...while non-macOS keeps the residency gate exactly.
-        assert!(should_prevent_exit_for(None, true, false));
-        assert!(!should_prevent_exit_for(None, false, false));
-        // A programmatic exit exits on every platform.
-        assert!(!should_prevent_exit_for(Some(0), true, true));
-        assert!(!should_prevent_exit_for(Some(0), true, false));
+    fn the_menu_owned_quit_takes_the_programmatic_exit_path() {
+        // The macOS ⌘Q story: the application-menu Quit item calls `quit()`,
+        // which is `AppHandle::exit(0)` — `code: Some(0)`, always allowed. If a
+        // system quit ever reached the gate as `None` it would be prevented, which
+        // is exactly why the tray owns that item (see the module docs).
+        assert!(!should_prevent_exit(Some(0), true));
+        assert!(should_prevent_exit(None, true));
     }
 
     // ── MainWindowOutcome wire shape ───────────────────────────────────────

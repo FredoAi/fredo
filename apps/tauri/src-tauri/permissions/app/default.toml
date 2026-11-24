@@ -144,4 +144,7 @@ permissions = [
   # the IPC seam and is never rendered in any UI).
   "allow-open-main-window",
   "allow-quit-app",
+  # Spec #3192 ST-2 — the tray's read-back command: the `main` window's presence
+  # plus the REAL native menu items. Granted to the built-in window class only.
+  "allow-app-lifecycle-status",
 ]

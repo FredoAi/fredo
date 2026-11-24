@@ -178,6 +178,23 @@ async fn prune_application_data(app: &tauri::AppHandle) {
     }
 }
 
+/// Spec #3192 ST-2 — install the macOS application menu whose Quit item routes
+/// through `infrastructure::app_lifecycle::quit`.
+///
+/// A failure is logged and never fatal: the tray `Quit` item remains the
+/// guaranteed quit surface (R-2d), and the process is never left unquittable.
+#[cfg(target_os = "macos")]
+fn install_app_menu(app: &tauri::AppHandle) {
+    if let Err(error) = infrastructure::tray::install_app_menu(app) {
+        tracing::error!(
+            target: "fredo::app_lifecycle",
+            error = %error,
+            "could not install the macOS application menu; Cmd+Q will not quit — the \
+             tray Quit item does"
+        );
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Spec #3192 ST-3 (R-4) — the second-launch hand-off, at the very TOP of the
@@ -249,7 +266,14 @@ pub fn run() {
         },
     );
 
-    builder.setup(|app| {
+    // Spec #3192 ST-2 — ONE menu-event dispatch. The tray registers its own
+    // `on_menu_event` (`install_tray`); this app-wide handler is where the macOS
+    // application-menu Quit item arrives. Both feed
+    // `infrastructure::tray::dispatch_menu_event`, so `Open`/`Quit` have exactly
+    // one implementation each and an unknown id is ignored.
+    builder
+        .on_menu_event(infrastructure::tray::dispatch_menu_event)
+        .setup(|app| {
             // The setup closure is `'static`, so it re-reads the same `FREDO_*`
             // variables through the ONE resolver (`EnvConfig`) — resolution logic
             // is never duplicated, and the read is idempotent.
@@ -267,6 +291,29 @@ pub fn run() {
             // window close exit exactly as before (inert-safe); the tray (ST-2)
             // flips it once its icon is really built (R-2d).
             app.manage(infrastructure::app_lifecycle::ResidentShellState::default());
+
+            // Spec #3192 ST-2 — the ONE tray icon: a native menu of `Open`, a
+            // separator and `Quit`. A failure is logged and never fatal: the
+            // `tray_installed` bit stays `false`, so closing the window keeps the
+            // pre-feature behaviour (exit) instead of stranding a process with no
+            // way back (R-2d).
+            if let Err(error) = infrastructure::tray::install_tray(app.handle()) {
+                tracing::error!(
+                    target: "fredo::app_lifecycle",
+                    error = %error,
+                    "the tray could not be installed; closing the main window will exit \
+                     as it did before the resident shell"
+                );
+            }
+
+            // Spec #3192 ST-2 — macOS resident correctness. Tauri reports both the
+            // last-window close and a system quit as `ExitRequested { code: None }`,
+            // so the platform's own Quit item must not be what quits Fredo: the
+            // application menu is replaced with one whose Quit handler calls
+            // `app_lifecycle::quit` (a programmatic `code: Some(0)` exit), which is
+            // what lets the exit gate stay uniform on every platform.
+            #[cfg(target_os = "macos")]
+            install_app_menu(app.handle());
 
             // Spec #2977 ST-6 (G-275): the ONE app-data-dir resolver. A non-blank
             // `FREDO_DATA_DIR` redirects the app-data dir to an in-repo fixture; the
@@ -1177,6 +1224,11 @@ pub fn run() {
             // control is wired to it, and nothing here runs at startup (R-5.5).
             infrastructure::app_lifecycle::open_main_window,
             infrastructure::app_lifecycle::quit_app,
+            // Spec #3192 ST-2 — the tray's read-back command: the `main` window's
+            // presence plus the REAL native menu items (`trayItems`), so the tray
+            // content is proven from the shipped menu rather than a constant. The
+            // tray and its macOS application-menu Quit item are Rust-side.
+            infrastructure::tray::app_lifecycle_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Fredo application")
@@ -1202,9 +1254,11 @@ pub fn run() {
             //   * `code: None` — the last-window-closed path — is prevented ONLY
             //     while a tray is installed, so no tray degrades to today's
             //     behaviour instead of orphaning a windowless process (R-2d);
-            //   * on macOS a system Quit (⌘Q) arrives as `code: None` too, and
-            //     the recorded decision is that macOS ⌘Q quits — see
-            //     `SYSTEM_QUIT_SHARES_NONE_CODE` for the full rationale.
+            //   * the rule is the SAME on every platform. macOS reports its own
+            //     quit as `code: None` too, so the menu layer owns that surface:
+            //     `infrastructure::tray::install_app_menu` replaces the app-menu
+            //     Quit item with one that calls `quit()` (`code: Some(0)`), which
+            //     this gate always lets through to the teardown below.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = &event {
                 let tray_installed = app
                     .try_state::<infrastructure::app_lifecycle::ResidentShellState>()

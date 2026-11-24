@@ -14,6 +14,7 @@ pub mod rtdb;
 pub mod single_instance;
 pub mod storage;
 pub mod telemetry;
+pub mod tray;
 pub mod voice;
 
 // Removed: k8s, llm, store — these have moved to their respective application modules.
