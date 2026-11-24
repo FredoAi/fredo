@@ -29,6 +29,9 @@
  *   · `session.tool.progress` emits NOTHING (diagnostic only — preserved V1
  *     contract).
  *   · The `task`-tool child-completion attributes are preserved (Spec #2745 R-2).
+ *   · `session.tool.called` is where the ST-5 git-commit signal is derived (V2
+ *     has no `command.executed`): `handleToolCommandForCommit` gets the tool name
+ *     and the flattened input bag, and emits the `commit` LOG record only.
  */
 
 import { SeverityNumber } from "@opentelemetry/api-logs";
@@ -53,6 +56,7 @@ import {
   setBoundedMap,
 } from "../util";
 import { routingParentSessionId } from "./session";
+import { extractCommandText, handleToolCommandForCommit } from "./activity";
 import {
   ATTR_OP_NAME,
   GEN_AI_AGENT_NAME,
@@ -200,6 +204,12 @@ export function handleToolCalled(
   // EARS-9: every ISSUED call counts once, failed/interrupted included; the
   // count is recorded at session close as gen_ai.invoke_agent.tool_calls.
   incrementSessionCounters(sessionID, { toolCalls: 1 }, ctx);
+  // Spec #3197 R-3.3 (ST-5): V2 has no `command.executed`, so the git-commit
+  // signal is derived from the tool lifecycle. `.called` is the ONE wiring point
+  // — it is where the tool name AND its parsed input are both known, and wiring
+  // the accumulation event too would emit the `commit` log twice per call. The
+  // signal is a LOG record only (no span, no row).
+  handleToolCommandForCommit(tool, extractCommandText(input), sessionID, ctx);
   ctx.log("debug", "otel: tool span started", { sessionID, tool, key });
 }
 

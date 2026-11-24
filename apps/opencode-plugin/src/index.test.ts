@@ -407,15 +407,14 @@ describe("FREDO_CAPTURE_EVENTS lever", () => {
   });
 });
 
-// ── Dispatch wiring (ST-1 skeleton invariant, superseded by ST-2/ST-3/ST-4) ──
+// ── Dispatch wiring (ST-1 skeleton invariant, superseded by ST-2 … ST-5) ────
 //
-// ST-1 pinned "every handler skeleton emits nothing". ST-2/ST-3/ST-4 implement
-// the session, model-turn and tool handlers, so that pin now asserts the INVERSE
-// for those families — while the ST-5 skeletons (permissions, git-commit
-// activity) must still emit nothing. Both directions are pinned so a handler
-// that is wired but inert (or a stub that silently starts emitting) fails here.
+// ST-1 pinned "every handler skeleton emits nothing". ST-2/ST-3/ST-4/ST-5
+// implement the session, model-turn, tool, permission and activity handlers, so
+// that pin now asserts the INVERSE for every family — a handler that is wired but
+// inert (or a stub that silently starts emitting) fails here.
 
-describe("dispatch wiring (ST-2/ST-3/ST-4 implemented, ST-5 still stubs)", () => {
+describe("dispatch wiring (ST-2 … ST-5 implemented)", () => {
   test("a full session lifecycle leaves no in-flight state behind", () => {
     const { ctx } = recordingContext();
     for (const event of handledEvents) {
@@ -435,11 +434,13 @@ describe("dispatch wiring (ST-2/ST-3/ST-4 implemented, ST-5 still stubs)", () =>
     expect(ctx.pendingPermissions.size).toBe(0);
   });
 
-  test("ST-5 handler skeletons still emit nothing", () => {
+  test("the ST-5 permission path is live: the ask is remembered, the reply emits", () => {
     const { ctx, calls } = recordingContext();
     handleV2Event(permissionAsked, ctx);
+    expect(ctx.pendingPermissions.size).toBe(1);
     handleV2Event(permissionReplied, ctx);
-    expect(calls).toEqual([]);
+    // The pending ask is consumed and the `tool_decision` log record is emitted.
+    expect(calls).toContain("emitLog");
     expect(ctx.pendingPermissions.size).toBe(0);
   });
 
