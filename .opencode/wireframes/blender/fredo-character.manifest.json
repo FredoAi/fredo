@@ -1,0 +1,296 @@
+{
+  "asset": "fredo-character",
+  "version": 1,
+  "generator": "Khronos glTF Blender I/O v5.3.43",
+  "file": "fredo-character.glb",
+  "bytes": 3554176,
+  "units": "metres",
+  "height": 1.8,
+  "origin": "ground, between the feet, facing -Z after glTF Y-up conversion",
+  "forward": "+Z",
+  "triangles": 43104,
+  "meshes": 1,
+  "skins": 1,
+  "materials": [
+    "fredo_body",
+    "fredo_accent",
+    "fredo_limb",
+    "fredo_boot",
+    "fredo_hat",
+    "fredo_hair",
+    "fredo_metal",
+    "fredo_fx",
+    "fredo_doom",
+    "fredo_helm",
+    "fredo_visor",
+    "fredo_trim",
+    "fredo_glove",
+    "fredo_skin",
+    "fredo_lava",
+    "fredo_wood",
+    "fredo_brass"
+  ],
+  "bones": [
+    "arm_l",
+    "arm_r",
+    "eye_l",
+    "eye_r",
+    "head",
+    "tie",
+    "body",
+    "foot_l",
+    "leg_l",
+    "foot_r",
+    "leg_r",
+    "root",
+    "prop_error",
+    "prop_glasses",
+    "prop_hat",
+    "prop_monocle",
+    "prop_steam",
+    "prop_analyzing",
+    "prop_complete",
+    "prop_planning",
+    "prop_working",
+    "prop_burst",
+    "prop_flash",
+    "prop_p00",
+    "prop_p01",
+    "prop_p02",
+    "prop_p03",
+    "prop_p04",
+    "prop_p05",
+    "prop_p06",
+    "prop_p07",
+    "prop_p08",
+    "prop_p09",
+    "prop_p10",
+    "prop_p11",
+    "prop_p12",
+    "prop_p13",
+    "prop_thinking"
+  ],
+  "clips": [
+    {
+      "name": "analyzing",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "analyzing",
+        "monocle"
+      ]
+    },
+    {
+      "name": "angry",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "steam",
+        "hat"
+      ]
+    },
+    {
+      "name": "complete",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "complete",
+        "hat"
+      ]
+    },
+    {
+      "name": "confused",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "doom-idle",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "doom-in",
+      "duration": 1.333,
+      "loop": false,
+      "prop": []
+    },
+    {
+      "name": "doom-mg",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "doom-out",
+      "duration": 1.333,
+      "loop": false,
+      "prop": []
+    },
+    {
+      "name": "doom-shoot",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "doom-sword",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "error",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "error"
+      ]
+    },
+    {
+      "name": "funny",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "hat",
+        "monocle"
+      ]
+    },
+    {
+      "name": "greeting",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "hat"
+      ]
+    },
+    {
+      "name": "happy",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "idle",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "joking",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "listening",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "love",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "planning",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "planning",
+        "glasses"
+      ]
+    },
+    {
+      "name": "playful",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "sad",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "silly",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "skeptical",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "sleepy",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "squint",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "surprised",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "talk",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "teleport-in",
+      "duration": 1.333,
+      "loop": false,
+      "prop": [
+        "burst"
+      ]
+    },
+    {
+      "name": "teleport-out",
+      "duration": 1.333,
+      "loop": false,
+      "prop": [
+        "burst"
+      ]
+    },
+    {
+      "name": "thinking",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "thinking",
+        "monocle"
+      ]
+    },
+    {
+      "name": "uwu",
+      "duration": 1.333,
+      "loop": true,
+      "prop": []
+    },
+    {
+      "name": "working",
+      "duration": 1.333,
+      "loop": true,
+      "prop": [
+        "working",
+        "glasses"
+      ]
+    }
+  ]
+}

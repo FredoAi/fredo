@@ -5,7 +5,7 @@ import { SpeechBubble } from './SpeechBubble';
 import { completeAvatarRect } from './replySurfaceLayout';
 import type { ReplyAvatarRect, ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
-import { AVATAR_SM, FredoAvatar, resolveCompanionAvatarState } from '../fredo-avatar';
+import { AVATAR_SM, FredoAvatar, resolveCompanionAvatarState, useAvatarParallax } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
 import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation';
@@ -485,6 +485,9 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const [currentAnim, setCurrentAnim] = useState<FredoAvatarState>('idle');
     // animKey forces the wrapper to remount and restart the CSS animation cleanly
     const [animKey, setAnimKey] = useState(0);
+    // Subtle pointer parallax on the wrapper (whole-element motion belongs to
+    // the consumer, not the shared FredoAvatar - fredo-avatar.css header, #2850).
+    const avatarParallaxRef = useAvatarParallax<HTMLDivElement>();
     // #2917 r3 (FIX-4r3) — the bounded ambient `greeting` beat. While TRUE the
     // resolver's `ambientMessage` candidate is asserted; when the beat ends the
     // SAME ambient message falls through to the base `talk` expression.
@@ -1853,7 +1856,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             seat it is in-flow inside the consumer's slot. */}
         <div
           key={animKey}
-          ref={wrapperRef}
+          ref={(node) => {
+            // Merge: the wrapper owns positioning/measurement, the parallax hook
+            // needs the same node. The hook reads it lazily, so a remount (keyed
+            // on `animKey`) is picked up without rebinding listeners.
+            wrapperRef.current = node;
+            avatarParallaxRef.current = node;
+          }}
           onClick={handleSpriteClick}
           data-state={displayAnim}
           data-streaming={isStreaming || undefined}

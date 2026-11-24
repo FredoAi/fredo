@@ -144,6 +144,23 @@ The full index is at [docs/README.md](docs/README.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
+## Credits & acknowledgements
+
+Third-party components with a distribution obligation — the companion inference runtime, Doom
+Mode's game data and engine, and the GPU runtime redistributables — are recorded in
+[THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
+
+The companion avatar's design additionally draws on this reference:
+
+- **"Posable Doomguy (Blender file)" by [Fjaru](https://www.thingiverse.com/Fjaru)** —
+  [thing:4873090](https://www.thingiverse.com/thing:4873090), licensed
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Used as a proportion and
+  part-decomposition reference for the avatar's Doom mode. **No geometry from it is shipped** —
+  the in-app avatar is an original reconstruction, and the reference files are not redistributed.
+
+DOOM and the DOOM logo are trademarks of id Software LLC / ZeniMax Media Inc. Fredo is not
+affiliated with, endorsed by, or sponsored by id Software.
+
 ## License
 
 The code in this repository is dual-licensed under the [MIT](LICENSE-MIT) and

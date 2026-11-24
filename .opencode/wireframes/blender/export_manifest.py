@@ -1,0 +1,94 @@
+"""Emit a runtime manifest for fredo-character.glb by reading the GLB itself,
+so the contract can never drift from the asset."""
+import json
+import struct
+import sys
+import os
+
+BASE = "C:/Code/fredo/.opencode/wireframes/blender"
+GLB = f"{BASE}/fredo-character.glb"
+OUT = f"{BASE}/fredo-character.manifest.json"
+
+NON_LOOPING = {"teleport-out", "teleport-in", "doom-in", "doom-out"}
+PROPS_BY_CLIP = {
+    "thinking":     ["thinking", "monocle"],
+    "analyzing":    ["analyzing", "monocle"],
+    "planning":     ["planning", "glasses"],
+    "working":      ["working", "glasses"],
+    "complete":     ["complete", "hat"],
+    "error":        ["error"],
+    "greeting":     ["hat"],
+    "funny":        ["hat", "monocle"],
+    "angry":        ["steam", "hat"],
+    "teleport-out": ["burst"],
+    "teleport-in":  ["burst"],
+}
+
+with open(GLB, "rb") as f:
+    data = f.read()
+
+offset = 12
+gltf = None
+while offset < len(data):
+    clen, ctype = struct.unpack_from("<II", data, offset)
+    chunk = data[offset + 8: offset + 8 + clen]
+    if ctype == 0x4E4F534A:
+        gltf = json.loads(chunk.decode("utf-8"))
+    offset += 8 + clen + ((4 - clen % 4) % 4)
+
+acc = gltf["accessors"]
+nodes = gltf["nodes"]
+
+clips = []
+for anim in sorted(gltf.get("animations", []), key=lambda a: a["name"]):
+    dur = 0.0
+    for s in anim["samplers"]:
+        a = acc[s["input"]]
+        if a.get("max"):
+            dur = max(dur, float(a["max"][0]))
+    name = anim["name"]
+    clips.append({
+        "name": name,
+        "duration": round(dur, 3),
+        "loop": name not in NON_LOOPING,
+        "prop": PROPS_BY_CLIP.get(name, []),
+    })
+
+bones = [n["name"] for n in nodes if n.get("name") in (
+    "root", "body", "head", "eye_l", "eye_r", "tie", "arm_l", "arm_r",
+    "leg_l", "leg_r", "foot_l", "foot_r")] + \
+        [n["name"] for n in nodes if str(n.get("name", "")).startswith("prop_")]
+
+tris = 0
+for mesh in gltf["meshes"]:
+    for prim in mesh["primitives"]:
+        if "indices" in prim:
+            tris += acc[prim["indices"]]["count"] // 3
+
+manifest = {
+    "asset": "fredo-character",
+    "version": 1,
+    "generator": gltf["asset"].get("generator"),
+    "file": os.path.basename(GLB),
+    "bytes": os.path.getsize(GLB),
+    "units": "metres",
+    "height": 1.8,
+    "origin": "ground, between the feet, facing -Z after glTF Y-up conversion",
+    "forward": "+Z",
+    "triangles": tris,
+    "meshes": len(gltf["meshes"]),
+    "skins": len(gltf.get("skins", [])),
+    "materials": [m["name"] for m in gltf["materials"]],
+    "bones": bones,
+    "clips": clips,
+}
+
+with open(OUT, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2)
+
+print(f"wrote {OUT}")
+print(f"clips: {len(clips)}  bones: {len(bones)}  materials: {len(manifest['materials'])}")
+for c in clips:
+    tag = "loop" if c["loop"] else "once"
+    prop = f"  props={','.join(c['prop'])}" if c["prop"] else ""
+    print(f"  {c['name']:14s} {c['duration']:.2f}s  {tag}{prop}")
