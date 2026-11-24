@@ -3886,6 +3886,12 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
                     return (false, format!("planning QA section carries the undrivable placeholder '{}' — name the executor + evidence path for every AC (A3)", marker));
                 }
             }
+            // A2 size budget: a very large single plan comment is hard to read and
+            // was lost once on a post failure (#3036). Warn (do not block) so the
+            // Orchestrator can split sections into separate comments.
+            if a2a.len() > 200_000 {
+                println!("WARNING: the plan draft is {} bytes (>200 KB) — consider splitting sections into separate comments (A2)", a2a.len());
+            }
             (true, String::new())
         }
         Phase::Implementation => {
@@ -6131,7 +6137,7 @@ fn actor_allowed(action: &str, actor: &str) -> bool {
         // an AC amendment and had to route through the SI.)
         "comment" => true,
         "transition" => actor == "orchestrator",
-        "block" | "unblock" => matches!(actor, "orchestrator" | "developer"),
+        "block" | "unblock" => matches!(actor, "orchestrator" | "developer" | "tester"),
         "close-issue" => actor == "orchestrator",
         "create-worktree" => actor == "developer",
         "remove-worktree" => actor == "developer",

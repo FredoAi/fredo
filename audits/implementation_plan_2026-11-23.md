@@ -3,7 +3,7 @@
 Tracks the fixes in [`performance_audit_2026-11-23.md`](./performance_audit_2026-11-23.md).
 Execution mode: **direct implementation**. Last updated: 2026-11-23.
 
-Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine batch;
+Verification: `test-scripts.ps1` is **184/184 PASS** after each state-machine batch;
 `--action verify` is INTEGRITY OK. Docs updated in the same pass.
 
 ## P1 — Machine correctness — DONE
@@ -24,7 +24,8 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 ## P3a — Planning discipline — PARTIAL
 
 - [x] **A1** Plan size cap: >15 SP blocks `planning → implementation` unless a PO `## Scope Override` section exists.
-- [~] **A3** Machine-side drivability v1: the QA section is refused if it carries undrivable placeholders (`<executor>`, `<evidence>`, `<how>`, `tbd`, `todo`, `upload-pending`). Full per-row executor/evidence census tool remains.
+- [~] **A2** Size budget: a >200 KB plan draft now prints a split warning (non-blocking); section-per-comment splitting is not automated.
+- [x] **A3** Drivability: the machine refuses QA placeholders at the planning exit, and `check-plan-drivability.ps1` provides the per-row census tool (P6/D2).
 
 ## P3b — Evidence mechanics — PARTIAL
 
@@ -32,6 +33,7 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 - [x] **C5** Env-id tolerance: no-lease accepts `spec<N>` / `wf<N>-a` / `qa<N>-a`.
 - [x] **D3** Covered by the existing `upload-evidence` existence check.
 - [~] **F4** Architect playbook now routes sibling-owned fix-scope items to the owner (doc fix); machine pre-check not added.
+- [x] **F5** The Tester may now call `block`/`unblock` directly (actor gate + docs updated).
 - [x] **C1** Product-subtree tolerance: a docs/pipeline-only commit after the serve is accepted when `apps`+manifests are byte-identical; a product change still requires a re-serve.
 
 ## P4 — Throughput instrumentation — PARTIAL
@@ -61,6 +63,11 @@ Verification: `test-scripts.ps1` is **180/180 PASS** after each state-machine ba
 - [x] **H2** Fix-plan channel collapsed: the derived fallback compaction was removed; a rework round requires the authored `fix-plan.md`. The verdict draft/reconcile and dev-verify channels are idempotent by design (not duplicates).
 - [x] **G3** #2694/#2711 are already CLOSED; the SLA report now ignores terminal specs, so they no longer appear as overdue blockers.
 
-## Deferred
+## Deferred / residual
 
 - **F3** parallel dev waves, **F6** parallel envs — revisit after G4 data.
+- **H3** worktree dirty-check before sweep + `--human-authorized` provenance — needs a dedicated CLI/security design.
+- **A2** automated section-per-comment splitting; **F2** comment caching (retry-state memoization shipped).
+- **E1** retirement of 184 stale-`Pending` guardrails — Curator judgment pass.
+- **G2** `.opencode/tmp` prune at cleanup (log cap shipped).
+- **C4** generic guard-universe tool (v1 census shipped).
