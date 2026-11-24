@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fredo Terminal launches sessions against the shared background service by default;
   `--standalone` is used only where isolation is required (`FREDO_REQUIRE_ENV_ISOLATION`
   or a non-default OTLP endpoint). ([#3198](https://github.com/pktron/fredo/issues/3198))
+- **Setup restarts OpenCode's background service after installing the plugin.** A server that
+  was already running loaded its plugins at its own start, so a freshly installed bundle was
+  invisible to it until a restart. When the install writes a new copy and a service is running,
+  setup now runs the runtime's own `opencode service restart` (never a kill) and reports the
+  outcome — a failed restart is an error with the remedy, and the installed file stays in place.
+  An unchanged re-install writes nothing and restarts nothing, and
+  `fredo setup --install-plugin --no-restart-service` skips the restart for automation.
+  ([#3198](https://github.com/pktron/fredo/issues/3198))
 - **Brand cleanup**: Renamed all remaining "Fredo" references to "Fredo" in active code (asset files, imports, package names, socket paths). ([#17](https://github.com/pktron/fredo/issues/17))
   - `fredo-*.png` assets renamed to `fredo-*.png`
   - `@fredo/code-sandbox` renamed to `@fredo/code-sandbox`
