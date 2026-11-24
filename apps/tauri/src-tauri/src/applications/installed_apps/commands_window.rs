@@ -179,26 +179,94 @@ mod tests {
         }
     }
 
-    /// The `builder.setup(|app| { … })` closure's source text, balanced by
-    /// braces from the real `lib.rs` — never a hand-kept copy.
-    fn setup_closure_region() -> String {
-        let lib = include_str!("../../lib.rs");
-        let start = lib.find("builder.setup(|app|").expect("lib.rs has a setup closure");
+    /// The app's ONE setup closure's source text, balanced by braces from the real
+    /// `lib.rs` — never a hand-kept copy.
+    ///
+    /// Anchored on the `.setup(` CALL, never on a receiver spelling: the builder is a
+    /// chain (#3192: `builder.on_menu_event(..).setup(..)`), and `builder.` is
+    /// incidental formatting. `tauri::Builder::setup` is the only way an app registers
+    /// a setup closure, so COUNTING it asserts the property this guard means — "the
+    /// app registers exactly ONE setup closure".
+    fn setup_closure_region_from(source: &str) -> Result<String, String> {
+        const SETUP_CALL: &str = ".setup(";
+        let occurrences = source.matches(SETUP_CALL).count();
+        if occurrences != 1 {
+            return Err(format!(
+                "lib.rs must register exactly ONE `{SETUP_CALL}` closure, found {occurrences} \
+                 (if a non-Tauri builder gained a `.setup(` call, narrow this extractor — do not \
+                 delete the guard)"
+            ));
+        }
+        let start = source.find(SETUP_CALL).expect("counted exactly one occurrence");
         let mut depth: i32 = 0;
-        let mut end = lib.len();
-        for (index, character) in lib[start..].char_indices() {
+        for (index, character) in source[start..].char_indices() {
             match character {
                 '{' => depth += 1,
                 '}' => {
                     depth -= 1;
                     if depth == 0 {
-                        end = start + index + 1;
-                        break;
+                        return Ok(source[start..start + index + 1].to_string());
                     }
                 }
                 _ => {}
             }
         }
-        lib[start..end].to_string()
+        Err(format!("the `{SETUP_CALL}` closure in lib.rs is not brace-balanced"))
+    }
+
+    fn setup_closure_region() -> String {
+        setup_closure_region_from(include_str!("../../lib.rs"))
+            .expect("lib.rs registers one brace-balanced setup closure")
+    }
+
+    /// The extractor must be indifferent to the builder's receiver spelling: a chain
+    /// (`builder.on_menu_event(..).setup(..)`, #3192's ST-2 shape) and the plain form
+    /// extract the same region.
+    #[test]
+    fn the_setup_extractor_accepts_a_chained_builder() {
+        let plain = setup_closure_region_from("builder.setup(|app| { body(); });")
+            .expect("the plain form registers one setup closure");
+        let chained = setup_closure_region_from(
+            "builder\n    .on_menu_event(handler)\n    .setup(|app| { body(); });",
+        )
+        .expect("a chained builder registers one setup closure");
+        assert!(plain.contains("body();"), "extracted the wrong region: {plain}");
+        assert!(chained.contains("body();"), "extracted the wrong region: {chained}");
+        assert_eq!(
+            plain, chained,
+            "the receiver spelling must not change the extracted region"
+        );
+    }
+
+    /// The property is "exactly ONE setup closure": a second `.setup(` is refused, not
+    /// silently extracted first-match, and a source with none is refused too.
+    #[test]
+    fn the_setup_extractor_refuses_two_setup_closures() {
+        let two = setup_closure_region_from(
+            "builder.setup(|app| { first(); }).setup(|app| { second(); });",
+        )
+        .expect_err("two setup closures must be refused");
+        assert!(
+            two.contains("exactly ONE"),
+            "the refusal must name the property it means: {two}"
+        );
+        let none = setup_closure_region_from("builder.plugin(p);")
+            .expect_err("no setup closure must be refused");
+        assert!(
+            none.contains("exactly ONE"),
+            "the refusal must name the property it means: {none}"
+        );
+    }
+
+    /// An unbalanced closure is an ERROR, never the file tail: the old `end = len`
+    /// fallback made a broken extraction look like a (vacuous) success.
+    #[test]
+    fn the_setup_extractor_refuses_an_unbalanced_closure() {
+        let unbalanced = setup_closure_region_from("builder.setup(|app| { body();")
+            .expect_err("an unterminated closure must be refused");
+        assert!(
+            unbalanced.contains("not brace-balanced"),
+            "the refusal must say why: {unbalanced}"
+        );
     }
 }

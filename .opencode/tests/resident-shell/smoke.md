@@ -6,7 +6,10 @@
 - [ ] **S-1: App window renders** —
   `tauri_webview_dom_snapshot(type="structure")` on `main` returns a non-empty `<body>`.
 - [ ] **S-2: No console errors** — `tauri_read_logs(source="console", lines=50)` shows no
-  `Error:` / `Uncaught` / `Maximum update depth exceeded` on `main`.
+  `Error:` / `Uncaught` / `Maximum update depth exceeded` on `main`. Repeat it after the S-5 reopen
+  and again on the surviving `terminal` window (re-point the driver first — the tool reads the
+  CURRENTLY TARGETED webview); that second read is N-6's required leg (`functional.md`), so paste
+  both reads with their window label.
 - [ ] **S-3: Tray surface present** — `…invoke('app_lifecycle_status')` returns
   `trayItems === [{"id":"tray-open","label":"Open"},{"id":"tray-quit","label":"Quit"}]` and
   `mainWindowOpen === true`. (The icon itself is OS chrome and is not DOM-inspectable; the menu

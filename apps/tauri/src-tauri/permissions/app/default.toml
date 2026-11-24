@@ -139,4 +139,12 @@ permissions = [
   # window's theme effect (a built-in window), so it needs this grant; the
   # `installed-<id>` window never calls it and still matches no capability.
   "allow-installed-apps-push-theme",
+  # Spec #3192 ST-1 — the resident shell. Granted to the built-in window class
+  # only (`open_main_window` is also the tray/second-launch seam; `quit_app` is
+  # the IPC seam and is never rendered in any UI).
+  "allow-open-main-window",
+  "allow-quit-app",
+  # Spec #3192 ST-2 — the tray's read-back command: the `main` window's presence
+  # plus the REAL native menu items. Granted to the built-in window class only.
+  "allow-app-lifecycle-status",
 ]

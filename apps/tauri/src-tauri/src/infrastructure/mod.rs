@@ -1,3 +1,4 @@
+pub mod app_lifecycle;
 pub mod app_open;
 pub mod app_window;
 pub mod cli;
@@ -10,8 +11,10 @@ pub mod opencode_service;
 pub mod opencode_version;
 pub mod otlp;
 pub mod rtdb;
+pub mod single_instance;
 pub mod storage;
 pub mod telemetry;
+pub mod tray;
 pub mod voice;
 
 // Removed: k8s, llm, store — these have moved to their respective application modules.
