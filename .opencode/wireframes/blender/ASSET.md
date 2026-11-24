@@ -64,7 +64,7 @@ Never bake the body colour into the asset — it is a runtime choice
 - **Origin:** ground level, centred between the feet.
 - **Facing:** −Y in Blender → **+Z** after glTF Y-up conversion.
 - **Mesh:** one skinned mesh, quad-based, ~42 k triangles, 15 material slots.
-- **Skeleton:** 75 bones (12 body, 26 props, 37 doom wardrobe).
+- **Skeleton:** 77 bones (body joints, face shapes, props, wardrobe).
 - **Colour:** materials ship **neutral white**. Tint at runtime:
 
 ```js

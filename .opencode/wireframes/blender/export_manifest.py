@@ -5,9 +5,9 @@ import struct
 import sys
 import os
 
-BASE = "C:/Code/fredo/.opencode/wireframes/blender"
-GLB = f"{BASE}/fredo-character.glb"
-OUT = f"{BASE}/fredo-character.manifest.json"
+BASE = os.path.dirname(os.path.abspath(__file__))
+GLB = os.path.join(BASE, "fredo-character.glb")
+OUT = os.path.join(BASE, "fredo-character.manifest.json")
 
 NON_LOOPING = {"teleport-out", "teleport-in", "doom-in", "doom-out"}
 PROPS_BY_CLIP = {
@@ -54,10 +54,10 @@ for anim in sorted(gltf.get("animations", []), key=lambda a: a["name"]):
         "prop": PROPS_BY_CLIP.get(name, []),
     })
 
-bones = [n["name"] for n in nodes if n.get("name") in (
-    "root", "body", "head", "eye_l", "eye_r", "tie", "arm_l", "arm_r",
-    "leg_l", "leg_r", "foot_l", "foot_r")] + \
-        [n["name"] for n in nodes if str(n.get("name", "")).startswith("prop_")]
+# Every joint of the skin, not a hand-maintained subset: the skeleton is the
+# authority on how many bones the asset has, so this cannot drift again.
+joints = gltf.get("skins", [{}])[0].get("joints", [])
+bones = [nodes[i].get("name") for i in joints if i < len(nodes)]
 
 tris = 0
 for mesh in gltf["meshes"]:
@@ -73,8 +73,8 @@ manifest = {
     "bytes": os.path.getsize(GLB),
     "units": "metres",
     "height": 1.8,
-    "origin": "ground, between the feet, facing -Z after glTF Y-up conversion",
-    "forward": "+Z",
+    "origin": "ground, between the feet (the figure faces -Y in Blender)",
+    "forward": "+Z after glTF Y-up conversion (-Y in Blender)",
     "triangles": tris,
     "meshes": len(gltf["meshes"]),
     "skins": len(gltf.get("skins", [])),
