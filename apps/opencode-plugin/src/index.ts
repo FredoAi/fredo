@@ -24,6 +24,9 @@
  *   · registers every session from its FIRST observed event, because this host
  *     never delivers `session.created` on its `run` path (F-3),
  *   · runs ONE detached subscription loop with an `AbortController` cleanup,
+ *   · claims each session for this instance before dispatching, so a host that
+ *     evaluates this module once per connected client still emits ONE copy of
+ *     every span/log per logical event (ST-9, `util.ts` → `claimSession`),
  *   · hands every event to the typed handler for its type,
  *   · honours `FREDO_CAPTURE_EVENTS` (one JSON line `{type, event}` per event).
  *
@@ -41,6 +44,7 @@ import { ROOT_CONTEXT, type Span, type SpanContext } from "@opentelemetry/api";
 import pkg from "../package.json" with { type: "json" };
 import { loadConfig } from "./config";
 import { pluginLog } from "./log";
+import { claimSession } from "./util";
 import { probeEndpoint } from "./probe";
 import { setupOtel, createInstruments, forceFlushOtel, registerExitFlush } from "./otel";
 import { remoteParentContext } from "./trace-context";
@@ -90,6 +94,38 @@ const PLUGIN_VERSION: string = (pkg as { version?: string }).version ?? "unknown
 
 /** The plugin id registered with the V2 host. */
 export const PLUGIN_ID = "fredo";
+
+/**
+ * THIS module evaluation's plugin-instance identity (Spec #3197 round 3, ST-9).
+ *
+ * OpenCode V2 evaluates the plugin module once per connected client inside a
+ * shared `serve` host, so this value is re-created for every instance — that is
+ * precisely why it lives in module scope and the CLAIM MAP does not (it is
+ * anchored on `globalThis` via `Symbol.for("fredo.plugin.sessionOwner")`; see
+ * `util.ts` → `claimSession`).
+ */
+const INSTANCE_ID: string = crypto.randomUUID();
+
+/**
+ * The key an event's emission claim is taken on.
+ *
+ * `data.sessionID` is the natural key for every session-scoped event (and covers
+ * the whole dispatched surface); the envelope's `durable.aggregateID` is the
+ * fallback, and `id` the last resort, for an event whose `data` carries no
+ * session. Returns `undefined` only for an event with no usable identity — such
+ * an event is never claimed and always dispatched.
+ */
+function eventClaimKey(event: V2Event): string | undefined {
+  if ("data" in event) {
+    const sessionID = (event.data as { sessionID?: unknown }).sessionID;
+    if (typeof sessionID === "string" && sessionID.length > 0) return sessionID;
+  }
+  if ("durable" in event) {
+    const aggregateID = (event.durable as { aggregateID?: unknown } | undefined)?.aggregateID;
+    if (typeof aggregateID === "string" && aggregateID.length > 0) return aggregateID;
+  }
+  return event.id.length > 0 ? event.id : undefined;
+}
 
 /**
  * Spec #2768 ST-1 TEST SEAM — read ONCE at plugin init, default OFF.
@@ -157,10 +193,25 @@ function sessionSeedOf(event: V2Event): SessionSeed | undefined {
 }
 
 /**
- * Routes one V2 event: capture (when the lever is armed), bootstrap the session,
- * then dispatch to the typed handler for its type. Unhandled types are ignored
- * deliberately — the subscription is unfiltered, so the host may deliver events
- * this plugin has no opinion about.
+ * Routes one V2 event: claim the session (ST-9), capture (when the lever is
+ * armed), bootstrap the session, then dispatch to the typed handler for its type.
+ * Unhandled types are ignored deliberately — the subscription is unfiltered, so
+ * the host may deliver events this plugin has no opinion about.
+ *
+ * THE CLAIM COMES FIRST (Spec #3197 round 3, ST-9). In a shared host every client
+ * loads its own plugin instance and every instance subscribes to the same event
+ * stream, so without a claim N instances emit N copies of every span/log derived
+ * from one durable event (round 2: 5× — 55 spans / 15 traces for three turns).
+ * The first instance to observe a key owns it and emits; every other instance
+ * emits NOTHING for that key — not even a capture line or a diagnostic body. The
+ * claim is correct under both load topologies: broadcast (the owner wins every
+ * event) and partitioned (the claim is uncontended and behaviour is unchanged),
+ * and it is a no-op on the single-instance `--standalone` path by construction.
+ *
+ * `instanceId` is the instance-identity seam: production callers never pass it
+ * (it defaults to this module evaluation's `INSTANCE_ID`), while a test can drive
+ * two instances through the REAL dispatch path against the one shared
+ * `globalThis` registry.
  *
  * The bootstrap runs BEFORE dispatch so a session whose `session.created` never
  * arrives is registered (exactly once) by its first observed event; when the host
@@ -168,7 +219,20 @@ function sessionSeedOf(event: V2Event): SessionSeed | undefined {
  * `ensureSessionRegistered`, so the effect still happens exactly once and in the
  * same order as before.
  */
-export function handleV2Event(event: V2Event, ctx: HandlerContext): void {
+export function handleV2Event(
+  event: V2Event,
+  ctx: HandlerContext,
+  instanceId: string = INSTANCE_ID,
+): void {
+  const claimKey = eventClaimKey(event);
+  if (claimKey !== undefined && !claimSession(claimKey, instanceId)) {
+    pluginLog("debug", "duplicate plugin instance: session claimed elsewhere, skipping", {
+      sessionID: claimKey,
+      type: event.type,
+    });
+    return;
+  }
+
   const capturePath = process.env["FREDO_CAPTURE_EVENTS"];
   if (capturePath) captureEventTo(capturePath, event);
 
@@ -370,6 +434,11 @@ export const fredoPluginDefinition = Plugin.define({
     // intentionally NOT awaited, and every event/frame error is contained
     // (NFR-1) so a failing handler or a dropped transport cannot break the
     // session.
+    //
+    // The per-session emission claim (ST-9) is applied by `handleV2Event` itself
+    // — the ONE dispatch seam this loop calls — against this module evaluation's
+    // `INSTANCE_ID`, so a second plugin instance in the same process skips the
+    // session entirely and emits nothing.
     const controller = new AbortController();
 
     const runEventLoop = async () => {

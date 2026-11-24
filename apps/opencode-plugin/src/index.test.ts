@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { ROOT_CONTEXT, type Counter, type Histogram, type Tracer } from "@opentelemetry/api";
 import * as pluginModule from "./index";
 import { handleV2Event } from "./index";
+import { MAX_SESSION_CLAIMS, SESSION_OWNER_KEY, claimSession } from "./util";
 import { V2_EVENT_FIXTURES, fixtureOf } from "./fixtures/v2-events";
 import type { HandlerContext, V2Event, V2EventOf } from "./types";
 
@@ -497,5 +498,226 @@ describe("fixtures/v2-events model", () => {
 
   test("fixtureOf throws for an absent fixture — never a silent skip", () => {
     expect(() => fixtureOf("session.idle")).toThrow(/No V2 event fixture for "session\.idle"/);
+  });
+});
+
+// ── ST-9: ONE emitting plugin instance per session (round-3 duplication fix) ──
+//
+// Round 2 measured the defect: the shared `opencode serve --service` host loaded
+// `fredo.js` FIVE times in one run, and a three-turn session produced 55 spans /
+// 15 traces with `chat_rows=25`, because every instance subscribed to the whole
+// event stream and derived its own copy of every span. Round 2 made each instance
+// own its providers (F-1) — which is right — so the duplication can only be
+// stopped at the dispatch seam.
+//
+// These pins drive the REAL dispatch path (`handleV2Event`) TWICE against the one
+// `globalThis`-anchored claim registry, which is exactly the shape the host
+// produces: two module evaluations, one process. Every session id below is unique
+// to this block so no pin depends on another's claims (suite-order independent).
+
+const CLAIM_DUP_SESSION = "ses_claim_dup_3197";
+const CLAIM_OTHER_SESSION = "ses_claim_other_3197";
+const CLAIM_PAIR_SESSION = "ses_claim_pair_3197";
+const CLAIM_CAPTURE_SESSION = "ses_claim_capture_3197";
+
+function claimInputStarted(
+  sessionID: string,
+  callID: string,
+): V2EventOf<"session.tool.input.started"> {
+  return {
+    id: `evt-claim-input-${sessionID}-${callID}`,
+    created: 500,
+    type: "session.tool.input.started",
+    durable,
+    data: { sessionID, assistantMessageID: `msg-${callID}`, id: callID, name: "read" },
+  };
+}
+
+function claimToolCalled(sessionID: string, callID: string): V2EventOf<"session.tool.called"> {
+  return {
+    id: `evt-claim-called-${sessionID}-${callID}`,
+    created: 510,
+    type: "session.tool.called",
+    durable,
+    data: {
+      sessionID,
+      assistantMessageID: `msg-${callID}`,
+      id: callID,
+      input: { path: "a.ts" },
+      executed: true,
+    },
+  };
+}
+
+function claimToolSuccess(sessionID: string, callID: string): V2EventOf<"session.tool.success"> {
+  return {
+    id: `evt-claim-success-${sessionID}-${callID}`,
+    created: 520,
+    type: "session.tool.success",
+    durable: durableV2,
+    data: {
+      sessionID,
+      assistantMessageID: `msg-${callID}`,
+      id: callID,
+      content: [{ type: "text", text: "ok" }],
+      executed: true,
+    },
+  };
+}
+
+/** One logical tool call — start, call, terminal — for `sessionID`. */
+function claimSessionEvents(sessionID: string, callID: string): V2Event[] {
+  return [
+    claimInputStarted(sessionID, callID),
+    claimToolCalled(sessionID, callID),
+    claimToolSuccess(sessionID, callID),
+  ];
+}
+
+/** How many spans this recording context saw opened. */
+function spansStarted(calls: readonly string[]): number {
+  return calls.filter((call) => call === "tracer.startSpan").length;
+}
+
+describe("per-session emission claim (ST-9)", () => {
+  test("the FIRST instance to observe a session emits; a second sharing the process emits NOTHING", () => {
+    const first = recordingContext();
+    const second = recordingContext();
+
+    for (const event of claimSessionEvents(CLAIM_DUP_SESSION, "call-dup")) {
+      handleV2Event(event, first.ctx, "instance-A");
+    }
+    for (const event of claimSessionEvents(CLAIM_DUP_SESSION, "call-dup")) {
+      handleV2Event(event, second.ctx, "instance-B");
+    }
+
+    // A: exactly ONE span for the one logical tool call, closed, with its bodies.
+    expect(spansStarted(first.calls)).toBe(1);
+    expect(first.calls.filter((call) => call === "span.end")).toHaveLength(1);
+    expect(first.calls).toContain("emitLog");
+    // B: NO handler ran at all — no span, no log, no metric, not even a diagnostic.
+    // (Round 2: this was a second full copy of every span.)
+    expect(second.calls).toEqual([]);
+  });
+
+  test("non-vacuity: a DIFFERENT session first observed by the second instance IS emitted by it", () => {
+    const second = recordingContext();
+
+    for (const event of claimSessionEvents(CLAIM_OTHER_SESSION, "call-other")) {
+      handleV2Event(event, second.ctx, "instance-B");
+    }
+
+    // The guard suppresses DUPLICATES, not clients: an unclaimed session is the
+    // second instance's to emit.
+    expect(spansStarted(second.calls)).toBe(1);
+    expect(second.calls).toContain("span.end");
+    expect(second.calls).toContain("emitLog");
+  });
+
+  test("a session's start/end PAIRING stays on one instance (the span closes, never an orphan)", () => {
+    const first = recordingContext();
+    const second = recordingContext();
+
+    for (const event of claimSessionEvents(CLAIM_PAIR_SESSION, "call-pair")) {
+      handleV2Event(event, first.ctx, "instance-A");
+      // The same durable event broadcast to the second instance must not touch
+      // the pair — a copy would open its own span and could never close it.
+      handleV2Event(event, second.ctx, "instance-B");
+    }
+
+    expect(spansStarted(first.calls)).toBe(1);
+    expect(first.calls.filter((call) => call === "span.end")).toHaveLength(1);
+    expect(second.calls).toEqual([]);
+  });
+
+  test("a non-owner instance writes no capture line either — it is fully inert", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fredo-claim-capture-"));
+    const target = join(dir, "events.jsonl");
+    const originalCapture = process.env["FREDO_CAPTURE_EVENTS"];
+    process.env["FREDO_CAPTURE_EVENTS"] = target;
+    try {
+      const first = recordingContext();
+      const second = recordingContext();
+      for (const event of claimSessionEvents(CLAIM_CAPTURE_SESSION, "call-capture")) {
+        handleV2Event(event, first.ctx, "instance-A");
+      }
+      for (const event of claimSessionEvents(CLAIM_CAPTURE_SESSION, "call-capture")) {
+        handleV2Event(event, second.ctx, "instance-B");
+      }
+
+      const lines = readFileSync(target, "utf8").trimEnd().split("\n");
+      // Three events, three lines — NOT six. Round 2's shape would be 5N lines.
+      expect(lines).toHaveLength(3);
+      for (const line of lines) {
+        const parsed = JSON.parse(line) as { event: { data?: { sessionID?: string } } };
+        expect(parsed.event.data?.sessionID).toBe(CLAIM_CAPTURE_SESSION);
+      }
+    } finally {
+      if (originalCapture === undefined) delete process.env["FREDO_CAPTURE_EVENTS"];
+      else process.env["FREDO_CAPTURE_EVENTS"] = originalCapture;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("claim registry: bounded, globalThis-anchored (NFR-5)", () => {
+  test("the anchor is `Symbol.for(\"fredo.plugin.sessionOwner\")` on globalThis, not module scope", () => {
+    // Module scope is re-evaluated per client — which is WHY five instances
+    // existed. The registry must therefore live on the process-wide global.
+    expect(SESSION_OWNER_KEY).toBe(Symbol.for("fredo.plugin.sessionOwner"));
+
+    const probe = "ses_claim_anchor_3197";
+    expect(claimSession(probe, "instance-A")).toBe(true);
+
+    const holder = globalThis as unknown as Record<
+      symbol,
+      { owners: Map<string, string> } | undefined
+    >;
+    const registry = holder[SESSION_OWNER_KEY]?.owners;
+    expect(registry).toBeInstanceOf(Map);
+    expect(registry?.get(probe)).toBe("instance-A");
+    // A second instance reading the SAME anchor sees the first one's claim.
+    expect(claimSession(probe, "instance-B")).toBe(false);
+    expect(claimSession(probe, "instance-A")).toBe(true);
+  });
+
+  test("oldest-first eviction, LRU refresh, and an evicted key is re-claimable", () => {
+    const registry = new Map<string, string>();
+
+    for (let i = 0; i < 5; i += 1) expect(claimSession(`key-${i}`, "instance-A", registry, 3)).toBe(true);
+    expect(registry.size).toBe(3);
+    expect(registry.has("key-0")).toBe(false);
+    expect(registry.has("key-1")).toBe(false);
+    expect(registry.has("key-4")).toBe(true);
+
+    // An evicted session is re-claimable by whoever observes it next.
+    expect(claimSession("key-0", "instance-B", registry, 3)).toBe(true);
+
+    // A still-active session refreshes its recency, so it is not the first out.
+    const lru = new Map<string, string>();
+    claimSession("active", "instance-A", lru, 2);
+    claimSession("idle", "instance-A", lru, 2);
+    claimSession("active", "instance-A", lru, 2); // refresh
+    claimSession("fresh", "instance-A", lru, 2); // evicts "idle", not "active"
+    expect(lru.has("active")).toBe(true);
+    expect(lru.has("idle")).toBe(false);
+    expect(lru.size).toBe(2);
+
+    // A foreign instance never takes an existing claim.
+    expect(claimSession("active", "instance-B", lru, 2)).toBe(false);
+    expect(lru.get("active")).toBe("instance-A");
+  });
+
+  test("the DEFAULT cap is MAX_SESSION_CLAIMS — a long-lived host cannot grow it without bound", () => {
+    expect(MAX_SESSION_CLAIMS).toBe(10_000);
+
+    const registry = new Map<string, string>();
+    for (let i = 0; i < MAX_SESSION_CLAIMS; i += 1) claimSession(`s-${i}`, "instance-A", registry);
+    expect(registry.size).toBe(MAX_SESSION_CLAIMS);
+
+    claimSession("s-overflow", "instance-A", registry);
+    expect(registry.size).toBe(MAX_SESSION_CLAIMS);
+    expect(registry.has("s-0")).toBe(false);
+    expect(registry.has("s-overflow")).toBe(true);
   });
 });

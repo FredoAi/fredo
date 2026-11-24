@@ -32,13 +32,22 @@
  *   resolve without guessing a key. The match itself stays the FROZEN V1 rule
  *   (`GIT_COMMIT_RE`, copied verbatim).
  *
- * STILL UNVERIFIED (declared, not papered over): the exact field carrying the
- * command inside `data.input` is the plan's Phase-0 item, and the shell tool's
- * NAME in V2 is only corroborated in-repo (`bash` — the permission/tool-key
- * vocabulary at `research/02-vendor-docs-agent-files.md:130` and the V1
- * handler's own `name !== "bash"` guard). The tester's `FREDO_CAPTURE_EVENTS`
- * JSONL from a real `git commit` session corroborates both; a name that differs
- * would be a one-constant correction here, never a silent guess.
+ * THE TOOL NAME — RESOLVED LIVE (Spec #3197 round 3, R-3.3). The V2 port gated
+ * on the single V1 literal `bash` (taken from the permission/tool-key vocabulary
+ * at `research/02-vendor-docs-agent-files.md:130` and the V1 handler's own
+ * `name !== "bash"` guard), and round-2's live run proved that wrong for this
+ * host: the commit call emitted a `fredo.tool.shell` span with
+ * `gen_ai.tool.name=shell`, whose input carried
+ * `{"command":"git add …; git commit -m \"…\""}` — text the frozen rule below
+ * matches. The detector was therefore gated out by the NAME, not by the
+ * extractor, and no `commit` body was ever emitted. `SHELL_TOOL_NAMES` is the
+ * complete accepted set: OpenCode 2 on this host exposes `shell`, `bash` is
+ * retained for hosts that expose the V1-era name, and **an unknown name still
+ * never matches** (exact-name membership — no substring, no case folding).
+ *
+ * The field carrying the command inside `data.input` is resolved the same way:
+ * the round-2 payload carries `command`, and the field-agnostic walk below
+ * (`extractCommandText`) reads it without binding a key.
  */
 
 import { SeverityNumber } from "@opentelemetry/api-logs";
@@ -50,12 +59,15 @@ import type { HandlerContext } from "../types";
 export const GIT_COMMIT_RE = /\bgit\s+commit(?![-\w])/;
 
 /**
- * The V2 shell tool's name. The permission/tool-key vocabulary lists `bash`
- * (`research/02-vendor-docs-agent-files.md:130`) and the V1 handler gated on the
- * same name (`handlers/activity.ts:23` on `main`) — see the file header for the
- * corroboration this still owes the tester's capture.
+ * The accepted shell-tool names — an EXACT-name set, never a prefix/substring or
+ * case-insensitive match.
+ *
+ * `shell` is what OpenCode 2 exposes on this host (round-2 span
+ * `fredo.tool.shell`, `gen_ai.tool.name=shell`); `bash` is the V1-era name,
+ * retained for compatibility with a host that still exposes it. Both are the
+ * complete set — see the file header.
  */
-const SHELL_TOOL_NAME = "bash";
+const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(["shell", "bash"]);
 
 /** Depth-first walk collecting the non-empty string leaves of an arbitrary value. */
 function collectStrings(value: unknown, out: string[]): void {
@@ -89,8 +101,9 @@ export function extractCommandText(input: unknown): string {
 /**
  * Emits the `commit` log record when a shell-tool call carries a `git commit`.
  *
- * A non-shell tool never matches (the name is checked first — a `read` of a file
- * whose name mentions a commit is not a commit), and an unmatched command emits
+ * A non-shell tool never matches (the exact name is checked first — a `read` of
+ * a file whose name mentions a commit is not a commit, and neither is a tool
+ * whose name merely CONTAINS a shell name), and an unmatched command emits
  * nothing at all.
  */
 export function handleToolCommandForCommit(
@@ -99,7 +112,7 @@ export function handleToolCommandForCommit(
   sessionID: string,
   ctx: HandlerContext,
 ): void {
-  if (toolName !== SHELL_TOOL_NAME) return;
+  if (!SHELL_TOOL_NAMES.has(toolName)) return;
   if (!commandText) return;
   if (!GIT_COMMIT_RE.test(commandText)) {
     ctx.log("debug", "otel: shell command is not a commit", { sessionID });

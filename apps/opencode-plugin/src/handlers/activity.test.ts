@@ -5,6 +5,10 @@
  * lifecycle. Pins:
  *   · a shell-tool call whose input carries `git commit` emits EXACTLY ONE
  *     `commit` log record (`event.name=commit`, `session.id`, agent attrs);
+ *   · **both** accepted shell names (`shell` — this host's V2 name — and `bash`)
+ *     emit an IDENTICAL record; the round-3 R-3.3 fix is exactly this set;
+ *   · the name match is EXACT: `Shell`/`BASH` (case) and `shell_exec`/`myshell`
+ *     (containment) do NOT match — no case folding, no substring widening;
  *   · a non-commit shell command emits none;
  *   · a NON-shell tool never matches, even when its input mentions a git commit;
  *   · the signal is a LOG record only — no span, no metric (there is no
@@ -205,11 +209,38 @@ describe("handleToolCommandForCommit", () => {
     expect(h.spans).toHaveLength(0);
   });
 
+  test("`shell` — this host's V2 shell tool name — emits the SAME record as `bash`", () => {
+    // Round-2 root cause (R-3.3): the detector gated on the single V1 literal
+    // `bash`, so the host's real `shell` call never reached the regex. Both
+    // accepted names must produce a byte-identical record.
+    const records = (["shell", "bash"] as const).map((name) => {
+      const h = harness();
+      withSession(h.ctx);
+      handleToolCommandForCommit(name, 'git add AC3C.txt; git commit -m "ac3197-commit"', SESSION, h.ctx);
+      expect(h.spans).toHaveLength(0);
+      const emitted = commitLogs(h.logs);
+      expect(emitted).toHaveLength(1);
+      return emitted[0]!;
+    });
+
+    const [shell, bash] = records as [LogRecord, LogRecord];
+    expect(shell.body).toBe(LOG_COMMIT);
+    expect(shell.severityText).toBe("INFO");
+    expect(Object.keys(shell.attributes ?? {}).sort()).toEqual(
+      ["event.name", ATTR_SESSION_ID, "agent", "agent.name", "agent.type"].sort(),
+    );
+    expect(shell.attributes).toEqual(bash.attributes!);
+    expect(shell.body).toEqual(bash.body);
+    expect(shell.severityText).toEqual(bash.severityText);
+  });
+
   test("a non-commit shell command emits none", () => {
     const h = harness();
     withSession(h.ctx);
     handleToolCommandForCommit("bash", "npm test", SESSION, h.ctx);
     handleToolCommandForCommit("bash", "git status", SESSION, h.ctx);
+    handleToolCommandForCommit("shell", "npm test", SESSION, h.ctx);
+    handleToolCommandForCommit("shell", "git commit-tree abc123", SESSION, h.ctx);
     expect(commitLogs(h.logs)).toHaveLength(0);
     expect(h.spans).toHaveLength(0);
   });
@@ -220,6 +251,24 @@ describe("handleToolCommandForCommit", () => {
     handleToolCommandForCommit("read", "git commit -m done", SESSION, h.ctx);
     handleToolCommandForCommit("edit", "git commit", SESSION, h.ctx);
     expect(commitLogs(h.logs)).toHaveLength(0);
+  });
+
+  test("the name match is EXACT — no case folding, no substring containment", () => {
+    const h = harness();
+    withSession(h.ctx);
+
+    // Case differs only: an exact-name set is not case-insensitive.
+    handleToolCommandForCommit("Shell", "git commit -m done", SESSION, h.ctx);
+    handleToolCommandForCommit("BASH", "git commit -m done", SESSION, h.ctx);
+    // Contains an accepted name but is not it.
+    handleToolCommandForCommit("shell_exec", "git commit -m done", SESSION, h.ctx);
+    handleToolCommandForCommit("myshell", "git commit -m done", SESSION, h.ctx);
+    handleToolCommandForCommit("bash-2", "git commit -m done", SESSION, h.ctx);
+
+    expect(commitLogs(h.logs)).toHaveLength(0);
+    // Non-vacuity: the same command DOES emit under an accepted exact name.
+    handleToolCommandForCommit("shell", "git commit -m done", SESSION, h.ctx);
+    expect(commitLogs(h.logs)).toHaveLength(1);
   });
 });
 
@@ -239,6 +288,31 @@ describe("session.tool.called wiring", () => {
     expect(h.spans.map((s) => s.name)).toEqual(["fredo.tool.bash"]);
   });
 
+  test("the host's `shell` name reaches the detector through the real call site (R-3.3)", () => {
+    // The round-2 live shape: `session.tool.input.started` names the tool
+    // `shell`, the span is `fredo.tool.shell` with `gen_ai.tool.name=shell`, and
+    // `.called` carries `{"command":"git add …; git commit -m \"…\""}`.
+    const h = harness();
+    withSession(h.ctx);
+
+    handleToolInputStarted(inputStarted("shell"), h.ctx);
+    handleToolCalled(
+      toolCalled({
+        command: 'git add AC3C-MARK-r2.txt; git commit -m "ac3197-commit AC3C-MARK-r2"; git rev-parse HEAD',
+        workdir: "C:\\repo",
+      }),
+      h.ctx,
+    );
+
+    const records = commitLogs(h.logs);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.attributes?.["event.name"]).toBe(LOG_COMMIT);
+    expect(records[0]!.attributes?.[ATTR_SESSION_ID]).toBe(SESSION);
+    // Exactly the tool span, named from the same `tool` value — no `commit` span.
+    expect(h.spans.map((s) => s.name)).toEqual(["fredo.tool.shell"]);
+    expect(h.spans[0]!.attributes?.[ATTR_SESSION_ID]).toBe(SESSION);
+  });
+
   test("a non-commit shell call and a non-shell call emit none through the call site", () => {
     const h = harness();
     withSession(h.ctx);
@@ -249,7 +323,14 @@ describe("session.tool.called wiring", () => {
     handleToolInputStarted(withCallID(inputStarted("read"), "call-2"), h.ctx);
     handleToolCalled(withCallID(toolCalled({ path: "git commit.txt" }), "call-2"), h.ctx);
 
+    handleToolInputStarted(withCallID(inputStarted("shell"), "call-3"), h.ctx);
+    handleToolCalled(withCallID(toolCalled({ command: "git log --oneline -5" }), "call-3"), h.ctx);
+
     expect(commitLogs(h.logs)).toHaveLength(0);
-    expect(h.spans.map((s) => s.name)).toEqual(["fredo.tool.bash", "fredo.tool.read"]);
+    expect(h.spans.map((s) => s.name)).toEqual([
+      "fredo.tool.bash",
+      "fredo.tool.read",
+      "fredo.tool.shell",
+    ]);
   });
 });
