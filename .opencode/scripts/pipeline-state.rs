@@ -4964,11 +4964,21 @@ fn verification_status(issue: u32) -> (bool, bool, String, bool, bool, String) {
     (has_evidence, verdict_pass, policy, live_evidence, ok, reason)
 }
 
-/// A1: parse the plan's canonical `- **Effort:** N story points` line from text
-/// (the A2A plan draft) for the planning size cap. Tolerates the bold marker
-/// anywhere on the line and a trailing parenthetical.
+/// A1: parse the plan's `- **Effort:** N story points` line from text (the A2A
+/// plan draft) for the planning size cap. Tolerates the bold marker anywhere on
+/// the line and a trailing parenthetical.
+///
+/// SCOPE PRECEDENCE (shared with `regex_lite_find`; documented, not accidental): a
+/// plan legitimately carries MORE THAN ONE effort line — the Architect's
+/// decomposition ends with a per-TASK estimate and `## Staffing Plan` carries the
+/// spec TOTAL, in the same `- **Effort:** N story points` shape. The plan's size is
+/// the Staffing Plan total, so when that section exists only its lines are read;
+/// the whole-text scan is the fallback for a plan with no Staffing Plan section
+/// (#3193: first-match read the Architect's 6 for a 15-point plan).
 fn parse_effort_points(text: &str) -> Option<u32> {
-    for line in text.lines() {
+    let staffing = staffing_plan_section(text);
+    let scope = staffing.as_deref().unwrap_or(text);
+    for line in scope.lines() {
         let t = line.trim();
         let Some(pos) = t.find("**Effort:**").or_else(|| t.find("Effort:")) else { continue };
         let rest = &t[pos..];
@@ -8237,6 +8247,9 @@ fn last_root_cause(issue: u32) -> Option<String> {
 /// `- **Effort:** N story points (...)`. Recorded as an `audit.verdict` attribute
 /// so rounds/rework can be NORMALIZED BY SIZE in trend analysis (the #2756-audit
 /// confounder: big specs burn more rounds regardless of pipeline quality).
+/// The Staffing Plan section is authoritative — the Architect section carries a
+/// per-task estimate in the same shape (#3193 recorded 6 for a 15-point plan);
+/// see `regex_lite_find`'s precedence note.
 /// Best-effort: None when no plan/effort line exists.
 fn parse_story_points(issue: u32) -> Option<u32> {
     let json = run_gh(&["issue", "view", &issue.to_string(), "--comments", "--json", "comments"]).ok()?;
@@ -8283,18 +8296,43 @@ fn parse_root_cause_class(body: &str) -> Option<&'static str> {
     None
 }
 
-/// Tiny capture helper for the plan's Effort line (avoids pulling a regex crate
-/// dependency into rust-script for one call site). Prefers the CANONICAL
-/// `- **Effort:** N story points` line (marker immediately followed by the digit
-/// run and then `story point(s)`), then falls back to the first `**Effort:**`
-/// digit run for backward compatibility. The canonical-first preference is
-/// load-bearing: the Architect's decomposition also writes
-/// `**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**`, and the old
-/// first-marker behavior captured `1` from `ST-1` (observed #2870: an 11-point
-/// spec was recorded as 1, corrupting size normalization).
-fn regex_lite_find(haystack: &str) -> Option<String> {
+/// The plan's `## Staffing Plan` section body: everything under that heading until
+/// the next LEVEL-2 heading (`## ` — an `###` sub-heading stays inside it). `None`
+/// when the plan carries no such heading (the section is optional in prose but
+/// required by the planning exit guard, so a plan normally has one). The heading
+/// match is prefix-tolerant (`## Staffing Plan (3 developers)` counts) and
+/// case-insensitive.
+///
+/// This is the documented home of the spec's TOTAL effort, and the scope both
+/// effort parsers prefer — see `regex_lite_find`'s precedence note.
+fn staffing_plan_section(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut capture = false;
+    let mut found = false;
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with("## ") {
+            if !found && t[3..].trim().to_lowercase().starts_with("staffing plan") {
+                found = true;
+                capture = true;
+                continue;
+            }
+            if capture {
+                break;
+            }
+        } else if capture {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if found { Some(out) } else { None }
+}
+
+/// The CANONICAL `- **Effort:** N story points` line inside `scope`: the marker
+/// must be immediately followed by the digit run and then `story point(s)`.
+fn canonical_effort_line(scope: &str) -> Option<String> {
     const CANONICAL: &str = "**effort:**";
-    for line in haystack.lines() {
+    for line in scope.lines() {
         let lower = line.to_lowercase();
         let pos = match lower.find(CANONICAL) {
             Some(p) => p,
@@ -8307,12 +8345,40 @@ fn regex_lite_find(haystack: &str) -> Option<String> {
             return Some(digits);
         }
     }
-    // Fallback: the original first-marker digit run.
+    None
+}
+
+/// The original loose capture inside `scope`: the first `**Effort:**` marker's
+/// digit run, whether or not the canonical `N story points` tail follows.
+fn first_effort_line(scope: &str) -> Option<String> {
     let marker = "**Effort:**";
-    let idx = haystack.find(marker)?;
-    let rest = &haystack[idx + marker.len()..];
+    let idx = scope.find(marker)?;
+    let rest = &scope[idx + marker.len()..];
     let digits: String = rest.chars().skip_while(|c| !c.is_ascii_digit()).take_while(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() { None } else { Some(digits) }
+}
+
+/// Tiny capture helper for the posted plan's Effort line (avoids pulling a regex
+/// crate dependency into rust-script for one call site).
+///
+/// PRECEDENCE (documented, not accidental): the `## Staffing Plan` section is the
+/// ONLY place the spec's TOTAL lives — the Architect's decomposition carries a
+/// per-TASK estimate in the very same `- **Effort:** N story points` shape (#3193:
+/// a 15-point plan's Architect section also read `- **Effort:** 6 story points`, so
+/// a first-match scan recorded 6 and every multi-task plan silently recorded a task
+/// estimate instead of the spec total). Therefore: when the plan HAS a Staffing
+/// Plan section, ONLY that section is scanned; the whole-plan scan is the fallback
+/// for a plan with no such section — the previous first-match behaviour.
+///
+/// WITHIN a scope the CANONICAL form wins over a loose marker: the Architect also
+/// writes `**Effort:** ST-1 3 + ST-2 5 + ST-3 3 = **11 story points**`, and the old
+/// first-marker behaviour captured `1` from `ST-1` (observed #2870: an 11-point spec
+/// was recorded as 1). A miss returns None — the caller only skips the trend
+/// attribute.
+fn regex_lite_find(haystack: &str) -> Option<String> {
+    let staffing = staffing_plan_section(haystack);
+    let scope = staffing.as_deref().unwrap_or(haystack);
+    canonical_effort_line(scope).or_else(|| first_effort_line(scope))
 }
 
 /// Allocate the next free `### G-NNN` guardrail id by scanning the existing
