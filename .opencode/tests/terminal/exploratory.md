@@ -307,3 +307,25 @@ is wrong.
       `TERMINAL_PASSTHROUGH_TESTID`, `hotkeys-terminal-passthrough`, `subscribePassthrough`) under
       `apps/ui`, `apps/tauri`, and `docs` (e.g. a stale doc/comment naming the chip). A dangling
       reference promotes to F-84 / the QA Plan's Q-3 grep row.
+
+## #3198 probes — capture point + isolation
+
+> Seeded at triage for Spec #3198. Unscripted probes beyond F-89..F-96. A confirmed finding
+> PROMOTES to `functional.md` (keep the origin note).
+
+- [ ] E-44: **Stale ambient endpoint.** Set `-EnvVar "OPENCODE_OTLP_ENDPOINT=http://localhost:4399"`
+      (nothing listens) on the DEFAULT-path instance and run a session. Where do the spans land —
+      the app's own receiver (the plugin ignored/corrected the stale value) or nowhere (the
+      session silently lost capture)? A lost capture on a default-path machine is a finding
+      (feeds F-90 and the studio/user-facing risk).
+- [ ] E-45: **User-level variables from an older setup.** With User-level
+      `OPENCODE_ENABLE_TELEMETRY=1` + `OPENCODE_OTLP_ENDPOINT` still set (the pre-#3198 world),
+      install on OpenCode 2 and run a session. Does capture work, and does setup stay green
+      without rewriting them? A setup that refuses, or a session that loses capture, promotes to
+      F-16/F-17 (the PO's "must not be worse off" constraint).
+- [ ] E-46: **`--standalone` reality check.** Run `opencode --version` and `opencode --help`
+      (granted) and search the help text for `standalone`; then run
+      `opencode --standalone --version` and record the exit code + output.
+      EXPECTED: the record states, literally, whether OpenCode 2.x accepts the flag. An argv the
+      runtime rejects must never be presented as a working isolation mechanism (feeds F-93's
+      inert disposition).
