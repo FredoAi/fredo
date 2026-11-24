@@ -4762,6 +4762,164 @@ Test-Script "maint-pr recovers an open maint/<N> PR onto origin/main and merges"
   }
 }
 
+# --- #3192: the live deadlock — a merge that LANDED but was never recorded ---
+# `gh pr merge --delete-branch` merged remotely, then failed on its LOCAL post-merge
+# checkout (an EOL-only artefact), so `maint-pr` errored while the PR was MERGED.
+# Re-running printed NO-OP and recorded NOTHING, so the success gate could never be
+# satisfied and `done` was unreachable. The action now reconciles: nothing left to
+# commit + a MERGED `maint/<N>` PR records the event and unblocks cleanup.
+Test-Script "maint-pr reconciles an already-merged maint PR and unblocks cleanup" {
+  $url = Mock-IssueCreate "temp: maint reconcile" "maint reconcile scratch" "audit"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $refs = "docs/agentic-pipeline/playbooks/references.md"
+  $refsBackup = Join-Path $env:TEMP ("refs-" + [Guid]::NewGuid().ToString("N") + ".md")
+  $prDir = Join-Path $env:FREDO_MOCK_STORE "prs"
+  $prN = 9000 + $issueNum
+  try {
+    $draftDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$draftDir/tests-runs.md", "Verdict: PASS`nSELECT ... FROM telemetry_spans ... rows=1`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --issue $issueNum --agent tester --action post-comments 2>&1 | Out-Null
+    & rust-script $ps --issue $issueNum --agent auditor --action audit-record --verdict success --reason "ok" 2>&1 | Out-Null
+    Copy-Item -LiteralPath $refs -Destination $refsBackup -Force
+    & rust-script $ps --issue $issueNum --agent curator --action record-improvement --reason "harness: reconcile lesson" 2>&1 | Out-Null
+    # The merge LANDED but no event was recorded: a MERGED maint/<N> PR exists in the
+    # store and the working tree is CLEAN (nothing left to commit).
+    New-Item -ItemType Directory -Path $prDir -Force | Out-Null
+    $pr = @{ number = $prN; head = "maint/$issueNum"; base = "main"; title = "Spec #$issueNum`: maintenance sync"; body = ""; state = "MERGED"; mergeStateStatus = "CLEAN"; headRefOid = "mock-sha" } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $prDir "$prN.json"), $pr, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "reconciliation should succeed: $outStr" }
+    if ($outStr -match "NO-OP") { throw "a merged maint PR must never reconcile to a NO-OP: $outStr" }
+    if ($outStr -notmatch "ALREADY MERGED") { throw "expected the merged-PR line, got: $outStr" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" } | Select-Object -Last 1
+    if (-not $ev) { throw "reconciliation recorded no maint-pr event" }
+    if ($ev.attributes.merged -ne "true") { throw "reconciled event must carry merged:true, got '$($ev.attributes.merged)'" }
+    if ($ev.attributes.reconciled -ne "true") { throw "reconciled event must carry reconciled:true" }
+    if ("$($ev.attributes.pr)" -ne "$prN") { throw "event pr wrong: $($ev.attributes.pr) vs $prN" }
+    if ($ev.attributes.branch -ne "maint/$issueNum") { throw "event branch wrong: $($ev.attributes.branch)" }
+    if ($ev.attributes.url -notmatch "/pull/$prN") { throw "event url wrong: $($ev.attributes.url)" }
+    # The gate is now satisfied: cleanup is reachable.
+    $pout = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $poutStr = if ($pout -is [array]) { $pout -join "`n" } else { "$pout" }
+    if ($poutStr -notmatch "TRANSITIONED: post-audit -> cleanup") { throw "reconciled event did not unblock cleanup: $poutStr" }
+    return "maint-pr reconciliation: merged-but-unrecorded PR records the event and unblocks cleanup (#$issueNum)"
+  } finally {
+    Remove-Item $prDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($refsBackup -and (Test-Path -LiteralPath $refsBackup)) { Copy-Item -LiteralPath $refsBackup -Destination $refs -Force; Remove-Item -LiteralPath $refsBackup -Force -ErrorAction SilentlyContinue }
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# A NO-OP is NOT an outcome: with nothing to commit and no merged maint PR, the
+# action must record nothing at all (recording a `maint-pr` event would claim a
+# maintenance sync that never happened).
+Test-Script "maint-pr NO-OP with no merged PR records no event" {
+  $url = Mock-IssueCreate "temp: maint noop" "maint noop scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "a NO-OP must not be fatal: $outStr" }
+    if ($outStr -notmatch "NO-OP: no post-audit changes") { throw "expected NO-OP, got: $outStr" }
+    if ($outStr -notmatch "NOT satisfied") { throw "the NO-OP must say the gate is unsatisfied, got: $outStr" }
+    $evCount = @(Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" }).Count
+    if ($evCount -ne 0) { throw "a NO-OP must record no maint-pr event, found $evCount" }
+    return "maint-pr NO-OP records nothing (#$issueNum)"
+  } finally {
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3192 part 3: the checkout-cleanliness rule. A path whose `git diff --numstat` is
+# empty AND whose `--ignore-cr-at-eol` patch is empty carries NO content change — it
+# can never be overwritten meaningfully, so it must not refuse (the live blocker was
+# an EOL-only `apps/tauri/src-tauri/Cargo.toml`). A path with REAL content changes
+# still refuses, and is named.
+Test-Script "maint-pr exempts EOL-only paths and names a real content-dirty path" {
+  $url = Mock-IssueCreate "temp: maint eol" "maint eol scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $headDiverged = Join-Path $env:FREDO_MOCK_STORE "head-diverged"
+  $dirtyContent = Join-Path $env:FREDO_MOCK_STORE "dirty-content"
+  $dirtyEol = Join-Path $env:FREDO_MOCK_STORE "dirty-eol-only"
+  $target = "apps/tauri/src-tauri/Cargo.toml"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    [System.IO.File]::WriteAllText($headDiverged, $target, [System.Text.UTF8Encoding]::new($false))
+    # Real content change → REFUSED, and the path is named.
+    [System.IO.File]::WriteAllText($dirtyContent, $target, [System.Text.UTF8Encoding]::new($false))
+    $bad = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($LASTEXITCODE -eq 0) { throw "a content-dirty path must refuse, got: $badStr" }
+    if ($badStr -notmatch "would overwrite uncommitted changes") { throw "expected the checkout-cleanliness refusal, got: $badStr" }
+    if ($badStr -notmatch "Cargo\.toml") { throw "the refusal must NAME the path, got: $badStr" }
+    if ($badStr -notmatch "REAL content changes") { throw "the refusal must state the rule, got: $badStr" }
+    $merged = @(Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" }).Count
+    if ($merged -ne 0) { throw "a refused run must record no merged event" }
+    $global:LASTEXITCODE = 0
+    # The SAME path modelled as EOL-only → NOT refused; the action completes + merges.
+    Remove-Item -LiteralPath $dirtyContent -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($dirtyEol, $target, [System.Text.UTF8Encoding]::new($false))
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "an EOL-only path must not refuse: $okStr" }
+    if ($okStr -notmatch "EOL-only artefact") { throw "expected the EOL-only exemption note, got: $okStr" }
+    if ($okStr -notmatch "SPEC MAINT PR MERGED") { throw "expected the merge to complete, got: $okStr" }
+    return "maint-pr: real content-dirty path refused + named; EOL-only path exempt and merged (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $headDiverged -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dirtyContent -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dirtyEol -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3192 part 2: fail-closed correctness at the merge step. The merge command's exit
+# status is not the verdict — the PR's STATE is. The exact live shape (the remote
+# merge landed, the command still failed on its local post-merge checkout) must
+# record SUCCESS with `merge_cmd_error: true`; a PR that is not MERGED still errors
+# (covered by the timeout/closed legs in the first maint-pr test).
+Test-Script "maint-pr records success when the merge command errors but the PR is MERGED" {
+  $url = Mock-IssueCreate "temp: maint merge-error" "maint merge-error scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $cmdErr = Join-Path $env:FREDO_MOCK_STORE "maint-merge-command-error"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    New-Item -ItemType File -Path $cmdErr -Force | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "a MERGED PR must not fail the gate on a local checkout error: $outStr" }
+    if ($outStr -notmatch "reported an error but the PR is MERGED") { throw "expected the merge-command-error note, got: $outStr" }
+    if ($outStr -notmatch "SPEC MAINT PR MERGED") { throw "expected SPEC MAINT PR MERGED, got: $outStr" }
+    $prN = [regex]::Match($outStr, "/pull/(\d+)").Groups[1].Value
+    if (-not $prN) { throw "no PR number parsed: $outStr" }
+    $prObj = Get-Content (Join-Path $env:FREDO_MOCK_STORE "prs\$prN.json") -Raw | ConvertFrom-Json
+    if ($prObj.state -ne "MERGED") { throw "PR should be MERGED, got $($prObj.state)" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" } | Select-Object -Last 1
+    if (-not $ev) { throw "no merged maint-pr event recorded" }
+    if ($ev.attributes.merge_cmd_error -ne "true") { throw "the event must flag merge_cmd_error:true" }
+    return "maint-pr: MERGED PR records success despite a merge-command error (merge_cmd_error:true) (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $cmdErr -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # The success exit (post-audit -> cleanup) is gated on the merged SPEC MAINT PR:
 # with the Curator improvement recorded but NO maint-pr, the transition is BLOCKED
 # (so `done` is unreachable). A restart exit is NOT gated (covered by the
