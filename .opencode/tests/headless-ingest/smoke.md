@@ -2,8 +2,9 @@
 
 Feature: the headless ingest daemon (`fredo ingest`). Seeded at issue **#2992**. Short
 standardized sanity checks before deeper testing. This feature has a headless runtime surface
-plus a small GUI settings surface (the autostart toggle + the daemon-status readout), so the
-standard app-boot boilerplate applies to the GUI leg and a headless-boot check covers the daemon.
+plus a small GUI settings surface (the Background capture pane, which #3193 retitled from
+"Ingest" and whose daemon-status readout was removed), so the standard app-boot boilerplate
+applies to the GUI leg and a headless-boot check covers the daemon.
 
 > **Verification policy: LIVE** — receipts reference a `telemetry_spans` live read (PG-backed via
 > the managed `psql`) plus process/port observations. Static-only smoke cannot pass.
@@ -18,13 +19,16 @@ standard app-boot boilerplate applies to the GUI leg and a headless-boot check c
   after toggling autostart.
   **Expected:** no `Error:` / `Uncaught` / `Maximum update depth exceeded`.
 
-- [ ] **S-3: Feature surface reachable.** Open Settings → **Ingest**; confirm the nav section
-  (`id="ingest"`), the nav button `settings-nav-ingest`, the section root
-  `settings-ingest-autostart-section`, the toggle `settings-ingest-autostart-toggle`, the status
-  `settings-ingest-autostart-status`, and the daemon status `settings-ingest-daemon-status`
-  render.
-  **Expected:** all named elements present; daemon status shows a real state (incl. `attached`
-  when attached).
+- [ ] **S-3: Feature surface reachable.** Open Settings -> **Background capture** (retitled from
+  "Ingest" by #3193; the nav testid is unchanged); confirm the nav button `settings-nav-ingest`,
+  the section root `settings-ingest-autostart-section`, the toggle
+  `settings-ingest-autostart-toggle`, the status `settings-ingest-autostart-status` and the timing
+  line `settings-ingest-autostart-timing` render.
+  **Expected:** all named elements present; the status line is one of `Background capture: On`,
+  `Background capture: Off`, `Background capture: Unavailable on this platform`.
+  **Superseded clause (#3193):** `settings-ingest-daemon-status` NO LONGER EXISTS - assert its
+  ABSENCE, never its state. Capture/cluster liveness is out of #3193's scope and is no longer
+  rendered on this surface (read `pg_supervisor_status` instead when a row needs it).
 
 - [ ] **S-4: Headless daemon boots.** Start `fredo ingest` against the scratch dirs; wait for the
   descriptor to publish a live pid+port.
