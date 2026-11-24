@@ -43,6 +43,7 @@ import { setupOtel, createInstruments, forceFlushOtel } from "./otel";
 import { remoteParentContext } from "./trace-context";
 import {
   handleSessionCreated,
+  handleSessionInboxEnqueued,
   handleExecutionStarted,
   handleExecutionSucceeded,
   handleExecutionFailed,
@@ -72,9 +73,11 @@ import type {
   PendingChildCompletion,
   PendingPermission,
   PendingRun,
+  PendingToolInput,
   PendingToolSpan,
   PluginContext,
   SessionTotals,
+  SessionTurn,
   V2Event,
 } from "./types";
 
@@ -131,6 +134,9 @@ export function handleV2Event(event: V2Event, ctx: HandlerContext): void {
   switch (event.type) {
     case "session.created":
       handleSessionCreated(event, ctx);
+      break;
+    case "session.inbox.enqueued":
+      handleSessionInboxEnqueued(event, ctx);
       break;
     case "session.execution.started":
       handleExecutionStarted(event, ctx);
@@ -250,8 +256,10 @@ export const fredoPluginDefinition = Plugin.define({
 
     // ── In-Memory State Maps (bounded via util.setBoundedMap) ────────────
     const pendingToolSpans = new Map<string, PendingToolSpan>();
+    const pendingToolInputs = new Map<string, PendingToolInput>();
     const pendingPermissions = new Map<string, PendingPermission>();
     const sessionTotals = new Map<string, SessionTotals>();
+    const sessionTurns = new Map<string, SessionTurn>();
     const runSpans = new Map<string, Span>();
     const runSpanContexts = new Map<string, SpanContext>();
     const activeRuns = new Map<string, string>();
@@ -274,8 +282,10 @@ export const fredoPluginDefinition = Plugin.define({
       },
       instruments,
       pendingToolSpans,
+      pendingToolInputs,
       pendingPermissions,
       sessionTotals,
+      sessionTurns,
       tracer,
       tracePrefix: "fredo.",
       rootContext,
@@ -294,6 +304,9 @@ export const fredoPluginDefinition = Plugin.define({
       messageMeta,
       pendingChildCompletions,
       suppressParentRouting: SUPPRESS_PARENT_ROUTING,
+      // `session.idle` flush seam (ST-2) — the exporter flush point V1 performed
+      // inline at `session.idle`/`session.error`.
+      onIdleFlush: () => forceFlushOtel(providers),
     };
 
     // ── Detached event loop ──────────────────────────────────────────────

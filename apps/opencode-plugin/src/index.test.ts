@@ -34,8 +34,19 @@ function recordingContext(): { ctx: HandlerContext; calls: string[] } {
     };
   const counter = { add: record("counter.add") } as unknown as Counter;
   const histogram = { record: record("histogram.record") } as unknown as Histogram;
+  const fakeSpan = () => ({
+    setAttributes: record("span.setAttributes"),
+    setAttribute: record("span.setAttribute"),
+    addEvent: record("span.addEvent"),
+    setStatus: record("span.setStatus"),
+    end: record("span.end"),
+    spanContext: () => ({ traceId: "0".repeat(32), spanId: "0".repeat(16), traceFlags: 1 }),
+  });
   const tracer = {
-    startSpan: record("tracer.startSpan"),
+    startSpan: (..._args: unknown[]) => {
+      calls.push("tracer.startSpan");
+      return fakeSpan();
+    },
     startActiveSpan: record("tracer.startActiveSpan"),
   } as unknown as Tracer;
 
@@ -57,8 +68,10 @@ function recordingContext(): { ctx: HandlerContext; calls: string[] } {
       genAiToolCalls: histogram,
     },
     pendingToolSpans: new Map(),
+    pendingToolInputs: new Map(),
     pendingPermissions: new Map(),
     sessionTotals: new Map(),
+    sessionTurns: new Map(),
     tracer,
     tracePrefix: "fredo.",
     rootContext: () => ROOT_CONTEXT,
@@ -77,6 +90,7 @@ function recordingContext(): { ctx: HandlerContext; calls: string[] } {
     messageMeta: new Map(),
     pendingChildCompletions: new Map(),
     suppressParentRouting: false,
+    onIdleFlush: record("otel.flush"),
   } as unknown as HandlerContext;
 
   return { ctx, calls };
@@ -102,6 +116,18 @@ const sessionCreated: V2EventOf<"session.created"> = {
     agent: "build",
     model: { id: "claude", providerID: "anthropic" },
     version: "2.4.1",
+  },
+};
+
+const inboxEnqueued: V2EventOf<"session.inbox.enqueued"> = {
+  id: "evt-1b",
+  created: 1,
+  type: "session.inbox.enqueued",
+  durable,
+  data: {
+    sessionID,
+    inboxID: "msg_user_1",
+    item: { type: "user", payload: { text: "hello" }, delivery: "queue" },
   },
 };
 
@@ -291,6 +317,7 @@ const unhandledTextStarted: V2EventOf<"session.text.started"> = {
 
 const handledEvents: V2Event[] = [
   sessionCreated,
+  inboxEnqueued,
   executionStarted,
   executionSucceeded,
   executionFailed,
@@ -333,7 +360,8 @@ describe("FREDO_CAPTURE_EVENTS lever", () => {
     const { ctx, calls } = recordingContext();
     handleV2Event(sessionIdle, ctx);
     expect(existsSync(join(dir, "events.jsonl"))).toBe(false);
-    expect(calls).toEqual([]);
+    // Dispatch reached the handler: the idle path flushes and logs (ST-2).
+    expect(calls).toContain("otel.flush");
   });
 
   test("writes one JSON line {type, event} per received event", () => {
@@ -379,27 +407,48 @@ describe("FREDO_CAPTURE_EVENTS lever", () => {
   });
 });
 
-// ── ST-1 invariant: skeletons emit nothing ───────────────────────────────────
+// ── Dispatch wiring (ST-1 skeleton invariant, superseded by ST-2/ST-3/ST-4) ──
+//
+// ST-1 pinned "every handler skeleton emits nothing". ST-2/ST-3/ST-4 implement
+// the session, model-turn and tool handlers, so that pin now asserts the INVERSE
+// for those families — while the ST-5 skeletons (permissions, git-commit
+// activity) must still emit nothing. Both directions are pinned so a handler
+// that is wired but inert (or a stub that silently starts emitting) fails here.
 
-describe("handler skeletons emit nothing (ST-1)", () => {
-  test("dispatching every handled V2 event touches no emission seam", () => {
-    const { ctx, calls } = recordingContext();
-    for (const event of handledEvents) {
-      handleV2Event(event, ctx);
-    }
-    expect(calls).toEqual([]);
-  });
-
-  test("dispatch does not mutate handler state either", () => {
+describe("dispatch wiring (ST-2/ST-3/ST-4 implemented, ST-5 still stubs)", () => {
+  test("a full session lifecycle leaves no in-flight state behind", () => {
     const { ctx } = recordingContext();
     for (const event of handledEvents) {
       handleV2Event(event, ctx);
     }
-    expect(ctx.sessionTotals.size).toBe(0);
+    // A real session settles with an idle; the sweep must clear everything.
+    handleV2Event(sessionIdle, ctx);
+
     expect(ctx.pendingToolSpans.size).toBe(0);
+    expect(ctx.pendingToolInputs.size).toBe(0);
     expect(ctx.sessionSpans.size).toBe(0);
     expect(ctx.messageSpans.size).toBe(0);
+    expect(ctx.messageMeta.size).toBe(0);
+    expect(ctx.messageOutputs.size).toBe(0);
+    expect(ctx.messageThinking.size).toBe(0);
+    expect(ctx.sessionTotals.size).toBe(0);
     expect(ctx.pendingPermissions.size).toBe(0);
+  });
+
+  test("ST-5 handler skeletons still emit nothing", () => {
+    const { ctx, calls } = recordingContext();
+    handleV2Event(permissionAsked, ctx);
+    handleV2Event(permissionReplied, ctx);
+    expect(calls).toEqual([]);
+    expect(ctx.pendingPermissions.size).toBe(0);
+  });
+
+  test("the implemented families do emit — the wiring is live, not inert", () => {
+    const { ctx, calls } = recordingContext();
+    handleV2Event(sessionCreated, ctx);
+    handleV2Event(sessionIdle, ctx);
+    expect(calls).toContain("emitLog");
+    expect(calls).toContain("counter.add");
   });
 });
 

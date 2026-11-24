@@ -75,12 +75,44 @@ export type PluginLogger = (
   extra?: Record<string, unknown>,
 ) => void;
 
-/** In-flight tool execution tracked between `running` and `completed`/`error` part updates. */
+/** In-flight tool execution tracked between `session.tool.called` and `.success`/`.failed`. */
 export type PendingToolSpan = {
   tool: string;
   sessionID: string;
   startMs: number;
   span?: Span;
+};
+
+/**
+ * In-flight tool ARGUMENT accumulation (Spec #3197 ST-4).
+ *
+ * `session.tool.input.started` is the ONLY event that carries the tool name —
+ * `session.tool.called` / `.input.ended` / `.success` / `.failed` carry only
+ * `data.id`. The name and the streamed JSON input text are therefore remembered
+ * per call id (keyed `${sessionID}:${id}`) between `input.started` and `called`.
+ */
+export type PendingToolInput = {
+  sessionID: string;
+  assistantMessageID: string;
+  /** Tool name from `session.tool.input.started` (`"unknown"` when it was missed). */
+  name: string;
+  /** Accumulated `session.tool.input.delta` text; `input.ended` overwrites it. */
+  text: string;
+  /** `event.created` of `input.started` — the tool span start time. */
+  startMs: number;
+};
+
+/**
+ * The current user turn of a session (Spec #3197 ST-2/ST-3).
+ *
+ * `session.inbox.enqueued` carries the prompt text and `session.step.started`
+ * carries the resolved model — neither event repeats the other's value, so the
+ * LLM span's `prompt` / `gen_ai.input.messages` read the last-known turn here.
+ */
+export type SessionTurn = {
+  prompt?: string;
+  /** `"<providerID>/<modelID>"`, matching the V1 `model` span/log attribute. */
+  model?: string;
 };
 
 /** Permission prompt tracked between `permission.asked` and `permission.replied` (V2). */
@@ -202,8 +234,12 @@ export type HandlerContext = {
   emitLog: (record: LogRecord) => void;
   instruments: Instruments;
   pendingToolSpans: Map<string, PendingToolSpan>;
+  /** In-flight tool argument accumulation, keyed `${sessionID}:${toolCallID}` (ST-4). */
+  pendingToolInputs: Map<string, PendingToolInput>;
   pendingPermissions: Map<string, PendingPermission>;
   sessionTotals: Map<string, SessionTotals>;
+  /** Current turn (prompt + resolved model) per session (ST-2/ST-3). */
+  sessionTurns: Map<string, SessionTurn>;
   tracer: Tracer;
   tracePrefix: string;
   rootContext: () => Context;
@@ -213,6 +249,13 @@ export type HandlerContext = {
   assistantRuns: Map<string, string>;
   pendingRuns: Map<string, PendingRun>;
   runInputs: Map<string, string>;
+  /**
+   * The session's ONE `fredo.session` span, keyed by `session.id` (Spec #3197
+   * ST-2). A child session opens it at `session.created`; a primary session
+   * opens it on its first `session.inbox.enqueued` and refreshes it per turn.
+   * Exactly one span per session ⇒ every close path (succeeded/failed/
+   * interrupted/idle sweep) ends it exactly once and no turn root is orphaned.
+   */
   sessionSpans: Map<string, Span>;
   sessionSpanContexts: Map<string, SpanContext>;
   messageSpans: Map<string, Span>;
@@ -232,4 +275,10 @@ export type HandlerContext = {
    * isolation (AC5/R6). Default OFF. Test affordance only — no settings UI.
    */
   suppressParentRouting: boolean;
+  /**
+   * Flush seam for `session.idle` (Spec #3197 ST-2): `otel.ts` →
+   * `forceFlushOtel`, wired by `index.ts` to the live providers. Absent in unit
+   * contexts, so the flush is optional and never a hard dependency of a handler.
+   */
+  onIdleFlush?: () => Promise<void> | void;
 };

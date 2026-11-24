@@ -179,6 +179,38 @@ export function getSessionAgentMeta(
   };
 }
 
+/**
+ * Records the resolved agent name on a session's totals (Spec #3197 ST-3).
+ *
+ * V2 carries the authoritative agent on `session.step.started.data.agent`
+ * (`SessionCreated.data.agent` is optional), so the first model turn repairs the
+ * `unknown` placeholder written at `session.created`. The reconstruction is
+ * field-by-field and carries EVERY field (parentId / instruction included) —
+ * dropping one here silently loses it for the rest of the session.
+ * No-ops for a session that was never registered.
+ */
+export function setSessionAgent(sessionID: string, agent: string, ctx: HandlerContext): void {
+  const existing = ctx.sessionTotals.get(sessionID);
+  if (!existing || existing.agent === agent) return;
+  setBoundedMap(ctx.sessionTotals, sessionID, {
+    startMs: existing.startMs,
+    tokens: existing.tokens,
+    cost: existing.cost,
+    messages: existing.messages,
+    agent,
+    agentType: existing.agentType,
+    inferenceCalls: existing.inferenceCalls,
+    toolCalls: existing.toolCalls,
+    inputTokens: existing.inputTokens,
+    cacheReadTokens: existing.cacheReadTokens,
+    cacheWriteTokens: existing.cacheWriteTokens,
+    reasoningTokens: existing.reasoningTokens,
+    outputTokens: existing.outputTokens,
+    ...(existing.parentId ? { parentId: existing.parentId } : {}),
+    ...(existing.instruction ? { instruction: existing.instruction } : {}),
+  });
+}
+
 /** Builds a consistent agent attribute set for OTLP logs, metrics, and spans. */
 export function agentAttrs(agentName: string, agentType: SessionAgentType | "unknown") {
   return {
