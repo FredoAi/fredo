@@ -1100,6 +1100,14 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
 > with no `-EnvId`/`-EnvSlot`) and the tester must say so — never fake the default path on
 > the isolation branch.
 >
+> **F-90 is re-cut in round 3 (`## Fix Plan (round 3)`, plan item (d)) to boot its OWN slot-0
+> instance** — `-EnvId spec3198-ac3` with **no** `-EnvSlot`, so its OTLP gRPC receiver is `:4317`,
+> the endpoint the pre-existing shared service already emits to. At slot 0 the ambient endpoint
+> dev-env injects (`http://localhost:4317`) equals the instance's own ingest port, so
+> `isolation_required()` is false and the **default** branch is what runs — the G-452 caveat above
+> cannot bite there. That placement is what makes the row drivable without any lifecycle action on
+> the shared service (G-462).
+>
 > **Isolation arms the product flag explicitly.** `-RequireIsolation` arms only dev-env's own
 > guard (`dev-env.ps1:1397-1404` reads the process env, it does not export it), so the
 > AC4 legs pass `-EnvVar "FREDO_REQUIRE_ENV_ISOLATION=1"` as well.
@@ -1125,19 +1133,91 @@ disclosed ghostty scrollbar-width reservation is a host-flush gutter — record 
   - **Edge:** ambient variables inherited from the parent are NOT Fredo's wiring — record the
     ambient set separately and do not count it against the row.
 
-- [ ] **F-90 (R-3b / AC3 — a Terminal session is captured through the shared service;
-  NAMED BLOCKER until #3197).** Default path (F-89's premise). Launch a session, send one
-  bounded turn `write_pty_input{sessionId, data:"Reply with exactly: FREDO_QA_3198_TERM\r"}`,
-  record the app `session_id`, then
-  `powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Manifest
-  .opencode/tmp/envs/spec3198/manifest.json -Query "SELECT session_id, span_name, provider,
-  transport, count(*) AS n FROM telemetry_spans GROUP BY 1,2,3,4"`.
-  **Expected:** ≥1 span row for that session in the instance's own store (`ports.pg`), i.e.
-  the session reached the app's OTLP receiver with no per-session receiver wiring.
-  - **Edge:** if the store is empty for a session that clearly ran, first check the
-    #3197 precondition (the installed plugin is the V2 bundle, hash-equal to `dist/index.js`)
-    before declaring a product FAIL; a `too many clients` psql refusal → use the named
-    app-pool fallback and disclose (G-307).
+- [ ] **F-90 (R-3b / AC3 — a Terminal session is captured through the shared service; the store
+  sits at the endpoint that service already emits to).**
+  **Round-3 re-cut — this row is the Audit's FAILED DRIVE and the round's reason to exist.** It
+  could not be driven because it queried the env's own `16xxx` receiver while the **pre-existing**
+  shared service emits to **`:4317`**. The row now **puts the store where the service already
+  emits** — the non-destructive shape (G-462) — so it needs **no lifecycle action** on the service.
+  It must **not** restart, stop or start `opencode`'s shared service; the pid receipts below bind
+  that. (`opencode --server … session list` is **UNVERIFIED**, G-460, and is not used here.)
+  **Premise:** F-14's install (installed plugin hash-equal to `dist/index.js`) and the real runtime
+  (`opencode --version` ≥ `MIN_SUPPORTED_OPENCODE_MAJOR`). **Why slot 0 keeps the DEFAULT path:**
+  the ambient endpoint dev-env injects (`OPENCODE_OTLP_ENDPOINT=http://localhost:4317`,
+  `dev-env.ps1:1682`) is **equal to this instance's own ingest port**, so `isolation_required()` is
+  false and the default branch is what runs — the G-452 mismatch cannot bite at slot 0.
+  0. **Pre-state — 4317 must be free.** `Get-NetTCPConnection -LocalPort 4317 -State Listen
+     -ErrorAction SilentlyContinue`. **If anything already owns 4317, STOP and record a FAILED DRIVE
+     (port collision)** naming the owner: this row requires 4317 to belong to the instance it boots.
+  1. **Boot the env's OWN instance with slot-0 OTLP ports** — omit `-EnvSlot`, so gRPC is `4317` and
+     HTTP `4318` (`dev-env.ps1:99-102`, `:1516`) — and give it a password file so the store is
+     readable and the G-375 keychain failure cannot occur (the same file seeds `initdb` and is read
+     by the query wrapper):
+     ```
+     Set-Content -LiteralPath C:\Code\fredo\.opencode\tmp\3198\ac3-pg-password.txt -Value 'fredo-ac3-loopback' -Encoding ascii
+     powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3198 -EnvId spec3198-ac3 -EnvVar "FREDO_PG_PASSWORD_FILE=C:\Code\fredo\.opencode\tmp\3198\ac3-pg-password.txt"
+     ```
+     **Receipt:** `Get-Content .opencode\tmp\envs\spec3198-ac3\manifest.json | ConvertFrom-Json |
+     Select-Object -ExpandProperty ports` → `otlpGrpc = 4317`, `otlpHttp = 4318`, `pg > 0`.
+  2. **Receipt — port→pid ownership of the endpoint.** `$envPid = (Get-NetTCPConnection -LocalPort
+     4317 -State Listen | Select-Object -First 1).OwningProcess; Get-Process -Id $envPid |
+     Select-Object Id,ProcessName,StartTime`. **Expected:** the owner is this env's `fredo` process
+     (record `Id` + `StartTime`) — **not** an `opencode`/`node`. This is the receipt that the store
+     under test is the receiver at the endpoint the shared service writes to.
+  3. **Receipt — the shared service is untouched.** `$svcUrl = ((opencode service status) |
+     Select-Object -First 1).Trim()`; `$svcPort = ([uri]$svcUrl).Port`;
+     `$svcPidBefore = (Get-NetTCPConnection -LocalPort $svcPort -State Listen |
+     Select-Object -First 1).OwningProcess`; `Get-Process -Id $svcPidBefore |
+     Select-Object Id,ProcessName,StartTime`. **No `opencode service restart|stop|start` runs in this
+     row** — it only observes. Also record the shared server's `StartTime` (`SVC_START`) beside the
+     installed plugin's `(Get-Item ~\.config\opencode\plugins\fredo.js).LastWriteTimeUtc`: if
+     `SVC_START` is **earlier** than the write, this leg doubles as F-17(a′)'s pre-existing-server
+     control; if later, it is F-17(a)'s shape. Either relation is legal here — the observable (a
+     Terminal session captured through that server) is the same — but the relation must be recorded,
+     because it decides which mechanism the PASS witnesses.
+  4. **Receipt — the baseline `0`, and the store identity.** In the same shell set
+     `$env:FREDO_PG_PASSWORD_FILE = 'C:\Code\fredo\.opencode\tmp\3198\ac3-pg-password.txt'`, then
+     `powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1 -Manifest
+     .opencode/tmp/envs/spec3198-ac3/manifest.json -Format json -Query "SELECT count(*) AS n FROM
+     telemetry_spans"` → `N0`, **and** the marker count
+     `SELECT count(*) AS n FROM telemetry_spans WHERE attributes_json LIKE '%FREDO_QA_3198_AC3%'`
+     → **0**. Record both. (A failing query here is a **harness** result — the G-375 killer did not
+     work — never a product verdict.)
+  5. **Drive ONE Terminal turn through the untouched shared service.** In the env app, open the
+     `terminal` window and spawn the default-path session:
+     `__TAURI__.core.invoke('spawn_terminal_session', { cli:'opencode', workDir:'C:\\Code\\fredo' })`
+     → `SID`. Then exactly one bounded turn:
+     `__TAURI__.core.invoke('write_pty_input', { sessionId:'<SID>', data:"Reply with exactly: FREDO_QA_3198_AC3\r" })`.
+     Record `process-hygiene.ps1 -List`: the `opencode` CommandLine carries **no `--standalone`** and
+     **no receiver argument** (default path — F-89). Wait until `FREDO_QA_3198_AC3` appears in the
+     buffer.
+  6. **Session-scoped query against the store bound at 4317.** First the marker (it finds the
+     session even if the app's id and the CLI's id differ):
+     `... -Query "SELECT session_id, span_name, provider, transport, count(*) AS n FROM
+     telemetry_spans WHERE attributes_json LIKE '%FREDO_QA_3198_AC3%' GROUP BY 1,2,3,4"`, then the
+     session-scoped count by the resolved id:
+     `... -Query "SELECT count(*) AS n FROM telemetry_spans WHERE session_id = '<sid>'"`.
+     **Expected `0 → >0`:** the marker count is **0** in step 4 and **≥1** here, and the resolved
+     session holds **≥1** row; the total re-read from the **same manifest** is `N_after ≥ N0`
+     (store identity — a fresh store would read 0).
+  7. **Receipts after the turn.** Re-read the 4317 owner → **the same `$envPid`**; re-read
+     `$svcPort`'s owner → **`$svcPidBefore`, same `StartTime`** (the shared service was neither
+     restarted nor replaced). **A changed pid is a FAIL of this row**, not a caveat.
+  **Contingency — attribute a 0-row result, never waive it.** If step 6 is 0, run the committed
+  injector against the same endpoint:
+  `bun .opencode/scripts/inject-otlp-fixture.ts --port 4317 --count 1 --prefix ses_ac3probe3198`,
+  then `... -Query "SELECT session_id, span_name FROM telemetry_spans WHERE session_id LIKE
+  'ses_ac3probe3198%'"`:
+  - **≥1 row** ⇒ the receiver at 4317 and this store are live and identical to what the manifest
+    names, so the 0 is the **Terminal → shared service → plugin** leg → **product FAIL**, with the
+    cause named (E-44/E-45 probe the neighbouring shapes: absent endpoint, stale ambient endpoint).
+  - **0 rows** ⇒ the harness never delivered to this store (receiver unbound / different store /
+    unreadable) → **FAILED DRIVE (harness)**, never a product verdict.
+  - **Edge:** if the store is empty for a session that clearly ran, check the #3197 precondition
+    first (the installed plugin is the V2 bundle, hash-equal to `dist/index.js`) before declaring a
+    product FAIL; a `too many clients` psql refusal → use the named app-pool fallback and disclose
+    (G-307). Tear down with `dev-env.ps1 -Action Down -EnvId spec3198-ac3` **only after** the
+    receipts are pasted; the shared service is never stopped.
 
 - [ ] **F-91 (R-3c / AC3 — listing / attach / continue are byte-identical; runnable
   pre-#3197).** Static: the shipped argv pins — `opencode session list --format json`

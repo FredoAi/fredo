@@ -102,19 +102,43 @@
 
 ## #3198 — OpenCode 2 gate, global plugin install, no persistent OTLP wiring
 
-> Seeded at triage for Spec #3198 (`## QA Expert` R-1a..R-2e + the NFRs), re-cut in round 2 for the
-> ST-S5 receipts (F-17) and the L-1 / L-2 fixture defects. Maps 1:1 to the QA Plan table in
-> `.opencode/tmp/3198/triage.md` and the `## Fix Plan (round 2)` comment.
+> Seeded at triage for Spec #3198 (`## QA Expert` R-1a..R-2e + the NFRs); **re-cut in round 3**
+> (`## Fix Plan (round 3)`, plan item (d) / `ST-R3-3`) because the install-time service restart was
+> **removed**. Maps 1:1 to the QA Plan table in `.opencode/tmp/3198/triage.md`.
 >
-> **Verification policy: live**, split as the plan declares: F-9..F-13 and F-16 carry
-> committed-text/source evidence (message copy rendered from `MIN_SUPPORTED_OPENCODE_MAJOR`;
-> the "does not install" leg is a prove-a-negative over the shipped error branch); F-14/F-15
-> and F-17 are live. F-17 is re-cut by fix-plan **addendum ST-A5** into (a) the capture-mechanism
-> receipt, (b) the dispatch receipts (one restart / idempotent / opt-out), (c) the failure path,
-> (d) the no-service path — plus ONE **recorded-unreachable** leg (installing against the real
-> shared service, which hosts the pipeline's own session — G-461). Nothing in F-17 is a waivable
-> blocker, and **`restart_required` is not a state the product emits**: the `otel` vocabulary is
-> `ok` | `error` (R-2e, replaced in place by the addendum).
+> **The round-3 product shape these rows assert — and the deleted behaviour they must no longer
+> name.**
+> 1. **No install-time restart exists.** `install_plugin` (in-app) and
+>    `fredo setup --install-plugin` (CLI) only **write** the plugin through
+>    `install_plugin_file` (`infrastructure/opencode_service.rs`: SHA-256 hash-guarded write, plus
+>    the install-instant `LastWriteTime` stamp on a real write). Deleted with the restart:
+>    `--no-restart-service`, the `service status` probe, the restart dispatch, the
+>    `restart_required` state, the restart-**`error`** outcome, and every `OPENCODE_SERVICE_*`
+>    constant/message. A row that expects any of them asserts deleted behaviour — which is exactly
+>    what round 2's F-17(b)/(c)/(d) and S-10 did.
+> 2. **The `otel` step claims only the MECHANISM, never an install outcome.** status `ok`, detail =
+>    the rendered `OTEL_CAPTURE_MECHANISM_MSG` (`applications/setup/commands.rs`), which states
+>    that OpenCode loads the plugin **when its background service starts**. It must not say setup
+>    restarts anything.
+> 3. **Capture works because a server started AFTER the write loads the plugin** — and, per the
+>    round-2 control (6 → 8 spans on a pre-write server), a pre-existing server can also pick it
+>    up. F-17(a′) is therefore a **POSITIVE** control (≥1 span) under four receipts, not the old
+>    `0`-row negative; the `0`-row expectation was the falsified half of the removed restart
+>    rationale (G-462).
+> 4. **The former G-461 blocker is gone with the restart.** An install against the real runtime no
+>    longer performs a lifecycle action, so the real-service leg is **driven** (F-14 install,
+>    F-17(a′)) instead of being recorded as unreachable — with the shared-service `pid` before/after
+>    as the binding receipt that nothing was restarted.
+>
+> **Verification policy: live**, split as the plan declares: F-9..F-13, F-16 and F-20..F-22 carry
+> committed-text/source evidence (message copy rendered from `MIN_SUPPORTED_OPENCODE_MAJOR`; the
+> "does not install" leg is a prove-a-negative over the shipped error branch); F-14, F-15, F-17,
+> F-18 and F-19 are live.
+>
+> **Meta-rule for every row below (G-462):** where a row's observable used to be reachable only
+> through a destructive lever (install on the real runtime, restart the shared service), the row
+> names the **non-destructive shape FIRST** — the write-only install, the store/receiver at the
+> endpoint the protected process already emits to — and only then the fallback.
 >
 > **Constants — never a literal.** Read `MIN_SUPPORTED_OPENCODE_MAJOR`,
 > `OPENCODE_UPGRADE_COMMAND`, `PLUGIN_INSTALLED_GLOBAL_MSG` and `VERSION_PROBE_TIMEOUT_MS`
@@ -133,6 +157,19 @@
 > renamed to `.exe` is not a PE image, `CreateProcessW` refuses it, and the probe would report
 > R-1b's *undetermined* state instead of R-1a's *unsupported* one — the wrong row passing for the
 > wrong reason (round-2 Fix Plan, L-1).
+>
+> **`shim-opencode-service-*` roster after round 3 — say which, do not leave it implied.**
+> `fixtures/shim-opencode-service-ok/opencode.cmd` is **KEPT and USED** by F-17(b): it is now
+> simply a fake OpenCode 2.x runtime (`--version` → `opencode v2.4.1`) reached through the
+> product's own resolver, and the receipt is that its journal stays **EMPTY** — with the restart
+> removed, no install may dispatch `service restart`. The other two are **UNUSED by every
+> surviving row**: `fixtures/shim-opencode-service-fail` (its `service restart` exits 2) and
+> `fixtures/shim-opencode-service-none` (its `service status` exits 1) existed only for the
+> deleted restart-failure and no-service branches. **The commit that lands this re-cut deletes
+> those two directories and their two `fixtures/README.md` roster rows** (the suite author cannot
+> delete files). The **journal contract is unchanged** for the one fixture still in use: one line
+> per `service restart`, appended to `%FREDO_QA_SHIM_JOURNAL%` (else
+> `%TEMP%\fredo-3198-shim-journal.txt`); delete the journal before each leg.
 >
 > **PATH lever (G-316) — the committed forwarder owns the shadowing (round-2 Fix Plan, L-1).**
 > `dev-env.ps1`'s env seam is `-EnvVar` = **repeatable `NAME=value` strings**
@@ -275,78 +312,114 @@
 
 ## AC2 — V2 setup end to end (live)
 
-- [ ] **F-14 (R-2a / AC2 — one-pass install of the real artifact).** Preconditions, recorded:
-  (a) `opencode --version` (granted) reports a major
+- [ ] **F-14 (R-2a / AC2 — one-pass install of the real artifact; the write IS the whole action).**
+  Preconditions, recorded: (a) `opencode --version` (granted) reports a major
   **≥** `MIN_SUPPORTED_OPENCODE_MAJOR` — paste the literal line; (b) the artifact:
   `Test-Path apps/opencode-plugin/dist/index.js` — if absent, build it in this row with
   `bun run build` in `apps/opencode-plugin` (script `package.json:9`); record
-  `Get-FileHash dist/index.js -Algorithm SHA256` + `LastWriteTime`; (c) the artifact is
-  #3197's V2 bundle (the developer's verification comment records the confirmed artifact
-  name in `FREDO_PLUGIN_ARTIFACT_REL`). Then run
-  `fredo setup --install-plugin --no-restart-service` once — **the opt-out is the safe form for a
-  real-runtime install on this host**: without it, a real write restarts this pipeline's own shared
-  service (G-461). The default (restarting) path is driven on the fake control CLI in F-17(b).
+  `Get-FileHash dist/index.js -Algorithm SHA256` + `LastWriteTime`; (c) the artifact is #3197's V2
+  bundle (the developer's verification comment records the confirmed artifact name in
+  `FREDO_PLUGIN_ARTIFACT_REL`); (d) **the shared-service baseline, taken immediately before the
+  install** — `SVC_URL = (opencode service status)`; `SVC_PORT = ([uri]$SVC_URL).Port`;
+  `SVC_PID_BEFORE = (Get-NetTCPConnection -LocalPort $SVC_PORT -State Listen).OwningProcess` with
+  `Get-Process -Id $SVC_PID_BEFORE | Select Id,ProcessName,StartTime`; (e) the destination's
+  pre-state: `Test-Path ~\.config\opencode\plugins\fredo.js` plus its hash/`LastWriteTime`
+  (`PATH_MISSING` if absent), so the row can restore it. **Force the real-write branch:** if the
+  installed file already hashes equal to the artifact (a prior run left it current), delete it
+  after recording the pre-state — otherwise this row exercises the no-write branch and its
+  `LastWriteTime` assertion below would be unsatisfiable.
+
+  Then run, from the repo root:
+  `fredo setup --install-plugin` — **no flag**. There is no `--no-restart-service` any more and no
+  restart to opt out of; the install is a file write only, so it is safe on a machine whose shared
+  service hosts this pipeline. (Round 2's note that this row needed the opt-out "or a real write
+  restarts this pipeline's own shared service" describes deleted behaviour.)
+
+  **Safety receipt (binding, G-461):** re-read the owner of `SVC_PORT` after the run. The **same**
+  `SVC_PID_BEFORE` on the same port is the receipt that nothing was restarted. A **changed** pid
+  means the built product still performs the removed restart: **stop the row, record a FAILED DRIVE
+  (`product still restarts the shared service`), do not re-run it.**
+
   **Expected:** exit 0; `Test-Path ~\.config\opencode\plugins\fredo.js` **true**;
-  `Get-FileHash` of the INSTALLED file **equals** the dist hash (currency proof — never
-  grep the `~` path, G-244); no second manual step; the skipped-restart outcome line
-  (`OPENCODE_SERVICE_RESTART_SKIPPED_MSG`, F-17(b3)) is present and does not turn the run into a
-  failure.
-  - **Edge:** if `opencode --version` < the minimum, or `dist/index.js` is missing/stale,
-    record **UNVERIFIED** naming that precondition — never install a fixture in its place
-    and never report a fabricated PASS (a missing artifact must fail loud per ST-2).
+  `Get-FileHash` of the INSTALLED file **equals** the dist hash (currency proof — never grep the
+  `~` path, G-244); the installed file's `LastWriteTime` is **≥ the run's recorded start
+  timestamp** — the install-instant stamp fired on a real write, so the destination mtime is
+  neither the artifact's mtime nor the previous install's; stdout carries **exactly one**
+  message-bearing line (F-15) and **zero** lines containing `service`, `restart` or
+  `--no-restart-service`; no second manual step. Static half: `rg -n "OPENCODE_SERVICE_" apps/
+  tauri/src-tauri/src` returns **zero** hits, and `rg -n "no_restart_service|no-restart-service"
+  apps/tauri/src-tauri/src` returns **zero** hits.
+  - **Edge:** if `opencode --version` < the minimum, or `dist/index.js` is missing/stale, record
+    **UNVERIFIED** naming that precondition — never install a fixture in its place and never
+    report a fabricated PASS (a missing artifact must fail loud, ST-2). Restore the destination's
+    pre-state only **after** F-17 has used the installed file.
 
 - [ ] **F-15 (R-2b / AC2 — one `[fredo]` success line naming path + global).** From F-14's
   CLI run and from the in-app `install_plugin` (wizard action).
   **Expected:** stdout contains **exactly one** line whose text is the rendered
   `PLUGIN_INSTALLED_GLOBAL_MSG` — naming the resolved `…\.config\opencode\plugins\fredo.js`
-  and stating global — and `InstallResult.output` contains the same rendered text. The
-  restart/skip **outcome line is a different message** (F-17) and may follow on the next line; it is
-  not a second success line.
+  and stating global — and `InstallResult.output` contains the same rendered text. **There is no
+  second, outcome line at all:** the restart message family is deleted, so the output is one line
+  in both faces (round 2 pinned "the restart/skip outcome line may follow"; that sentence is
+  falsified and removed).
   - **Edge:** do NOT assert a global `[fredo]` line count: the CLI progress reporter prefixes
     its own lines with `[fredo] ` (`setup.rs:86-99`). Assert only the message-bearing line.
 
-- [ ] **F-16 (R-2c + R-2e / AC2 — no persistent env write; the `otel` claim is bounded, never
-  false-green).** Static: `rg -n "setx|SetEnvironmentVariable|fredo-otel-opencode"` over
-  `applications/setup/commands.rs` and `infrastructure/cli/commands/setup.rs`.
+- [ ] **F-16 (R-2c + R-2e / AC2 — no persistent env write; the `otel` claim names the mechanism
+  ONLY, never an install outcome).** Static: `rg -n "setx|SetEnvironmentVariable|fredo-otel-opencode"`
+  over `applications/setup/commands.rs` and `infrastructure/cli/commands/setup.rs`.
   **Expected:** **zero writer hits** (quote every hit, if any, with its disposition; the
   three `OPENCODE_*` names may survive only as read-only detection constants). Live: in F-9's app,
-  `check_all_setup`/`--check` reports the `otel` step with a status in
-  **{`"ok"`, `"error"`} — NEVER `"missing"` and NEVER `"restart_required"`** (that state no longer
-  exists; the addendum replaced it with an install-time action), and:
-  (i) the `ok` case's `detail` **states the mechanism** — it names that OpenCode loads the plugin
-  when its background service starts **and** that setup restarts the service after installing —
-  never a bare "configured" (quote it; render from the shipped constant, do not paraphrase);
-  (ii) the `error` case appears **only** when this process knows a restart failed (install ran and
-  failed — F-17(c) produces it in the same process) and its `detail` is the rendered failure
-  message; (iii) `check_otel_configured().opencode_configured == false` while that failure is
-  recorded (file presence alone must not read as configured) and `true` otherwise; (iv) the
-  `plugin-install` plan command string contains only the copy (no `set`/`setx`/`export`).
-  **`--check` is read-only:** it never restarts the service (only the bounded probe runs, and only
-  when `version.is_supported() && plugin_installed`).
+  `check_all_setup`/`--check` reports the `otel` step with **status `"ok"`** — **NEVER `"missing"`,
+  NEVER `"restart_required"`, and never a restart-failure `"error"`** (all three were removed with
+  the restart; a surviving `error` after a successful install is a FAIL of this row), and:
+  (i) the `detail` is the rendered `OTEL_CAPTURE_MECHANISM_MSG` — quote it verbatim and assert it
+  **names the mechanism**: it contains `background service` and states the server **loads** the
+  plugin when it starts; it must **not** contain `restart`/`restarted`/`service restart`, must not
+  name `--no-restart-service`, and must not report an install outcome (nothing like "the service was
+  restarted"/"could not be restarted") — **assert the constant, never paraphrase it** (read
+  `OTEL_CAPTURE_MECHANISM_MSG` at test time and compare the rendered string, so a copy change is a
+  FAIL rather than a silent pass);
+  (ii) `check_otel_configured().opencode_configured == true` while the plugin file exists — with the
+  restart record gone, file presence is the whole claim and there is no process-local failure state
+  to contradict it (round 2's `false`-while-failed clause is deleted with the record);
+  (iii) the `plugin-install` plan command string contains only the copy (no `set`/`setx`/`export`,
+  no service verb).
+  **`--check` is read-only:** it never touches the service — no probe, no restart, no lifecycle verb
+  of any kind. Static receipt: `rg -n -i "service (restart|status)|OPENCODE_SERVICE_|restart_required"
+  apps/tauri/src-tauri/src/applications/setup/commands.rs
+  apps/tauri/src-tauri/src/infrastructure/cli/commands/setup.rs` → **zero hits**; the only `service`
+  token that may survive in these two files is the shared write helper
+  `opencode_service::install_plugin_file` (quote it and its call sites as the disposition).
   - **Edge:** a pre-existing User-level `OPENCODE_*` value must be left AS IS (F-19). A `--check`
-    run in a *fresh process* after a failed install cannot know the failure — that is expected
-    (process-local record); assert (ii)/(iii) in the process that ran the install, via F-17(c).
+    run and a `--install-plugin` run in **different processes** must report the same `otel` detail —
+    the claim has no process-local state left to differ on (the round-2 fresh-process caveat is
+    void).
 
-- [ ] **F-17 (R-2d + R-2e / AC2 — capture after install, and the restart dispatch).**
-  **R-2e (addendum, binding):** *WHEN setup installs the Fredo plugin on a supported OpenCode
-  runtime, the installed bytes differ from what was already on disk, and an OpenCode background
-  service is running, the system SHALL restart that service through the runtime's own
-  `opencode service restart` verb and SHALL report the outcome; WHEN the restart does not complete
-  successfully, the system SHALL report the install as failed with the remedy — never as `ok`,
-  never as a silent success. WHILE the installed bytes are already current, or no background
-  service is running, the system SHALL NOT restart the service. The system SHALL NOT terminate,
-  signal or otherwise kill any process directly.*
-  Four receipts (addendum ST-A5); a FAIL is a receipt that does not hold. **No receipt touches the
-  real background service** — that leg is recorded at the end, not driven.
-  **Safety rule for every REAL-runtime install in this suite:** pass `--no-restart-service` (the
-  documented opt-out) so this pipeline's own shared service is never restarted; the restart itself
-  is proven on the fake control CLI, where a restart is inert. The opt-out's own semantics are
-  receipt (b3).
-  **(a) R-2d — capture, live: a server started AFTER the install captures.** Needs the REAL
-  runtime (no shim) and F-14's install. **Probe gate first — both flags are UNVERIFIED:** record
-  `opencode serve --help` and `opencode --help`; continue only if `serve` and `--server <url>`
-  appear. Then, from a scratch script `.opencode/tmp/3198/capture-mech.ps1`: pick a port verified
-  free (`(Test-NetConnection 127.0.0.1 -Port <p>).TcpTestSucceeded` is `False`), start
+- [ ] **F-17 (R-2d / AC2 — capture after install: the write-only install, a server started after it,
+  and a pre-existing server that also picks it up).**
+  **What this row no longer contains — said explicitly so nobody re-adds it.** Round 2's F-17(b1),
+  (b3), (c) and (d) asserted the `service restart` dispatch, the `--no-restart-service` opt-out, the
+  restart-failure `error`, and the no-service branch. **The install-time restart is removed from the
+  product, so those receipts are DELETED, not rewritten**; (b) survives only as a **negative
+  dispatch guard** (no lifecycle verb may be invoked), and round 2's "recorded-unreachable
+  real-shared-service leg" is deleted because the real-service install is now a plain file write
+  (driven by F-14). Two fixtures lose every consumer and are recorded UNUSED in the roster above
+  (`shim-opencode-service-fail`, `shim-opencode-service-none`).
+  **Safety rule for every REAL-runtime install in this suite:** there is no flag to pass — the
+  install writes a file and dispatches nothing. The receipt that this held is the shared service's
+  **pid + port owner before → after** (F-14(d)/(e)): a changed pid is a **FAILED DRIVE**
+  (`product still restarts the shared service`), never a PASS.
+  **(a) capture, live: a server started AFTER the plugin write captures.** Needs the REAL runtime
+  (no shim) and F-14's install (plain `--install-plugin`). **Non-vacuity receipt first:**
+  `(Get-Item -LiteralPath ~\.config\opencode\plugins\fredo.js).LastWriteTimeUtc` → `WRITE_UTC`
+  (F-14's install instant); the server you start below must have
+  `StartTime > WRITE_UTC` — record both, or the leg proves nothing. Then re-record
+  `opencode serve --help` and `opencode --help` (round 2's receipts verify `serve` and
+  `--server <url>`, but a runtime swap re-opens an unprobed tool-surface fact — G-460): continue only
+  if both appear. Then, from a scratch script `.opencode/tmp/3198/capture-mech.ps1`: pick a port
+  verified free
+  (`(Test-NetConnection 127.0.0.1 -Port <p>).TcpTestSucceeded` is `False`), start
   `opencode serve --port <p>` **in the background** (env-owned, disposable), wait until the port
   accepts a connection, then run the client
   `opencode --server http://127.0.0.1:<p> run "Reply with exactly: FREDO_QA_3198_R2D"`.
@@ -359,28 +432,68 @@
   row** (the plugin's own spans — the CLI emit path writes no spans, G-256); the server was started
   **after** the plugin write and is torn down with the run.
   **DISCLOSE THE FORM:** an env-owned server of the same plugin-host type as the shared service —
-  this proves *install → server-started-after → captured*, not a restart-in-place.
+  this proves *install → server-started-after → captured*.
   **Fallback (disclose it):** if either flag is missing, copy
   `.opencode/tests/opencode-plugin/scripts/run-external-session.ps1` to `.opencode/tmp/3198/` and
   run it with the same marker (it hosts its own server via `--standalone`, so it is a
   server-started-after-the-install by construction).
-  **(a′) R-2d — the negative control that makes (a) non-vacuous (E-1, reproduced).** Record the
-  destination's pre-state (F-14), then `Remove-Item ~\.config\opencode\plugins\fredo.js`, start an
-  env-owned server on another free port (so the plugin is **absent when it starts**), install
-  (`--no-restart-service`) so the bytes land **after** that server started, then run one more
-  session on **that same pre-write server** with marker `FREDO_QA_3198_R2D_PRE`.
-  **EXPECTED:** **0** `telemetry_spans` rows for `FREDO_QA_3198_R2D_PRE` — a pre-write server does
-  not load the plugin, which is exactly why the install must restart the service. If rows DO appear,
-  the runtime hot-loads the plugin: record it as a finding (it does not fail (a), but it voids the
-  addendum's inferred "restart is what makes capture work" link). The leg leaves `fredo.js` present
-  (re-run F-14's install if needed).
-  **(b) R-2e — dispatch, live: exactly one `service restart`, at the write, and reported.** Use the
-  **fake control CLI** `fixtures/shim-opencode-service-ok` — it answers `--version` →
-  `opencode v2.4.1`, `service status` → `http://127.0.0.1:28894` (exit 0), and appends its argv to
-  the journal on `service restart` — reached through `.opencode/scripts/setup-version-shim.ps1` so
-  the **product's own resolver** picks it. Drive gate: the payload's `binary_path` resolves inside
-  that fixture directory.
-  Prepare once: create the plugins dir; seed the destination with **different bytes**
+
+  **(a′) a PRE-EXISTING server picks the plugin up — the under-controlled negative, re-cut to its
+  true direction.** Round 2's own control produced **6 → 8** spans on a server that started
+  **before** the write; that falsified the "invisible until a restart" premise, removed the restart,
+  and made the old `0`-row expectation an assertion of deleted behaviour. **EXPECTED is now ≥1
+  span, and 0 rows is a FAIL of this row** (G-462: the removed rationale failed by being
+  *unnecessary*, so a `0` here would be re-asserting the falsified premise, not a negative control).
+  Four receipts, taken in this order and recorded verbatim — a receipt that does not hold is a FAIL:
+  1. **RECEIPT 1 — `PLUGIN_EXISTS=False` recorded immediately before that server starts.**
+     `Remove-Item -LiteralPath ~\.config\opencode\plugins\fredo.js` then immediately
+     `Test-Path -LiteralPath ~\.config\opencode\plugins\fredo.js` → `False`, stamped with
+     `Get-Date -Format o`. Record the pair (`PLUGIN_EXISTS=False`, `ABSENT_AT`).
+  2. **RECEIPT 2 — the server's `pid` + `StartTime`, and the port owner at the endpoint.**
+     In the same pass as receipt 1 (nothing may install in between): pick a port verified free
+     (`(Test-NetConnection 127.0.0.1 -Port <q>).TcpTestSucceeded` → `False`), start
+     `opencode serve --port <q>` in the background, wait until it accepts a connection, then
+     `SERVER_PID_BEFORE = (Get-NetTCPConnection -LocalPort <q> -State Listen | Select-Object -First 1)
+     .OwningProcess`; `Get-Process -Id $SERVER_PID_BEFORE | Select-Object Id,ProcessName,StartTime`
+     → `SERVER_START`. **The port owner must be that same pid** — record both, not one.
+  3. **RECEIPT 3 — the plugin write's `LastWriteTime` strictly later than the server start.**
+     `fredo setup --install-plugin` (no flag), then
+     `(Get-Item -LiteralPath ~\.config\opencode\plugins\fredo.js).LastWriteTimeUtc` → `WRITE_UTC`,
+     and assert `WRITE_UTC -gt SERVER_START.ToUniversalTime()` — **strictly** later. If the two
+     compare equal at the recorded precision, re-run the leg with a ≥2 s gap between the server
+     start and the install; never round them into a pass.
+  4. **RECEIPT 4 — the SAME pid after the session (the server was not restarted).** Run one session
+     on **that same pre-write server**:
+     `opencode --server http://127.0.0.1:<q> run "Reply with exactly: FREDO_QA_3198_R2D_PRE"`, then
+     re-read `(Get-NetTCPConnection -LocalPort <q> -State Listen | Select-Object -First 1)
+     .OwningProcess` → `SERVER_PID_AFTER` and `Get-Process -Id $SERVER_PID_AFTER | Select-Object
+     StartTime` → unchanged. **`SERVER_PID_AFTER -eq SERVER_PID_BEFORE` AND the `StartTime` is
+     identical** is the receipt; a different pid or a new `StartTime` is a restart, which voids the
+     control instead of proving it.
+     **`opencode --server … session list` is UNVERIFIED** (G-460 — no planning role can execute it,
+     and round 2 recorded only the `--server … run` form): the "not restarted" verdict must **not**
+     rest on a `session list` read. The **pid/`StartTime` before-after control is the binding
+     fallback** and decides receipt 4 on its own.
+  5. Resolve the marker and count:
+     `SELECT session_id, attributes_json::jsonb ->> 'prompt' FROM telemetry_spans WHERE
+     span_name='fredo.session' ORDER BY start_time_ns DESC LIMIT 5`, then
+     `SELECT count(*) FROM telemetry_spans WHERE session_id='<sid>'` through
+     `telemetry-query.ps1 -Manifest .opencode/tmp/envs/spec3198/manifest.json`.
+  **EXPECTED:** exactly one session carries `FREDO_QA_3198_R2D_PRE` and it holds **≥1**
+  `telemetry_spans` row, with `PLUGIN_EXISTS=False` before `SERVER_START`, `WRITE_UTC >
+  SERVER_START`, and the **same pid/port owner before and after** the session. The leg leaves
+  `fredo.js` present (F-14 installed it; keep it).
+  **Why this is the row that matters:** it is the only receipt that the **no-restart default**
+  still captures on a machine that already had a server running — the mechanism AC2 leans on once
+  the restart is gone.
+
+  **(b) no service lifecycle verb is dispatched (the guard against re-adding the restart).** Use the
+  **KEPT** fake control CLI `fixtures/shim-opencode-service-ok` — `--version` → `opencode v2.4.1`,
+  and it appends its argv to the journal on any `service restart` — reached through
+  `.opencode/scripts/setup-version-shim.ps1` so the **product's own resolver** picks it. Drive gate:
+  the payload's `binary_path` resolves inside that fixture directory and the detected token is
+  `2.4.1` (the fixture must PASS the version gate so the install path runs).
+  Prepare: create the plugins dir; seed the destination with **different bytes**
   (`Set-Content -LiteralPath ~\.config\opencode\plugins\fredo.js -Value '// stale placeholder'`); and
   delete the journal `.opencode/tmp/3198/shim-journal.txt`. Journal wiring — CLI leg: a scratch
   wrapper `.opencode/tmp/3198/dispatch-cli.ps1` holding
@@ -391,72 +504,47 @@
   -ExtraEnvVar "FREDO_QA_SHIM_JOURNAL=C:\Code\fredo\.opencode\tmp\3198\shim-journal.txt"` and run
   the wizard's install (or `invoke('install_plugin')`). **Both faces run this receipt** — never
   substitute the CLI for the app.
-  **EXPECTED (b1, one restart):** `Get-Content` the journal → **exactly one** line `service
-  restart`; the install succeeds (CLI exit 0 / `InstallResult.success == true`) and its output
-  carries the rendered `OPENCODE_SERVICE_RESTARTED_MSG` **after** the `PLUGIN_INSTALLED_GLOBAL_MSG`
-  line (record both verbatim, rendered from the constants).
-  **EXPECTED (b2, idempotency — a no-write run restarts nothing):** run the same install again with
-  no artificial change; the journal gains **zero** new lines, the success line prints again, and
-  **no** restart-outcome line appears (the hash guard wrote nothing). Record both journal counts and
-  the destination hash.
-  **EXPECTED (b3, opt-out):** re-seed the destination with different bytes, delete the journal, run
-  the CLI leg with `-Args "--install-plugin --no-restart-service"` → journal **zero** lines, CLI
-  **exit 0**, install successful, output carries the rendered
-  `OPENCODE_SERVICE_RESTART_SKIPPED_MSG` naming `opencode service restart` (rendered from
-  `OPENCODE_SERVICE_RESTART_COMMAND`, never a hand-written command).
-  **(c) R-2e — failure path, live: a failed restart fails the install and keeps the file.** With
-  `fixtures/shim-opencode-service-fail` (its `service restart` prints one stderr line and exits
-  **2**): re-seed the destination with different bytes, delete the journal, install through the
-  forwarder (CLI leg as in (b), plus the app leg for the same-process half).
-  **EXPECTED:** the journal shows **one** `service restart` attempt; `InstallResult.success ==
-  false` with `error` = the rendered `OPENCODE_SERVICE_RESTART_FAILED_MSG`, whose `{detail}` is the
-  child's own exit code **2** plus its stderr line (record verbatim) and whose `{restart}` renders
-  `opencode service restart`; the **CLI exits 1** through `fail_step` (stderr carries the message);
-  **`~\.config\opencode\plugins\fredo.js` is still on disk and hash-equal to
-  `apps/opencode-plugin/dist/index.js`** (the copy succeeded — the failure is the capture outcome,
-  not the file); and in the same app process `check_all_setup`'s `otel` step is `status == "error"`
-  with that detail while `check_otel_configured().opencode_configured == false` (F-16 ii/iii).
-  **Never `ok` on a failed restart.**
-  **(d) R-2e — no-service path, live: nothing to restart, so no restart.** With
-  `fixtures/shim-opencode-service-none` (its `service status` exits **1** — no Running service):
-  re-seed the destination with different bytes, delete the journal, install (CLI leg).
-  **EXPECTED:** journal **zero** lines (no restart on `Absent`/`Unknown` — never restart on a
-  guess), `InstallResult.success == true`, CLI exit 0, no restart-outcome line, and the `otel` step
-  `ok` — today's successful install, file byte-equal to the artifact.
-  - **RECORD, do not waive — the one unreachable leg:** installing **against the real shared
-    background service** and letting setup restart it is undrivable here: that service hosts this
-    pipeline's own session, so the restart would end the run (**G-461**). Record the service's
-    identity (`opencode service status` → its URL) and the exact command that would have run
-    (`fredo setup --install-plugin`, no opt-out), then point at (b) + (c) + (d) as the closed chain:
-    the dispatch, its idempotency, its opt-out, its failure and its no-service branch are all driven
-    through the product's real code path on the fake control CLI; the residual — that the runtime's
-    own `restart` verb reloads plugins — is the runtime's contract (proven for a fresh server in
-    (a)). This is a recorded environment limit, never an UNVERIFIED verdict and never a FAIL.
+  **EXPECTED (b1 — a real write dispatches NOTHING):** `Get-Content` the journal → **the file does
+  not exist, or is empty: zero lines**. The install succeeds (CLI exit 0 / `InstallResult.success
+  == true`), its output is exactly the one `PLUGIN_INSTALLED_GLOBAL_MSG` line (F-15) with **no**
+  second line and **no** `service`/`restart` substring, and the destination hash equals
+  `apps/opencode-plugin/dist/index.js`.
+  **EXPECTED (b2 — a no-write re-run dispatches nothing either):** run the same install again with
+  no artificial change → journal still **zero** lines, the success line prints again, and the
+  destination's `Get-FileHash` **and `LastWriteTime` are unchanged** (the hash guard wrote nothing,
+  so the install-instant stamp did not fire — F-18 pins the file side in full).
+  **A journal line, a second output line, or a changed `LastWriteTime` is a FAIL:** it means the
+  removed restart (or a stamp-on-no-op sibling) came back.
+
   - **LEVER / dependencies:** the fake CLI is reachable only with the forwarder's **L-1 shadow fix**
-    (addendum ST-A6, Toolsmith/Machinist-owned): if `where opencode.exe` names a path while the
-    payload's `binary_path` sits outside the fixture dir, the shadow did not engage — record a
-    **FAILED DRIVE**, never a product FAIL. Ordering: F-13's before/after hash record must be taken
-    **before** this row (it rewrites the destination); F-14/F-15/F-18 use the real runtime with
-    `--no-restart-service` so this pipeline's service is never touched.
-  - **Edge:** the journal IS the receipt — a fixture that never fires shows zero lines and a double
-    dispatch shows two; delete the journal in each leg or the count is invalid. Every message
-    assertion renders from the shipped constants (`OPENCODE_SERVICE_RESTARTED_MSG`,
-    `_FAILED_MSG`, `_SKIPPED_MSG`; `{restart}` from `OPENCODE_SERVICE_RESTART_COMMAND`) — never a
-    hand-written command. A 0-row result in (a) must first be attributed to the lever (did the
-    plugin host receive `OPENCODE_OTLP_ENDPOINT`? did the server start?) before it is called a
-    product FAIL.
+    (Toolsmith/Machinist-owned): if `where opencode.exe` names a path while the payload's
+    `binary_path` sits outside the fixture dir, the shadow did not engage — record a **FAILED
+    DRIVE**, never a product FAIL. Ordering: F-13's before/after hash record must be taken **before**
+    this row (it rewrites the destination); F-14/F-15/F-18/F-19 use the real runtime with no flag.
+  - **Edge:** the journal IS the receipt — a fixture that never fires shows zero lines and a stale
+    journal shows lines from a previous leg; delete it in each leg or the count is invalid. Every
+    message assertion renders from the shipped constant (`PLUGIN_INSTALLED_GLOBAL_MSG`) — never a
+    hand-written line. A 0-row result in (a)/(a′) must first be **attributed** (did the server start?
+    is that pid the port owner? did the plugin host get its endpoint? is the store the queried one?)
+    and the cause named in the verdict — but attribution never softens it: **a 0-row (a′) is a
+    FAIL**.
 
 ## Non-functional
 
-- [ ] **F-18 (idempotency; R-2e's no-write ⇒ no-restart clause).** Run
-  `fredo setup --install-plugin --no-restart-service` a second time on the configured machine;
-  capture `Get-FileHash` + `LastWriteTime` before and after.
-  **Expected:** the destination hash is byte-identical (an in-place rewrite is allowed, a
-  content change is not); F-15's single line prints again; no new PATH entry and no second
-  rc block (the writer is deleted, F-16); and **no restart outcome line** — an unchanged install
-  writes no bytes, so nothing restarts. The restart-side of that clause (journal zero on a re-run)
-  is F-17(b2); this row pins the file side.
-  - **Edge:** a third run; both entry points in sequence (in-app after CLI).
+- [ ] **F-18 (idempotency; the hash-guard's no-write clause — mtime included).** Run
+  `fredo setup --install-plugin` (no flag — there is no opt-out left) a **second** time on the
+  configured machine; capture `Get-FileHash` **and** `LastWriteTimeUtc` before and after.
+  **Expected:** the destination hash is byte-identical **and `LastWriteTimeUtc` is byte-for-byte the
+  same value** — an unchanged install writes no bytes, so `install_plugin_file` takes neither the
+  copy nor the install-instant `set_modified` (a rewritten file that ends up content-equal but
+  re-stamped is a **FAIL**: the guard is supposed to skip the write, and the stamp is what a later
+  provenance read would trust); F-15's single line prints again; no new PATH entry and no second rc
+  block (the writer is absent, F-16); and **no second output line at all** — the restart-outcome
+  message family is deleted, so a re-run prints exactly what the first run printed. The dispatch
+  half of the same clause (journal zero on a re-run) is F-17(b2); this row pins the file side.
+  - **Edge:** a third run; both entry points in sequence (in-app after CLI) — a run that changes the
+    bytes (re-built artifact) legitimately updates hash **and** `LastWriteTime`; that is the
+    real-write branch, not a failure of this row.
 
 - [ ] **F-19 (no collateral writes).** From F-14's before/after records.
   **Expected:** the only filesystem writes the setup surfaces perform are the global plugins
@@ -487,16 +575,26 @@
   **Expected:** exactly one bullet stating the same three facts (OpenCode 2 supported; the new
   default path = global plugin install + no `OPENCODE_ENABLE_TELEMETRY`/`OPENCODE_OTLP_ENDPOINT`/
   `OPENCODE_OTLP_PROTOCOL` writes; the opt-out = isolation-only `--standalone`) and linking
-  issue #3198.
+  issue #3198. **And no restart claim:** the bullet must not state that setup restarts the
+  background service, must not name `--no-restart-service`, and must not say a freshly installed
+  bundle was "invisible until a restart" — the round that wrote that sentence disproved it
+  (round-2 control: 6 → 8 spans on a pre-write server), so its survival is a FAIL of this row.
   - **Edge:** the bullet must not present `--standalone` as the default (F-22); the shipped
     bullet style (bold lead sentence + indented sub-lines + issue link) is followed.
 
-- [ ] **F-22 (R-5c / AC5 — the stale claims are GONE; runnable pre-#3197).**
-  `rg -n -i "works with opencode|install the plugin in (each|every) project|per[- ]project"`
-  over `docs/SETUP.md docs/CLI_GUIDE.md docs/FAQ.md docs/ARCHITECTURE.md CHANGELOG.md`, and
-  `rg -n "standalone"` over the same set.
-  **Expected:** the first search returns **zero** matches; every `standalone` hit states it is
-  the isolation-only path, never "the default" and never "always".
-  - **Edge:** a mention of the retired variables that says they are no longer required is a
-    PASS; a "requires the latest OpenCode" style claim is a FAIL (the gate enforces a major,
-    not perpetual tracking).
+- [ ] **F-22 (R-5c / AC5 — the stale and now-falsified claims are GONE; runnable pre-#3197).**
+  Three searches over `docs/SETUP.md docs/CLI_GUIDE.md docs/FAQ.md docs/ARCHITECTURE.md
+  CHANGELOG.md`:
+  1. `rg -n -i "works with opencode|install the plugin in (each|every) project|per[- ]project"`
+  2. `rg -n -- "--no-restart-service|no_restart_service|invisible until (a )?restart|until a restart"`
+  3. `rg -n -i "restart(s)? the (opencode )?(background )?service|service restart"`
+  and `rg -n "standalone"` over the same set.
+  **Expected:** searches **1** and **2** return **zero** matches — the flag and the "invisible until a
+  restart" sentence are gone from the product and from the docs the round disproved. **Search 3:**
+  every hit must be a *negation* ("setup does not restart the service") quoted with its disposition;
+  a **positive** claim, in any tense, is a FAIL. Every `standalone` hit states it is the
+  isolation-only path, never "the default" and never "always".
+  - **Edge:** a mention of the retired variables that says they are no longer required is a PASS;
+    a "requires the latest OpenCode" style claim is a FAIL (the gate enforces a major, not
+    perpetual tracking). If you conclude a negation should not be there at all, record it as a
+    finding and quote the line — do not silently pass it.

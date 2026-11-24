@@ -12,8 +12,9 @@
 
 ## #3198 — set of quick paths
 
-> Seeded at triage for Spec #3198. Quick paths only; full assertions live in the named
-> `functional.md` rows.
+> Seeded at triage for Spec #3198, **re-cut in round 3** with the install-time restart removed: the
+> quick paths no longer name `--no-restart-service`, a restart outcome or `restart_required`. Quick
+> paths only; full assertions live in the named `functional.md` rows.
 
 - [ ] S-7: **V1 gate quick path** — boot the 1.x fixture through the committed forwarder (it
       prepends the fixture dir and drops every PATH entry that resolves an `opencode.*`; QA adds no
@@ -25,23 +26,29 @@
       found version and `opencode upgrade` + `fredo setup --check` (and **no** `--major`);
       a `binary_path` outside the fixture dir is a FAILED DRIVE (round-1 L-1), not a product FAIL.
       No success state, no plugin write. Full assertions F-9/F-13.
-- [ ] S-8: **V2 install quick path** — `fredo setup --install-plugin --no-restart-service` against
-      the shipped `apps/opencode-plugin/dist/index.js` (build it if absent). The opt-out is the safe
-      form on this host: a real write would otherwise restart this pipeline's own shared service
-      (G-461). EXPECTED: exit 0; one `[fredo]` line naming `…\.config\opencode\plugins\fredo.js` and
-      "global"; the installed hash equals the dist hash; the skipped-restart message follows.
-      Full assertions F-14/F-15/F-17(b3).
+- [ ] S-8: **V2 install quick path** — `fredo setup --install-plugin` (**no flag**: the
+      install-time restart was removed in round 3, so the write is safe on a machine whose shared
+      service hosts this pipeline) against the shipped `apps/opencode-plugin/dist/index.js` (build it
+      if absent). Record the shared service's port owner (`opencode service status` →
+      `([uri]$url).Port` → `Get-NetTCPConnection -LocalPort <port> -State Listen | Select
+      OwningProcess`) **before and after**. EXPECTED: exit 0; one `[fredo]` line naming
+      `…\.config\opencode\plugins\fredo.js` and "global"; the installed hash equals the dist hash;
+      the destination `LastWriteTime` ≥ the run start (the install-instant stamp); **no**
+      restart/skip line of any kind; the shared service pid **unchanged** — a changed pid is a
+      FAILED DRIVE (`product still restarts the shared service`), never a PASS.
+      Full assertions F-14/F-15/F-17(b).
 - [ ] S-9: **Capture quick path** — copy the external lever to
       `.opencode/tmp/3198/`, run it with marker `FREDO_QA_3198_R2D` and
       `-OtlpEndpoint http://localhost:<env ingest_grpc_port>`, then resolve the session by the
       marker and count its rows. EXPECTED: ≥1 `telemetry_spans` row for that session (the lever
       hosts its own server — disclosed pre-existing-service gap). Full assertions F-17(a).
-- [ ] S-10: **Restart-failure quick path (R-2e)** — seed the destination with different bytes, delete
-      the fixture's default journal `%TEMP%\fredo-3198-shim-journal.txt`, then run the fake control
-      CLI through the forwarder:
+- [ ] S-10: **No-restart quick path (round-3 replacement for the deleted restart-failure path)**
+      — seed the destination with different bytes, delete the fixture journal, then run the fake
+      control CLI through the forwarder:
       `powershell -File .opencode/scripts/setup-version-shim.ps1 -Mode Cli -ShimDir
-      .opencode/tests/setup/fixtures/shim-opencode-service-fail -Args "--install-plugin"`.
-      EXPECTED: **exit 1**; the journal holds one `service restart`; the rendered failure message
-      names the child's own detail and `opencode service restart`; `fredo.js` is still on disk
-      (hash = `dist/index.js`); and in the same app process the `otel` step is **`error`** — never
-      `ok`, never `missing`, never `restart_required`. Full assertions F-17(c)/F-16.
+      .opencode/tests/setup/fixtures/shim-opencode-service-ok -Args "--install-plugin"`.
+      EXPECTED: **exit 0**; the journal is **absent or empty — zero lines** (the product dispatches
+      no `service restart` at all); the output is exactly one `PLUGIN_INSTALLED_GLOBAL_MSG` line;
+      `fredo.js` matches `dist/index.js`; and in the app `check_all_setup`'s `otel` step is **`ok`**
+      with the mechanism detail — never a restart outcome, never `missing`, never
+      `restart_required`. Full assertions F-17(b)/F-16.
