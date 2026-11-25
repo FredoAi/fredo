@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * #3206 ST-2 — deterministic Credits artifact generator.
  *
