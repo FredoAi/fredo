@@ -22,6 +22,7 @@ import {
   type SubsystemHealth,
 } from '../fredoHealth';
 import { engineFailureCopy } from '../../components/companion/companionReadiness';
+import type { IngestFailure } from '../streamHealth';
 
 /** All-neutral base: nothing to degrade, everything settled healthy where possible. */
 function snapshots(overrides: Partial<FredoHealthSnapshots> = {}): FredoHealthSnapshots {
@@ -89,12 +90,15 @@ describe('deriveSubsystemLines — frozen source → state mapping', () => {
     );
   });
 
-  it('postgres: ready/attached → healthy, starting → unknown', () => {
+  it('postgres: ready → healthy, starting → unknown (the retired attach state is neutral)', () => {
     expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'ready' } })), 'postgres')).toMatchObject(
       { state: 'healthy', detail: 'Ready' },
     );
-    expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'attached' } })), 'postgres')).toMatchObject(
-      { state: 'healthy', detail: 'Ready' },
+    // Spec #3194 ST-3 inverted the shipped `attached → healthy` pin: the attach
+    // state no longer exists, so a foreign payload still reporting it settles to
+    // the neutral default (U-8) instead of ever reading healthy.
+    expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'attached' as never } })), 'postgres')).toMatchObject(
+      { state: 'unknown', detail: 'Starting' },
     );
     expect(lineOf(deriveSubsystemLines(snapshots({ postgres: { state: 'starting' } })), 'postgres')).toMatchObject(
       { state: 'unknown', detail: 'Starting' },
@@ -416,5 +420,151 @@ describe('F-4b (static/unit pin — NON-AC) — pg_supervisor_status `disabled` 
       technicalDetail: 'state=disabled',
     });
     expect(aggregateFredoHealth(lines)).toBe('down');
+  });
+});
+
+// ── Spec #3194 ST-3 — the typed OTLP ingest cause on the telemetry line ─────
+
+/** The wire shape the backend emits (camelCase, one value per failure). */
+function ingestFailure(overrides: Partial<IngestFailure> = {}): IngestFailure {
+  return {
+    receiver: 'grpc',
+    port: 4317,
+    code: 'addrInUse',
+    message: 'bind 127.0.0.1:4317: address already in use',
+    ...overrides,
+  };
+}
+
+function telemetryLineOf(overrides: Partial<FredoHealthSnapshots>): FredoHealthLine {
+  return lineOf(deriveSubsystemLines(snapshots(overrides)), 'telemetry');
+}
+
+describe('#3194 ST-3 — degraded + typed ingest failure (U-4, U-8, U-9)', () => {
+  it('U-4: `bindFailed` → detail "Could not start" (never the receiver token) + raw `otlp:` evidence', () => {
+    const line = telemetryLineOf({
+      telemetry: 'degraded',
+      telemetryFailure: ingestFailure({
+        receiver: 'http',
+        port: 4318,
+        code: 'bindFailed',
+        message: 'failed to bind the HTTP receiver',
+      }),
+    });
+    expect(line).toMatchObject({ state: 'degraded', detail: 'Could not start' });
+    expect(line.technicalDetail).toBe(
+      'otlp:http:4318:bindFailed · failed to bind the HTTP receiver',
+    );
+    // The receiver (`grpc`/`http`) is protocol jargon: it rides ONLY the raw
+    // evidence line, never the user-facing `detail`.
+    expect(line.detail).not.toContain('http');
+    // No `remedy` on the telemetry line (the #3180 rule binds it to `down` rows).
+    expect(line).not.toHaveProperty('remedy');
+  });
+
+  it('U-4 (sibling leg): `addrInUse` → detail names the failing PORT as a bare integer', () => {
+    const line = telemetryLineOf({
+      telemetry: 'degraded',
+      telemetryFailure: ingestFailure({ port: 4318 }),
+    });
+    expect(line).toMatchObject({ state: 'degraded', detail: 'Port 4318 is in use' });
+    expect(line.technicalDetail).toBe(
+      'otlp:grpc:4318:addrInUse · bind 127.0.0.1:4317: address already in use',
+    );
+    expect(line).not.toHaveProperty('remedy');
+  });
+
+  it('U-9: the four existing telemetryLine pins are byte-identical', () => {
+    expect(telemetryLineOf({ telemetry: 'healthy' })).toMatchObject({
+      state: 'healthy',
+      detail: 'Streaming',
+    });
+    expect(telemetryLineOf({ telemetry: 'degraded' })).toMatchObject({
+      state: 'degraded',
+      detail: 'Telemetry stalled',
+    });
+    expect(telemetryLineOf({ telemetry: 'down' })).toMatchObject({
+      state: 'down',
+      detail: 'Stream stopped',
+    });
+    // The failure-present degraded row keeps the SAME state word + mandatory line.
+    const withFailure = telemetryLineOf({
+      telemetry: 'degraded',
+      telemetryFailure: ingestFailure(),
+    });
+    expect(withFailure).toMatchObject({ id: 'telemetry', label: 'Agent telemetry', state: 'degraded' });
+    // No failure recorded → no raw evidence line at all (absent key, G-413).
+    expect(telemetryLineOf({ telemetry: 'degraded' })).not.toHaveProperty('technicalDetail');
+  });
+
+  it('U-8: a foreign pg payload reporting the retired attach state is neutral and absent everywhere', () => {
+    const lines = deriveSubsystemLines(
+      snapshots({ postgres: { state: 'attached' as never } }),
+    );
+    expect(lineOf(lines, 'postgres')).toMatchObject({ state: 'unknown', detail: 'Starting' });
+    // `unknown` is NEUTRAL — the mandatory `down` escalation must not fire.
+    expect(aggregateFredoHealth(lines)).not.toBe('down');
+    expect(aggregateFredoHealth(lines)).toBe('healthy');
+    // No derived line carries the retired vocabulary (rendered-surface absence).
+    expect(JSON.stringify(lines)).not.toContain('attached');
+  });
+});
+
+describe('#3194 ST-3 — the typed cause is IGNORED outside the degraded branch (U-6)', () => {
+  it('U-6: a failure present while healthy is ignored — "Streaming", no raw evidence', () => {
+    const line = telemetryLineOf({ telemetry: 'healthy', telemetryFailure: ingestFailure() });
+    expect(line).toMatchObject({ state: 'healthy', detail: 'Streaming' });
+    expect(line).not.toHaveProperty('technicalDetail');
+  });
+
+  it('U-6: a failure present while down is ignored — "Stream stopped", no raw evidence', () => {
+    const line = telemetryLineOf({ telemetry: 'down', telemetryFailure: ingestFailure() });
+    expect(line).toMatchObject({ state: 'down', detail: 'Stream stopped' });
+    expect(line).not.toHaveProperty('technicalDetail');
+    // `down` keeps its #3180 cause-free copy: a stale bind failure never decorates it.
+    expect(line).not.toHaveProperty('remedy');
+  });
+});
+
+describe('#3194 ST-3 — a malformed failure fails closed (U-7)', () => {
+  function malformed(failure: unknown): FredoHealthLine {
+    return telemetryLineOf({
+      telemetry: 'degraded',
+      telemetryFailure: failure as IngestFailure,
+    });
+  }
+
+  it('U-7: port 0 / missing / non-integer / non-numeric → "Telemetry stalled", no evidence line', () => {
+    for (const failure of [
+      ingestFailure({ port: 0 }),
+      { ...ingestFailure(), port: undefined },
+      { ...ingestFailure(), port: 4317.5 },
+      { ...ingestFailure(), port: '4317' },
+      { ...ingestFailure(), port: Number.NaN },
+    ]) {
+      const line = malformed(failure);
+      expect(line).toMatchObject({ state: 'degraded', detail: 'Telemetry stalled' });
+      expect(line).not.toHaveProperty('technicalDetail');
+      expect(line.detail).not.toContain('undefined');
+      expect(line.detail).not.toContain('NaN');
+    }
+  });
+
+  it('U-7: an unknown code or a malformed shape → the unchanged stall copy, never a rendered cause', () => {
+    for (const failure of [
+      { ...ingestFailure(), code: 'somethingElse' },
+      { ...ingestFailure(), receiver: 'bluetooth' },
+      { ...ingestFailure(), message: 42 },
+      null,
+      undefined,
+      'addrInUse',
+      {},
+    ]) {
+      const line = malformed(failure);
+      expect(line).toMatchObject({ state: 'degraded', detail: 'Telemetry stalled' });
+      expect(line).not.toHaveProperty('technicalDetail');
+      expect(JSON.stringify(line)).not.toContain('undefined');
+      expect(JSON.stringify(line)).not.toContain('NaN');
+    }
   });
 });

@@ -40,6 +40,7 @@ import {
   type FredoHealth,
   type FredoHealthSnapshots,
 } from '@/shared/hooks/fredoHealth';
+import type { IngestFailure } from '@/shared/hooks/streamHealth';
 import { LauncherChrome } from '../LauncherChrome';
 
 /** The frozen tooltip order (ST-1 emits this; ST-3 must render it unchanged). */
@@ -449,5 +450,116 @@ describe('Spec #3180 ST-4 — remedy + technical detail rendered in the LED rows
     );
     await triggerLed();
     expect(countPhrase(screen.getByTestId('health-line-llamaServer'), 'Checking')).toBe(1);
+  });
+});
+
+// ── Spec #3194 ST-3 — a `degraded` row carrying raw ingest evidence ──────────
+//
+// This is a NEW combination for the shipped renderer: a non-`down` row that
+// carries BOTH a human `detail` and a raw `technicalDetail`. The component is
+// NOT edited — it already renders `technicalDetail` for any line state — so
+// these pins prove the existing rendering carries the typed OTLP cause.
+
+describe('#3194 ST-3 — typed OTLP ingest failure on the telemetry row (U-10, U-11)', () => {
+  const FAILURE: IngestFailure = {
+    receiver: 'grpc',
+    port: 4317,
+    code: 'addrInUse',
+    message: 'bind 127.0.0.1:4317: address already in use',
+  };
+  const EVIDENCE =
+    'otlp:grpc:4317:addrInUse · bind 127.0.0.1:4317: address already in use';
+
+  function degradedHealth(failure: IngestFailure | null): FredoHealth {
+    return healthFrom({ ...ALL_HEALTHY, telemetry: 'degraded', telemetryFailure: failure });
+  }
+
+  it('U-10: renders the port cause inline + the mono evidence line, with an UNCHANGED aria-label', async () => {
+    // Baseline first: a degraded row with NO failure (the shipped `Telemetry stalled`).
+    renderLed(degradedHealth(null));
+    const baselineLabel = (await triggerLed()).getAttribute('aria-label');
+    cleanup();
+
+    renderLed(degradedHealth(FAILURE));
+    const trigger = await triggerLed();
+    const row = screen.getByTestId('health-line-telemetry');
+
+    expect(row).toHaveAttribute('data-health-state', 'degraded');
+    expect(row).toHaveTextContent('Agent telemetry');
+    expect(row).toHaveTextContent('Degraded');
+    expect(row).toHaveTextContent('Port 4317 is in use');
+    // The typed cause REPLACES the generic stall copy (not an addition).
+    expect(row).not.toHaveTextContent('Telemetry stalled');
+
+    // The raw evidence line: one node, full text + native title, mono/nowrap/ellipsised.
+    const evidenceNodes = row.querySelectorAll<HTMLElement>('[title]');
+    expect(evidenceNodes).toHaveLength(1);
+    const technical = evidenceNodes[0];
+    expect(technical).toHaveAttribute('title', EVIDENCE);
+    expect(technical).toHaveTextContent(EVIDENCE);
+    expect(getComputedStyle(technical).whiteSpace).toBe('nowrap');
+    expect(getComputedStyle(technical).textOverflow).toBe('ellipsis');
+    expect(getComputedStyle(technical).fontFamily.toLowerCase()).toContain('mono');
+
+    // The receiver token (`grpc`) rides ONLY the evidence line — never the scan line.
+    const scanLine = row.firstElementChild as HTMLElement;
+    expect(scanLine).toHaveTextContent('Port 4317 is in use');
+    expect(scanLine).not.toHaveTextContent('grpc');
+
+    // No remedy node: the cause is the detail, and the row gains no second sentence.
+    expect(row).not.toHaveTextContent('Settings →');
+    expect(row).not.toHaveTextContent('restart Fredo');
+
+    // The cause is NOT in the polite live label — byte-identical to the no-failure row.
+    expect(baselineLabel).toBe(
+      'Fredo health: Degraded — Agent telemetry: Degraded; Companion engine: Healthy; Companion model: Healthy; Postgres: Healthy',
+    );
+    expect(trigger.getAttribute('aria-label')).toBe(baselineLabel);
+
+    // The trigger contract and the overall state are unchanged (degraded, not down).
+    expect(trigger).toHaveAttribute('role', 'status');
+    expect(trigger).toHaveAttribute('aria-live', 'polite');
+    expect(trigger).toHaveAttribute('aria-atomic', 'true');
+    expect(trigger).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('desktop-status-led-overall')).toHaveAttribute(
+      'data-health-state',
+      'degraded',
+    );
+    // Still exactly four subsystem lines + one overall (no new DOM row).
+    const tooltip = screen.getByTestId('desktop-status-led-tooltip');
+    expect(tooltip.querySelectorAll('[data-testid^="health-line-"]')).toHaveLength(4);
+    expect(tooltip.querySelectorAll('button, a, [tabindex]')).toHaveLength(0);
+  });
+
+  it('U-11: a >120-char message stays ONE constrained ellipsised line with the full title', async () => {
+    const longMessage =
+      'bind 127.0.0.1:4317: address already in use — the OTLP receiver could not publish its ' +
+      'surface because another process already owns the configured port for this profile';
+    expect(longMessage.length).toBeGreaterThan(120);
+
+    renderLed(degradedHealth({ ...FAILURE, message: longMessage }));
+    await triggerLed();
+
+    const row = screen.getByTestId('health-line-telemetry');
+    const technical = row.querySelector<HTMLElement>('[title]');
+    expect(technical).not.toBeNull();
+    const fullEvidence = `otlp:grpc:4317:addrInUse · ${longMessage}`;
+    // The DOM text is the FULL string (the ellipsis is paint-time only) and the
+    // native title carries it verbatim for the truncated view.
+    expect(technical).toHaveTextContent(fullEvidence);
+    expect(technical).toHaveAttribute('title', fullEvidence);
+
+    // ONE line: nowrap + hidden overflow + ellipsis + maxWidth 100% is the shipped
+    // mechanism that keeps the tooltip from scrolling horizontally (jsdom has no
+    // layout, so the constraint is asserted structurally, not by pixel width).
+    const style = getComputedStyle(technical as HTMLElement);
+    expect(style.whiteSpace).toBe('nowrap');
+    expect(style.overflow).toBe('hidden');
+    expect(style.textOverflow).toBe('ellipsis');
+    expect(style.maxWidth).toBe('100%');
+    // The long message never leaks into the scan line (the sentence stays short).
+    const scanLine = row.firstElementChild as HTMLElement;
+    expect(scanLine.textContent).not.toContain(longMessage);
+    expect(scanLine).toHaveTextContent('Port 4317 is in use');
   });
 });

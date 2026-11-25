@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   deriveStreamHealth,
+  isIngestFailure,
   isStreamHealth,
   STREAM_HEARTBEAT_STALE_MS,
   STREAM_HEALTH_CHECK_INTERVAL_MS,
@@ -74,5 +75,43 @@ describe('isStreamHealth — narrowing predicate', () => {
     expect(isStreamHealth(true)).toBe(false);
     expect(isStreamHealth(0)).toBe(false);
     expect(isStreamHealth({})).toBe(false);
+  });
+});
+
+describe('#3194 ST-3 — isIngestFailure narrows the typed OTLP start failure', () => {
+  const WELL_FORMED = {
+    receiver: 'grpc',
+    port: 4317,
+    code: 'addrInUse',
+    message: 'bind 127.0.0.1:4317: address already in use',
+  };
+
+  it('accepts the real wire shape for both receivers and both codes', () => {
+    expect(isIngestFailure(WELL_FORMED)).toBe(true);
+    expect(isIngestFailure({ ...WELL_FORMED, receiver: 'http' })).toBe(true);
+    expect(isIngestFailure({ ...WELL_FORMED, code: 'bindFailed' })).toBe(true);
+  });
+
+  it('rejects an ABSENT failure (the wire key is absent, never null — G-413)', () => {
+    expect(isIngestFailure(undefined)).toBe(false);
+    expect(isIngestFailure(null)).toBe(false);
+    expect(isIngestFailure({})).toBe(false);
+  });
+
+  it('rejects a malformed port (0 / negative / non-integer / non-numeric) — never "Port NaN"', () => {
+    expect(isIngestFailure({ ...WELL_FORMED, port: 0 })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, port: -1 })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, port: 4317.5 })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, port: '4317' })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, port: Number.NaN })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, port: undefined })).toBe(false);
+  });
+
+  it('rejects an unknown receiver/code and a non-string message', () => {
+    expect(isIngestFailure({ ...WELL_FORMED, receiver: 'bluetooth' })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, code: 'unknown' })).toBe(false);
+    expect(isIngestFailure({ ...WELL_FORMED, message: 42 })).toBe(false);
+    expect(isIngestFailure('addrInUse')).toBe(false);
+    expect(isIngestFailure([WELL_FORMED])).toBe(false);
   });
 });

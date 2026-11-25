@@ -93,7 +93,7 @@ export function dbResultPage(args: DbResultPageArgs): Promise<DbResultSet> {
  * already registered and invoked with no args.
  */
 export interface PgSupervisorStatus {
-  state: 'disabled' | 'starting' | 'ready' | 'attached' | 'failed';
+  state: 'disabled' | 'starting' | 'ready' | 'failed';
   port: number | null;
 }
 

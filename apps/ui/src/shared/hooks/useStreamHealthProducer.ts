@@ -14,6 +14,9 @@
  *   - A monotonic sequence guard drops a stale probe response that a fresher
  *     heartbeat (or a newer tick) has superseded.
  *   - Unmount reports `down` (the producer is gone — no signal can arrive).
+ *   - Spec #3194 ST-3: the typed `ingestFailure` rides BOTH carriers into the
+ *     ONE state object (`setStreamHealth(health, failure)`); it never changes
+ *     `deriveStreamHealth`'s three-state truth table.
  *
  * Test-only induction seam (inert by default — G-376, mirroring the FS-1
  * `resolveForceTelemetryDown` precedent in `useFredoHealth`): the frontend
@@ -29,7 +32,9 @@ import type { HostAdapter } from '../../app/adapters/HostAdapter';
 import { useStream } from '../contexts/StreamContext';
 import {
   deriveStreamHealth,
+  isIngestFailure,
   STREAM_HEALTH_CHECK_INTERVAL_MS,
+  type IngestFailure,
   type StreamHealth,
   type StreamHealthHeartbeat,
   type StreamHealthProbe,
@@ -78,18 +83,31 @@ export function resolveStreamHealthForce(): StreamHealth | null {
 
 /**
  * Normalize the backend `stream_health` snapshot
- * (`{ seq, ingestConnected, ageMs, forced }`) into the pure probe shape. A
- * missing/invalid `ageMs` fails closed to `+Infinity` (stale) so an unknown
- * snapshot can never read `healthy`.
+ * (`{ seq, ingestConnected, ageMs, forced, ingestFailure? }`) into the pure probe
+ * shape. A missing/invalid `ageMs` fails closed to `+Infinity` (stale) so an
+ * unknown snapshot can never read `healthy`. The typed `ingestFailure` is
+ * carried ONLY when it survives `isIngestFailure` — absent key otherwise
+ * (Spec #3194 ST-3, G-413).
  */
 function normalizeSnapshot(raw: unknown): StreamHealthProbe | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const snapshot = raw as { ingestConnected?: unknown; ageMs?: unknown };
+  const snapshot = raw as { ingestConnected?: unknown; ageMs?: unknown; ingestFailure?: unknown };
   const ageMs =
     typeof snapshot.ageMs === 'number' && Number.isFinite(snapshot.ageMs)
       ? snapshot.ageMs
       : Number.POSITIVE_INFINITY;
-  return { ok: true, ageMs, ingestConnected: snapshot.ingestConnected === true };
+  const probe: StreamHealthProbe = {
+    ok: true,
+    ageMs,
+    ingestConnected: snapshot.ingestConnected === true,
+  };
+  if (isIngestFailure(snapshot.ingestFailure)) probe.ingestFailure = snapshot.ingestFailure;
+  return probe;
+}
+
+/** The typed failure a heartbeat carries, or `null` when absent/malformed. */
+function failureFromHeartbeat(heartbeat: StreamHealthHeartbeat): IngestFailure | null {
+  return isIngestFailure(heartbeat.ingestFailure) ? heartbeat.ingestFailure : null;
 }
 
 /** Derive the health a freshly pushed heartbeat proves (event-driven recovery). */
@@ -117,7 +135,7 @@ export function useStreamHealthProducer(adapter: HostAdapter): {
   const onHeartbeat = useCallback(
     (heartbeat: StreamHealthHeartbeat) => {
       seqRef.current += 1;
-      setStreamHealth(healthFromHeartbeat(heartbeat));
+      setStreamHealth(healthFromHeartbeat(heartbeat), failureFromHeartbeat(heartbeat));
     },
     [setStreamHealth],
   );
@@ -128,13 +146,13 @@ export function useStreamHealthProducer(adapter: HostAdapter): {
     // The test-only runtime mirror short-circuits the probe (state mapping).
     const force = resolveStreamHealthForce();
     if (force) {
-      setStreamHealth(force);
+      setStreamHealth(force, null);
       return;
     }
     const invoke = adapter.invoke;
     if (typeof invoke !== 'function') {
       // No IPC transport (dev/browser) — the probe cannot prove liveness.
-      if (seq === seqRef.current) setStreamHealth('down');
+      if (seq === seqRef.current) setStreamHealth('down', null);
       return;
     }
     let result: StreamHealthProbe;
@@ -148,7 +166,7 @@ export function useStreamHealthProducer(adapter: HostAdapter): {
       result = { ok: false, ageMs: 0, ingestConnected: false };
     }
     if (seq !== seqRef.current) return; // superseded by a heartbeat/newer tick
-    setStreamHealth(deriveStreamHealth(result));
+    setStreamHealth(deriveStreamHealth(result), result.ingestFailure ?? null);
   }, [adapter, setStreamHealth]);
 
   // ONE bounded interval while mounted. `probe`/`setStreamHealth` are stable, so
@@ -162,7 +180,7 @@ export function useStreamHealthProducer(adapter: HostAdapter): {
     return () => {
       clearInterval(id);
       // The producer is unmounted — no signal can arrive; report `down`.
-      setStreamHealth('down');
+      setStreamHealth('down', null);
     };
   }, [probe, setStreamHealth]);
 

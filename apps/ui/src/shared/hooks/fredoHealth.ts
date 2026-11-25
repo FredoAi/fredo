@@ -21,8 +21,14 @@
  *
  * State-source → state mapping (frozen by the plan's Binding Names Block):
  *   - telemetry     : `StreamHealth` 1:1 → `healthy`/`degraded`/`down` (event-driven; never polled).
- *   - postgres      : `ready`/`attached` → healthy; `starting` → unknown; `failed`/`disabled` → down
- *                     (with a typed cause + remedy + raw detail — #3180 R-5).
+ *                     On the `degraded` branch an OPTIONAL typed `ingestFailure` (#3194 ST-3)
+ *                     names the real cause (`Port <port> is in use` / `Could not start` +
+ *                     the raw `otlp:<receiver>:<port>:<code> · <message>` evidence);
+ *                     `healthy`/`down` IGNORE it.
+ *   - postgres      : `ready` → healthy; `starting` → unknown; `failed`/`disabled` → down
+ *                     (with a typed cause + remedy + raw detail — #3180 R-5). The retired
+ *                     attach state (#3194) is no longer in the union; a foreign payload
+ *                     settles to the neutral `unknown` default.
  *   - llamaServer   : `healthy` → healthy; `starting` (in-flight) → unknown "Starting";
  *                     running-but-not-ready → degraded; a TYPED failure → down with a
  *                     remedy + detail; otherwise (idle) → unknown "Idle". NEVER a false
@@ -38,7 +44,7 @@
 
 // ── Aggregate (worst-wins over enabled subsystems) ───────────────────────────
 
-import type { StreamHealth } from './streamHealth';
+import { isIngestFailure, type IngestFailure, type StreamHealth } from './streamHealth';
 import {
   engineFailureCopy,
   type CompanionEngineErrorCode,
@@ -134,8 +140,12 @@ export function aggregateFredoHealth(lines: FredoHealthLine[]): FredoHealthState
 
 // ── Raw source snapshots → subsystem lines ───────────────────────────────────
 
-/** The supervisor lifecycle states exposed by `pg_supervisor_status.state`. */
-export type FredoPgState = 'disabled' | 'starting' | 'ready' | 'attached' | 'failed';
+/**
+ * The supervisor lifecycle states exposed by `pg_supervisor_status.state`.
+ * Spec #3194 ST-1/ST-3 removed the attach member: exactly one process owns the
+ * cluster, so there is no attach state to report.
+ */
+export type FredoPgState = 'disabled' | 'starting' | 'ready' | 'failed';
 
 /**
  * The companion setup signal, derived from the SAME `check_companion_readiness`
@@ -173,6 +183,12 @@ export interface FredoLlamaServerSnapshot {
 export interface FredoHealthSnapshots {
   /** The three-valued stream health (Spec #3064; event-driven; never polled). */
   telemetry: StreamHealth;
+  /**
+   * The typed OTLP ingest start failure that decorates the `degraded` telemetry
+   * row (Spec #3194 ST-3). Absent/`null` when none was recorded; ignored unless
+   * the stream health is `degraded`.
+   */
+  telemetryFailure?: IngestFailure | null;
   /** Companion readiness probe; `null` while unresolved/unavailable. */
   companion: FredoCompanionSnapshot | null;
   /** Llama-server status probe; `null` while unresolved/unavailable. */
@@ -245,16 +261,32 @@ const PG_FAILURE_COPY: Record<FredoPgFailureKind, { cause: string; remedy: strin
  * (Spec #3064 ST-4). Binding copy: `Streaming` (healthy) / `Telemetry stalled`
  * (degraded) / `Stream stopped` (down). The telemetry line is MANDATORY, so a
  * `down` escalates the aggregate to `down` and a `degraded` to `degraded`.
+ *
+ * Spec #3194 ST-3 adds the typed OTLP ingest cause, consulted ONLY on the
+ * `degraded` branch (UI/UX Asset 1): a stale failure never decorates a healthy
+ * line, and `down` (the IPC bridge itself is gone) keeps its pinned, cause-free
+ * copy. A malformed failure (`isIngestFailure` false) falls back to
+ * `Telemetry stalled` with no technical detail — never `Port undefined is in use`.
  */
-function telemetryLine(health: StreamHealth): FredoHealthLine {
-  switch (health) {
-    case 'healthy':
-      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'healthy', detail: 'Streaming' };
-    case 'degraded':
-      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'degraded', detail: 'Telemetry stalled' };
-    case 'down':
-      return { id: 'telemetry', label: SUBSYSTEM_LABELS.telemetry, state: 'down', detail: 'Stream stopped' };
+function telemetryLine(health: StreamHealth, failure?: unknown): FredoHealthLine {
+  const id = 'telemetry';
+  const label = SUBSYSTEM_LABELS.telemetry;
+  if (health === 'healthy') return { id, label, state: 'healthy', detail: 'Streaming' };
+  if (health === 'down') return { id, label, state: 'down', detail: 'Stream stopped' };
+
+  const typed = isIngestFailure(failure) ? failure : null;
+  if (typed) {
+    // The receiver token (`grpc`/`http`) rides ONLY the raw evidence line; user
+    // copy names the failing port. The `otlp:` prefix is the machine-greppable
+    // origin stamp (same register as `state=disabled` / `gpuUnavailable · …`).
+    const origin = `otlp:${typed.receiver}:${typed.port}:${typed.code}`;
+    const technicalDetail = typed.message.length > 0 ? `${origin} · ${typed.message}` : origin;
+    if (typed.code === 'addrInUse') {
+      return makeLine(id, label, 'degraded', `Port ${typed.port} is in use`, { technicalDetail });
+    }
+    return makeLine(id, label, 'degraded', 'Could not start', { technicalDetail });
   }
+  return { id, label, state: 'degraded', detail: 'Telemetry stalled' };
 }
 
 /**
@@ -328,7 +360,6 @@ function postgresLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
   if (!status) return line('unknown', 'Starting');
   switch (status.state) {
     case 'ready':
-    case 'attached':
       return line('healthy', 'Ready');
     case 'starting':
       return line('unknown', 'Starting');
@@ -359,7 +390,7 @@ function postgresLine(snapshots: FredoHealthSnapshots): FredoHealthLine {
  */
 export function deriveSubsystemLines(snapshots: FredoHealthSnapshots): FredoHealthLine[] {
   return [
-    telemetryLine(snapshots.telemetry),
+    telemetryLine(snapshots.telemetry, snapshots.telemetryFailure),
     llamaServerLine(snapshots),
     companionModelLine(snapshots),
     postgresLine(snapshots),

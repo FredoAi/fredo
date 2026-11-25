@@ -33,7 +33,6 @@ function signatureOf(status: PgSupervisorStatusView | null): string {
     status.failureKind ?? '',
     status.port ?? '',
     status.pid ?? '',
-    status.attached ? '1' : '0',
     status.error ?? '',
   ].join('|');
 }

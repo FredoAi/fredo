@@ -1,5 +1,6 @@
 /**
- * postgresConfigStore — the `pg_supervisor_status` consumer boundary (#3188 ST-3).
+ * postgresConfigStore — the `pg_supervisor_status` consumer boundary (#3188 ST-3;
+ * #3194 ST-3 removes the retired attach state from the closed state guard).
  *
  * `getPgSupervisorStatus` runs the raw IPC payload through a CLOSED
  * `isFailureKind` validator. That validator is NOT exhaustiveness-checked, so an
@@ -41,5 +42,26 @@ describe('getPgSupervisorStatus — closed failureKind validator (#3188 ST-3)', 
 
     const status = await getPgSupervisorStatus();
     expect(status.failureKind).toBeNull();
+  });
+});
+
+describe('getPgSupervisorStatus — the retired attach state (#3194 ST-3)', () => {
+  it('a FOREIGN payload still reporting `attached` fails the narrowed guard and reads the neutral default', async () => {
+    // A foreign/older backend payload: the attach state no longer exists in the
+    // union, so the closed `isSupervisorState` guard rejects the whole snapshot.
+    setInvoke(async () => ({ state: 'attached', port: 54321, pid: 42 }));
+
+    const status = await getPgSupervisorStatus();
+    // The neutral default — NEVER a false `failed`/`down` (G-220).
+    expect(status).toEqual({ state: 'disabled' });
+    expect(status.state).not.toBe('failed');
+  });
+
+  it('accepts every surviving state (disabled / starting / ready / failed)', async () => {
+    for (const state of ['disabled', 'starting', 'ready', 'failed'] as const) {
+      setInvoke(async () => ({ state, port: null, pid: null, error: null }));
+      const status = await getPgSupervisorStatus();
+      expect(status.state).toBe(state);
+    }
   });
 });
