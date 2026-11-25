@@ -64,12 +64,20 @@ this feature edits.
   menu-quit carve-out is untouched. Pin: `infrastructure/tray.rs` + `app_lifecycle.rs` unit tests
   green (`cargo test … tray`).
 
-- [ ] **RT-8 (the retained `fredo ingest` daemon still works).**
-  The gated E2E `apps/tauri/src-tauri/tests/headless_ingest.rs` is unchanged and still gated; run
-  `.opencode/tests/headless-ingest/smoke.md` S-4/S-5 if an environment is available.
-  **Expected:** the daemon boots and stops bounded; no source change to `pg_supervisor/**`,
-  `cli/commands/ingest.rs`, or the daemon's env seams. (Retiring the subcommand is #3194's call —
-  this spec must not.)
+- [ ] **RT-8 (INVERTED by #3194 — the retired daemon is GONE, and the resident owner took its
+  place).** The gated E2E `apps/tauri/src-tauri/tests/headless_ingest.rs` and
+  `applications/pg_supervisor/{headless,descriptor}.rs` were **deleted** by #3194 (ST-1), together
+  with `infrastructure/cli/commands/ingest.rs` and the `--run-ms`/`--shutdown-file` seams. Assert
+  the absence and run the successor evidence instead of the deleted drive:
+  (i) those four paths do not exist; (ii) `run-exitcode.ps1 -Command "\"<exe>\" --help"` lists no
+  `ingest` and no `--run-ms`/`--shutdown-file`; (iii) the one-owner row is green —
+  `.opencode/tests/resident-ingest/functional.md` **F-1/F-2** (`pg_supervisor_status` ready with
+  its own pid/port, one postmaster, one binder per OTLP port).
+  **Expected:** (i) all four absent; (ii) exit **0**, no retired token; (iii) F-1/F-2 PASS.
+  **KEPT:** `matches_legacy_ingest` / `RunEntryClass::OwnedLegacy` and the
+  `no_production_code_path_builds_the_ingest_command` pin still exist and stay green (F-10) — a
+  removed *command* is not a removed stored *value*.
+  **FAIL:** a surviving module/E2E/seam, or a second postmaster/binder.
 
 - [ ] **RT-9 (KV + command names unchanged).** `AUTOSTART_KEY == "ingest.autostart"`;
   commands are still `ingest_autostart_get` / `ingest_autostart_set` with the same argument names;
@@ -93,7 +101,8 @@ this feature edits.
 | Suite | Relationship |
 |---|---|
 | `resident-shell` | owns the resident process, tray, probe and exit gate this spec composes with (RT-4/RT-5/RT-7). |
-| `headless-ingest` | owns the retained `fredo ingest` daemon; its F-8 login-entry row is SUPERSEDED by this suite (rewritten in the same slice), F-6's DOM clause amended, smoke S-3 amended. |
+| `resident-ingest` | owns the ONE resident owner: cluster + OTLP binder set, the typed ingest failure, bounded quit, and the `fredo ingest` ABSENCE rows this suite's F-5a/F-5b/RT-8 now delegate to (seeded #3194). |
+| `headless-ingest` | **RETIRED by #3194** — folder deleted; its row-by-row disposition is `resident-ingest/retirement-ledger.md`. Do not run it, do not cite it as a live surface. |
 | `settings` | owns the Settings shell; the nav item's LABEL changes, its testid does not. |
 | `theme-contract`, `contrast-gate` | the pane must stay token-driven (RT-12). |
 
