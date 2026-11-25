@@ -105,6 +105,16 @@
     poster path must not spin.
   - This is the ONLY row where reduced motion is proven (a live flip is impossible — record the
     blocker, never a static-CSS-only PASS for R-4c).
+  - **#3223 · UX-14 — the Doom leg (same fake renderer, `doomEngaged` prop true).** Engage Doom
+    Mode through the store: **Expected** `data-avatar-motion="still"`, exactly **ONE** renderer draw
+    of the resolved DOOM clip (`doom-idle` on the first engagement), **ZERO** RAF ticks after it, no
+    `doom-in` / `doom-out` / `doom-shoot` (the phase jumps `idle→holding` on engage and `→idle` on
+    release — the instant costume swap, UX-14), the Doom palette still applies (`--accent-primary`
+    `#8fbf3f` on the body family), and the still comes from the **LIVE 3D path** (`data-avatar-render`
+    stays `live`, canvas present, poster `visibility: hidden`) — never the poster, which would erase
+    state legibility. **Edge:** the still keeps the held weapon, so a second engagement's still is a
+    different weapon; a one-shot (`teleport-out`) must not loop; no second animation loop and no
+    second canvas.
 
 ## F-AV-5 `[NEW]` (R-4) — "no blank seat" is measured in every degraded leg
 
@@ -154,6 +164,16 @@
       the wardrobe/brass regions unchanged while the body region changed.
   - **Edge:** Doom accent; a poster leg (the detail PNG is authored colour and must not be tinted);
     a state with FX.
+  - **#3223 — the Doom armour is in the SAME class (G-403: every member, not one).** Repeat (i) with
+    the Doom performance active, over the full material set the shipped manifest declares
+    (`fredo-character.manifest.json:14-32`): the four body-family materials
+    (`fredo_body`/`fredo_limb`/`fredo_boot`/`fredo_accent`) still track the palette, and **all eight
+    armour materials keep their AUTHORED hex in both accent passes** — `fredo_doom`, `fredo_helm`,
+    `fredo_visor`, `fredo_metal`, `fredo_brass`, `fredo_lava`, `fredo_trim`, `fredo_glove`. The
+    armour is authored-colour **by construction** (it is outside `applyAvatarTint`'s two name sets,
+    `avatarPalette.ts:46-47,165-192`), so a hit here means a second tint path was added. The row
+    reads the MATERIAL colours, never a screenshot (G-419). **Reddens after the change:** any armour
+    material whose hex moved in either pass, or a body material that stopped tracking the palette.
 
 ## F-AV-9 `[NEW]` (R-3d) — no avatar colour originates outside the theme/accent contract
 
@@ -198,8 +218,9 @@
       (`doomTheme.ts:39`) with no reload and no remount; `[data-avatar-doom-phase]`,
       `#fredo-armor`, `data-doom-armor` are ABSENT (the base renders no armour — the disclosed
       interim, U-9); on exit the body returns to the theme accent.
-  - **Edge:** release-mid-`doom-in`, the weapon cycle and the armour clips are **#3223's** and MUST
-    NOT be asserted here.
+  - **Edge:** release-mid-`doom-in`, the weapon cycle and the armour clips are **`F-AV-22`…`F-AV-29`**
+    of this suite (Spec #3223) and MUST NOT be asserted here; the per-engagement weapon identity is
+    `data-avatar-clip` (`doom-idle`/`doom-mg`/`doom-sword`), never a badge.
 
 ## F-AV-11 `[NEW]` (SC-1) — both surfaces render the character at their reserved footprint
 
@@ -295,6 +316,14 @@
       `<button>`, `<a>`, `<input>`); the poster's `<img>`/`<mask>` is `aria-hidden` (`alt=""`); the
       wrapper's `aria-label` equals `Fredo companion -- <state>` and tracks the state; Tab never lands
       inside the avatar; the wrapper `title` unchanged. (UI/UX §7 / UX-8.)
+  - **#3223 · UX-16 — the same read WITH Doom engaged (independent leg).** Engage and settle into the
+      armour idle, then repeat every read: **Expected** the ROOT still `aria-hidden="true"`, still
+      ZERO focusable nodes inside it (the armour is painted inside the canvas — nothing becomes
+      focusable, no role, no live region, no `<button>`/`<a>`/`[tabindex]` is added), the wrapper's
+      accessible name is **still `Fredo companion -- <state>`** and does **not** announce Doom (the
+      12-state readout is the functional state; the persona is decorative), the `title` tooltip is
+      unchanged, and Tab order across the window is untouched. **Reddens after the change:** any new
+      focusable inside the root, a wrapper name that gains a Doom token, or a new live region.
 
 ## F-AV-18 `[NEW]` (R-4 / SC-3 — UI/UX §2 / UX-2 / UX-7) — the poster is not a backdrop, and the canvas never paints a rectangle
 
@@ -380,4 +409,245 @@
     live); re-read after the live transition. If a reset was performed, the cold reload is
     mandatory before any read; if the reset control was absent, record the two storage keys as the
     stock-precondition receipt.
+
+---
+
+# fredo-avatar — Doom cut-over: the clip-driven armour + weapon cycle (Spec #3223)
+
+> **Verification policy: live.** This slice's AC (AC5, moved word-for-word from #3210) is a rendered
+> performance inside the live 3D canvas. Every visual leg is a LOCAL CAPTURE from the live dev app
+> (`tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3223/e2e/<name>.jpeg")`,
+> MCP driver `com.fredo.app`, main window) **paired with** a same-task `execute_js` read of
+> `data-avatar-clip` / `data-state` / `data-avatar-render` / `data-avatar-body-color` — a visual row is
+> never UNVERIFIED by construction. Upload every capture into the round's POSTED `## Tests Runs`
+> (`gh image` via `upload-evidence`): the posted comment is the durable record (G-415); the
+> `.opencode/tmp/3223/e2e/` path is only where the file is authored. **Doom emits NO OTLP span** — the
+> round's live-pipeline receipt (`telemetry_spans`, non-zero + recent `max(ingested_at)`) proves the
+> pipeline, not the feature; DISCLOSE that.
+>
+> **The observable is `data-avatar-clip`** — the mixer's APPLIED clip (`FredoAvatar.tsx:153`), live
+> only. While engaged it carries one of six doom names (`doom-in`, `doom-idle`, `doom-mg`,
+> `doom-sword`, `doom-shoot`, `doom-out`); otherwise a 12-state name; absent on the poster. There is
+> **no `data-avatar-doom-phase` hook** and no 13th state. The weapon identity IS the clip.
+>
+> **Instruments (defined once, used by every row below).**
+> **I-1 `QAClipRecorder`** — pasted in ONE `execute_js` task before a drive and dumped in one task
+> after it. A `requestAnimationFrame` loop re-querying the document each frame (so a surface remount
+> cannot blind it) that appends `{t, clip, state, render, motion, bodyColor}` whenever
+> `data-avatar-clip` changes: `clip`/`motion`/`bodyColor` from
+> `.fredo-companion-avatar [data-avatar-render]` (or `.fredo-avatar-idle [data-avatar-render]` for the
+> OFF-seat leg), `state` from the wrapper's `data-state`. Sub-second states and 1.333 s clips are read
+> from THIS log, never a serial driver round-trip.
+> **I-2 `QaZoom` capture aid** — the shipped screenshot call has no crop, and `sm` is 80×100 CSS px.
+> In the SAME task that reads a row's DOM facts, set `style.transform='scale(4)'` +
+> `style.transformOrigin='top left'` on the avatar wrapper, shoot, then remove the inline style in the
+> next task. A transform changes no `offsetWidth` and triggers no camera re-fit; no assertion is read
+> while it is on, and the receipt says it was applied.
+> **I-3 levers** — engage: five `document.dispatchEvent(new KeyboardEvent('keydown',{key,
+> bubbles:true,cancelable:true}))` for `i`,`d`,`d`,`q`,`d` (`useSecretCode.ts:41-74`; it IGNORES an
+> editable target, `:45` — never type into the launcher bar or the composer). Disengage:
+> `window.__TAURI_INTERNALS__.invoke('exit_doom_mode')` in the main webview (the shipped invoke path).
+> **Precondition for every row:** `get_doom_mode_status.phase === "active"` while engaged and
+> `data-avatar-render === "live"`.
+>
+> **Tag legend:** `[NEW]` must redden on the pre-change tree — the control is the frozen vocabulary:
+> `doomClips.ts`/`DOOM_CLIPS` do not exist there and `data-avatar-clip` can only carry one of the 12
+> state names, so any `doom-*` expectation is unsatisfiable on `main`'s tip.
+
+## F-AV-22 `[NEW]` (REQ-1 / REQ-4 / REQ-7 / REQ-8 — UX-10) — engage mid-`thinking`: armour in, weapon idle, palette, then retract
+
+- [ ] F-AV-22 **leg A (engage).** START from a page reload (a fresh page session resets the module
+      weapon cursor to `shotgun`; a prior engagement in the session would advance it). Companion
+      visible on the shipped surface with `data-avatar-render="live"` and `data-state="thinking"`
+      (single-click the `.fredo-companion-avatar` — the joke's LLM wait is `thinking` until the first
+      token, `CompanionEntity.tsx:1100-1105`; a cold model gives the widest window). Read the baseline
+      (`data-avatar-clip` ∈ the 12 names; `data-avatar-body-color` channels numerically equal
+      `--accent-primary`). Install **I-1**, then dispatch the five `iddqd` keydowns (**I-3**).
+  **Expected:** `data-avatar-clip` becomes `doom-in` and is observed for **≥1.0 s** (authored 1.333 s,
+      one-shot ended by the mixer's `finished`); then a weapon idle and it HOLDS (no flap) — on the
+      FIRST engagement of a fresh page session that is `doom-idle` (shotgun), and after any earlier
+      engagement in the same session read the clip rather than assuming the weapon; `data-avatar-render`
+      stays `live`; a second `iddqd` while engaged does NOT re-play `doom-in` (idempotent). `data-avatar-body-color` channels equal the computed
+      `--accent-primary` = **`DOOM_PALETTE.accentPrimary` `#8fbf3f`** (`doomTheme.ts:39`) — compare a
+      channel TRIPLE, never a string; `data-state` may keep changing underneath (the overlay is
+      independent of the flow) — record it. Captures: `doom0-thinking.jpeg`, `doom-in-mid.jpeg`
+      (~0.4 s in), `doom-idle-shotgun.jpeg` (settled).
+  - **Reddens after the change:** on `main`'s tip no doom clip can be applied at all → `doom-in` /
+    `doom-idle` never appear (the control).
+  - **Edge:** engage mid-stream (`data-streaming="true"`); engage twice fast; a click during
+    `doom-in` must not cut the entrance (see F-AV-24 leg B for the reference sequence).
+- [ ] F-AV-22 **leg B (release + restore).** From the settled armour idle, invoke
+      `exit_doom_mode` (**I-3**) with the recorder still running; capture mid-retract and after the
+      clip settles. Read `data-state` immediately BEFORE the invoke and again at the restore instant.
+  **Expected:** `doom-idle` → `doom-out` (observed **≥1.0 s**, one-shot on `finished`) → a 12-state
+      clip; the palette reverts on the same edge the armour retracts (`data-avatar-body-color` back to
+      the theme accent, no flash, no remount — a marker stamped on `[data-avatar-canvas]` survives the
+      whole engage/release); **the restored clip EQUALS `data-state` at that instant** (no stale
+      pre-engagement snapshot, no 13th state). Captures: `doom-out-mid.jpeg`, `restored-thinking.jpeg`.
+  - **The AC's "returns to the thinking performance":** if `data-state` reads `thinking` at BOTH
+    reads, the restored clip MUST be `thinking`. If the companion's turn already left `thinking`, the
+    literal leg is RE-DRIVEN (recommended: the TicTacToe O-move, whose vision turn holds `thinking`
+    for seconds) — the disclosure `precondition window missed; re-driven` is pre-authorized and is not
+    a FAIL; a restore that differs from a `thinking`-at-restore `data-state` IS a FAIL.
+  - **Edge:** release from `flourishing` (must go straight to `doom-out`); a double release (idempotent
+    no-op).
+
+## F-AV-23 `[NEW]` (REQ-2 — UX-11) — the weapon cycle across four consecutive engagements
+
+- [ ] F-AV-23 (live) In ONE page session (no reload — the cursor is module-scoped), run four
+      engagement cycles: `iddqd` → poll until a holding clip → read it → `exit_doom_mode` → poll until
+      a 12-state clip → repeat. Capture each engagement's armour idle with **I-2**.
+  **Expected:** engagement 1 `doom-idle` (**shotgun**), 2 `doom-mg` (**machine gun**), 3
+      `doom-sword` (**energy sword**), 4 `doom-idle` again (**wraps**); the three captures show three
+      DIFFERENT silhouettes (UX-11: a horizontal boomstick across the chest / a bulky drum-fed chest
+      mass / a diagonal self-lit blade — the sword is the only self-lit prop); the recorder shows no
+      extra `doom-in` inside a single engagement. Captures: `doom-engage-1.jpeg` … `doom-engage-4.jpeg`.
+  - **Reddens after the change:** no doom clip exists on the pre-change tree (control).
+  - **Edge:** the release→`idle`→re-engage "flick" walks all three in a few seconds (UX-11) — covered
+    by F-AV-25 leg B. **Count ENGAGEMENTS, not `iddqd` presses:** a second `iddqd` while still engaged
+    (including during `entering`) is a no-op and must NOT advance the cursor — the plan's repeated-edge
+    rule means an entry edge during `entering` settles to `holding` on the SAME weapon (it never reaches
+    `idle`). A page reload restarts the cursor at `shotgun` (declare it, do not fail it).
+  - **Unit (same row):** `__tests__/doomClips.test.ts` — `DOOM_WEAPON_ORDER` is
+    `['shotgun','machine-gun','energy-sword']`, `DOOM_WEAPON_CLIP` maps `shotgun→doom-idle`,
+    `machine-gun→doom-mg`, `energy-sword→doom-sword`, `advanceDoomWeapon()` returns `shotgun` first
+    and wraps after the third, and `isDoomClipName` rejects the 12 state names. In
+    `__tests__/doomPerformance.test.ts`: the cursor SURVIVES a consumer unmount — unmount mid-session,
+    re-engage, and the next weapon (not `shotgun`) is selected.
+
+## F-AV-24 `[NEW]` (REQ-3 / REQ-11 — UX-12) — the deterministic flourish
+
+- [ ] F-AV-24 **leg A (the beat).** Engage, settle into the armour idle, keep recording ~12 s; capture
+      the frame the `doom-shoot` clip is first observed.
+  **Expected:** exactly **ONE** `doom-shoot` entry in the log; it STARTS **9.6–11.4 s** after the
+      `iddqd` keys (9 s of continuous holding after the settle + the 1.333 s intro, UX-12 — the band
+      is the declared tolerance), lasts **1.0–1.8 s** (`DOOM_FLOURISH_MS = 1333`, ended by the timer
+      because a loop clip emits no `finished`), then returns to the **SAME** weapon clip; no RNG (the
+      same beat on a repeat run). Capture: `doom-flourish.jpeg`.
+  - **The row asserts that a flourish PLAYED and returned to `holding` — it never asserts the weapon
+    silhouette during the flourish.** `doom-shoot` is authored on the shotgun, so an MG/sword
+    engagement visibly shows the shotgun for one loop: recorded AUTHORED quirk (UX-12), not a defect.
+- [ ] F-AV-24 **leg B (never after a release begins).** Repeated with the recorder running, issue
+      `exit_doom_mode` the instant `doom-shoot` is observed.
+  **Expected:** the very next recorded clip is `doom-out`, and NO second `doom-shoot` entry appears
+      after the release edge; the exit's own one-shot is not delayed by the flourish.
+- [ ] F-AV-24 **leg C (unit — the six "nevers").** `__tests__/doomPerformance.test.ts` with fake
+      timers + a fake renderer: no flourish from `entering` or `exiting`; none while suspended
+      (teleport); the 9 s interval restarts on every entry into `holding` (two flourishes are never
+      adjacent); a fake renderer that never emits `finished` for `doom-shoot` still returns to
+      `holding` at `DOOM_FLOURISH_MS`; release during `flourishing` clears the timer; reduced motion
+      never arms it (see F-AV-4's Doom leg).
+
+## F-AV-25 `[NEW]` (REQ-5 / REQ-6 — UX-13) — the two mid-transition sequences, and the repeated-edge invariant
+
+- [ ] F-AV-25 **leg A (release mid-`entering`, live).** With **I-1** installed, in ONE task: dispatch
+      the five `iddqd` keydowns, then `setTimeout(() => window.__TAURI_INTERNALS__.invoke(
+      'exit_doom_mode'), 300)`. Capture during `doom-in` and after the sequence settles.
+  **Expected:** the recorded sequence is `doom-in` → `doom-out` → `<12-state>`; **never** `doom-in` →
+      `<12-state>`; the `doom-in`→`doom-out` interval is **≥1.0 s** (the in-flight one-shot completed;
+      the release intent is held by the plan's coalesce-to-latest mirror, never a `pendingExit`
+      boolean); no 12-state clip appears between the two doom clips; the final
+      `data-avatar-clip` equals `data-state` (the armour is never left half-applied).
+      Captures: `doom-release-mid-in.jpeg`, `doom-retract-complete.jpeg`.
+  - **Disclosure (required in the receipt):** the backend's own teardown reaches `inactive` after its
+    bounded stop (the `exiting` phase still reads engaged, `types.ts:69-71`), so the live leg may
+    complete `doom-in` before the edge lands. The live leg proves ORDERING + DURATION; the
+    coalesce-to-latest mechanics are proven by leg C. Say which path the run took.
+- [ ] F-AV-25 **leg B (re-engage mid-`exiting`, live).** Engage, settle, `exit_doom_mode`, then poll
+      in-page (rAF) until `data-avatar-clip === 'doom-out'` and immediately dispatch the five `iddqd`
+      keydowns again. Capture mid-retract and at the new holding.
+  **Expected:** `doom-out` → `doom-in` → the **NEXT** weapon clip (releasing a shotgun engagement
+      re-enters at `doom-mg`); `doom-out` is not cut (≥1.0 s observed) and the fresh `doom-in` is full
+      length. Captures: `doom-reengage-mid-out.jpeg`, `doom-reengage-armour.jpeg`.
+- [ ] F-AV-25 **leg C (unit — the repeated-edge rule + the settled invariant).**
+      `__tests__/doomPerformance.test.ts` with a fake renderer that records `setDoomPerformance` and
+      emits `onDoomClipFinished`: `setDoomPerformanceEngaged(false)` during `entering` leaves the phase
+      and the pushed clip UNCHANGED; the exit is pushed only after `completeDoomOneShot('doom-in')`
+      (→ `exiting`); the mirror holds for an entry edge during `exiting` (→ `entering` after
+      `finished(doom-out)`, weapon advanced EXACTLY once). **Mechanism note (binding — the plan's
+      Convergence section supersedes an earlier two-boolean design):** there is NO
+      `pendingExit`/`pendingEntry` slot; every edge rewrites ONE `desiredEngaged` mirror and
+      `settle()` runs on every one-shot completion. Assert the BEHAVIOUR, never a boolean name.
+      Then the settled invariant: `false→true→false→true` inside one `doom-in` ends in `holding`, and
+      `true→false→true→false` inside one `doom-out` ends in `idle` (the figure converges on the mode's
+      ACTUAL final state, never on edge order), and after EVERY `finished`
+      `desiredEngaged === (phase === 'holding' || phase === 'flourishing')` — i.e. the rendered armour
+      matches `isDoomVisualEngaged()`: **never un-armoured with the mode ON, never armoured with it
+      OFF.**
+
+## F-AV-26 `[NEW]` (REQ-13 — UX-15) — the poster host: palette only, no doom clip
+
+- [ ] F-AV-26 Record `Get-FileHash` (SHA-256) of `apps/ui/public/avatar/fredo-character.glb`, **move
+      it** to `.opencode/tmp/3223/lever/`, hard-reload the dev app, engage Doom Mode, read the surface;
+      capture `doom-poster.jpeg`; **restore the file**, re-verify the digest and reload.
+  **Expected:** for the whole mount `data-avatar-render="poster"`, `[data-avatar-canvas]` count **0**,
+      `data-avatar-clip` **absent** while engaged (no doom clip, no weapon), and the Doom palette
+      still applies (`--accent-primary` = `#8fbf3f`; the poster body layer resolves that accent — a
+      green idle silhouette is the acknowledgement, UX-15); no app-level `Error:`/`Uncaught` (one
+      failed-resource line for the missing file is expected and is not an app error). After restore:
+      digest matches and a reload returns the surface to `live`. **Restore is verified BEFORE any
+      later live row runs** (a stale lever poisons them — paste the digest into the receipt).
+  - **Unit (same row):** `useAvatarRenderer.reducedMotion.test.tsx`'s literal `AvatarRenderer` fake
+    gains `setDoomPerformance` (ST-3) or the typecheck fails; `avatarAssetContract.test.ts` asserts
+    `DOOM_CLIPS` ⇄ the manifest (six names, 1.333 s, only `doom-in`/`doom-out` `loop:false`) and
+    presence in the GLB.
+  - **Edge:** both surfaces; the capability-loss leg is a renderer-seam unit row, not this lever.
+
+## F-AV-27 `[NEW]` (REQ-9) — a teleport outranks the Doom overlay and hands it back
+
+- [ ] F-AV-27 With the companion floated (away overlay, so the landing point is observable) and Doom
+      engaged in `holding` with a known weapon, dispatch
+      `window.dispatchEvent(new MouseEvent('mousedown',{button:2,ctrlKey:true,clientX,clientY,
+      bubbles:true}))` (`FredoCompanion.tsx:192-215`), with **I-1** running.
+  **Expected:** recorded `holding-clip` → `teleport-out` → `teleport-in` → the **SAME** weapon clip
+      (the overlay is suspended then restored, `DOOM_SUPPRESSING_STATES`); `data-avatar-clip` is never
+      left on a `teleport-*` name after settle (≤2 s — never stuck mid-teleport); the landing point
+      equals today's clamp on the overlay (`left = clamp(clientX−40, 0, innerWidth−80)`,
+      `top = clamp(clientY−50, 0, innerHeight−100)` — `CompanionEntity.tsx:1043-1059`, the 80×100 box);
+      the resting state after arrival is the doom weapon clip while engaged. Captures:
+      `doom-teleport-out.jpeg`, `doom-teleport-in.jpeg`, `doom-teleport-resumed.jpeg`.
+  - **Reddens after the change:** no doom clip exists pre-change, so "resumes the weapon clip" cannot
+    pass (control).
+  - **Unit (same row):** `doomPerformance.test.ts` — `setDoomPerformanceSuspended(true)` pushes
+    `null`, freezes the phase and CLEARS the flourish timer; on resume the phase clip is re-pushed,
+    and `entering` restarts `doom-in` (a teleport during the intro swallows its `finished` — R-4).
+    `avatarRenderer.test.ts` — while a doom performance is active, `setState('teleport-out')` applies
+    the teleport clip (teleport always wins) and the doom clip resumes afterwards.
+  - **Edge:** teleport during `doom-in`, during `flourishing`, and twice in rapid succession.
+
+## F-AV-28 `[NEW]` (REQ-1 / REQ-2 / REQ-6) — one store, both shipped avatar consumers
+
+- [ ] F-AV-28 **leg A (mount freshness).** Engage on the home seat (`CompanionEntity surface="seat"`),
+      note the holding clip, then teleport away (the seat entity UNMOUNTS and the away overlay mounts)
+      with **I-1** running.
+  **Expected:** the freshly mounted surface immediately reports the SAME holding clip — no second
+      `doom-in`, never `null` and never a 12-state clip while engaged; a release on the new surface
+      retracts normally and lands on a 12-state clip. (The phase is store-owned: module scope, never a
+      `useRef`, per ENGINEERING_RULES persistence.)
+  - **Edge:** teleport back to the seat mid-holding; a release that lands mid-remount.
+- [ ] F-AV-28 **leg B (the OFF-seat mascot).** Toggle **Settings → Companion → the
+      `aria-label="Show Fredo Companion"` switch** OFF (`CompanionSettingsPanel.tsx:679`) so the
+      launcher renders the decorative `.fredo-avatar-idle` mascot, then engage Doom Mode; release.
+  **Expected:** the decorative mascot ALSO arms — its `[data-avatar-render]` reports a doom clip while
+      engaged and a 12-state clip after release (both shipped `FredoAvatar` consumers read the same
+      store); exactly ONE `[data-avatar-render]` per mounted surface throughout.
+  - **Remount control:** the OFF→ON toggle must not blank the seat for a frame; see `R-AV-10`.
+
+## F-AV-29 `[NEW]` (unit only — REQ-6 settled invariant) — the double-flick converges on the mode's actual state
+
+- [ ] F-AV-29 `__tests__/doomPerformance.test.ts` (fake timers, fake renderer): drive edge bursts
+      faster than one one-shot — `false→true→false→true` inside one `doom-in`, and
+      `true→false→true→false` inside one `doom-out` — then settle.
+  **Expected:** the first burst ends in `holding` with `isDoomVisualEngaged() === true` (armoured), the
+      second ends in `idle` with `isDoomVisualEngaged() === false` (un-armoured); and after EVERY
+      `finished` (`settle()`) `desiredEngaged === (phase === 'holding' || phase === 'flourishing')`
+      and `getDoomPerformanceSnapshot().clip` agrees with `isDoomVisualEngaged()` — armour rendered
+      iff the mode is engaged. **Mechanism (binding):** one `desiredEngaged` mirror rewritten by every
+      edge + `settle()` on every one-shot completion — the plan's Convergence section supersedes an
+      earlier `pendingExit`/`pendingEntry` design, so the test asserts the snapshot and the invariant,
+      never a boolean name. **Reddens after the change:** this module does not exist on the pre-change
+      tree (control). **Edge:** three edges inside one one-shot; an edge arriving exactly on the
+      `finished` callback; a suspended (teleport) burst; **an entry edge DURING `entering`** (no
+      `idle` visit) settles to `holding` on the SAME weapon — one engagement, exactly one
+      `advanceDoomWeapon` for the whole flick.
 
