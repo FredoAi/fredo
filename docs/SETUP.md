@@ -226,7 +226,13 @@ powershell -NoProfile -File .opencode/scripts/verify-installer-payload.ps1 -Inst
 
 `RESULT=PASS` means the installer passed **both** halves of the gate: every core payload DLL was found inside the extracted install, **and** every payload DLL present was import-scanned clean — the run prints `ARTIFACT_PAYLOAD_SCANNED=<n> of=<n>` and then `IMPORT_SCAN=PASS dlls=<n>` (`IMPORT_SCAN=FAIL dlls=<n>` otherwise). `PAYLOAD_MISSING=<name>` with exit 1 means the installer is incomplete. A forbidden import (`ERROR=PAYLOAD_FORBIDDEN_IMPORT_IN_ARTIFACT dll=<dll> module=<module> kind=<import|delay-import>`) or an import the payload cannot satisfy (`ERROR=PAYLOAD_IMPORT_UNRESOLVED_IN_ARTIFACT edge=<dll> -> <module> kind=<import|delay-import>`) also fails the gate, exit 1. `PAYLOAD_ABSENT_OPTIONAL=<name>` only names an optional tool module that was not shipped — it is a report, not a failure.
 
-**Auto-start at login.** Settings → **Background capture** installs a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`), so capture is continuous without opening the desktop app. Disabling the toggle removes the entry. An entry left by an earlier version (`fredo ingest`) is migrated in place — at startup or on the next toggle — and an entry the product does not own is never modified. No administrator rights are required (an OS-level service is out of scope).
+### Residency and start at login
+
+Fredo is a resident process. Closing the main window destroys the webview, not the process — capture continues with no window on screen, and the **notification area** icon's two verbs, **`Open`** and **`Quit`**, are the control surface: `Open` shows a hidden or rebuilds a destroyed main window, `Quit` ends the process and runs its bounded teardown. The cluster and the receivers belong to that one process, exactly as [PostgreSQL Persistence](#postgresql-persistence) below describes.
+
+Settings → **Background capture** installs one per-user login entry that starts Fredo **at sign in with no window**; its command is exactly `"<current_exe>" --background`, and no administrator rights are required (an OS-level service is out of scope). Disabling the toggle removes the entry. An entry an earlier version wrote is rewritten in place — at startup or on the next toggle, with its enabled state preserved — and an entry the product does not own is never modified.
+
+Capture therefore runs exactly as long as the process does. It ends on **quit**, on a **crash**, on a **force-kill**, or on a **reboot before sign in** — the login entry is a per-user value, so nothing starts before a user signs in — and the next start resumes it, sweeping a postmaster a hard kill may have left behind. Full mechanism: [ARCHITECTURE.md → The resident shell](ARCHITECTURE.md#the-resident-shell).
 
 ## PostgreSQL Persistence
 

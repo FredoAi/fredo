@@ -156,7 +156,11 @@ Fredo also collects its own internal metrics and structured logs from the Rust b
 
 ### Can I capture telemetry while the desktop app is closed?
 
-Yes. Closing the main window does not stop capture — Fredo stays resident in the tray and keeps the ingest pipeline running. For a machine that is signed out or freshly started, Settings → **Background capture** installs a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`), so capture resumes whenever you sign in; an entry left by an earlier version is migrated in place, and an entry the product does not own is never modified.
+Yes — capture runs while Fredo's **process** runs, with or without a window. Fredo is one resident process that owns the embedded PostgreSQL cluster and the OTLP receivers, so **closing the main window destroys the webview, not the process**, and capture continues. The word that decides the answer is *process*: a stopped process captures nothing (see [What stops capture?](#what-stops-capture)). The **notification area** icon offers exactly two verbs — **`Open`** shows a hidden or rebuilds a destroyed main window, **`Quit`** ends the process. For a machine that is signed out or freshly started, Settings → **Background capture** installs a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`), so capture resumes whenever you sign in; an entry left by an earlier version is rewritten in place, and an entry the product does not own is never modified. Full mechanism: [ARCHITECTURE.md → The resident shell](ARCHITECTURE.md#the-resident-shell).
+
+### What stops capture?
+
+Capture runs exactly as long as Fredo's process runs — capture *is* the process. It ends when you **quit** Fredo (the notification-area **`Quit`** item, which also runs the bounded teardown), when the process **crashes**, when it is **force-killed**, and on a **reboot before you sign in**, because the login entry is a per-user value and nothing starts before sign-in. None of these is a defect: they are the accepted boundary of a resident desktop process. The next start resumes capture, and the cluster a hard kill left behind is reclaimed by that start's sweep.
 
 ---
 
@@ -321,4 +325,4 @@ The Windows NSIS installer (`nsis/installer-hooks.nsh`) adds the `fredo` binary 
 
 ### What does `fredo` do when no desktop app is running?
 
-CLI mode prints a connection-refused error and exits non-zero. The IPC socket only exists while the GUI is running.
+CLI mode prints a connection-refused error and exits with code `2`. The IPC socket exists while the Fredo **process** runs — a window is not required, so a login (`--background`) instance serves CLI commands with no window on screen. With no process running, there is no socket to reach.
