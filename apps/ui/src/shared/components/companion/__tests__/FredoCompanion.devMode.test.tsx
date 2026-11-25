@@ -33,7 +33,7 @@
  * on it re-runs forever — an infinite re-render loop.)
  *
  * Regression invariants (carry-over): the 58 base rects stay byte-identical to the
- * frozen `FREDO_AVATAR_SOURCE_RECTS` expansion; the 250 ms single/double discriminator
+ * frozen 58-rect expansion — see the shell assertions in the first test); the 250 ms single/double discriminator
  * is exercised; teleport timing (400+50 out / 400+50 in) and the 5 s talk hold are
  * asserted observably; the Tauri branch (IS_TAURI === true) is NOT exercised here
  * (proven live by Q-9..Q-12). No static `@tauri-apps/api` import is introduced.
@@ -51,10 +51,6 @@ import { FredoCompanion } from '@/shared/components/companion';
 import { DevAdapter } from '@/app/adapters/DevAdapter';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
 import { AVATAR_SM } from '@/shared/components/fredo-avatar/fredoAvatarSizes';
-import {
-  expandFredoRects,
-  FREDO_AVATAR_SOURCE_RECTS,
-} from '@/shared/components/fredo-avatar/fredoAvatarGeometry';
 
 // The framer-motion mock needs React.createElement at render time; it is obtained from
 // the test file's React import (evaluated before any test renders).
@@ -229,7 +225,7 @@ afterEach(() => {
 });
 
 describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
-  it('renders the sm avatar idle with the frozen 58-rect geometry and reads the persisted visible key', async () => {
+  it('renders the sm avatar shell idle and reads the persisted visible key', async () => {
     // isVisible defaults false — the persisted `Fredo_companion_visible` key
     // (CompanionContext.tsx:70-79 + usePersistedSetting.ts:28-37) flips visibility
     // after the async settingsService/localStorage load; the seed then puts Fredo
@@ -240,23 +236,18 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
     expect(el.getAttribute('data-state')).toBe('idle');
     expect(el.getAttribute('aria-label')).toBe('Fredo companion -- idle');
 
-    const svg = el.querySelector('svg');
-    expect(svg).not.toBeNull();
-    expect(svg!.getAttribute('viewBox')).toBe('0 0 1014 1264');
+    // #3210 — the SVG render path is DELETED. Under jsdom (no WebGL2) the avatar
+    // renders the PRODUCTION poster path: the stable shell + the poster layer,
+    // zero SVG, zero canvas.
+    const shell = el.querySelector('[data-avatar-render]') as HTMLElement;
+    expect(shell).not.toBeNull();
+    expect(shell.getAttribute('data-avatar-render')).toBe('poster');
+    expect(shell.getAttribute('data-avatar-motion')).toBe('play');
+    expect(shell.querySelector('[data-avatar-poster-layer]')).not.toBeNull();
+    expect(shell.querySelector('svg')).toBeNull();
+    expect(shell.querySelector('canvas')).toBeNull();
 
-    // Frozen-geometry invariant: 58 base rects, byte-identical to the
-    // FREDO_AVATAR_SOURCE_RECTS expansion (27 mirrored pairs + 4 center singles).
-    const rects = svg!.querySelectorAll('rect');
-    expect(rects).toHaveLength(58);
-    const expected = expandFredoRects(FREDO_AVATAR_SOURCE_RECTS);
-    rects.forEach((r, i) => {
-      expect(Number(r.getAttribute('x'))).toBe(expected[i].x);
-      expect(Number(r.getAttribute('y'))).toBe(expected[i].y);
-      expect(Number(r.getAttribute('width'))).toBe(expected[i].width);
-      expect(Number(r.getAttribute('height'))).toBe(expected[i].height);
-    });
-
-    // No overlay in idle and no errors on the persisted-read boot.
+    // No overlay markup in idle and no errors on the persisted-read boot.
     expect(el.querySelector('#fredo-expression')).toBeNull();
     expect(consoleError).not.toHaveBeenCalled();
   });

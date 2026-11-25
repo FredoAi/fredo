@@ -122,9 +122,9 @@
 }
 
 /* ── Reduced motion: idle bob/glow + talk pulse off; teleport degrades to a
-      pure opacity crossfade (still ~400 ms — timing preserved); the mouth
-      keyframe slows (fredo-avatar.css) but stays functional. The #2854 status
-      wrapper motion is suppressed while the expression overlay stays legible. ── */
+      pure opacity crossfade (still ~400 ms — timing preserved); the resolved
+      state clip is drawn as a single still frame by the renderer. The #2854
+      status wrapper motion is suppressed too. ── */
 @media (prefers-reduced-motion: reduce) {
   .fredo-companion-avatar[data-state='idle'],
   .fredo-companion-avatar[data-state='talk'],

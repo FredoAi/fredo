@@ -679,7 +679,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
 
   const overlayRef = useRef<HTMLDivElement | null>(null);
   // Subtle pointer parallax, wrapper-owned (whole-element motion never lives in
-  // the shared FredoAvatar - see fredo-avatar.css header, #2850).
+  // the shared FredoAvatar — see `fredoAvatarIdle.css` / `companion.css`, #2850).
   const avatarParallaxRef = useAvatarParallax<HTMLDivElement>();
   // ── Spec #2883 ST-2 — the launcher-measured reply band ─────────────────────
   // The launcher owns the geometry the seat reply surface must stay inside, so it

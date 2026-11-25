@@ -28,21 +28,15 @@ export { themes } from './app/types/theme';
 export { Provider } from './shared/components/ui/provider';
 export { Toaster } from './shared/components/ui/toaster';
 
-// ── Shared FREDO avatar (canonical mascot, Spec #2850) ───────────────────────
+// ── Shared FREDO avatar (canonical mascot, Spec #2850; 3D cut-over #3210) ─────
 export { FredoAvatar } from './shared/components/fredo-avatar';
 export type { FredoAvatarProps, FredoAvatarState } from './shared/components/fredo-avatar';
 export {
-  FREDO_AVATAR_SPACE,
-  FREDO_AVATAR_VIEWBOX,
-  FREDO_AVATAR_SOURCE_RECTS,
-  expandFredoRects,
   AVATAR_SM,
   AVATAR_MD,
   AVATAR_SIZE,
 } from './shared/components/fredo-avatar';
 export type {
-  FredoRect,
-  FredoAvatarSourceRect,
   FredoAvatarSize,
 } from './shared/components/fredo-avatar';
 

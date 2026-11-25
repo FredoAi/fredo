@@ -2376,7 +2376,8 @@ clean.
 
 - [ ] F-126: (a) Drive TWO real managed-`llama-server` replies with different intent (the
       Architect-bound forcing prompts, quoted verbatim); sample `.fredo-companion-avatar`
-      `data-state` + `#fredo-expression[data-state]` across each turn (≥5 samples + screenshots).
+      `data-state` + the avatar's `data-avatar-clip` across each turn (≥5 samples + screenshots).
+      (**#3210:** `#fredo-expression[data-state]` is DELETED — the applied clip is the observable.)
       (b) Inject `{"reply":"…","status":"happy"}` then `{"reply":"…","status":"joking"}` then
       `llm-done` on `llm-token` (LV2). (c) Inject an object with NO status. (d) Read the outgoing
       request constraint (LV4 builder pin + the managed-server log).

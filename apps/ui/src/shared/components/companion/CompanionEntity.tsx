@@ -85,9 +85,9 @@ const SAFETY_TIMEOUT_MS = 15000;
 export const WORKING_BEAT_MS = 900;
 
 // #2917 round 3 (FIX-4r3) — DISPLAY-ONLY BOUNDED welcome beat: exactly the UI/UX
-// greeting wave (fredo-avatar.css:163 — 500 ms x 3). After it, the ambient message
-// renders the base `talk` expression (the pre-#2917 behaviour). MUST stay < the
-// shortest ambient window (4000 ms).
+// greeting wave (the authored `greeting` clip's welcome beat, 1500 ms). After it,
+// the ambient message renders the base `talk` clip (the pre-#2917 behaviour).
+// MUST stay < the shortest ambient window (4000 ms).
 export const GREETING_BEAT_MS = 1500;
 
 const JOKE_TOPICS = [
@@ -486,7 +486,8 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // animKey forces the wrapper to remount and restart the CSS animation cleanly
     const [animKey, setAnimKey] = useState(0);
     // Subtle pointer parallax on the wrapper (whole-element motion belongs to
-    // the consumer, not the shared FredoAvatar - fredo-avatar.css header, #2850).
+    // the consumer, never inside the shared FredoAvatar — see the header of
+    // `fredoAvatarIdle.css` / `companion.css`, #2850).
     const avatarParallaxRef = useAvatarParallax<HTMLDivElement>();
     // #2917 r3 (FIX-4r3) — the bounded ambient `greeting` beat. While TRUE the
     // resolver's `ambientMessage` candidate is asserted; when the beat ends the
@@ -1879,7 +1880,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             cursor: isGeneratingRef.current ? 'default' : 'pointer',
           }}
         >
-          <FredoAvatar size="sm" state={displayAnim} />
+          <FredoAvatar size="sm" state={displayAnim} streaming={isStreaming} />
         </div>
       </>
     );

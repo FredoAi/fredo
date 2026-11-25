@@ -1,15 +1,21 @@
 /**
  * Shared FREDO avatar display sizes — the SINGLE source for the sm/md aspect.
  *
- * Height is ALWAYS derived from the width via the canonical wireframe aspect
- * (1014:1264, from `FREDO_AVATAR_SPACE`) — never a separate height literal, so
- * every size is undistorted and a new width can never drift from the aspect.
+ * Height is ALWAYS derived from the width via the canonical portrait aspect
+ * (1014:1264) — never a separate height literal, so every size is undistorted
+ * and a new width can never drift from the aspect.
+ *
+ * #3210 — the canonical rect table that used to publish this aspect
+ * (`fredoAvatarGeometry.ts`) is deleted by the 3D cut-over, so the 1014:1264
+ * ratio is a FROZEN LITERAL here. The values (`AVATAR_SM` 80×100,
+ * `AVATAR_MD` 132×165) do not move.
  */
 
-import { FREDO_AVATAR_SPACE } from './fredoAvatarGeometry';
+/** The canonical portrait aspect (width:height) every avatar box renders at. */
+const FREDO_AVATAR_ASPECT = { width: 1014, height: 1264 } as const;
 
 const aspectHeight = (width: number): number =>
-  Math.round((width * FREDO_AVATAR_SPACE.height) / FREDO_AVATAR_SPACE.width);
+  Math.round((width * FREDO_AVATAR_ASPECT.height) / FREDO_AVATAR_ASPECT.width);
 
 /** Small — the desktop companion (~80 px wide × ~100 px tall). */
 export const AVATAR_SM = { width: 80, height: aspectHeight(80) };

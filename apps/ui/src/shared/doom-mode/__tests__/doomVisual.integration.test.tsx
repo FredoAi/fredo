@@ -8,12 +8,18 @@
  * - ST-3 funnel: `useDoomMode().applyStatus` drives the module-scoped
  *   `doomVisual` store from `isDoomModeEngaged(phase)` (so `entering`/`exiting`
  *   engage, not only `active`), on BOTH the mount seed and every broadcast.
- * - R-7 continuity: the restyle + armor survive a consumer unmount/remount
- *   while engaged — carried by the module-scoped store, never a `useRef`.
+ * - R-7 continuity: the restyle survives a consumer unmount/remount while engaged
+ *   — carried by the module-scoped store, never a `useRef`.
  * - R-8 fail-enter: a `mark_enter_failed → Inactive` broadcast reverts the
- *   theme AND the armor with no residue.
+ *   theme with no residue.
  * - R-2 token-first: engaging writes only the pre-existing `--*` contract —
  *   never a new `--doom-*` namespace.
+ *
+ * #3210 ST-7: the SVG armour overlay (`#fredo-armor` / `data-doom-armor`) is
+ * DELETED by the 3D cut-over, so the avatar half of these rows now asserts the
+ * BASE TRUTH — the avatar shell renders and carries NO doom hook at all (the
+ * clip-driven armour is #3223's landing). Every palette/theme assertion is kept
+ * verbatim; Doom is a body re-tint in this base.
  */
 import React from 'react';
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react';
@@ -87,7 +93,10 @@ const doomClass = () => document.documentElement.classList.contains('doom-mode')
 const doomAttr = () => document.documentElement.getAttribute('data-doom-mode');
 const bodyBg = () => document.documentElement.style.getPropertyValue('--body-bg');
 const accentPrimary = () => document.documentElement.style.getPropertyValue('--accent-primary');
-const armor = (container: HTMLElement) => container.querySelector('#fredo-armor');
+/** The 3D avatar shell (the ONE render path) — never an armour node. */
+const avatarRoot = (container: HTMLElement) => container.querySelector('[data-avatar-render]');
+const doomAvatarHooks = (container: HTMLElement) =>
+  container.querySelectorAll('#fredo-armor, [data-doom-armor]');
 
 const stylePropNames = (): string[] => {
   const names: string[] = [];
@@ -149,7 +158,7 @@ describe('#2971 ST-6 Doom visual wiring', () => {
     await waitFor(() => expect(isDoomVisualEngaged()).toBe(true));
   });
 
-  it('R-7: the restyle + armor survive a consumer remount while engaged (module-scoped store)', async () => {
+  it('R-7: the restyle survives a consumer remount while engaged (module-scoped store)', async () => {
     const driver = renderHook(() => useDoomMode());
     await waitFor(() => expect(listenMock).toHaveBeenCalled());
 
@@ -161,7 +170,8 @@ describe('#2971 ST-6 Doom visual wiring', () => {
     expect(doomClass()).toBe(true);
     expect(doomAttr()).toBe('engaged');
     expect(bodyBg()).toBe(DOOM_PALETTE.bodyBg);
-    expect(armor(first.container)).not.toBeNull();
+    expect(avatarRoot(first.container)).not.toBeNull();
+    expect(doomAvatarHooks(first.container)).toHaveLength(0);
 
     // Unmount the consumer and WIPE its paint, so a remount must re-derive
     // engagement from the module-scoped store — a `useRef` would reset here.
@@ -175,26 +185,29 @@ describe('#2971 ST-6 Doom visual wiring', () => {
     expect(doomAttr()).toBe('engaged');
     expect(bodyBg()).toBe(DOOM_PALETTE.bodyBg);
     expect(accentPrimary()).toBe(DOOM_PALETTE.accentPrimary);
-    expect(armor(second.container)).not.toBeNull();
-    expect(second.container.querySelector('svg')!.getAttribute('data-doom-armor')).toBe('true');
+    // #3210 base truth: the avatar shell renders, and no armour node exists.
+    expect(avatarRoot(second.container)).not.toBeNull();
+    expect(second.container.querySelector('#fredo-armor')).toBeNull();
+    expect(second.container.querySelector('[data-doom-armor]')).toBeNull();
 
     driver.unmount();
   });
 
-  it('R-8: a failed-enter inactive broadcast reverts the theme and armor with no residue', async () => {
+  it('R-8: a failed-enter inactive broadcast reverts the theme with no residue', async () => {
     const driver = renderHook(() => useDoomMode());
     await waitFor(() => expect(listenMock).toHaveBeenCalled());
 
     const view = render(<Consumer />);
     await flush();
 
-    // Engaged (active) → Doom theme + armor.
+    // Engaged (active) → Doom theme (the base renders no armour).
     emit(statusFor('active'));
     await flush();
     expect(doomClass()).toBe(true);
     expect(doomAttr()).toBe('engaged');
     expect(bodyBg()).toBe(DOOM_PALETTE.bodyBg);
-    expect(armor(view.container)).not.toBeNull();
+    expect(avatarRoot(view.container)).not.toBeNull();
+    expect(doomAvatarHooks(view.container)).toHaveLength(0);
 
     // mark_enter_failed → Inactive travels the SAME broadcast path.
     emit(DOOM_MODE_INACTIVE_STATUS);
@@ -205,8 +218,9 @@ describe('#2971 ST-6 Doom visual wiring', () => {
     expect(doomAttr()).toBeNull();
     expect(bodyBg()).not.toBe(DOOM_PALETTE.bodyBg);
     expect(accentPrimary()).not.toBe(DOOM_PALETTE.accentPrimary);
-    expect(armor(view.container)).toBeNull();
-    expect(view.container.querySelector('svg')!.hasAttribute('data-doom-armor')).toBe(false);
+    // The avatar shell is unchanged by the revert — and never carried a hook.
+    expect(avatarRoot(view.container)).not.toBeNull();
+    expect(doomAvatarHooks(view.container)).toHaveLength(0);
 
     driver.unmount();
   });
