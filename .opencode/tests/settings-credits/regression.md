@@ -29,8 +29,26 @@
       applications) once.
   - **Expected:** each renders its own pane; no pane is blank; `credits-settings` is absent
     unless Credits is active (the section switch is exclusive).
-  - **Edge:** `SaveFooter` still renders on every section (it is part of the shell, not the
-    pane) — a Credits pane that removes the footer for the other sections is a FAIL.
+  - **Shell-chrome baseline (re-derived — the old `SaveFooter` clause was stale and could never
+    pass):** the shell renders **no** save footer on ANY section today. `SaveFooter`
+    (`SettingsSurface.tsx:85-117`) returns `null` whenever
+    `useSettingsSaveContext().saveFn` is null; its registration hook `useSettingsSave`
+    (`applications/settings/SettingsSaveContext.tsx:51`) has **zero call sites** under
+    `apps/ui/src`, and the footer carries no `data-testid` at all — so a `*save*` / `*footer*`
+    testid query reads 0 by construction, on every section, Credits included.
+  - **What to assert instead (still able to fail):** on the same live visit, read on three
+    sibling sections (`companion`, `apps`, `installed-apps`) **and** on `credits`:
+    (a) the count of `[data-testid*="save"], [data-testid*="footer"]` nodes, and (b) the count of
+    `button`s whose whitespace-normalised text is exactly `Save`. Before the zero is trusted, run
+    the same two queries over a control node — append
+    `<div data-testid="__probe-save-footer"><button>Save</button></div>` to the content region,
+    require both counts to rise by exactly 1, remove it, re-count (G-430: a zero from a selector
+    that cannot see such a node is a blind spot, not a reading).
+  - **Expected:** both counts are EQUAL across the four sections and none changes when Credits is
+    opened and closed — the chrome is shell-owned, not pane-owned. **Fails if:** Credits (or a
+    neighbour) starts rendering a save footer, the `if (!saveFn) return null;` gate is removed, or
+    one section's count differs from the others. Do not restore the old wording — it asserted a
+    footer that this tree never renders.
 
 ## R-3 — The webview capability surface is unchanged (the opener must not widen it)
 
