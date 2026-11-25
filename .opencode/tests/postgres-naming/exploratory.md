@@ -11,9 +11,13 @@ Unscripted edge/failure probes for the embedded-PostgreSQL cluster identity (app
 
 ## Prompt lines
 
-- [ ] **E-1:** What does the migration do when the legacy cluster (tables in the `postgres`
-  database) is locked/held by a headless `fredo ingest` daemon at GUI boot — does it migrate before
-  attach, defer, or fail closed with a clear message?
+- [ ] **E-1 (retargeted by #3194):** What does the migration do when the legacy cluster (tables in
+  the `postgres` database) is held by a **second Fredo instance** at boot — does the second
+  instance's `pg_supervisor_status` read `failed` with a clear lock error (never adopting the
+  incumbent's cluster), and does the migration therefore neither run twice nor fail closed silently?
+  (The old form of this probe named a headless `fredo ingest` daemon; that process no longer exists
+  — the only contention case left is a second instance holding the exclusive data-dir lock,
+  `.opencode/tests/resident-ingest/functional.md` F-3.)
 - [ ] **E-2:** Seed a legacy dir in which the target database `fredo` ALREADY exists (a partial
   prior migration / a stray `fredo` db) — is the second migration a byte-identical no-op, or does
   `ALTER DATABASE postgres RENAME TO fredo` error on the name collision?
