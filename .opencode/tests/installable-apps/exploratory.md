@@ -123,6 +123,15 @@ fixture — see the note below — do not hand-roll a bespoke one for a single p
 
 ## #3146 probes (the declared-reach boundary)
 
+> **Transport note (read before any probe that drives the child).** Every `tauri_webview_*` call
+> against an `installed-*` window returns `Request timeout after 2000ms` (#3147), so a probe written
+> as "from inside the child, call X" is **not producible** unless the fixture already drives it.
+> The capability fixtures are **self-driving** (see `functional.md` → **Child evidence transport** and
+> `README.md` §6): read their `[data-assertion]` lines with a native UIA read / native capture. A probe
+> that needs a NEW child-side call is recorded `UNVERIFIED — no host-side child inject path (Toolsmith
+> item, routed and non-gating)`; never drive it with an improvised one-off script and never call an
+> `execute_js` timeout a result.
+
 - [ ] **E-13 — a capability block that is well-typed but semantically hostile.** Take
   `build-capability-fixtures.mjs`'s `qa3146-app-a` and edit its `capabilities.data.tables[0].name` to a
   name that collides with ANOTHER declared table on the same app (`notes` twice), and separately to a

@@ -1,7 +1,7 @@
 # installable-apps — fixtures & generators
 
-Two **independent, deterministic, Node-built-ins-only** generators produce every package this
-suite's live rows consume. They are deliberately separate files so the two never contend on a
+Three **independent, deterministic, Node-built-ins-only** generators produce every package this
+suite's live rows consume. They are deliberately separate files so they never contend on a
 lock, a temp dir or a helper module: each one can be run, re-run and reviewed on its own.
 
 > **Nothing here ships.** These scripts and the packages they emit are test scaffolding. No
@@ -12,6 +12,7 @@ lock, a temp dir or a helper module: each one can be run, re-run and reviewed on
 |---|---|---|
 | `fixtures/build-package-fixtures.mjs` | **ST-2** | the seven install-validation packages — valid, no-manifest, bad-manifest, zip-slip, hash-tamper, `engines.fredo`-incompatible, reserved-`__fredo/` — plus its committed expected-output manifest naming each id and the refusal code it drives |
 | `fixtures/build-behaviour-fixtures.mjs` | **ST-7** | the five behaviour apps (+ one optional variant) + `behaviour-fixtures.expected.json` |
+| `fixtures/build-capability-fixtures.mjs` | **QA Expert (#3146)** | **eleven capability packages** (ten capability packages + the `qa3146-mirror-control` negative control). **Every openable one is SELF-DRIVING** — see §6 |
 
 Both write to a gitignored output directory under `.opencode/tmp/3147/fixtures/` and print the
 output directory plus every produced file name and its sha256.
@@ -392,7 +393,94 @@ exports; nothing here duplicates a host-owned `installed-app-*` testid.
 | `fixtures/build-behaviour-fixtures.mjs` | **yes** | the generator |
 | `fixtures/behaviour-fixtures.expected.json` | **yes** | the expected-output manifest (ids, displayNames, hashes, what each app asserts, the DOM hooks it renders) |
 | `fixtures/build-package-fixtures.mjs` + its manifest | **yes** (ST-2) | the sibling generator |
-| `.opencode/tmp/3147/fixtures/**` | no (gitignored) | the generated `.zip` archives and per-run summaries |
+| `fixtures/build-capability-fixtures.mjs` | **yes** (QA Expert, #3146) | the capability generator — self-driving fixtures, no hash manifest (§6) |
+| `.opencode/tmp/3147/fixtures/**`, `.opencode/tmp/3146/fixtures/capabilities/**` | no (gitignored) | the generated `.zip` archives and per-run summaries |
 
 The generated archives are deliberately **not** committed: they are reproducible byte-for-byte,
 so a committed copy would only be a second source of truth that can drift from the generator.
+
+---
+
+## 6. The capability fixtures (#3146) — self-driving, with a rendered-text mirror
+
+### Why they drive themselves
+
+The installed window is **deliberately unreachable by every `tauri_webview_*` tool**. `execute_js`
+*lands* (`window.eval` runs) but its **result channel** is ACL-denied inside the child — the injected
+wrapper calls `window.__TAURI__.core.invoke('plugin:mcp-bridge|script_result', …)`, and the child has
+neither `__TAURI__` (`withGlobalTauri:false`) nor a grant for that command. So `execute_js`,
+`dom_snapshot`, `find_element`, `screenshot` and `console` all return
+**`Request timeout after 2000ms`** against an `installed-*` windowId. That is not a bug to work
+around — it is the isolation property under test working.
+
+A fixture that waits to be driven therefore cannot be driven at all. So each openable package from
+`build-capability-fixtures.mjs` runs its own **probe plan** on `mount` and mirrors every result as
+**rendered text**. The tester reads that text with a capability-independent instrument: a **native
+accessibility (UIA) text read** of the installed window's own a11y tree, corroborated by a **native
+window capture**. No `execute_js` call is involved.
+
+### The mirror grammar (stable — rows cite these strings)
+
+| Node | Text |
+|---|---|
+| `[data-qa3146-header]` | `QA3146-FIXTURE app=<id> version=<v> capabilities=<set> tables=<csv> probes=<ids>` — **identical on every run**, so a reader asserts what it is looking at |
+| `[data-qa3146-document]` | `QA3146-DOCUMENT app=<id> version=<v> ready=true mount=<id> loaded=<iso> origin=<origin>` |
+| `[data-qa3146-theme]` | `QA3146-THEME theme.body-bg=… theme.card-bg=… theme.text-primary=… theme.accent-primary=… colorScheme=<light\|dark> mount=<id>` — re-published every second |
+| `[data-qa3146-assertions]` | one `<p data-assertion="<id>">` per probe: `PASS <id> codes=<c1>,<c2> …` or `FAIL <id> codes=… <reason>` |
+| `[data-qa3146-consent]` | `QA3146-CONSENT app=<id> mount=<id> state=<consent\|granted> query=<code>` (consent fixtures only; `state=none` otherwise) |
+| `[data-refusal-code]` / `[data-refusal-json]` | the last refusal, as text |
+| `[data-call-log]` | every call in drive order, JSON |
+| `[data-qa3146-summary]` | `QA3146-SUMMARY calls=<n> rejected=<n> probes=<n> done=<true\|halted\|running>` |
+
+`codes=` is **positional**: one entry per step in drive order, `ok` for a resolve and the refusal code
+otherwise. Watch-generated lines (`consent` / `data` transitions) carry the `mount=` they were
+observed at, so "no reload" is checkable.
+
+### The plans
+
+The probe plan is **data**, built by `probePlanFor(fixture)` and embedded in that fixture's `main.js`.
+Rows bound:
+
+| Fixture | Assertion ids it emits |
+|---|---|
+| `qa3146-app-a` | `F-7.5`, `F-7.6`, `F-7.7`, `F-7.8`, `F-7.9`, `F-7.10`, `F-7.13`, `F-7.14`, `F-7.24`, `F-7.31` (+ `HDR`, and `RELOAD` on failure) |
+| `qa3146-app-b` | `F-7.11`, `F-7.13` (load-time read) **and** `F-7.13` (live watch — announces a landed write) |
+| `mission` | `F-7.11` |
+| `orbit` · `orbit-lab` | `F-7.12` (both sides) |
+| `qa3146-consent-a` | `F-7.17` at load; `F-7.18`, `F-7.27` (transition lines) and `F-7.20` (once the query grant is observed) from the consent watcher |
+| `qa3146-consent-b` | `F-7.19` |
+| `qa3146-no-capabilities` | `F-7.26` |
+| `qa3146-mirror-control` | `MIRROR-CONTROL` — **must be `FAIL`** |
+
+### The negative control (do not remove it)
+
+`qa3146-mirror-control` declares its own table and then asserts the **opposite** of the true outcome:
+that reading that table is refused. A working mirror therefore **always** prints
+`FAIL MIRROR-CONTROL codes=ok step 1 expected refusal action_not_declared, resolved`.
+
+- line **missing** → the mirror never ran (no child evidence exists);
+- line reads **PASS** → either the declared read really was refused (a product defect) or the mirror
+  fabricates results;
+- line reads **FAIL with that reason** → the transport is live.
+
+Without it, "every probe said PASS" and "the mirror renders nothing" are the same observation.
+
+### Determinism and self-checks
+
+The generator writes **eleven** archives with stored entries and a fixed 1980-01-01 DOS timestamp, and
+commits **no** hash manifest. Two runs must print an identical `sha256` column — that comparison is
+the determinism receipt. Before writing anything it self-checks every archive (re-parse, CRC, manifest
++ `capabilities` round-trip, `mount` export, the exact capability defect for each refusal fixture,
+**every advertised probe id embedded in `main.js`**, the mirror hooks present, and the control probe's
+knowingly-false expectation). Any failure exits non-zero.
+
+### Two limits the verdict must record
+
+1. A **native/UIA read is not a live-evidence token** for the pipeline's `testing → audit` matcher
+   (`telemetry_spans` / `user-attachments` / `tauri_webview_*` / `getBoundingClientRect`). The verdict
+   must also carry **one genuine `tauri_webview_*` receipt from a reachable window** (`main` /
+   `app-*`) in the same round, plus the `user-attachments` upload of the native capture — otherwise
+   the leg is **refused for an instrument reason**, never upgraded to a PASS on a native read alone.
+2. A **host-side child read/inject path** (a bridge that can read or drive an `installed-*` document)
+   is a **Toolsmith** item. It is routed and **non-gating this round** — no row blocks on it, and no
+   row may be answered by an improvised one-off script.
