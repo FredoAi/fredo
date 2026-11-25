@@ -45,6 +45,31 @@
              when isolated. NEVER starts PostgreSQL or the app, and does NOT run
              the G-052 root-currency check (it serves nothing). Records the
              decision in .opencode/state/env-isolation.jsonl.
+  WebviewOnly -- Frontend-only serving for the POST-QUIT window. Starts ONLY the
+             environment's Vite dev server on the Vite port RECORDED in its
+             manifest, with the env's variable block derived the same way Up
+             derives it. Several test legs need "the app is quit (so its OTLP
+             ports are free) BUT a webview still loads"; the product's own
+             quit_app tears down the dev launcher tree AND Vite, so nothing
+             serves on the env's port afterwards (#3194/#3195/#3206). Refuses
+             when the env has no manifest / no recorded Vite port, when the
+             env's app is still running, or when the recorded port is bound by
+             a foreign owner (fail-closed, never a port scan/fallback). NEVER
+             starts the app, the embedded PostgreSQL cluster, MCP or OTLP, and
+             never touches the machine-global services or another env.
+             Idempotent: a second call reports the already-serving PID and
+             exits 0. Records the server in the manifest under the distinct
+             roles `vite-only` (+ `vite-only-launcher`), so the env-scoped
+             Down/Clean reap it. Prints
+             `WEBVIEW-ONLY SERVING port=<p> pid=<pid>` + an HTTP readiness
+             line, so a probe can prove the precondition.
+
+.PARAMETER Stop
+  WebviewOnly only. Stop the frontend-only server this verb recorded (manifest
+  roles `vite-only` / `vite-only-launcher`) instead of starting it. Env-scoped
+  and image-guarded like the rest of the env teardown; never touches the app,
+  PostgreSQL, the machine-global services, or another env. Down/Clean already
+  reap the same roles.
 
 .PARAMETER RequireIsolation
   Arms the env-isolation guard (Spec #3066) on the Up path: refuse (exit 3,
@@ -138,11 +163,14 @@
   powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId spec2944
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Spec 2762
   powershell -File .opencode/scripts/dev-env.ps1 -Action Hygiene -Kill -Spec 2762
+  powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Spec 3195
+  powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Spec 3195 -EnvId qa3195-a
+  powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Stop -Spec 3195 -EnvId qa3195-a
 #>
 
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Clean", "Hygiene", "AssertIsolation")]
+  [ValidateSet("Up", "Down", "Status", "Restart", "Logs", "Clean", "Hygiene", "AssertIsolation", "WebviewOnly")]
   [string]$Action,
 
   [ValidateRange(1, [uint64]::MaxValue)]
@@ -176,6 +204,10 @@ param(
 
   # Hygiene passthrough: forward -Kill as process-hygiene.ps1 -KillOrphans.
   [switch]$Kill,
+
+  # WebviewOnly only: stop the recorded frontend-only server instead of starting
+  # it (env-scoped, image-guarded; Down/Clean reap the same roles).
+  [switch]$Stop,
 
   # Spec #3066: env-isolation guard. Arms the shared-cluster refusal on the Up
   # path (default OFF => byte-identical legacy behavior). Env equivalent:
@@ -240,6 +272,13 @@ if ($EnvVar -and $EnvVar.Count -gt 0) {
     $value = $pair.Substring($eq + 1)
     $EnvVars[$name] = $value
   }
+}
+
+# -Stop is a WebviewOnly-only switch: fail closed on a mistaken pairing rather
+# than silently ignoring it on (say) a Down that had a different intent.
+if ($Stop -and $Action -ne "WebviewOnly") {
+  Write-Log "ERROR: -Stop is only valid with -Action WebviewOnly (got -Action $Action)." -Level ERROR
+  exit 2
 }
 
 # -- Native runner (PS 5.1 fix): with $ErrorActionPreference = "Stop", a native
@@ -317,23 +356,28 @@ function Test-Port {
     $tcp = [System.Net.Sockets.TcpClient]::new()
     $ar  = $tcp.BeginConnect("127.0.0.1", $Port, $null, $null)
     if ($ar.AsyncWaitHandle.WaitOne(2000)) {
-      try { $tcp.EndConnect($ar) } catch { $tcp.Close(); return $false }
+      $ok = $false
+      try { $tcp.EndConnect($ar); $ok = $true } catch {}
       $tcp.Close()
-      return $true
+      if ($ok) { return $true }
+    } else {
+      $tcp.Close()
     }
-    $tcp.Close()
   } catch {}
 
-  # Try IPv6
+  # Try IPv6 (a refusal on IPv4 must NOT short-circuit the dual-stack probe:
+  # Vite bound to `localhost` can listen on ::1 only).
   try {
     $tcp = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetworkV6)
     $ar  = $tcp.BeginConnect("::1", $Port, $null, $null)
     if ($ar.AsyncWaitHandle.WaitOne(2000)) {
-      try { $tcp.EndConnect($ar) } catch { $tcp.Close(); return $false }
+      $ok = $false
+      try { $tcp.EndConnect($ar); $ok = $true } catch {}
       $tcp.Close()
-      return $true
+      if ($ok) { return $true }
+    } else {
+      $tcp.Close()
     }
-    $tcp.Close()
   } catch {}
 
   return $false
@@ -872,6 +916,8 @@ $script:RoleImage = @{
   app      = @("fredo.exe")
   postgres = @("postgres.exe")
   vite     = @("node.exe", "bun.exe")
+  "vite-only"          = @("node.exe", "bun.exe")
+  "vite-only-launcher" = @("cmd.exe", "powershell.exe", "pwsh.exe")
   launcher = @("cmd.exe", "powershell.exe", "pwsh.exe")
 }
 
@@ -1007,6 +1053,405 @@ function Invoke-EnvDown {
   # The envId guard never clobbers a sibling env's record.
   if ($leaseIssue -gt 0) { Remove-EnvLease (Get-EnvLeasePath $leaseIssue) $EnvId }
   return $stopped
+}
+
+# -- Frontend-only serving (WebviewOnly) --------------------------------------
+#
+# Post-quit test legs need a webview served while the app is gone (its OTLP
+# ports free). The product's own quit path tears down the dev launcher tree AND
+# Vite, so nothing serves on the env's Vite port afterwards (#3194/#3195/#3206).
+# This action starts ONLY the env's Vite dev server on the Vite port RECORDED in
+# its manifest, with the same variable block Up derives. It never starts the
+# app, the embedded PostgreSQL cluster, MCP or OTLP, never touches the
+# machine-global services or another env, and records the server in the manifest
+# under roles `vite-only` / `vite-only-launcher` so the env-scoped Down/Clean
+# (and the -Stop switch) reap it.
+
+$script:WebviewOnlyRoles = @("vite-only", "vite-only-launcher")
+
+# The manifest records whose role is in $Roles (never a port scan).
+function Get-ManifestRoleRecords {
+  param([object]$Manifest, [string[]]$Roles)
+  $out = @()
+  if (-not $Manifest) { return $out }
+  foreach ($p in @($Manifest.processes)) {
+    if (-not $p) { continue }
+    if ($Roles -contains [string]$p.role) { $out += $p }
+  }
+  return $out
+}
+
+# Add/replace ONE process record in the env manifest, preserving every other
+# field and process. BOM-free UTF-8, matching Write-EnvManifest.
+function Add-EnvManifestProcess {
+  param([string]$Path, [string]$Role, [int]$ProcessId, [string]$StartedAt)
+  $manifest = Read-EnvManifest $Path
+  if (-not $manifest) { return $false }
+  $procs = @($manifest.processes | Where-Object { $_ -and ([string]$_.role -ne $Role) })
+  $procs += [pscustomobject]@{ pid = $ProcessId; role = $Role; startedAt = $StartedAt }
+  $manifest.processes = @($procs)
+  $json = $manifest | ConvertTo-Json -Depth 6
+  [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
+  return $true
+}
+
+# Remove ONLY the named roles from the env manifest; every other record and every
+# other field is preserved.
+function Remove-EnvManifestRoles {
+  param([string]$Path, [string[]]$Roles)
+  $manifest = Read-EnvManifest $Path
+  if (-not $manifest) { return }
+  $kept = @($manifest.processes | Where-Object { $_ -and ($Roles -notcontains [string]$_.role) })
+  $manifest.processes = @($kept)
+  $json = $manifest | ConvertTo-Json -Depth 6
+  [System.IO.File]::WriteAllText($Path, $json, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# HTTP readiness probe: a REAL HTTP status line from the dev server, not just a
+# bound socket. Raw TCP + `GET /` keeps the probe independent of PowerShell's
+# HTTP stack (no proxy autodiscovery) and bounds BOTH the connect and the read.
+# Returns the status code (0 when unreachable). The three targets cover
+# `localhost` resolving to IPv4 or IPv6 (Vite binds only one on Windows).
+function Get-HttpStatus {
+  param([int]$Port, [int]$TimeoutSec = 2)
+  $timeoutMs = [Math]::Max(500, $TimeoutSec * 1000)
+  foreach ($target in @(
+      @{ Host = "localhost"; V6 = $false },
+      @{ Host = "127.0.0.1"; V6 = $false },
+      @{ Host = "::1"; V6 = $true }
+    )) {
+    $client = $null
+    try {
+      if ($target.V6) {
+        $client = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetworkV6)
+      } else {
+        $client = [System.Net.Sockets.TcpClient]::new()
+      }
+      $iar = $client.BeginConnect($target.Host, $Port, $null, $null)
+      if (-not $iar.AsyncWaitHandle.WaitOne($timeoutMs)) { continue }
+      try { $client.EndConnect($iar) } catch { continue }
+      $client.ReceiveTimeout = $timeoutMs
+      $stream = $client.GetStream()
+      $reqBytes = [System.Text.Encoding]::ASCII.GetBytes("GET / HTTP/1.0`r`nHost: localhost`r`nConnection: close`r`n`r`n")
+      $stream.Write($reqBytes, 0, $reqBytes.Length)
+      $stream.Flush()
+      $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::ASCII)
+      $statusLine = $reader.ReadLine()
+      if ($statusLine -and $statusLine -match '^HTTP/\d\.\d\s+(\d{3})') { return [int]$Matches[1] }
+    } catch {
+    } finally {
+      if ($client) { try { $client.Close() } catch {} }
+    }
+  }
+  return 0
+}
+
+# The serving checkout recorded in the env manifest (absolute as written by Up; a
+# relative value is anchored at the repo root). $null when it is not a directory.
+function Resolve-ManifestServingDir {
+  param([object]$Manifest)
+  $raw = ""
+  if ($Manifest -and $Manifest.servingCheckout) { $raw = [string]$Manifest.servingCheckout }
+  if (-not $raw) { $raw = $script:RepoRoot }
+  $dir = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $script:RepoRoot $raw }
+  if (-not (Test-Path -LiteralPath $dir)) { return $null }
+  return (Resolve-Path -LiteralPath $dir).Path
+}
+
+# Stop ONLY the roles this verb records: manifest-scoped and image-guarded
+# (R-3.1/R-3.3), with the same bounded graceful -> hard-kill ladder as Down.
+# Returns $true when no recorded target is alive afterwards.
+function Stop-WebviewOnlyRoles {
+  param([object]$Manifest)
+  $targets = @()
+  foreach ($p in (Get-ManifestRoleRecords -Manifest $Manifest -Roles $script:WebviewOnlyRoles)) {
+    $procId = 0
+    if (-not [int]::TryParse([string]$p.pid, [ref]$procId) -or $procId -le 0) { continue }
+    $role = [string]$p.role
+    $image = Get-ProcessImageName $procId
+    if (-not $image) {
+      Write-Log "webview-only $role PID $procId is gone -- skip"
+      continue
+    }
+    if (-not (Test-RoleImageMatch -Role $role -Image $image)) {
+      Write-Log "REFUSING to kill webview-only PID ${procId}: role '$role' expects image '$($script:RoleImage[$role] -join '/')' but live image is '$image' (stale/reused PID)." -Level WARN
+      continue
+    }
+    $targets += @{ pid = $procId; role = $role; image = $image }
+  }
+
+  if ($targets.Count -eq 0) { return $true }
+
+  $boundSecs = [Math]::Min([Math]::Max($TimeoutSecs, 1), 5)
+  foreach ($t in $targets) {
+    Write-Log "Stopping webview-only $($t.role) PID $($t.pid) ($($t.image))..."
+    Invoke-NativeQuiet taskkill /PID $t.pid /T | Out-Null
+  }
+  $deadline = (Get-Date).AddSeconds($boundSecs)
+  while ((Get-Date) -lt $deadline) {
+    if (@($targets | Where-Object { Get-ProcessImageName $_.pid }).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+
+  $survivors = @($targets | Where-Object { Get-ProcessImageName $_.pid })
+  foreach ($t in $survivors) {
+    Write-Log "webview-only $($t.role) PID $($t.pid) survived the graceful stop -- hard-kill fallback." -Level WARN
+    Invoke-NativeQuiet taskkill /PID $t.pid /T /F | Out-Null
+  }
+  $deadline2 = (Get-Date).AddSeconds($boundSecs)
+  while ((Get-Date) -lt $deadline2) {
+    if (@($survivors | Where-Object { Get-ProcessImageName $_.pid }).Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+
+  $left = @($targets | Where-Object { Get-ProcessImageName $_.pid })
+  return ($left.Count -eq 0)
+}
+
+# WebviewOnly -Stop: env-scoped teardown of ONLY this verb's recorded server.
+function Invoke-WebviewOnlyStop {
+  $manifest = Read-EnvManifest $ManifestPath
+  if (-not $manifest) {
+    Write-Log "env '$EnvId' has no manifest at $ManifestPath -- nothing to stop (safe no-op)."
+    return $true
+  }
+  if ($manifest.envId -and ([string]$manifest.envId -ne $EnvId)) {
+    Write-Log "ERROR: manifest $ManifestPath belongs to env '$($manifest.envId)', not '$EnvId' -- refusing to stop another env's server (R-3.1)." -Level ERROR
+    return $false
+  }
+  $records = @(Get-ManifestRoleRecords -Manifest $manifest -Roles $script:WebviewOnlyRoles)
+  if ($records.Count -eq 0) {
+    Write-Log "env '$EnvId' manifest records no webview-only server -- nothing to stop."
+  }
+  $stopped = Stop-WebviewOnlyRoles -Manifest $manifest
+  Remove-EnvManifestRoles -Path $ManifestPath -Roles $script:WebviewOnlyRoles
+
+  $vite = 0
+  if ($manifest.ports -and $manifest.ports.vite) { $vite = [int]$manifest.ports.vite }
+  if ($vite -gt 0) {
+    if (Test-Port $vite) {
+      $owner = Get-PidByPort $vite
+      Write-Log "WARNING: Vite port $vite is STILL BOUND after the webview-only stop (owner PID $owner) -- not this verb's recorded role, so it was not killed." -Level WARN
+    } else {
+      Write-Log "Vite port $vite closed."
+    }
+  }
+  if (-not $stopped) {
+    Write-Log "ERROR: a recorded webview-only process survived the hard-kill fallback." -Level ERROR
+    return $false
+  }
+  Write-Log "env '$EnvId' webview-only server stopped."
+  return $true
+}
+
+# WebviewOnly start: start ONLY the env's Vite dev server (idempotent).
+function Invoke-WebviewOnlyStart {
+  $manifest = Read-EnvManifest $ManifestPath
+  if (-not $manifest) {
+    Write-Log "WEBVIEW-ONLY REFUSED: env '$EnvId' has no manifest at $ManifestPath." -Level ERROR
+    Write-Log "This verb serves an EXISTING env's recorded Vite port -- start the env once with -Action Up -Spec <N> [-EnvId <id>], or pass the env's actual -EnvId (see .opencode/state/env-leases/<N>.json)." -Level ERROR
+    return $false
+  }
+  if ($manifest.envId -and ([string]$manifest.envId -ne $EnvId)) {
+    Write-Log "WEBVIEW-ONLY REFUSED: manifest $ManifestPath belongs to env '$($manifest.envId)', not '$EnvId' (never another env's server)." -Level ERROR
+    return $false
+  }
+  $vite = 0
+  if ($manifest.ports -and $manifest.ports.vite) { $vite = [int]$manifest.ports.vite }
+  if ($vite -le 0) {
+    Write-Log "WEBVIEW-ONLY REFUSED: env '$EnvId' manifest records no Vite port (ports.vite is 0/absent)." -Level ERROR
+    return $false
+  }
+  $serving = Resolve-ManifestServingDir -Manifest $manifest
+  if (-not $serving) {
+    Write-Log "WEBVIEW-ONLY REFUSED: the manifest's serving checkout does not exist." -Level ERROR
+    return $false
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $serving "pnpm-workspace.yaml")) -or
+      -not (Test-Path -LiteralPath (Join-Path $serving "apps\tauri\vite.config.ts"))) {
+    Write-Log "WEBVIEW-ONLY REFUSED: $serving is not a Fredo workspace (pnpm-workspace.yaml / apps/tauri/vite.config.ts missing)." -Level ERROR
+    return $false
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $serving "node_modules"))) {
+    Write-Log "WEBVIEW-ONLY REFUSED: $serving has no node_modules -- run 'pnpm install --frozen-lockfile' there first." -Level ERROR
+    return $false
+  }
+
+  # Idempotency: OUR recorded server alive AND owning the recorded port AND
+  # answering HTTP => report it and exit 0. A second call never starts a second
+  # server.
+  foreach ($rec in (Get-ManifestRoleRecords -Manifest $manifest -Roles @("vite-only"))) {
+    $procId = 0
+    if (-not [int]::TryParse([string]$rec.pid, [ref]$procId) -or $procId -le 0) { continue }
+    $image = Get-ProcessImageName $procId
+    if (-not $image -or -not (Test-RoleImageMatch -Role "vite-only" -Image $image)) { continue }
+    $owner = Get-PidByPort $vite
+    if ($owner -and ([int]$owner -eq $procId)) {
+      $code = Get-HttpStatus $vite
+      Write-Log "webview-only idempotency probe: recorded PID $procId owns :$vite, HTTP status $code"
+      if ($code -gt 0) {
+        Write-Host "WEBVIEW-ONLY ALREADY SERVING port=$vite pid=$procId"
+        Write-Host "READY (Vite dev server already serving at http://localhost:$vite/; http=$code; the app and PostgreSQL were NOT started)"
+        return $true
+      }
+    } else {
+      Write-Log "webview-only idempotency probe: recorded PID $procId does not own :$vite (owner '$owner')" -Level WARN
+    }
+  }
+
+  # Any stale record of ours (alive but not owning the port) is reaped before a
+  # fresh start -- manifest-scoped and image-guarded, never a port scan.
+  $stale = @(Get-ManifestRoleRecords -Manifest $manifest -Roles $script:WebviewOnlyRoles)
+  if ($stale.Count -gt 0) {
+    Write-Log "Clearing stale webview-only record(s) before a fresh start..."
+    if (-not (Stop-WebviewOnlyRoles -Manifest $manifest)) {
+      Write-Log "WEBVIEW-ONLY REFUSED: a stale recorded webview-only process survived the stop; not starting a second server." -Level ERROR
+      return $false
+    }
+    Remove-EnvManifestRoles -Path $ManifestPath -Roles $script:WebviewOnlyRoles
+    $manifest = Read-EnvManifest $ManifestPath
+  }
+
+  # The env's app must be gone: this verb is for the POST-QUIT window.
+  foreach ($rec in (Get-ManifestRoleRecords -Manifest $manifest -Roles @("app"))) {
+    $procId = 0
+    if (-not [int]::TryParse([string]$rec.pid, [ref]$procId) -or $procId -le 0) { continue }
+    $image = Get-ProcessImageName $procId
+    if ($image -and (Test-RoleImageMatch -Role "app" -Image $image)) {
+      Write-Log "WEBVIEW-ONLY REFUSED: env '$EnvId' app (PID $procId) is still RUNNING." -Level ERROR
+      Write-Log "This verb is for the post-quit window (OTLP ports free, webview still served). Quit the app first, then retry." -Level ERROR
+      return $false
+    }
+  }
+
+  # Fail-closed collision gate: never scan to another port, never kill a foreign
+  # owner, never touch another env.
+  if (Test-Port $vite) {
+    $owner = Get-PidByPort $vite
+    Write-Log "WEBVIEW-ONLY REFUSED: recorded Vite port $vite is already bound by PID $owner (not this verb's recorded server)." -Level ERROR
+    Write-Log "Fail-closed: no port scan/fallback and no foreign-owner kill. Stop the owner or use the env that owns it." -Level ERROR
+    return $false
+  }
+
+  # The env's variable block, derived the same way Up derives it (the manifest's
+  # recorded values are authoritative; per-env paths come from the same Names
+  # Block).
+  $mcpRec   = if ($manifest.ports -and $manifest.ports.mcp) { [int]$manifest.ports.mcp } else { $McpPort }
+  $grpcRec  = if ($manifest.ports -and $manifest.ports.otlpGrpc) { [int]$manifest.ports.otlpGrpc } else { $OtlpGrpcPort }
+  $httpRec  = if ($manifest.ports -and $manifest.ports.otlpHttp) { [int]$manifest.ports.otlpHttp } else { $OtlpHttpPort }
+  $dataRec  = if ($manifest.dataDir) { [string]$manifest.dataDir } else { $DataDir }
+  $pipeRec  = if ($manifest.pipe) { [string]$manifest.pipe } else { $CliPipe }
+  $wvRec    = if ($manifest.webviewProfile) { [string]$manifest.webviewProfile } else { $WebviewDir }
+
+  $env:FREDO_ENV_ID                     = $EnvId
+  $env:FREDO_ENV_ROOT                   = $EnvRoot
+  $env:FREDO_ENV_MANIFEST               = $ManifestPath
+  $env:FREDO_EVIDENCE_FILE              = $EvidencePath
+  $env:FREDO_DATA_DIR                   = $dataRec
+  $env:FREDO_PG_DATA_DIR                = $PgDataDir
+  $env:FREDO_PG_LOCK_DIR                = $PgLockDir
+  $env:FREDO_DBCLIENT_STATE_DIR         = $DbClientDir
+  $env:FREDO_CLI_PIPE                   = $pipeRec
+  $env:FREDO_MCP_BASE_PORT              = "$mcpRec"
+  $env:FREDO_VITE_PORT                  = "$vite"
+  $env:FREDO_WEBVIEW_PROFILE_DIR        = $wvRec
+  $env:FREDO_LLAMA_SERVER_COMPANION_DIR = $CompanionDir
+  $env:FREDO_INGEST_GRPC_PORT           = "$grpcRec"
+  $env:FREDO_INGEST_HTTP_PORT           = "$httpRec"
+  $env:WEBVIEW2_USER_DATA_FOLDER        = $wvRec
+  $env:OPENCODE_ENABLE_TELEMETRY        = "1"
+  $env:OPENCODE_OTLP_ENDPOINT           = "http://localhost:$grpcRec"
+  $env:OPENCODE_OTLP_PROTOCOL           = "grpc"
+
+  # Caller -EnvVar seam wins (Up parity), except the recorded Vite port: the
+  # manifest is the env contract and the readiness probe must match it.
+  if ($EnvVars -and $EnvVars.Count -gt 0) {
+    foreach ($envKey in @($EnvVars.Keys)) {
+      if ([string]$envKey -eq "FREDO_VITE_PORT" -and ([string]$EnvVars[$envKey]).Trim() -ne "$vite") {
+        Write-Log "WEBVIEW-ONLY REFUSED: -EnvVar FREDO_VITE_PORT=$($EnvVars[$envKey]) contradicts the manifest's recorded Vite port $vite." -Level ERROR
+        return $false
+      }
+      [Environment]::SetEnvironmentVariable([string]$envKey, [string]$EnvVars[$envKey], "Process")
+      Write-Log "Injected env var $envKey for the webview-only server"
+    }
+  }
+
+  # Per-env log dir sits beside the manifest (<env-root>/logs), never elsewhere.
+  $webviewLogDir = Join-Path (Split-Path -Parent $ManifestPath) "logs"
+  if (-not (Test-Path -LiteralPath $webviewLogDir)) { New-Item -ItemType Directory -Path $webviewLogDir -Force | Out-Null }
+  $webviewStdout = Join-Path $webviewLogDir "webview-only-stdout.log"
+  $webviewStderr = Join-Path $webviewLogDir "webview-only-stderr.log"
+  $startedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+  Write-Log "Starting frontend-only Vite (env '$EnvId' from $serving, port :$vite; app/PostgreSQL are NOT started)..."
+  # G-450 caller contract: use the ONE handle-whitelist spawn primitive. Plain
+  # Start-Process (even with -RedirectStandardOutput) inherits EVERY inheritable
+  # handle, so the long-lived cmd -> node/vite tree would keep an inline caller's
+  # stdout pipe open after this script exits. Start-DetachedProcess passes exactly
+  # stdin=NUL + the two declared log files.
+  $detachModule = Join-Path $PSScriptRoot "detach-process.psm1"
+  if (-not (Test-Path -LiteralPath $detachModule)) {
+    Write-Log "WEBVIEW-ONLY REFUSED: detach-process.psm1 not found next to dev-env.ps1 (G-450 handle-whitelist spawn primitive)." -Level ERROR
+    return $false
+  }
+  Import-Module $detachModule -Force
+  $cmdExe = $env:ComSpec
+  if (-not $cmdExe) { $cmdExe = Join-Path $env:SystemRoot "System32\cmd.exe" }
+  $launcherPid = Start-DetachedProcess -FilePath $cmdExe -ArgumentString "/c pnpm --filter @fredo/tauri exec vite" `
+    -WorkingDirectory $serving -StdOutPath $webviewStdout -StdErrPath $webviewStderr
+  if (-not $launcherPid -or $launcherPid -le 0) {
+    Write-Log "ERROR: could not launch the frontend-only Vite process tree (Start-DetachedProcess returned $launcherPid)." -Level ERROR
+    return $false
+  }
+  if (-not (Add-EnvManifestProcess -Path $ManifestPath -Role "vite-only-launcher" -ProcessId ([int]$launcherPid) -StartedAt $startedAt)) {
+    Write-Log "ERROR: could not record the webview-only launcher in the env manifest -- reaping it rather than running unrecorded." -Level ERROR
+    Invoke-NativeQuiet taskkill /PID $launcherPid /T /F | Out-Null
+    return $false
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSecs)
+  $code = 0
+  $portSeen = $false
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Port $vite) {
+      if (-not $portSeen) {
+        Write-Log "Vite port :$vite bound; waiting for an HTTP response..."
+        $portSeen = $true
+      }
+      $code = Get-HttpStatus $vite
+      if ($code -gt 0) { break }
+    }
+    Start-Sleep -Milliseconds 500
+  }
+
+  if ($code -le 0) {
+    Write-Log "ERROR: frontend-only Vite did not answer on :$vite within ${TimeoutSecs}s." -Level ERROR
+    $current = Read-EnvManifest $ManifestPath
+    $survivors = @(Get-ManifestRoleRecords -Manifest $current -Roles $script:WebviewOnlyRoles)
+    if ($survivors.Count -gt 0) {
+      Stop-WebviewOnlyRoles -Manifest $current | Out-Null
+    } elseif ($launcherPid -gt 0) {
+      Invoke-NativeQuiet taskkill /PID $launcherPid /T /F | Out-Null
+    }
+    Remove-EnvManifestRoles -Path $ManifestPath -Roles $script:WebviewOnlyRoles
+    Write-Log "Logs: $webviewStdout / $webviewStderr" -Level WARN
+    return $false
+  }
+
+  $vitePid = Get-PidByPort $vite
+  if (-not $vitePid) { $vitePid = $launcherPid }
+  if (-not (Add-EnvManifestProcess -Path $ManifestPath -Role "vite-only" -ProcessId ([int]$vitePid) -StartedAt $startedAt)) {
+    Write-Log "ERROR: the server answered but could not be recorded in the env manifest -- reaping it rather than running unrecorded." -Level ERROR
+    $current = Read-EnvManifest $ManifestPath
+    if ($current) { Stop-WebviewOnlyRoles -Manifest $current | Out-Null }
+    Invoke-NativeQuiet taskkill /PID $launcherPid /T /F | Out-Null
+    Remove-EnvManifestRoles -Path $ManifestPath -Roles $script:WebviewOnlyRoles
+    return $false
+  }
+  Write-Host "WEBVIEW-ONLY SERVING port=$vite pid=$vitePid"
+  Write-Host "READY (Vite dev server at http://localhost:$vite/; http=$code; app NOT started, PostgreSQL NOT started)"
+  Write-Log "env '$EnvId' frontend-only server serving on :$vite (manifest: $ManifestPath)"
+  return $true
 }
 
 # Remove one env artifact, refusing the repo root and any filesystem root.
@@ -1478,7 +1923,9 @@ function Assert-NoSharedClusterTarget {
 # -- Environment resolution (continues) ---------------------------------------
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$IsEnvMode = ($EnvId -ne "") -or ($EnvSlot -ge 1) -or ($ServingCheckout -ne "")
+# WebviewOnly is env-schema by definition (it serves a recorded manifest), so a
+# bare -Spec/-EnvId resolves the env block even without -EnvSlot/-ServingCheckout.
+$IsEnvMode = ($EnvId -ne "") -or ($EnvSlot -ge 1) -or ($ServingCheckout -ne "") -or ($Action -eq "WebviewOnly")
 
 if ($IsEnvMode) {
   # Apply the caller -EnvVar seam BEFORE port resolution so a port supplied via
@@ -1744,6 +2191,21 @@ switch ($Action) {
   "AssertIsolation" {
     Assert-NoSharedClusterTarget -ActionName "AssertIsolation"
     exit 0
+  }
+
+  # -- WebviewOnly -------------------------------------------------------------
+  # Frontend-only serving for the POST-QUIT window (app quit => OTLP ports free,
+  # webview still loads). Starts ONLY the env's recorded Vite dev server; never
+  # the app, PostgreSQL, MCP or OTLP. -Stop tears down only this verb's roles.
+  "WebviewOnly" {
+    if (-not $IsEnvMode) {
+      Write-Log "ERROR: -Action WebviewOnly requires env mode (-Spec <N> or -EnvId <id>)." -Level ERROR
+      exit 1
+    }
+    if ($Stop) {
+      if (Invoke-WebviewOnlyStop) { exit 0 } else { exit 1 }
+    }
+    if (Invoke-WebviewOnlyStart) { exit 0 } else { exit 1 }
   }
 
   # -- Down --------------------------------------------------------------------

@@ -1607,16 +1607,20 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                 return Ok(String::new());
             }
             // #3192: the EOL-only distinction. `git diff --numstat -- <path>` and
-            // `git diff --ignore-cr-at-eol -- <path>`: a path listed in the
-            // `dirty-eol-only` marker carries NO content change (both outputs empty);
-            // every other path reports a real change — default-to-real is the fail
-            // closed direction.
+            // `git diff --ignore-cr-at-eol [--cached] <rev> -- <path>`: a path listed
+            // in the `dirty-eol-only` marker carries NO content change (both outputs
+            // empty). `align-redundant` models the OTHER provably-lossless case for
+            // align-root: an uncommitted path whose content EQUALS the target
+            // (EOL-insensitive), so a checkout restores it losslessly. Every other
+            // path reports a real change — default-to-real is the fail-closed direction.
             if args.iter().any(|a| *a == "--numstat" || *a == "--ignore-cr-at-eol") {
                 let path = args.iter().position(|a| *a == "--").and_then(|i| args.get(i + 1)).copied().unwrap_or("");
-                let eol_only = mock_read(&mock_file(&["dirty-eol-only"]))
+                let listed = |marker: &str| mock_read(&mock_file(&[marker]))
                     .map(|raw| raw.lines().any(|l| l.trim() == path))
                     .unwrap_or(false);
-                if eol_only {
+                let eol_only = listed("dirty-eol-only");
+                let redundant = listed("align-redundant");
+                if eol_only || redundant {
                     return Ok(String::new());
                 }
                 if args.iter().any(|a| *a == "--numstat") {
@@ -3064,6 +3068,24 @@ fn path_has_content_change(path: &str) -> bool {
     }
 }
 
+/// True when `path`'s **uncommitted content equals `rev`'s copy** (EOL-insensitive),
+/// so a checkout that writes `rev`'s copy over it would lose nothing. Both the
+/// worktree and the index are compared: `git checkout` may refuse on either. An
+/// unreadable or unresolvable answer is `false` — callers treat "unknown" as real
+/// work (fail closed).
+fn rev_content_matches(dir: &std::path::Path, rev: &str, path: &str) -> bool {
+    for args in [
+        vec!["diff", "--ignore-cr-at-eol", rev, "--", path],
+        vec!["diff", "--cached", "--ignore-cr-at-eol", rev, "--", path],
+    ] {
+        match run_git_in(dir, &args) {
+            Ok(out) if out.trim().is_empty() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// **`align-root`** — put the repo root ON the spec tip, safely, so the
 /// `implementation → testing` serving-currency guard (G-052) is satisfied without a
 /// hand-run preserve/align/restore dance.
@@ -3073,12 +3095,21 @@ fn path_has_content_change(path: &str) -> bool {
 /// the same move the machine is trusted to make, but NEVER force:
 /// - `git fetch origin` (bounded by `run_cmd`'s timeout), then resolve
 ///   `origin/spec/<N>`;
-/// - REFUSE, naming every path, when an **uncommitted** path also differs between
-///   the current HEAD and the target — exactly the condition where a checkout would
-///   overwrite in-flight work (the failure that bit repeatedly);
+/// - judge the **at-risk** uncommitted paths — the dirty ∩ changed(HEAD, target)
+///   set a checkout would rewrite — by **content, not dirt**:
+///   - content equals the **target** (EOL-insensitive) ⇒ **redundant**: the
+///     checkout restores it losslessly from the target (the planning-time
+///     `tests-commit` reconcile is exactly this — it was committed to `origin/main`
+///     and the spec branch was cut from that main), so allow and report it as
+///     `discarded-redundant`;
+///   - content equals **HEAD** but differs from the target ⇒ recoverable from HEAD,
+///     so allow (restored from HEAD) and report it;
+///   - differs from the target **and** from HEAD ⇒ real in-flight work: REFUSE,
+///     naming every such path (the failure that bit repeatedly);
+///   - an untracked path has no copy at either rev, so it always counts as real;
 /// - otherwise `git checkout -B spec/<N> origin/spec/<N>` (no `-f`, no stash drop,
-///   no commit), then report HEAD, the preserved dirty set, and whether HEAD matches
-///   the tip;
+///   no commit), then report HEAD, the preserved dirty set, the discarded-redundant
+///   set, and whether HEAD matches the tip;
 /// - legal only while the issue is in `implementation` or `testing`; orchestrator
 ///   gated (see `actor_allowed`).
 fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
@@ -3105,41 +3136,74 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
         );
     }
     let head_before = run_git_in(&root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
-    // The uncommitted paths in the serving working tree.
+    // The uncommitted paths in the serving working tree. Untracked (`??`) paths are
+    // tracked separately: they have no committed copy at either rev, so their content
+    // can never be proven recoverable by a tree diff — they always count as real work.
     let dirty_raw = run_git_in(&root, &["status", "--porcelain"])?;
     let dirty: Vec<String> = dirty_raw.lines().filter_map(porcelain_path).collect();
-    // The paths whose content differs between the current HEAD and the target. A
-    // dirty path that appears here is exactly one the checkout would overwrite.
+    let untracked: std::collections::HashSet<String> = dirty_raw.lines()
+        .filter(|l| l.trim_start().starts_with("??"))
+        .filter_map(porcelain_path)
+        .collect();
+    // The paths whose content differs between the current HEAD and the target: the
+    // checkout rewrites exactly these, so only a dirty path in this set is at risk.
     let changed_raw = run_git_in(&root, &["diff", "--name-only", "HEAD", &target])?;
     let changed: Vec<String> = changed_raw.lines()
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
-    let conflicts: Vec<String> = dirty.iter()
-        .filter(|p| changed.iter().any(|c| c == *p))
-        .cloned()
-        .collect();
+    // Classify each at-risk path by CONTENT (#3196-family): being dirty is not the
+    // hazard — losing content is. A path whose content already equals the target is
+    // provably redundant (the planning-time `tests-commit` reconcile committed the
+    // SAME content to origin/main, and the spec branch was cut from it) and must not
+    // cost a hand-run proof. A path equal to HEAD is recoverable from HEAD. Only a
+    // path that differs from BOTH holds real in-flight work the checkout would drop.
+    let mut redundant: Vec<String> = Vec::new();
+    let mut restored_from_head: Vec<String> = Vec::new();
+    let mut conflicts: Vec<String> = Vec::new();
+    for path in dirty.iter().filter(|p| changed.iter().any(|c| c == *p)) {
+        if !untracked.contains(path) {
+            if rev_content_matches(&root, &target, path) {
+                redundant.push(path.clone());
+                continue;
+            }
+            if rev_content_matches(&root, "HEAD", path) {
+                restored_from_head.push(path.clone());
+                continue;
+            }
+        }
+        conflicts.push(path.clone());
+    }
     if !conflicts.is_empty() {
         anyhow::bail!(
-            "REFUSED: aligning the repo root to `{}` ({}) would overwrite uncommitted work in {} path(s): {}. Commit, stash, or move that work first — align-root never forces (-f), never drops a stash, and never commits.",
+            "REFUSED: aligning the repo root to `{}` ({}) would overwrite uncommitted work in {} path(s): {}. These paths differ from BOTH the target and HEAD — commit, stash, or move that work first. align-root never forces (-f), never drops a stash, and never commits.",
             branch,
             short_sha(&target),
             conflicts.len(),
             conflicts.join(", ")
         );
     }
-    // No dirty path is touched by the checkout, so it is safe — and still no `-f`.
+    // No at-risk path holds unrecoverable content, so the checkout is lossless — and
+    // still no `-f`.
     run_git_in(&root, &["checkout", "-B", &branch, &format!("origin/{}", branch)])?;
     let head_after = run_git_in(&root, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_default();
     let matches = !head_after.is_empty() && head_after.eq_ignore_ascii_case(&target);
-    let preserved = if dirty.is_empty() { "none".to_string() } else { dirty.join(", ") };
+    let preserved_set: Vec<String> = dirty.iter()
+        .filter(|p| !redundant.contains(p) && !restored_from_head.contains(p))
+        .cloned()
+        .collect();
+    let preserved = if preserved_set.is_empty() { "none".to_string() } else { preserved_set.join(", ") };
+    let discarded = if redundant.is_empty() { "none".to_string() } else { redundant.join(", ") };
+    let restored = if restored_from_head.is_empty() { "none".to_string() } else { restored_from_head.join(", ") };
     println!(
-        "ROOT ALIGNED: {} -> HEAD {} ({} from {}). Preserved uncommitted path(s): {}. Tree matches {} tip: {}",
+        "ROOT ALIGNED: {} -> HEAD {} ({} from {}). Preserved uncommitted path(s): {}. Discarded-redundant uncommitted path(s): {}. Restored from HEAD: {}. Tree matches {} tip: {}",
         branch,
         head_after,
         short_sha(&head_after),
         short_sha(&head_before),
         preserved,
+        discarded,
+        restored,
         branch,
         if matches { "yes" } else { "no" }
     );
@@ -3149,12 +3213,14 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
         actor,
         phase.as_str(),
         "success",
-        &format!("aligned repo root to {} at {} (preserved: {})", branch, head_after, preserved),
+        &format!("aligned repo root to {} at {} (preserved: {}; discarded-redundant: {})", branch, head_after, preserved, discarded),
         &[
             ("branch", branch.as_str()),
             ("head", head_after.as_str()),
             ("target", target.as_str()),
             ("preserved", preserved.as_str()),
+            ("discarded_redundant", discarded.as_str()),
+            ("restored_from_head", restored.as_str()),
             ("tree_matches_tip", if matches { "true" } else { "false" }),
         ],
     )?;
@@ -3651,8 +3717,40 @@ fn triage_a2a_path(issue: u32) -> anyhow::Result<PathBuf> {
 /// feature-domain test suites were seeded (`**Feature tests:** a, b`).
 const FEATURE_TESTS_PREFIX: &str = "**Feature tests:**";
 
+/// The raw tokens after the QA Expert's `**Feature tests:**` marker, wherever the
+/// marker appears on a line (see `parse_feature_names` for the position rationale).
+/// One token per comma-separated entry, backticks trimmed.
+fn feature_test_marker_tokens(a2a: &str) -> Vec<String> {
+    section(a2a, "## QA Expert")
+        .lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c == '>' || c == ' ').trim())
+        .filter_map(|l| l.find(FEATURE_TESTS_PREFIX).map(|i| &l[i + FEATURE_TESTS_PREFIX.len()..]))
+        .flat_map(|rest| rest.split(','))
+        .map(|s| s.trim().trim_matches('`').trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// True when the token is the sanctioned **"no suites, deliberately"** declaration:
+/// the literal `none`, case-insensitive, optionally parenthesised (`(none)`), with
+/// optional surrounding backticks and trailing punctuation. A docs-only spec seeds
+/// no durable suite, and without this form QA wrote bare `none`, which the token
+/// parser read as a suite NAME and the G-240 shape warning then fired on (#3196).
+fn feature_tests_none_token(token: &str) -> bool {
+    let t = token.trim().trim_matches(|c: char| matches!(c, '(' | ')' | '`' | '.' | ';'));
+    t.eq_ignore_ascii_case("none")
+}
+
+/// True when the QA declaration says this spec deliberately seeds NO feature suite.
+/// Only an all-`none` declaration counts: `none, foo` is a genuinely mixed/malformed
+/// declaration and keeps warning (the G-240 shape check) rather than discarding `foo`.
+fn feature_tests_declared_none(a2a: &str) -> bool {
+    let tokens = feature_test_marker_tokens(a2a);
+    !tokens.is_empty() && tokens.iter().all(|t| feature_tests_none_token(t))
+}
+
 /// Parse feature-domain names from the QA Expert's A2A section so the
-/// `triage → implementation` transition can persist each suite automatically.
+/// `planning → implementation` transition can persist each suite automatically.
 fn parse_feature_names(a2a: &str) -> Vec<String> {
     // Accept the declaration wherever it appears on a line — inside a
     // blockquote (`> **Feature tests:** …`) AND appended after other prose on
@@ -3660,14 +3758,10 @@ fn parse_feature_names(a2a: &str) -> Vec<String> {
     // EVERY suite in the planning -> implementation transition when the QA
     // Expert appended the declaration to the end of a paragraph (observed
     // #2877 for the blockquote case and #2897 for the mid-line case).
-    section(a2a, "## QA Expert")
-        .lines()
-        .map(|l| l.trim().trim_start_matches(|c: char| c == '>' || c == ' ').trim())
-        .filter_map(|l| l.find(FEATURE_TESTS_PREFIX).map(|i| &l[i + FEATURE_TESTS_PREFIX.len()..]))
-        .flat_map(|rest| rest.split(','))
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
-        .map(str::to_string)
+    feature_test_marker_tokens(a2a)
+        .into_iter()
+        .filter(|s| !feature_tests_none_token(s))
+        .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'))
         .collect()
 }
 
@@ -6378,10 +6472,19 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                             // silently skipped — the parser is lenient about POSITION but
                             // strict about TOKEN SHAPE (same family as #2877/#2897, whose
                             // fixes only covered position). Surface it loudly instead.
+                            // The sanctioned exception is the deliberate no-suite form:
+                            // `**Feature tests:** none` (case-insensitive, optional
+                            // parentheses) means "nothing to seed on purpose" — print an
+                            // explicit note and fire no guard. A genuinely EMPTY marker
+                            // still warns: it is a forgotten declaration, not a decision.
                             if features.is_empty() && section(&a2a, "## QA Expert").contains(FEATURE_TESTS_PREFIX) {
-                                let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]` and put any prose on a following line)";
-                                notes.push(format!("WARNING: {}", msg));
-                                let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped"), ("site", "transition")]);
+                                if feature_tests_declared_none(&a2a) {
+                                    notes.push("NO SUITES (declared none)".to_string());
+                                } else {
+                                    let msg = "QA `**Feature tests:**` marker present but no valid feature names parsed — no suites persisted (write `**Feature tests:** <lowercase-kebab>[, <name>]`, `**Feature tests:** none` for a deliberately suite-less spec, and put any prose on a following line)";
+                                    notes.push(format!("WARNING: {}", msg));
+                                    let _ = append_event_attrs(issue, "guard.fired", &a.actor, to.as_str(), "blocked", msg, &[("guardId", "G-240"), ("guardKey", "feature_tests_marker_token_shape"), ("failureClass", "suite_persistence_silently_skipped"), ("site", "transition")]);
+                                }
                             }
                             for feat in features {
                                 match persist_tests(&feat) {

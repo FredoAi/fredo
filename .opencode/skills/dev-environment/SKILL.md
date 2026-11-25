@@ -14,7 +14,8 @@ No state files. Ports (5174 Vite, 9223 MCP Bridge) are the source of truth. Dual
 | Action | Command | Description |
 |--------|---------|-------------|
 | Up | `powershell -File .opencode/scripts/dev-env.ps1 -Action Up` | Ensure dev instance is running AND ready. Auto-starts if not running. Polls ports until responsive. |
-| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance. Finds process by port, kills tree. Keeps the env's data (intra-run recovery). |
+| Down | `powershell -File .opencode/scripts/dev-env.ps1 -Action Down` | Stop dev instance and keep the env's data (intra-run recovery). Legacy mode finds the process by port and kills its tree; env mode stops ONLY that env's manifest PIDs, image-guarded — including a frontend-only server recorded by `WebviewOnly`. |
+| WebviewOnly | `powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Spec <N> [-EnvId <id>]` | **Post-quit frontend-only serving.** Starts ONLY the env's recorded Vite dev server (the app, PostgreSQL, MCP and OTLP stay down) and prints a real HTTP readiness line. `-Stop` tears down only what it recorded. See [Frontend-only serving](#frontend-only-serving-for-post-quit-legs-webviewonly). |
 | Clean | `powershell -File .opencode/scripts/dev-env.ps1 -Action Clean -EnvId <id>` | **Run-complete teardown (isolated env).** Stop the env, then remove ONLY its manifest/app-data/PostgreSQL dir/cache/logs and release its lease — nothing left behind. See [Cleanup](#cleanup). |
 | Status | `powershell -File .opencode/scripts/dev-env.ps1 -Action Status` | Read-only: `running` / `starting` / `stopped`. |
 | Restart | `powershell -File .opencode/scripts/dev-env.ps1 -Action Restart -Spec <N>` | Down then Up. **`-Spec` (or a repo root already on `spec/<N>`) is resolved BEFORE anything is stopped** — a missing `-Spec` now exits with a clear error and leaves the running instance up, instead of killing it and then failing the Up leg's range guard. **The Restart verb does NOT persist `-EnvSlot`** (G-328): for a per-issue ISOLATED env it silently falls back to the legacy ports (5174/9223) while keeping the env-scoped PG dir. To recover/restart an isolated env, run an explicit `-Action Down -EnvId <id>` followed by `-Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`; name that isolated form in any tester brief so the round never enters the legacy shared path. |
@@ -64,6 +65,34 @@ Every dev/test/pipeline round MUST run against its own isolated env slot — nev
 - **The legacy shared path is FORBIDDEN for rounds.** A round that resolves to the shared `%APPDATA%\com.fredo.app` PostgreSQL cluster dir fails closed with `ISOLATION REFUSED (shared-dir)` and exits `3` BEFORE PostgreSQL starts; the credential sentinel seams (`FREDO_PG_PASSWORD_FILE` / `FREDO_PG_KEYCHAIN_DISABLED`) are refused there too (`ISOLATION REFUSED (sentinel-seam)`), so `initdb` can never re-password the shared cluster. The human's manual legacy run WITHOUT the marker is intentionally left unchanged.
 - **`Restart` is forbidden for isolated envs** (it drops `-EnvSlot`, G-328) — recover with an explicit `powershell -File .opencode/scripts/dev-env.ps1 -Action Down -EnvId <id>` then `... -Action Up -Spec <N> -EnvId <id> -EnvSlot <n>`.
 - **Audit trace:** every isolation/refusal is appended to `.opencode/state/env-isolation.jsonl` (one JSON object per line, `decision` in {`refused`,`isolated`}). `dev-env.ps1 -Action Status` surfaces the read-only isolation check, and `verify-env-isolation.ps1` flags an active env whose data root IS the shared cluster dir.
+
+### Frontend-only serving for post-quit legs (`WebviewOnly`)
+
+Some test legs need the precondition **"the app is quit (so its OTLP ports are free) but a webview still loads"** — the post-quit port-conflict and post-quit settings legs (#3194/#3195/#3206). The product's own `quit_app` tears down the dev launcher tree **and Vite**, so after a legitimate quit nothing serves on the env's Vite port, the probe correctly refuses `NO_FRONTEND_SERVING`, and an agent must not improvise `pnpm ... dev:webview` by hand (G-110). Use this verb instead:
+
+```
+powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Spec <N> [-EnvId <id>]
+```
+
+- **What it starts:** ONLY the env's Vite dev server, on the Vite port **recorded in the env manifest** (`ports.vite`), with the env's variable block derived the same way `Up` derives it (`FREDO_ENV_ID`, per-env data/PG/pipe/webview profile, MCP + OTLP ports, `OPENCODE_*`). It records the server in the manifest under the distinct roles `vite-only` (the node listener) and `vite-only-launcher` (the launcher tree), so the env-scoped `Down`/`Clean` reap it and nothing else.
+- **What it does NOT start:** the app, the embedded PostgreSQL cluster, the MCP bridge or the OTLP receivers. It never touches the machine-global services or another env.
+- **Readiness:** prints `WEBVIEW-ONLY SERVING port=<p> pid=<pid>` followed by `READY (… http=<code> …)` — a real HTTP status from `http://localhost:<p>/`, not just a bound socket. Probe the same URL to prove the precondition instead of assuming it.
+- **Cold-start budget:** the port binds within a few seconds, but the FIRST root response on a cold Vite cache can take ~60–90 s while dependencies are optimized. The verb logs `Vite port :<p> bound; waiting for an HTTP response...` and keeps polling; pass `-TimeoutSecs 180` on a cold cache (a warm cache answers in seconds).
+- **Idempotent:** a second call while the server is healthy prints `WEBVIEW-ONLY ALREADY SERVING port=<p> pid=<pid>` and exits 0. It never starts a second server.
+- **Stop:** `powershell -File .opencode/scripts/dev-env.ps1 -Action WebviewOnly -Stop -Spec <N> [-EnvId <id>]` stops only the roles this verb recorded (env-scoped, image-guarded, bounded graceful → hard-kill) and reports `Vite port <p> closed.` `-Action Down` / `-Action Clean` already cover the same roles.
+- **Env id:** `-Spec <N>` alone resolves the default env id `spec<N>` and manifest `<repo>/.opencode/tmp/envs/spec<N>/manifest.json`. For a custom env id, pass the env's actual `-EnvId` (read it from `.opencode/state/env-leases/<N>.json`) or `-Manifest <path>`.
+
+| Failure mode | Behaviour |
+|---|---|
+| No manifest for the env | `WEBVIEW-ONLY REFUSED: … has no manifest at <path>`, exit 1. Start the env once with `-Action Up` (or pass the actual `-EnvId`/`-Manifest`). |
+| Manifest records no Vite port (`ports.vite` 0/absent) | `WEBVIEW-ONLY REFUSED: … records no Vite port`, exit 1. |
+| Manifest belongs to a different env | Refuses (never another env's server), exit 1. |
+| The env's app is still running (manifest `app` role alive, image-guarded) | `WEBVIEW-ONLY REFUSED: … app (PID …) is still RUNNING`, exit 1 — quit the app first; this verb is the post-quit window only. |
+| Recorded Vite port already bound by a foreign owner | `WEBVIEW-ONLY REFUSED: … already bound by PID …`, exit 1 — fail-closed: no port scan/fallback, no foreign-owner kill. |
+| Serving checkout has no `node_modules` | Refuses with the `pnpm install --frozen-lockfile` hint, exit 1. |
+| Vite never answers within `-TimeoutSecs` (default 120) | Exit 1, the launched tree is reaped, and the log paths (`<env-root>/logs/webview-only-*.log`) are printed. |
+
+**Self-test (live):** `powershell -File .opencode/scripts/test-scripts.ps1 -SelfTestWebviewOnly` starts the verb against a throwaway manifest/port, asserts a real HTTP 200 with the app's `index.html` shell, asserts the idempotent second call, stops it, asserts the port closed and the manifest roles removed. It is opt-in — the default harness run stays offline.
 
 ### Error-path induction levers (Spec #2944 ST-14, G-275)
 
