@@ -22,6 +22,22 @@
 > **F-9…F-12** (and the additions to F-2/F-6/F-7) carry **#3195's** and are each tagged
 > `(#3195 …)`. Both schemes have an AC4 — read the tag, not the number.
 >
+> **#3195 POST-AUDIT TEXT CORRECTIONS (suite defects fixed after the round; no product change).**
+> (1) **The Settings window label is `app-settings`** — the durable route closed/open `settings`
+> (the appId), a silent no-op that could false-PASS AC2/AC4 (F-2c, F-11b and the close block now
+> carry the label rule and require the window-list witness). (2) **F-12d's retired-copy clause is
+> scoped**: the retired strings MUST be spelled by the suite's own absence pin, so the binding
+> sweep is the non-test render-site sweep at zero, with the whole-tree sweep reconciling to the pin
+> (same shape for F-12c's retired id: three hits, one file, negative assertions only).
+> (3) **F-12e's hex pattern is narrowed** to 6/8-digit hex so an issue reference (`Spec #3195`) is
+> never a colour hit. (4) **F-3d drives the DISABLE through `ingest_autostart_set { enabled:
+> false }`** — ON-then-OFF is F-3e's recovery + F-2b's removal and cannot prove unowned preservation.
+> (5) **N-7 binds to the committed fake-timer poll assertion**; the live IPC counter is a NAMED
+> BLOCKER (the bridge dispatches through a bound reference, so the global patch read 0).
+> (6) **F-10f is UNVERIFIED** under its named blocker (the launcher/Vite topology: `quit_app` tears
+> the tree down, so nothing serves on `ports.vite`). (7) **F-6b states the `Applying…` sampling
+> floor** (~10–20 ms write vs the ~250 ms driver floor; a missed sample is disclosed, not scored).
+>
 > Inherits `.opencode/tests/resident-shell/` (the resident process, tray `Open`/`Quit`, the
 > single-instance probe, the exit gate), `.opencode/tests/resident-ingest/` (the ONE resident owner
 > of the cluster and the OTLP receivers — its predecessor `headless-ingest/` was RETIRED by #3194;
@@ -53,7 +69,9 @@ preflight). Rows F-9…F-12 share the one env. The recommended order after F-8 i
 i.e. every leg that needs a NORMAL launch first, then the three bounded `Down` + `Up -EnvVar`
 restarts (F-10b `ingest-down`, F-10c `degraded`, F-10d `down`) one at a time (one env per issue,
 G-316 — never two force values at once), then F-10f LAST among the live legs because its probe
-refuses an incumbent app and launches the app itself with the port held. F-11 needs the pre-test
+refuses an incumbent app and launches the app itself with the port held — **but F-10f is currently
+UNVERIFIED: its named blocker is the launcher/Vite topology (see the row and the named-blockers
+list), so record that blocker instead of running it.** F-11 needs the pre-test
 registry backup CLEARED first and restores it at the end — it says so in its own text. Never
 reorder without re-reading the row.
 
@@ -192,8 +210,21 @@ reorder without re-reading the row.
   `apps/tauri/src-tauri/capabilities/default.json:14`; `Window::close()` emits
   `RunEvent::CloseRequested` then destroys — the same path the title-bar X takes;
   `resident-shell/functional.md:37-41` drives it and `F-5` proves a second window survives it).
-  Verify the close from the OUTSIDE: `tauri_manage_window(action="list")` no longer lists that
-  label, and `…invoke('app_lifecycle_status')` reads `mainWindowOpen:false` with `trayItems` still
+  **THE WINDOW LABEL IS `app-<appId>`, NEVER THE APP ID (G-316 — validate a recipe against the
+  shipped naming):** the Settings window's label is **`app-settings`**; `settings` is its *appId*
+  (`shared/window-system/appWindows.ts:28-33` — "the backend opens … the generic `app-<id>`
+  window"). The product commands take `{ appId: 'settings' }`; the window plugin takes
+  `{ label: 'app-settings' }`. **A close sent with `{ label: 'settings' }` resolves WITHOUT an
+  error and closes NOTHING** — #3195 round 1 hit exactly this, and a row that does not check would
+  then read a pane that never unmounted (a false PASS of AC4/F-2c). Therefore: (a) **the window
+  list is the only witness** — every close row confirms the label is GONE from
+  `tauri_manage_window(action="list")` and treats a surviving entry as a FAILED DRIVE, never a
+  PASS; (b) where a surviving window can issue it, prefer
+  `…invoke('close_app_window', { appId: 'settings' })`, which returns `true` ONLY on a real close
+  (`appWindows.ts:40-49`) — a built-in no-op witness.
+  Verify a close from the OUTSIDE: `tauri_manage_window(action="list")` no longer lists that
+  label; for a `main` close, `…invoke('app_lifecycle_status')` additionally reads
+  `mainWindowOpen:false` with `trayItems` still
   `[{id:"tray-open",label:"Open"},{id:"tray-quit",label:"Quit"}]` while the PID is alive.
   **With the LAST window closed there is no webview to invoke from** — reopen `main` with the
   webview-free seam (`resident-shell/second-launch.ps1`, F-1c) and continue from there; never
@@ -383,16 +414,24 @@ reorder without re-reading the row.
   also #3195's guard that the status-line change did not smuggle a login-entry boolean into the
   pane.*
   Precondition: F-2a left the owned value PRESENT and the pane OPEN with `switchChecked:true`.
-  1. CLOSE the `app-settings` window (`plugin:window|close`, label `settings`; see the close block)
-     and confirm from `tauri_manage_window(action="list")` that it is gone. The pane is now
-     UNMOUNTED, so nothing of it is on screen.
+  1. CLOSE the `app-settings` window — **`plugin:window|close` with `label: 'app-settings'`** (the
+     label is `app-<appId>`; `'settings'` is the appId and closes nothing — see the close block),
+     or the preferred `…invoke('close_app_window', { appId: 'settings' })` from `main`, whose
+     boolean must read `true`. Then confirm from `tauri_manage_window(action="list")` that
+     `app-settings` is GONE. The pane must now be UNMOUNTED, so nothing of it is on screen.
+     **The list read is this leg's only witness:** a close with a label that does not exist
+     resolves without an error, so an `app-settings` entry still in the list — or a
+     `close_app_window` that returned `false` — is a FAILED DRIVE of this row, never a PASS
+     (the step-3 reading would then be the still-mounted pane's cached value, which is exactly
+     what this row claims to discriminate).
   2. **Mutate the registry OUT OF BAND** while no pane exists:
      `registry-entry.ps1 -Clear -BackupPath .opencode/tmp/3195/registry-backup.json` → paste
      `DELETE_VERIFIED=Absent`; then `-Read` → `ENTRY=Absent`.
   3. Reopen the window (`…invoke('open_app_window', { appId: 'settings' })` from `main`), navigate to
      Background capture, and read the PANE READING once the section exists.
-  4. Then the reverse direction: toggle ON from the pane, close the window, `-Read` → `Present`;
-     reopen and read.
+  4. Then the reverse direction: toggle ON from the pane, close the window (the SAME
+     `app-settings` close, verified by the list read — never `label: 'settings'`), `-Read` →
+     `Present`; reopen and read.
   **Expected:** step 3's FIRST settled reading is `switchChecked:false` with
   `timing` = `Fredo does not start when you sign in.` — the pane reported the REGISTRY, not the
   `enabled:true` it had rendered before it unmounted; step 4's reading is `switchChecked:true`.
@@ -461,18 +500,34 @@ reorder without re-reading the row.
   **Expected:** the pane's `switchChecked` is `false` and `timing` is `DETAIL_OFF`
   (`Fredo does not start when you sign in.`) — derived from
   `enabled: true, owned: false, available: true`, never as an error (`status.error` absent, no
-  `Could not update background capture:` line, `timing` contains no `Could not update`). Toggle ON
-  then OFF; after the OFF, `-Read` the registry: `ENTRY=Present` and `RAW_SHA256` STILL the foreign
-  digest — disable did not delete a value this product does not own.
+  `Could not update background capture:` line, `timing` contains no `Could not update`).
+  **Then drive a DISABLE with the foreign value present — NEVER ON-then-OFF.** The switch renders
+  UNCHECKED for a foreign entry (`effectiveOn = enabled && owned`,
+  `IngestAutostartSettings.tsx:249-256`), so a click on it means ENABLE, and enable ALWAYS writes
+  the current form (`apply_toggle` → `write_current_entry`, `autostart.rs:457-460`) — that is
+  **F-3e's recovery**, after which a disable removes what the product now owns (`:469-473`) and the
+  value reads `ENTRY=Absent`. The switch therefore cannot express "disable" from this state: drive
+  the disable through the SAME command the switch calls, in the direction the switch cannot
+  produce here — `…invoke('ingest_autostart_set', { enabled: false })`. (`enabled:false` with a
+  foreign value classifies `Foreign` and logs "login entry is not Fredo's; leaving it untouched",
+  `autostart.rs:470-480`.) Then `-Read` the registry: `ENTRY=Present` and `RAW_SHA256` **STILL the
+  foreign digest** — paste the pre-seed / pre-disable / post-disable digests as a triple, so
+  "untouched" is visible rather than inferred. Re-read the pane afterwards: still
+  `switchChecked:false` + `DETAIL_OFF`, with the command's returned view `enabled:true,
+  owned:false`.
+  **FAIL:** a disable that deletes the foreign value, rewrites it, or replaces it with the current
+  form (a disable must never claim or adopt a value this product does not own); **or this row
+  resting on an ON→OFF sequence** — that sequence is F-3e (recovery) followed by F-2b (removal of
+  what is now owned), and it cannot prove the unowned-preservation clause.
   **INVERTED by #3195:** this row previously asserted the rendered `Background capture: Off` line and
   the DETAIL_OFF sentence `… Capture runs only while Fredo is open.` Both are gone: the retired
   status id is absent (`retiredStatusPresent:false`) and the "only while Fredo is open" clause is a
   FALSE stopped-claim the spec removes. `sectionText` must NOT contain `only while Fredo is open`.
   The capture-status line is independent here — whatever it reads, it may not be read as the
   sign-in state.
-  **Edge:** toggle ON with the foreign value present (F-3e) — the surface must not claim it was
-  already correct; `ingest_autostart_get` alone (open the pane, change nothing) must leave the
-  registry byte-identical (read-only contract).
+  **Edge:** toggle ON with the foreign value present (**F-3e**, not this row) — the surface must not
+  claim it was already correct; `ingest_autostart_get` alone (open the pane, change nothing) must
+  leave the registry byte-identical (read-only contract).
 
 - [ ] **F-3e — enabling RECOVERS a foreign value (the documented recovery path).**
   From F-3d's foreign state, click the toggle ON and wait for PANE READING `switchChecked:true`.
@@ -621,6 +676,22 @@ reorder without re-reading the row.
   UI/UX A-1's claim-free rewrites; the pre-#3195 strings claimed capture was happening —
   `This session is already capturing…` / `This session keeps capturing until you quit Fredo.` — and
   rendering either is now a FAIL.)**
+  **In-flight sampling floor — stated, not left to the tester (disclosed method limit, NOT a FAIL
+  and NOT a PASS).** The `Applying…` state exists only for the registry round trip: **~10–20 ms** on
+  this host (#3195 round 1), which is SHORTER THAN ONE `tauri_webview_execute_js` ROUND-TRIP — the
+  driver's sampling floor is ~250 ms per sample (the same floor F-11b and the named blockers
+  disclose). So a 0–1 s sample will USUALLY land after the write settled, and **a sample that
+  misses `Applying…` proves nothing either way**: record `IN_FLIGHT_SAMPLE_MISSED (write settled
+  within ~10–20 ms; driver floor ~250 ms)` and do NOT score the row on it. A sample that DOES catch
+  `Applying…` is corroboration. The binding proof of the in-flight state is **F-10e's component
+  case** — the pending write held open under fake timers (`IngestAutostartSettings.test.tsx:428-458`)
+  asserting `Applying…`, switch `disabled`, `aria-busy:"true"`, and the capture word holding the
+  last SETTLED state. Cite that pin as the in-flight receipt.
+  **What this row still FAILS on:** a caught in-flight sample whose toggle is NOT `disabled`, or
+  whose capture word is a skeleton/guess; a settled ON/OFF `timing` that is not the §2 sentence
+  above; any sample rendering a pre-#3195 claim (`This session is already capturing…`,
+  `This session keeps capturing…`); the error leg not rendering a PERSISTENT
+  `Could not update background capture: <message>` or leaving the switch flipped.
   **Edge:** rapid toggle ON→OFF before the first write settles (final state matches the registry,
   not the last click); `aria-busy="true"` while applying (`regionAriaBusy:"true"` — the region also
   carries `aria-busy` while the CAPTURE read is unresolved, so read `switchChecked`/`timing` for the
@@ -857,7 +928,8 @@ reorder without re-reading the row.
   U-2), and an assertion that the invoke set contains no `pg_supervisor_status`.
   **The no-poll-spam leg (UI/UX U-10) is part of this row:** under fake timers, six 5 s ticks
   produce ≤ 1 `stream_health` invoke per tick, the region's `textContent` is byte-identical across
-  all six, and `aria-busy` never flips during them (N-7 is the live counterpart).
+  all six, and `aria-busy` never flips during them (this committed pin IS the binding receipt —
+  N-7's live counter is a named blocker, so nothing rests on a live count).
   **FAIL:** a state with no case; a case that asserts a paraphrase (two artifacts pinning the same
   string must not disagree, G-466); the invoke set still calling `pg_supervisor_status`.
   **Edge:** a green suite whose titles promise a state its assertions do not read (e.g. a
@@ -865,12 +937,32 @@ reorder without re-reading the row.
   (G-418).
 
 - [ ] **F-10f — `notRunning` with the TYPED cause, live (the port-squat route).**
-  Reuse the resident-ingest port-squat recipe — do NOT hand-roll a holder
-  (`resident-ingest/functional.md` F-6 owns it; read that row before this one).
-  1. With the env up, quit the app through the PRODUCT's own path
-     (`…invoke('quit_app')`, the same one the tray `Quit` item dispatches) so the ports are free but
-     the Vite dev-server keeps serving (the probe REFUSES, exit 2, when the incumbent app still
-     runs or the frontend is not serving).
+  **UNVERIFIED — NAMED BLOCKER (environment/topology), stated up front (G-440 / G-316).**
+  **Why the environment cannot satisfy it.** The route needs a FRONTEND SERVING on the env's Vite
+  port (`ports.vite`, 16000) while the app is NOT yet running: the probe launches the app itself
+  and the pane needs a loaded page. But the env's Vite server is started by the `tauri dev` launcher
+  tree that `dev-env.ps1 -Action Up` brings up, and the product's own `…invoke('quit_app')` tears
+  that WHOLE TREE down — the app **and** Vite. #3195 round 1 measured the consequence: after
+  `quit_app`, a census of `ports.vite` found **no listener**, and `otlp-conflict-probe.ps1` refused
+  with `NO_FRONTEND_SERVING` / `RESULT=REFUSED` / exit 2, so `HOLD_PROVEN` was never reachable.
+  The previous text's premise — "quit_app … so the ports are free but the Vite dev-server keeps
+  serving" — was **FALSE** and is deleted here; do not read the steps below as a drivable recipe
+  until the lever named next exists.
+  **The one missing lever (this is what unblocks the row, not a product fix):** a committed way to
+  serve `apps/ui` on `ports.vite` independently of the launcher (a standalone dev-server start/stop
+  action). Hand-rolling a server spawn is forbidden (G-110), and neither `dev-env.ps1` nor
+  `otlp-conflict-probe.ps1` provides one. So this round records the row **UNVERIFIED with this
+  blocker** — never a FAIL, and never a PASS by substitution. The typed-cause clause rests on
+  **F-10e's component cases** (both receivers; receiver + port taken from the wire `ingestFailure`);
+  paste that substitution explicitly and say the live leg is unavailable.
+  **Recipe — run only once a frontend server exists on `ports.vite`.** Reuse the resident-ingest
+  port-squat recipe; do NOT hand-roll a holder (`resident-ingest/functional.md` F-6 owns it; read
+  that row first).
+  1. With the env up, quit the app through the PRODUCT's own path (`…invoke('quit_app')`, the same
+     one the tray `Quit` item dispatches) so the app's ports are free. **Then prove the frontend
+     precondition instead of assuming it:** census `ports.vite` (the `resident-shell`
+     `lifecycle-probe.ps1 -Action Port -PortNumber <ports.vite>`) and paste the reading. No listener
+     ⇒ the probe will refuse; that refusal is the blocker above, not a restart loop.
   2. `run-exitcode.ps1 -Command "powershell -File .opencode/tests/resident-ingest/otlp-conflict-probe.ps1
      -Manifest <manifest> -Exe <exe> -DryRun"` — paste the resolved block (it spawns and binds
      NOTHING).
@@ -880,7 +972,7 @@ reorder without re-reading the row.
      the gRPC port held and leaves it running: take `<appPid>` for the rest of this row from the
      probe's printed launch facts (the env manifest still names the QUIT pid).
   4. Point the driver at the relaunched app and open the pane; wait one tick.
-  **Expected:** the probe exits **0** with `HOLD_PROVEN=true`, `APP_READY=true`,
+  **Expected (when driven):** the probe exits **0** with `HOLD_PROVEN=true`, `APP_READY=true`,
   `TARGET_LISTENER_ROWS=1`, `SIBLING_LISTENER_ROWS=0`, `HOLDER_RELEASED=true`; the backend snapshot
   carries `ingestFailure` with `receiver:"grpc"`, `port:<ports.otlpGrpc>`, `code:"addrInUse"` and a
   non-empty `message`; `status` = `Capture: Not running`; `detail` = 
@@ -889,14 +981,15 @@ reorder without re-reading the row.
   Paste the `stream_health` JSON beside the rendered detail so the port/receiver are attributable.
   **The `http` leg:** repeat 2–4 with `-Receiver http` after quitting this instance through
   `quit_app` again — expect `HTTP` and `<ports.otlpHttp>` in the sentence and
-  `ingestFailure.receiver:"http"`.
-  **FAIL:** the typed cause is not reflected (the generic sentence is rendered while the snapshot
-  carries a well-formed `ingestFailure`); the port/receiver in the sentence disagree with the
-  snapshot; the detail is a stopped/daemon sentence.
+  `ingestFailure.receiver:"http"`. It inherits the SAME frontend-server precondition and the same
+  blocker; when the `grpc` leg is UNVERIFIED this leg is too.
+  **FAIL (when driven):** the typed cause is not reflected (the generic sentence is rendered while
+  the snapshot carries a well-formed `ingestFailure`); the port/receiver in the sentence disagree
+  with the snapshot; the detail is a stopped/daemon sentence.
   **Instrument note:** exit **1** = the LEVER ran but its preconditions failed (`HOLD_PROVEN`/
   `APP_READY` false) — a FAILED DRIVE; exit **2** = REFUSED before launching (manifest, incumbent
-  still running, frontend not serving) — restart the sequence, never improvise. Neither is a product
-  FAIL (G-406).
+  still running, `NO_FRONTEND_SERVING`) — the `NO_FRONTEND_SERVING` refusal is this row's KNOWN
+  blocker (record it, do not retry endlessly), and no refusal is ever a product FAIL (G-406).
   **Edge:** the page may be `about:blank` for minutes after the probe's launch — the documented
   isolated-boot characteristic (3–5 min); wait it out and say how long before declaring a wedge.
 
@@ -943,10 +1036,15 @@ reorder without re-reading the row.
   Continue from F-11a's state (registry `Absent`, `main` destroyed, Settings window open, line
   `Capture: Running`).
   1. Close the Settings window:
-     `tauri_webview_execute_js(windowId='app-settings', script="(() => __TAURI__.core.invoke('plugin:window|close', { label: 'settings' }))()")`
-     (the product's own alternative is `…invoke('close_app_window', { appId: 'settings' })` from
-     `main`; use whichever answers and record which). Confirm it is gone from
-     `tauri_manage_window(action="list")`.
+     `tauri_webview_execute_js(windowId='app-settings', script="(() => __TAURI__.core.invoke('plugin:window|close', { label: 'app-settings' }))()")`
+     (**the label is `app-settings`, NOT `settings`** — `settings` is the *appId* the product
+     commands take; a close of `settings` resolves without an error and closes nothing, so the
+     "freshly created webview" premise would be silently false — see the close block). From this
+     window `close_app_window { appId: 'settings' }` would have to answer from a window that is
+     being destroyed, so the plugin lever is the one to use here; record which you drove.
+     Confirm from `tauri_manage_window(action="list")` that `app-settings` is **GONE**. An
+     `app-settings` entry still listed means the close was a NO-OP: a FAILED DRIVE of this row,
+     never a PASS.
   2. Reopen WITHOUT an existing webview: with no product window left, reopen `main` through the
      webview-free seam
      (`run-exitcode.ps1 -Command "powershell -File .opencode/tests/resident-shell/second-launch.ps1
@@ -1029,10 +1127,17 @@ reorder without re-reading the row.
   `rg -n "settings-ingest-autostart-status" apps/ui/src` → paste every hit and disposition each.
   **Expected:** ZERO hits in a rendering position — no `data-testid="settings-ingest-autostart-status"`
   and no `testId` assignment of it in `IngestAutostartSettings.tsx` (whose testid legend comment
-  must name the NEW ids instead). The ONLY permitted hits are the ABSENCE pin in
-  `applications/ingest/__tests__/IngestAutostartSettings.test.tsx` (a `queryByTestId`/`not.` form)
-  — and that pin must EXIST (zero hits overall is also a FAIL: the pin is ST-2's deliverable, and
-  an "absent" claim with no pin is unwitnessed).
+  must name the NEW ids instead). The permitted hits are, and only are, in
+  `applications/ingest/__tests__/IngestAutostartSettings.test.tsx` — **the ABSENCE pin body** (a
+  `queryByTestId` / `querySelector` → `toBeNull()` form, `:250-251` in the #3195 tree) **and its
+  header declaration** (the suite doc-comment naming the ids it pins absent, `:19`). At the #3195
+  tree that is **three hits, all in that one file**; paste the sweep and reconcile its hit count
+  against that, dispositioning any extra (G-419 — the count is a literal fact re-derived from the
+  tree, not remembered).
+  **Zero hits overall is ALSO a FAIL** (the pin is ST-2's deliverable — an "absent" claim with no
+  pin is unwitnessed), and **so is a hit that is a POSITIVE assertion** (`getByTestId('…-status')`
+  or any `expect(...).toBeInTheDocument()` on the retired id): the permitted form is the NEGATIVE
+  assertion. Read the assertion around each hit, not the token alone.
   **Additionally (the agentic-derived pin, `apps/ui/src` only):** no source file imports
   `useStreamHealth`/`useStreamContext` into the pane — the line must come from
   `captureStatus.ts`: `rg -n "useStreamHealth|useStreamContext|useStream\(" apps/ui/src/applications/ingest`
@@ -1041,45 +1146,75 @@ reorder without re-reading the row.
   **FAIL:** a live render site with the retired id; the absence pin missing; the pane wired to the
   stream context (a `degraded` cold start would then render the stopped claim, F-11b's defect).
 
-- [ ] **F-12d — the retired COPY is gone from the app sources (string literals), and no stale claim
-  survives in prose.**
-  `rg -n "Background capture: (On|Off|Unavailable)" apps/ui/src` → ZERO hits (the pane source and
-  its unit suite are both rewritten this round; a surviving hit in the TEST is a FAIL of ST-2's
-  rewrite, not an allowlisted artifact).
-  Then `rg -n "only while Fredo is open|still captures while it is|already capturing|keeps capturing until you quit" apps/ui/src`
+- [ ] **F-12d — the retired COPY has ZERO RENDER SITES, and the only surviving spellings are the
+  absence pin.**
+  **Two sweeps, both over `apps/ui/src`, each one shell call, pasted verbatim.**
+  (i) **The render-site sweep (the binding clause):**
+  `rg -n "Background capture: (On|Off|Unavailable)" apps/ui/src -g '!**/__tests__/**'` →
+  **ZERO hits.** A retired capture line in product source is a FAIL of ST-2's rewrite. (An exclusion
+  limited to test files is deliberate and stated here — G-430/G-431: the pin MUST spell the tokens
+  to assert their absence, so a whole-tree literal zero would be contradicted by the instrument's
+  own evidence. Not a repo-wide claim: this is a `apps/ui/src`, non-test sweep.)
+  (ii) **The whole-tree sweep (the pin must EXIST):**
+  `rg -n "Background capture: (On|Off|Unavailable)" apps/ui/src` → the ONLY permitted hits are the
+  absence pin and its header in
+  `applications/ingest/__tests__/IngestAutostartSettings.test.tsx` — the `RETIRED_COPY` array
+  (`:102-104` in the #3195 tree) and the suite doc-comment (`:19-22`). **Disposition every hit**
+  and reconcile the count against the tree you actually read (G-419). **Zero hits overall in (ii)
+  is ALSO a FAIL:** the pin is ST-2's deliverable, and an unwitnessed absence claim is not a proof.
+  **A test hit is a FAIL when it feeds a POSITIVE assertion** — a `getByText`/`toContain`/
+  `toBeInTheDocument`/snapshot that pins the retired text as RENDERED. The permitted form is the
+  NEGATIVE assertion (`expect(text).not.toContain(…)`, `queryByTestId(…)` → `toBeNull`). Read the
+  assertion each literal feeds, not the quote character — inside `RETIRED_COPY` the same literal is
+  the permitted pin.
+  **Then the stale-claim sweep:**
+  `rg -n "only while Fredo is open|still captures while it is|already capturing|keeps capturing until you quit" apps/ui/src`
   and **disposition every hit** (G-419's code-vs-comment rule, applied to a copy row):
-  - a hit **inside a string literal or template** (a `'`, `"` or backtick immediately before the
-    token — i.e. a rendered constant or an assertion pinning one) is a **FAIL**: the constant was
-    re-introduced, or the suite still pins the retired text.
+  - a hit **in product source (any file outside `__tests__`)** — whether in a string literal, a
+    template, or a JSX text node — is a **FAIL**: the retired claim is back on a render path.
+  - a hit **inside the test's `RETIRED_COPY` / a `not.toContain` assertion** is the **permitted
+    pin** (not a FAIL); a hit that feeds a POSITIVE assertion is a **FAIL**.
   - a hit inside a `//` / `/* */` **comment** is **recorded, not failed**, and reported as a stale
     comment for ST-2 to clean in the same landing — but it must not read as current copy (e.g. the
     pane header explaining that *“this session is already capturing” is false after a restart* is a
     stale quotation of a sentence A-1 deleted, and is exactly the kind of comment the plan's own
     G-416 rule says must be corrected).
-  **Expected:** zero `Background capture: On|Off|Unavailable` hits; every A-1-sentence hit is a
-  comment (report the file:line + the quoted text), or zero.
+  **Expected:** (i) empty; (ii) hits only in that one test file, every one of them a NEGATIVE
+  assertion; every A-1-sentence hit is either that pin or a comment (report file:line + quoted text).
   **Scope:** `apps/ui/src` only — `.opencode/tests/**` records the retired strings as the absence
   contract and is outside the universe (G-430/G-431).
-  **FAIL:** a rendered constant or test assertion carrying any retired string.
+  **FAIL:** a retired string reachable from a render path; a positive assertion pinning one; the
+  absence pin missing.
   **Edge:** the A-1 sentences in the pane's HEADER comment are expected to disappear with ST-2's
   comment pass; if one survives as a quoted explanation, say so rather than failing the row — a
   comment is not a copy surface.
 
-- [ ] **F-12e — token-only styling (no hex/rgb/hsl literal, no alpha-append on `var()`), and the
+- [ ] **F-12e — token-only styling (no colour literal, no alpha-append on `var()`), and the
   WORD is `fg.default` (UI/UX A-2 / U-11).**
-  `rg -n "#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(" apps/ui/src/applications/ingest/IngestAutostartSettings.tsx apps/ui/src/applications/settings-app/components/SettingsSurface.tsx`
-  → ZERO; `rg -n "var\(--[a-z0-9-]+\)[0-9a-fA-F]{2}"
+  **The two commands, narrowed to real colour forms (G-271/G-419 — a pattern is a literal fact):**
+  (i) `rg -n "#[0-9a-fA-F]{8}\b|#[0-9a-fA-F]{6}\b|rgba?\(|hsla?\(" apps/ui/src/applications/ingest/IngestAutostartSettings.tsx apps/ui/src/applications/settings-app/components/SettingsSurface.tsx`
+  → ZERO; (ii) `rg -n "var\(--[a-z0-9-]+\)[0-9a-fA-F]{2}"
   apps/ui/src/applications/ingest/IngestAutostartSettings.tsx` → ZERO.
+  **Why 6/8-digit hex and not `{3,8}`:** the old `#[0-9a-fA-F]{3,8}\b` also matched an ISSUE
+  REFERENCE — `Spec #3195`, `#3195` etc. are `#` + a 4-digit hex-class run — so the sweep reddened
+  on comments (#3195 round 1). **Issue-reference forms (`Spec #NNNN`, `G-NNN`, `#<1-5 digits>`) are
+  EXCLUDED by construction here** and are never a colour hit. If you widen the pattern for any
+  reason, every `#`+digits hit must be dispositioned by reading its line (`Spec #…` / an issue or
+  guardrail reference) and must never be counted as evidence either way. The 3-/4-digit hex
+  SHORTHAND is deliberately not swept by the pattern for the same reason (it is lexically
+  indistinguishable from an issue ref); it is covered by the token read below, which names each
+  colour by token rather than by value.
   **Expected:** both empty (paste them). The state HUE rides the decorative icon only —
   `status.success` (`running`) / `status.warning` (`notRunning`) / `status.info` (`unknown`) — and
   the WORD TEXT is `fg.default` in all three states (A-2: the preset status hues do not clear AA
   small-text contrast on `bg.surface`, and `fg.default` is today's line — no-worse-than-control,
   G-235). F-10a's computed-colour comparison is the live leg of A-2; this row is the static one:
   read the status word's `color` prop and confirm it is a token, not a status hue.
-  **FAIL:** any colour literal in the pane; an alpha-append like `var(--accent-primary)22` (invalid
-  CSS — the declaration is dropped at computed-value time); the word text coloured with
-  `status.warning`/`status.success`/`status.info`.
-  **Edge:** a colour inside a `title`/`aria` string is not styling — record it, do not fail.
+  **FAIL:** any colour literal reachable from the pane's styles; an alpha-append like
+  `var(--accent-primary)22` (invalid CSS — the declaration is dropped at computed-value time); the
+  word text coloured with `status.warning`/`status.success`/`status.info`.
+  **Edge:** a colour inside a `title`/`aria` string is not styling — record it, do not fail; a hit
+  inside a comment that IS a colour (e.g. a pinned example in prose) is recorded, not failed.
 
 - [ ] **F-12f — every affected test moved with the surface (the whole-UI gate).**
   `run-exitcode.ps1 -Command "pnpm --filter @fredo/ui test:run"` → `EXITCODE=0` with **0 failed**
@@ -1116,26 +1251,48 @@ reorder without re-reading the row.
 - [ ] **N-6 (no window flash at login — disclosed method).** `launch-background.ps1` reads the window
   enumeration (`VISIBLE_PRODUCT_WINDOW`) after readiness; a sub-100 ms flash between process start
   and that read is not observable with the provisioned tools — DISCLOSE it, do not claim it proven.
-- [ ] **N-7 (IPC budget + no state churn — measured, not asserted).** Install a counter in the pane's
-  webview BEFORE sampling:
-  `(() => { const i = window.__TAURI_INTERNALS__; if (i.__qaCount) return 'ALREADY'; const orig = i.invoke; i.__qaCount = { stream_health: 0, total: 0 }; i.invoke = function (cmd, args) { i.__qaCount.total++; if (cmd === 'stream_health') i.__qaCount.stream_health++; return orig.call(i, cmd, args); }; return 'WIRED'; })()`
-  then wait 30 s without touching the pane and read `JSON.stringify(window.__TAURI_INTERNALS__.__qaCount)`.
-  **Expected:** `stream_health` count ∈ **[6, 9]** over 30 s (one on mount + one per 5 s tick, with
-  scheduling slack) — NOT dozens; and a second 10 s window during which the tester changes theme
-  preset / resizes the window produces at most +3 (a re-render must not issue a probe; a burst is
-  the #523 loop).
-  **FAIL:** a count ≥ 15 in 30 s (a re-render loop or a per-render invoke), or zero (the line is not
-  being driven by a read at all — then F-10a's reading is unexplained).
-  **Edge:** `total` is recorded too — the pane must not invoke `pg_supervisor_status` at all (record
-  the key set; a `pg_supervisor_status` key is a FAIL of the no-matrix constraint). The counter is
-  installed from the driver, so it does not alter the shipped bundle — say so in the receipt.
-  The count is invalidated by a reload: re-install after any navigation or remount and record the
-  timestamp the counter started.
+- [ ] **N-7 (IPC budget + no state churn — measured at COMPONENT level; the live counter is a NAMED
+  BLOCKER).**
+  **The binding receipt is the pane suite's own stubbed bridge handler under fake timers** — an
+  observable the test can actually see. Run
+  `run-exitcode.ps1 -Command "pnpm --filter @fredo/ui exec vitest run src/applications/ingest"` →
+  `EXITCODE=0`, then read the steady-poll case in
+  `src/applications/ingest/__tests__/IngestAutostartSettings.test.tsx` (`:540-565` in the #3195
+  tree) and paste the test name AND its assertion (never the title alone — G-418). The measured
+  quantity is the mock's per-command call count —
+  `invokeMock.mock.calls.filter((c) => c[0] === 'stream_health').length` — after six `5 s` ticks.
+  **Expected:** exactly ONE `stream_health` invoke per tick across the six ticks — **0 is a FAIL**
+  (the line would not be driven by a read at all; F-10a's reading would be unexplained) and **≥ 2 in
+  one tick is a FAIL** (a per-render invoke); the region's `textContent` byte-identical across all
+  six; `aria-busy` never flipping during them; and 0 `pg_supervisor_status` calls in the mock's key
+  set (a `pg_supervisor_status` key is a FAIL of the no-matrix constraint).
+  **Live corroboration (record, NOT a gate):** after 30 s untouched, two
+  `tauri_webview_execute_js` samples of the region's `textContent` are byte-identical with
+  `regionAriaBusy:"false"`, and `tauri_read_logs(source="console", lines=50)` on `app-settings`
+  carries no `Maximum update depth exceeded` (N-4) — the console is the churn witness a live run
+  CAN read.
+  **NAMED BLOCKER — the live IPC counter (G-469, disclosed).** This row previously patched
+  `window.__TAURI_INTERNALS__.invoke` and read its count. **That instrument is blind, and #3195
+  round 1 proved it:** the wrapper read `0` while the pane demonstrably polled (F-10a's word moved
+  with the backend). The bridge holds a BOUND reference registered once at startup —
+  `main.tsx:27` → `adapterBridge.setInvoke(adapter.invoke.bind(adapter))`, dispatched through at
+  `adapterBridge.ts:108-122` — so a property patched onto `__TAURI_INTERNALS__` after load is not on
+  the call path. There is no sanctioned live IPC-count seam, and product code must not gain a
+  QA-only hook, so **the live count is UNVERIFIED with this blocker**: a `0` reading is EVIDENCE OF
+  NOTHING (never "the pane does not poll", never a FAIL of the NFR); a `> 0` reading is
+  corroboration only. Do not substitute another live counter without citing why it is on the invoke
+  path.
+  **FAIL:** the unit pin absent, red, or not asserting per-tick counts; ≥ 2 `stream_health` invokes
+  in one tick; a `pg_supervisor_status` key; the region text CHANGING across the six ticks;
+  `aria-busy` flipping during them; `Maximum update depth exceeded` in the live console.
 
 ## Suite-level pass/fail
 
 PASS = F-0 green **and** F-1a…F-8 green (F-7's live leg recorded as its named blocker and its pin
-green) **and** F-9a…F-12f green **and** N-1…N-7 hold.
+green) **and** F-9a…F-12f green **except F-10f**, which is recorded UNVERIFIED under its named
+blocker (launcher/Vite topology — `quit_app` tears the tree down, so no frontend serves on
+`ports.vite`) with the typed cause resting on F-10e's component cases, **and** N-1…N-7 hold **with
+N-7's live counter recorded UNVERIFIED under its named blocker and its unit pin green**.
 FAIL = a background launch that shows a visible product window
 (`VISIBLE_PRODUCT_WINDOW=True` before `Open`, i.e. a visible top-level window of the app PID whose
 class is NOT `ConsoleWindowClass`); a background launch whose child did not use the env's own
@@ -1150,7 +1307,9 @@ section**; **a capture line that claims `Not running` while the backend reports 
 `Not running`/anything-else where the probe could not be read (it must read `Status unavailable`)**;
 **more than one `role="status"` inside the section, or the capture line outside it**; **the capture
 line flipping to a stopped claim when `main` is closed or when the Settings webview is recreated**;
-**a surviving `settings-ingest-autostart-status` render site**; or a static-only receipt for any
+**a surviving `settings-ingest-autostart-status` render site, or a retired copy reachable from a
+render path**; **a close/unmount leg scored from a window that was never closed (the `settings` vs
+`app-settings` no-op) — the window-list witness is mandatory**; or a static-only receipt for any
 LIVE row.
 UNVERIFIED requires a NAMED, actionable blocker (G-053) — never a silent drop.
 
@@ -1229,3 +1388,19 @@ UNVERIFIED requires a NAMED, actionable blocker (G-053) — never a silent drop.
   `<svg>`); F-12b's static pin is the receipt and F-12a only proves an icon renders.
 - **A failed registry WRITE** has no product injection seam; if ST-2 exposes none, the error-state
   leg is a unit-pin leg (F-6b/F-10e) and is recorded as such.
+- **F-10f's live typed-cause leg (environment/topology).** The port-squat probe needs a FRONTEND
+  SERVING on `ports.vite` while the app is not running, but the env's Vite server belongs to the
+  `tauri dev` launcher tree that the product's `quit_app` tears down — #3195 round 1 measured no
+  listener on 16000 after the quit and the probe refused `NO_FRONTEND_SERVING` (exit 2). No committed
+  lever serves `apps/ui` independently of the launcher (hand-rolling a spawn is forbidden, G-110), so
+  **F-10f and its `http` leg are UNVERIFIED** with this blocker; the typed render is component-pinned
+  in F-10e (both receivers, receiver + port from the wire value). Record, never FAIL.
+- **N-7's live IPC count (instrument).** The `__TAURI_INTERNALS__.invoke` wrapper is blind: the
+  bridge dispatches through a BOUND reference installed at `main.tsx:27`
+  (`adapterBridge.ts:108-122`), so a post-load property patch observes nothing — round 1 read `0` on
+  a pane that was demonstrably polling (G-469). **The live count is UNVERIFIED with this blocker**;
+  N-7's binding receipt is the committed fake-timer poll assertion in F-10e. A `0` reading is
+  evidence of nothing and must not be written up as "no polls".
+- **The `Applying…` state is sub-round-trip** (the write settles in ~10–20 ms, below the driver's
+  ~250 ms sampling floor): a missed in-flight sample is disclosed, never scored (F-6b); the pin is
+  `IngestAutostartSettings.test.tsx:428-458`.
