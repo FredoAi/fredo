@@ -2,8 +2,21 @@
 
 Unscripted probes for the installed-application boundary. A confirmed finding **promotes** to
 `functional.md` as a new `F-` row (keep the origin note). Probes are cheap live checks in the
-isolated DEV env; only E-5 and E-8 need a generated fixture (extend an existing one — do not author a
-third generator).
+isolated DEV env; only E-5 and E-8 need a generated fixture (extend the generator that owns that
+fixture — see the note below — do not hand-roll a bespoke one for a single probe).
+
+> **Which generator (#3146).** `.opencode/tests/installable-apps/fixtures/` now holds THREE committed
+> generators, each owning one fixture family, and none may absorb another's:
+> `build-package-fixtures.mjs` (install-refusal packages), `build-behaviour-fixtures.mjs` (runtime
+> behaviour: probe / lazy-trace / crash / hang / fail-once) and
+> `build-capability-fixtures.mjs` (capability declarations: `data.tables`, the two collision pairs,
+> the consent pair, the no-declaration package and the two manifest-refusal packages). Extend the
+> generator that already owns the family you need. **Why the third one exists rather than an
+> extension of the second:** `build-behaviour-fixtures.mjs` ships a COMMITTED sha256 manifest and its
+> `--verify` mode fails when a built fixture is missing from it, so adding archives there reddens a
+> committed gate until someone re-runs `--write-expected` — and the QA Expert who authored these holds
+> no shell (G-460), so it will not ship hashes it cannot derive. `build-capability-fixtures.mjs`
+> therefore commits no hash manifest and proves determinism by a twice-run sha256 comparison instead.
 
 > Do not probe the host's own privileged surfaces (MCP bridge commands, the settings KV) beyond what
 > the spec's own rows already require. Do not probe the OS credential store or anything outside
@@ -107,6 +120,51 @@ third generator).
       (each has its own `fredo-theme-change`).
   - WHY: the broadcast path enumerates `installed-*` windows; a single-window implementation would
       pass every other row. This is the multi-target gap G-397 warns about.
+
+## #3146 probes (the declared-reach boundary)
+
+- [ ] **E-13 — a capability block that is well-typed but semantically hostile.** Take
+  `build-capability-fixtures.mjs`'s `qa3146-app-a` and edit its `capabilities.data.tables[0].name` to a
+  name that collides with ANOTHER declared table on the same app (`notes` twice), and separately to a
+  name carrying a SQL metacharacter (`no\"tes`).
+  - EXPECT: the first is refused with a named duplicate-table error from the shared declaration
+    validator (quote it — the manifest must reuse `ApplicationDataDeclaration::validate`, not a second
+    implementation, NFR-6); the second is refused by the charset gate. Record WHICH layer refused
+    (manifest at install vs registry at materialize) — the plan does not fix the ordering and the
+    ordering is worth reporting.
+  - WHY: the plan reuses one validator; a second, weaker path in the manifest would be the bypass.
+
+- [ ] **E-14 — a granted high-risk capability used where the action's own capability is undeclared.**
+  With `qa3146-consent-b` (declares `high-risk.database-query` ONLY, no `data.tables`), grant
+  `high-risk.database-query`, then drive
+  `{action:\"application_data_read\", args:{ref:{source:\"application\",applicationId:\"qa3146-consent-b\",table:\"notes\"}}}`.
+  - EXPECT: `action_not_declared` — a high-risk grant must never imply `data.tables`. Record the code
+    and whether a `capability` field is present.
+  - WHY: consent and declaration are two independent axes; a store that answers \"does this app have ANY
+    grant\" rather than \"does it have THIS capability\" would pass F-7.18…F-7.20 and fail here.
+
+- [ ] **E-15 — one installed document fetching another's bytes at the SAME origin.** Install
+  `qa3146-app-a` and `mission`, open A, and from A's document
+  `fetch('/cross-read-probe.html')` after also trying `fetch(location.href.replace('<A id>','<mission id>'))`.
+  - EXPECT: record what happens. Every installed document is served at the same host origin, so whether
+    one installed document can FETCH another's path is an origin-scope question the plan does not
+    decide. A 200 carrying another app's HTML is a **finding worth promoting** (document-level
+    cross-read); a 404/refusal is the expected answer.
+  - WHY: #3146's boundary is *authority* (which actions, which data), NOT origin isolation — so this
+    probe is deliberately OUTSIDE the ACs. Record and route the observation; do not FAIL any AC row on
+    it, and do not row a sandbox claim.
+
+- [ ] **E-16 — the consent store's tolerance for a malformed file.** With no app open, write
+  `<FREDO_DATA_DIR>/installed-apps-consent.json` as
+  `{\"version\":1,\"grants\":{\"qa3146-consent-a\":[\"high-risk.database-query\",\"nonsense\"]}}` and,
+  in a second leg, as `{\"version\":999,\"grants\":{}}` — back the file up first and restore it after.
+  - EXPECT: record the behaviour for each. The plan says a capability id not in that app's declaration
+    is **ignored on read** — so leg 1 must not grant `nonsense` and must not crash; leg 2 (unknown
+    version) is unspecified — record whether it is ignored or the store is reset, and whether the run
+    continues. A crash or a wedge is a FAIL of the fail-safe NFR.
+  - WHY: the store is host-owned JSON on disk; a malformed file must degrade to \"no grants\", never to
+    \"grants everything\" and never to a panic. **Restore the file afterwards — F-7.22 and F-7.27 depend
+    on it.**
 
 _Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooling limit is recorded
 `UNVERIFIED` with a named blocker — never a PASS._
