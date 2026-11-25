@@ -8,8 +8,14 @@
   - **PASS.** `body.theme-classic` → `div#root` with the WindowManager/DesktopBackground/LauncherChrome surfaces (125+ indexed elements).
 - [x] S-2: No console errors — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **PASS.** Console across the run: only INFO/DEBUG + the pre-existing `motion() is deprecated` WARN (exempt); zero error-level entries in main AND run-cli-terminal.
-- [x] S-3: Companion surface reachable — with the companion toggled on (Settings → Companion), the companion avatar renders in the main window as the shared sm vector avatar (`<svg viewBox="0 0 1014 1264">`, crispEdges rects, accent fill), not a raster sprite; the avatar wrapper exposes an accessible name describing the click/teleport gestures.
-  - **PASS.** Toggled the companion on via Settings → Companion; `.fredo-companion-avatar` rendered the shared `FredoAvatar size="sm"` `<svg viewBox="0 0 1014 1264">` with 58 crispEdges rects + accent fill, wrapper `aria-label="Fredo companion -- idle"` + `title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"`. NO raster sprite.
+- [ ] S-3: Companion surface reachable — with the companion toggled on (Settings → Companion), the
+      companion renders in the main window as the shared character (`[data-avatar-render]` at
+      80×100, painted figure, no `<svg>` inside the avatar root); the avatar wrapper exposes an
+      accessible name describing the click/teleport gestures.
+  - **#3210 re-point:** the previous probe (`<svg viewBox="0 0 1014 1264">`, crispEdges rects) is
+    DELETED — read `[data-avatar-render]`/`[data-avatar-clip]`. The historical PASS below is a record
+    of the pre-cut-over render.
+  - **PASS (spec/2850 — historical).** Toggled the companion on via Settings → Companion; `.fredo-companion-avatar` rendered the shared `FredoAvatar size="sm"` `<svg viewBox="0 0 1014 1264">` with 58 crispEdges rects + accent fill, wrapper `aria-label="Fredo companion -- idle"` + `title="Click to chat | Double-click to play Tic-Tac-Toe | Ctrl+right-click to teleport"`. NO raster sprite.
 - [x] S-4: Telemetry Settings accessible — the gear opens the settings dialog; the Companion nav section renders the visibility toggle + teleport tip (no bubble-color section).
   - **PASS.** The gear opened the settings dialog; the Companion nav section renders "Show Fredo Companion" toggle + the "Hold Ctrl and right-click anywhere to teleport Fredo there." tip — no bubble-color section, no autoWalk control.
 - [x] S-5: Screenshot captured — `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/2850/e2e/smoke.jpeg")` succeeds.
@@ -30,7 +36,11 @@
 > Issue #2852 makes the launcher mascot render at the companion's sm size + idle motion. This
 > smoke row confirms both surfaces still render the shared canonical avatar.
 
-- [ ] S-7: Launcher + companion both render the shared sm avatar — open the launcher and toggle the companion on; each renders the shared `FredoAvatar` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) at `offsetWidth`=80/`offsetHeight`=100, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-7: Launcher + companion both render the shared character — open the launcher and toggle the
+      companion on; each renders ONE `[data-avatar-render]` at `offsetWidth`=80/`offsetHeight`=100 with
+      a painted figure (`fredo-avatar/smoke.md` S-AV-3/S-AV-4 own the detail rows), and
+      `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`. **#3210 re-point:** the shared SVG/viewBox/58-rect clause is deleted.
 
 ## #2853 extension — presence lifecycle smoke
 
@@ -54,7 +64,11 @@
 > screenshot + console-clean per step.
 
 - [ ] S-11: Companion boots + statuses render — with the companion ON, the resting avatar renders; single-click → the avatar shows `thinking` during the wait then `joking` while the joke streams, and returns to rest; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] S-12: Both surfaces render the shared avatar under the new vocabulary — with the companion ON exactly one Fredo renders (`.fredo-companion-avatar`, 80×100, shared SVG); toggle it OFF and the desktop mascot (`.fredo-avatar-idle`) renders the shared SVG; screenshot succeeds; console clean.
+- [ ] S-12: Both surfaces render the shared character under the new vocabulary — with the companion ON
+      exactly one Fredo renders (`.fredo-companion-avatar`, 80×100, one `[data-avatar-render]`); toggle
+      it OFF and the desktop mascot (`.fredo-avatar-idle`) renders the same character
+      (`[data-avatar-render]`, 80×100); screenshot succeeds; console clean.
+      (**#3210:** the "shared SVG" clause is deleted — both surfaces render the same 3D shell.)
 - [ ] S-13: No stuck state after a joke/TicTacToe moment — after a joke completes and after a TicTacToe turn, the avatar returns to its resting state (no lingering `thinking`/`joking`/`happy`); screenshot succeeds; console clean.
 
 ### Round 1 (spec/2854 @ 0e52c599) — results
@@ -110,7 +124,10 @@
 > console-clean per step.
 
 - [ ] S-20: Companion ON ⇒ Fredo at the centre seat — toggle ON (Settings → Companion); `execute_js` shows the interactive seat entity in the centre slot (role active in place), NO corner `position:fixed` wrapper, and the command-bar `getBoundingClientRect().y` unchanged (≤1 px) vs OFF; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
-- [ ] S-21: Companion OFF ⇒ decorative mascot at the seat — toggle OFF; `.fredo-avatar-idle` (58 rects) renders at the SAME centre seat and the interactive seat entity is gone (NOT the placeholder); persisted `Fredo_companion_visible="false"`; screenshot succeeds; console clean.
+- [ ] S-21: Companion OFF ⇒ decorative mascot at the seat — toggle OFF; `.fredo-avatar-idle` renders
+      ONE `[data-avatar-render]` (80×100, painted) at the SAME centre seat and the interactive seat
+      entity is gone (NOT the placeholder); persisted `Fredo_companion_visible="false"`; screenshot
+      succeeds; console clean. (**#3210:** the "58 rects" discriminator is replaced by the render hook.)
 - [ ] S-22: Turn-on welcome bubble — toggle ON; the welcome bubble appears at the seat and auto-hides at ~4 s (same-task capture per G-140); screenshot succeeds; console clean.
 - [ ] S-23: Away ⇒ empty seat — Ctrl+right-click in main (recipe a); the centre slot shows the 80×100 placeholder (not Fredo, not a corner Fredo); screenshot succeeds; console clean.
 
@@ -272,9 +289,10 @@
       **Expected:** the interior resolves to the live accent (no background showing through) in BOTH
       themes; `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update
       depth exceeded`.
-- [ ] S-39: **A state renders legibly over the fill.** Single-click the avatar → the joke streams.
-      **Expected:** `#fredo-expression[data-state=talk]` (and `joking` during the stream) renders its
-      shapes ON TOP of the fill, visible and distinguishable from idle; screenshot succeeds; console clean.
+- [ ] S-39: **A state renders legibly.** Single-click the avatar → the joke streams.
+      **Expected:** `data-avatar-clip="talk"`/`"joking"` during the stream (creature state visible and
+      distinguishable from `idle` in the capture); screenshot succeeds; console clean.
+      (**#3210:** `#fredo-expression[data-state=talk]` is DELETED — read the applied clip.)
 - [ ] S-40: **No stuck state after a moment.** Complete a joke and a TicTacToe turn. **Expected:** the
       avatar returns to `idle` (no lingering `thinking`/`joking`/`happy`), the fill stays intact;
       screenshot succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
@@ -304,6 +322,12 @@
       clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
 
 ## #2922 extension — whole-body solid Fredo quick paths
+
+> **#3210 RETIREMENT:** S-44/S-45/S-46 measure the SVG fill (`#fredo-interior`, the 58-rect mask,
+> the `seeThrough`/`leak` oracles) that the 3D cut-over DELETES. **They are RETIRED as executable
+> rows — do not run them.** The opaque-body property is true by construction for a 3D mesh; the
+> surviving quick paths are `fredo-avatar/smoke.md` (S-AV-3..S-AV-6). The historical text is kept as
+> the record of the pre-cut-over fill.
 
 > Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
 > the full matrix lives in `functional.md` F-135..F-143 / `regression.md` R-66..R-69; the metric
