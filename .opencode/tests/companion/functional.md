@@ -2447,17 +2447,28 @@ clean.
 
 ## F-130 (Q-5 / AC-5) — Closed vocabulary heals; the prompt contract is literal
 
+> **#3224 SUPERSEDE (#2918 — row body amended 2026-11-25; the historical PASS record below is
+> append-only history and is NOT rewritten).** The vocabulary is now **23 members** (12 status
+> states + 11 emotion states), the model-emittable set is **18** (the 7 + the 11 emotions), and the
+> `funny → joking` alias is **RETIRED** — `funny` is a first-class emotion and
+> `resolveReplyStatus('funny') === 'funny'` (the member check precedes the alias table). The
+> emittable set is pinned to `applications/llm_server/fredo_status_contract.json` on both sides.
+
 - [ ] F-130: (a) Inject out-of-vocabulary statuses on the real channel — `"success"`, `"dancing"`,
-      `"IDLE"`, `""`, `123`, `null` — and sample `.fredo-companion-avatar` `data-state` across each
-      turn. (b) Read the prompt/system constant (LV4) and quote its lines. (c) Read
-      `FREDO_AVATAR_STATES`.
+      `"IDLE"`, `""`, `123`, `null`, `"explode"` — and sample `.fredo-companion-avatar` `data-state`
+      across each turn; ALSO inject the formerly-aliased `"funny"` and record what it settles to.
+      (b) Read the prompt/system constant (LV4) and quote its lines. (c) Read
+      `FREDO_AVATAR_STATES` + `FREDO_REPLY_STATUSES` + the shared fixture.
   **Expected:** every out-of-vocabulary / absent value heals to the safe default; at EVERY sample the
       wrapper `data-state` ∈ `FREDO_AVATAR_STATES` (an out-of-vocabulary `data-state` reaching the
-      DOM is a FAIL); the vocabulary is the frozen 12 (`success`/`waiting`/`reasoning` absent —
-      quote); the prompt contains the literal word `json` AND an example, and contains NO
-      free-text-JSON instruction (quote the lines).
+      DOM is a FAIL); the vocabulary is **23** members (`success`/`waiting`/`reasoning` remain
+      non-members — quote); **`"funny"` settles to `funny`, NOT `joking`** (the retired alias — a
+      `joking` settle is a FAIL, G-444 polarity); the emittable set is the closed **18** and matches
+      the shared fixture; the prompt contains the literal word `json` AND an example, names all 18
+      emittable values, and contains NO free-text-JSON instruction (quote the lines).
   - **Edge:** a status after the reply text; a mix of valid+invalid in one turn; a valid status in the
-    next turn after an invalid one; an integer/`null` status.
+    next turn after an invalid one; an integer/`null` status; `"Funny"`/`"  FUNNY  "` → `funny`
+    (trim + case-fold keep working); an emotion on the TicTacToe/vision turn.
 
 ## F-131 (Q-6 / Precedence) — The model status composes without masking an existing state's sole trigger (G-220)
 
