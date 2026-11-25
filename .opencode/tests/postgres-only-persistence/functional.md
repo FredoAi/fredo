@@ -72,15 +72,17 @@
   With `FREDO_PG_PASSWORD_FILE` seeding the sentinel `qa-3005-sentinel-<guid8>`, boot the app. Then
   scan (a) every file under the app-data dir recursively, (b) the app's log output, and (c)
   `telemetry_spans`/`telemetry_logs` content for the sentinel string. Separately, force the
-  keychain-unavailable path with `FREDO_PG_KEYCHAIN_DISABLED` and boot `fredo ingest`.
+  keychain-unavailable path with `FREDO_PG_KEYCHAIN_DISABLED` and boot the **resident app**
+  (`dev-env.ps1 -Action Up` with that seam injected through `-EnvVar`; retargeted by #3194 — the
+  old form booted the `fredo ingest` daemon, which no longer exists).
   - EXPECTED: the sentinel occurs ZERO times in (a)/(b)/(c); the password is read/written only via the
-    keychain (`fredo.postgres`/`loopback:password`); with `FREDO_PG_KEYCHAIN_DISABLED` the headless
-    `fredo ingest` still boots on `fredo-loopback-fallback` (warned without the value, never persisted).
+    keychain (`fredo.postgres`/`loopback:password`); with `FREDO_PG_KEYCHAIN_DISABLED` the resident app
+    still boots on `fredo-loopback-fallback` (warned without the value, never persisted) and the
+    cluster reports `pg_supervisor_status.state:"ready"` (its cluster, not an adopted one).
   - Edge: first run with no keychain entry (generate + store); keychain read error (fall back, no log
-    of the value); a stale keychain entry is used (password never re-derived into a file); GUI + headless
-    share the SAME credential.
-  - FAIL: the sentinel appears in any file/log/span; the secret is logged/exported; headless fails to
-    boot when the keychain is unavailable.
+    of the value); a stale keychain entry is used (password never re-derived into a file).
+  - FAIL: the sentinel appears in any file/log/span; the secret is logged/exported; the resident app
+    fails to boot when the keychain is unavailable.
 
 - [ ] **F-4 (R-4/AC4) — a pre-existing legacy `fredo.db` is ignored and stays byte-identical.**
   Materialize a fake legacy SQLite file (valid SQLite header + a table) literally named `fredo.db` at
