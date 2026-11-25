@@ -69,42 +69,44 @@
     (`LauncherShell.tsx:1765,1773`; `CompanionEntity.tsx:1875,1882`) — the plan's SC-1 `md` clause
     is bound to this row (see `## Discussion`).
 
-## R-AV-6 `[GUARD]` — names still MOVED to #3224 must not appear; #3223's landed names are LEGITIMATE
+## R-AV-6 `[INVERTED by #3224 — was a GUARD]` — the 11 emotion ids are now PRESENT; the still-banned names stay absent
 
-- [ ] R-AV-6: Comment-stripped grep the base code for `data-avatar-doom-phase`,
-      `resolveAvatarClip`, `poster-detail-doom`, the 11 emotion ids
-      (`uwu`,`love`,`sad`,`surprised`,`sleepy`,`skeptical`,`confused`,`silly`,`squint`,`angry`,
-      `funny`) and a 23-member `FREDO_AVATAR_STATES`; run a non-vacuity control against a tree that
-      DOES carry them.
-  **Expected:** zero hits in base code; `FREDO_AVATAR_STATES.length === 12`; the durable-suite rows
-      that own those names are POINTERS to **#3224**, never re-assertions.
-  - **Edge:** a pointer sentence that NAMES a moved hook is compliance (judge polarity); above all the
-    base must not pre-create **#3224's** widened vocabulary. (#3223's own Doom machine is legitimate —
-    it lives in `doomPerformance.ts`/`doomClips.ts`, and `FredoAvatar.tsx` still takes a plain boolean
-    and names none of it.)
-  - **AMENDED by #3223 — `doomPerformance` (and `doomClips`) are REMOVED from the banned list.** This
-    spec LANDS `doomClips.ts` (`DOOM_CLIPS`, `DOOM_ONE_SHOT_CLIPS`, `DOOM_WEAPON_ORDER`,
-    `DOOM_WEAPON_CLIP`, `DOOM_SUPPRESSING_STATES`, `isDoomClipName`, `DoomClipName`, `DoomWeapon`) and
-    `doomPerformance.ts` (`doomPerformance`, `DOOM_FLOURISH_INTERVAL_MS`, `DOOM_FLOURISH_MS`,
-    `resolveDoomClip`, `advanceDoomWeapon`, `getDoomWeapon`, `setDoomPerformanceEngaged`,
-    `completeDoomOneShot`, `setDoomPerformanceSuspended`, `getDoomPerformanceSnapshot`,
-    `subscribeDoomPerformance`, `resetDoomPerformanceForTests`). Keeping either name banned reddens
-    this guard on the spec's own success — the ban is NARROWED, not dropped: every name above still
-    has zero hits.
-  - **Universe (G-441):** the base avatar PRODUCT tree (the tree minus `__tests__`/`__mocks__`/
-    `*.test.*`), comment-stripped; report the scanned count, the excluded count and the tree the scan
-    ran in, plus the non-vacuity control's hit list. `FredoAvatar.tsx` still imports nothing from the
-    Doom store — the shell takes a plain boolean — and the #3210 source scan
-    (`fredoAvatarShell.test.tsx:151-172`) stays green UNMODIFIED.
+- [ ] R-AV-6 (**INVERTED by #3224**, G-444 polarity) — this row used to ban the 11 emotion ids and
+      pin `FREDO_AVATAR_STATES.length === 12`; both are inverted by design. Comment-strip the base
+      avatar PRODUCT tree (the tree minus `__tests__`/`__mocks__`/`*.test.*`) and:
+      (a) grep for the tokens that are STILL forbidden — `data-avatar-doom-phase`,
+      `resolveAvatarClip`, `poster-detail-doom`;
+      (b) assert the PRESENT state the widened vocabulary now requires — all 11 ids (`uwu`, `love`,
+      `sad`, `surprised`, `sleepy`, `skeptical`, `confused`, `silly`, `squint`, `angry`, `funny`)
+      are members of `FREDO_AVATAR_EMOTION_STATES` in `fredoAvatarStates.ts`, and
+      `FREDO_AVATAR_STATES.length === 23` with `Object.keys(AVATAR_CLIPS).length === 23`.
+      Run a non-vacuity control: a planted probe carrying `data-avatar-doom-phase` must be REPORTED.
+  **Expected:** zero hits for the three still-banned tokens; the 11 ids PRESENT and the union 23;
+      the durable rows that own the widened vocabulary are `functional.md` F-AV-30…F-AV-35 and this
+      file's R-AV-12…R-AV-14.
+  - **Edge:** a pointer sentence that NAMES a still-banned hook is compliance (judge polarity); the
+    base must not pre-create a SECOND vocabulary (no parallel 23-list beside `FREDO_AVATAR_STATES`).
+  - **#3223's own Doom machine is legitimate** — it lives in `doomPerformance.ts`/`doomClips.ts`
+    (the ban list above was narrowed by #3223, not dropped); `FredoAvatar.tsx` still takes a plain
+    boolean and names none of it.
+  - **Universe (G-441):** report the scanned count, the excluded count, the tree the scan ran in,
+    and the non-vacuity control's hit list. `fredoAvatarShell.test.tsx:151-172`'s source scan (the
+    shell names no emotion id) stays green **UNMODIFIED** — it is the belt-and-suspenders half.
 
-## R-AV-7 `[RETAINED]` — the resolver and the size values do not move
+## R-AV-7 `[RETAINED — NARROWED by #3224]` — the size values do not move (the resolver suite legitimately does)
 
-- [ ] R-AV-7: `vitest run …/fredoAvatarResolver.test.ts …/fredoAvatarSizes.test.ts` (filter by
-      file path) and report executed counts.
-  **Expected:** both pass **UNCHANGED** (byte-identical test files) — the resolver and the
-      `AVATAR_SM`/`AVATAR_MD` values are not this spec's surface (`fredoAvatarSizes.ts` may only
-      inline the 1014:1264 aspect constant, with the values unchanged).
-  - **Edge:** if either suite needs an edit, the change overran its capsule — FAIL and report.
+- [ ] R-AV-7: `vitest run …/fredoAvatarSizes.test.ts` (filter by file path) and report the executed
+      count. Read `AVATAR_SM` / `AVATAR_MD` and the aspect constant.
+  **Expected:** `fredoAvatarSizes.test.ts` passes **UNCHANGED** (byte-identical test file) —
+      `AVATAR_SM` = 80×100, `AVATAR_MD` = 132×165, the 1014:1264 aspect constant inline and
+      unchanged.
+  - **#3224 NARROWING (was: "resolver + sizes pass UNCHANGED"):** `fredoAvatarResolver.test.ts` is
+    **no longer** an unchanged-file row — widening the vocabulary to 20 ranked members is ST-2's
+    deliberate change, and its 9-member order pin is re-cut to the 20-member subsequence form. The
+    resolver's contract is owned by **`functional.md` F-AV-33** and by **R-AV-12** below (the 12's
+    relative order unchanged). Do not assert "byte-identical" for the resolver suite any more.
+  - **Edge:** a filtered run that executes 0 tests is a FAILED DRIVE; any size value moving is a
+    capsule overrun — FAIL and report.
 
 ## R-AV-8 `[GUARD]` — console clean, no re-render loop, frame budget honoured
 
@@ -114,6 +116,8 @@
       `motion() is deprecated` WARN is exempt); no frame-driven React state; a hidden window runs no
       RAF ticks; the mount/unmount loop leaves no extra `<canvas>` in the DOM (context disposed).
   - **Edge:** accent change with the window hidden then shown; teleport during a stream.
+  - **#3224:** the sweep is now the **23-state** sweep (`functional.md` F-AV-30 leg E) — the same
+    gates apply to it, and a state that adds a frame-driven React update is a FAIL.
 
 ## R-AV-9 `[RETAINED]` — the legacy durable-suite sweep is re-pointed, absence rows survive
 
@@ -158,3 +162,84 @@
     (`R-AV-3`), which must stay green unchanged.
   - **Edge:** a click during `doom-in` and during `doom-out`; the discriminator boundary (~240 ms =
     double, ~260 ms = single); a teleport while `flourishing`; the gesture with the composer open.
+
+---
+
+# fredo-avatar — the 23-state vocabulary (Spec #3224)
+
+> **Verification policy: live** (the build/static rows are named as such). Instruments are
+> `functional.md`'s **Q-1** (the DEV flow lever), **Q-2** (the three mount paths), **Q-3** (the clip
+> recorder). Every runtime row pairs its capture with a same-task `execute_js` read; the uploaded
+> capture in the round's POSTED `## Tests Runs` is the durable record (G-415).
+
+## R-AV-12 `[RETAINED]` — the 12 shipped states' product behaviour is unchanged
+
+- [ ] R-AV-12: Re-run **F-AV-12**'s 12 recipes on BOTH surfaces (the recipe table at
+      `functional.md:17-36`), reading `data-avatar-clip`, wrapper `data-state` and `aria-label` per
+      state; then read the timings: `AVATAR_CLIP_TIME_SCALE` (only the two teleports),
+      `resolveAvatarMotion`'s `talk`-without-stream rule, `HAPPY_HOLD_MS`,
+      `AVATAR_ONE_SHOT_CLIPS`, and the resting cadence constants.
+  **Expected:** every one of the 12 reports the SAME applied clip and `data-state` as on the
+      pre-change tree; `idle` is still the only state whose applied clip is `idle`;
+      `aria-label="Fredo companion -- <state>"`; every timing value unchanged.
+  - **Edge:** an emotion whose new rank STEALS one of the 12's sole triggers is a FAIL of this row
+    (the 12's recipes must remain reachable — G-220); the launcher seat still reports only its 4-state
+    product selection when no lever is set (`LauncherShell.tsx:687-690`).
+  - **Scope note:** this row is the 12's product behaviour; the 23-state matrix is F-AV-30 and the
+    20-ranked order is F-AV-33.
+  - **UX-22 clause (c-copy, static — bound here):** assert **zero** new authored copy naming an emotion
+    or the word "emotion" anywhere a user can read it — no label, tooltip, settings row, toast or
+    onboarding/empty/error sentence (`CompanionEntity.tsx:1881`'s shipped `title` names no state), and
+    **zero** new focusable nodes / `[data-state='<emotion>']` CSS rules (the only wrapper state rule is
+    the shipped `happy` one — an emotion rule is a FAIL, not a fix). An emotion id MAY appear in the
+    wrapper's `aria-label` (a state-id echo) — that is intended, never a FAIL.
+
+## R-AV-13 `[RETAINED]` — the Doom channel stays parallel and disjoint, and the fit does not move while engaged
+
+- [ ] R-AV-13 **leg A (static).** Read `doomClips.ts` + `avatarClips.ts`: `DOOM_CLIPS` is still the
+      six authored names; `isDoomClipName(S) === false` for ALL 23; `isAvatarClipName(doomName) ===
+      false` for all 6; `AVATAR_CLIPS` has no `doom-*` property; `DOOM_CLIPS` has no state name;
+      `AVATAR_ONE_SHOT_CLIPS` is still exactly `teleport-out`/`teleport-in`; `DOOM_ONE_SHOT_CLIPS`
+      still exactly `doom-in`/`doom-out`.
+- [ ] R-AV-13 **leg B (source order).** Confirm the Doom action map is still built AFTER the camera
+      framing measurement (`avatarRenderer.ts:391-414`) — the armour poses/props never size the
+      camera.
+  **Expected:** disjointness both ways; the six Doom clips 1.333 s; the framing call still precedes
+      the doom map.
+- [ ] R-AV-13 **leg C (live, the fit holds engaged).** Engage Doom Mode (`get_doom_mode_status.phase
+      === "active"`), capture `s3224-doom-framing.jpeg`, and re-read the silhouette off the same
+      instrument F-AV-19 uses.
+  **Expected:** the silhouette fractions still hold (`0.8284 W × 0.9233 H` ±2 %, feet `0.9763 H`) —
+      the 23-member widening plus the armour poses did not move the fit; the `[data-avatar-clip]`
+      while engaged is one of the six doom names and returns to a member of
+      `FREDO_AVATAR_STATUS_STATES` on release.
+  - **Edge:** engaging straight from an EMOTION (the release must restore a STATUS state, never a
+    stranded armoured frame); `doom-mode/regression.md` R-21 carries the vocab-count half.
+  - **Reddens after the change:** an emotion name added to `DOOM_CLIPS` (or vice versa), a fit that
+    moves while engaged, or a `doom-*` name reachable through `AVATAR_CLIPS`.
+
+## R-AV-14 `[RETAINED]` — no emotion reaches a shipped surface without a product reason
+
+- [ ] R-AV-14: Cold-reload the app (**`window.__FREDO_QA_AVATAR_FLOW__` must be `undefined`** afterwards
+      — verify it by value, not by presence of the module). Then: (a) with the companion OFF, sample
+      the L1 seat's `data-state`/`data-avatar-clip` across ≥12 s of rest including at least one
+      `playful` beat; (b) with the companion ON at the seat, drive one joke turn, one skill turn
+      (`open Mission Monitor`) and one error turn (`open NotARealApp`), sampling throughout.
+  **Expected:** every sampled `data-state` / `data-avatar-clip` is one of the **12 status states**
+      (`FREDO_AVATAR_STATUS_STATES`); the lever global is `undefined` after the reload (no
+      persistence, not reachable from a URL/query/hash — UX-23).
+  - **Polarity (UX-22 — do NOT invert this row):** this row does **not** ban an emotion id from
+    `aria-label`. The wrapper label is a state-id echo (`Fredo companion -- ${displayAnim}`,
+    `CompanionEntity.tsx:1882`) that already yields `teleport-out` / `joking`; an emotion id there is
+    the **intended** consequence of R-1b. The checkable form of the no-new-copy rule is: zero authored
+    strings naming an emotion, zero new focusable nodes, zero `[data-state='<emotion>']` CSS rules
+    (asserted statically in `F-AV-35`), never a token ban in the live DOM.
+  - **Scope (G-466 — this row must not contradict F-AV-34):** the clause covers the shipped **FLOW
+    derivation** only. A **model-declared** status may legitimately settle to an emotion (F-AV-34
+    leg B) — that is the product reason this spec exists — so no turn with a model status in flight
+    is part of this row, and none of the three turns above declares one (a joke/skill/error turn
+    settles to `happy`/`working`/`error`).
+  - **Edge:** the launcher's `desktopState` derivation passes no `modelStatus` at all
+    (`LauncherShell.tsx:687-690`) — it can never reach an emotion; a soft navigation that keeps the
+    module alive is NOT a reload (reload properly); an emotion persisting across a remount after the
+    lever is cleared is a FAIL (state must be derived, never remembered).
