@@ -298,9 +298,9 @@
 
 # doom-mode — Whole-app Doom theme + armored avatar (Spec #2971)
 
-> **Verification policy: live** — UI-rendering feature: whole-app CSS-variable restyle + an SVG armor
-> overlay (**#3210: the SVG armour overlay is DELETED; the clip-driven armour is #3223's landing — the
-> base's avatar leg is the palette only**).
+> **Verification policy: live** — UI-rendering feature: whole-app CSS-variable restyle + the avatar
+> armour (**#3210 deleted the SVG armour overlay; #3223 landed the clip-driven armour — `F-53` below is
+> the re-activated row, read on `data-avatar-clip`; the palette is unchanged**).
 > Evidence MUST carry the `telemetry_spans` live-pipeline reference (non-zero count + recent `max(ingested_at)`;
 > managed `psql` on the PG default, G-284, or a disclosed app-pool `feature_data_read` fallback, G-307).
 > **Doom emits NO OTLP span — the query proves the pipeline, not the feature; disclose that.** A static-only PASS
@@ -321,7 +321,9 @@
 > DOM hooks `<html class="doom-mode" data-doom-mode="engaged">`; engaged = `phase !== 'inactive'` (`types.ts:63-65`); fail-enter lever
 > `FREDO_DOOM_MODE_FAIL_ENTER=1` (`mode.rs:29,236-243`).
 > **#3210 strike:** `<svg data-doom-armor="true">` and `<g id="fredo-armor" data-layer="armor">` are
-> DELETED hooks — the armour visual (and its hooks `data-avatar-doom-phase` etc.) is **#3223's**.
+> DELETED hooks and stay deleted. **#3223 re-activated the armour clause on `data-avatar-clip`** (see
+> the re-authored F-53 below); there is **no** `data-avatar-doom-phase` hook — that literal is
+> forbidden by the #3210 shell scan and must never be asserted.
 
 ## Whole-app theme apply/revert (R-1..R-4, R-6)
 
@@ -331,17 +333,34 @@
 - [x] F-52 (PASS 2026-10-05 #2971 r1 — only `ThemeProvider` imports `DOOM_PALETTE`; zero `--doom-*` vars; surfaces resolve through the existing `--*` contract; COVERAGE assertion, G-271) (R-2, AC1 token-first) **Palette reachable only through the token layer.** Static: grep `DOOM_PALETTE` importers + `--doom-`; live: sample restyled surfaces.
   - EXPECTED: only `ThemeProvider.tsx` imports `DOOM_PALETTE`; zero `--doom-*` vars; restyled surfaces resolve through the pre-existing `--*` contract (`system.ts:56-141`); no component-local hex/rgba; changing only `DOOM_PALETTE` restyles every surface. COVERAGE assertion (G-271) — not a literal var count.
   - Edge: derived `color-mix()` vars re-resolve live.
-- [ ] F-53 (armour clause MOVED to #3223 by #3210) (R-3, AC2) **Armor overlay present + visibly
-      distinct; absent when inactive.** Enter; snapshot the avatar + screenshot; exit; re-snapshot.
-  - **#3210:** `svg[data-doom-armor="true"]` + `<g id="fredo-armor">` are DELETED hooks. The base
-    renders NO armour (U-9 disclosure); #3223 re-authors this row against
-    `[data-avatar-doom-phase]` + the doom clip names. **Do not re-assert the deleted hooks here, and
-    do not fail the base for the interim absence** — the base's Own Doom avatar observable is the
-    palette (`fredo-avatar/functional.md` F-AV-10). The frozen vocabulary (`FREDO_AVATAR_STATES.length
-      === 12`) and the absent-on-exit halves remain valid and stay in force.
-  - EXPECTED (base scope): on enter the app restyles and `data-avatar-body-color` follows the Doom
-      accent; neither `data-doom-armor` nor `#fredo-armor` EXISTS at any point; on exit the palette
-      reverts byte-exactly; `FREDO_AVATAR_STATES.length === 12`.
+- [ ] F-53 (RE-AUTHORED by #3223 — the armour now EXISTS as the authored doom clips) (R-3, AC2) **The
+      armour is visible while engaged and gone when inactive — read on `data-avatar-clip`.** Enter;
+      capture + read the avatar (`data-avatar-render`, `data-avatar-clip`, `data-avatar-body-color`);
+      settle; exit; re-read. The full performance rows live in `fredo-avatar/functional.md`
+      `F-AV-22`…`F-AV-29`; THIS row is the doom-mode suite's executable re-activation of the clause
+      #3210 struck.
+  - **Re-authoring note (#3223):** #3210 deleted `svg[data-doom-armor="true"]` and
+    `<g id="fredo-armor">` and struck this row's armour clause to #3223. #3223 lands the armour as
+    authored CLIPS, so the observable is **`data-avatar-clip`** — the mixer's applied clip
+    (`FredoAvatar.tsx:153`). **There is NO `[data-avatar-doom-phase]` hook** (the Architect
+    deliberately rejected it and the #3210 shell scan forbids that literal): no row in this suite may
+    expect it. The weapon identity is the clip itself (`doom-idle` = shotgun, `doom-mg`,
+    `doom-sword`); `doom-in`/`doom-out` are the transitions.
+  - EXPECTED: on enter, `data-avatar-render="live"` and `data-avatar-clip` becomes a DOOM clip
+    (`doom-in`, then the engagement's weapon clip — `doom-idle` on the first engagement) and stays one
+    of the six doom names for the whole engagement; `data-avatar-body-color` follows the Doom accent
+    (= `DOOM_PALETTE.accentPrimary` `#8fbf3f`, channel triple); on exit `data-avatar-clip` returns to a
+    **12-state** name (`fredo-avatar/functional.md` F-AV-22 leg B owns the exact restore contract) and
+    the palette reverts byte-exactly; `[data-doom-armor]`, `#fredo-armor` and
+    `[data-avatar-doom-phase]` are ABSENT at every point, engaged or not; `FREDO_AVATAR_STATES.length
+    === 12`. Captures `f53-engaged.jpeg` / `f53-restored.jpeg` (upload to the round's `## Tests Runs`).
+  - **Runtime (superseded advice, #3023):** this slice's header still says to re-stage the engine with
+    `scripts/doom/stage-doom-fixture.ps1` — that script was retired with the native in-process engine
+    and does **not** exist in the tree. F-53 needs only `get_doom_mode_status.phase === "active"` with
+    the shipped runtime; a mode that never activates is a BLOCKED precondition, not a defect of this
+    row.
+  - **Reddens after the change:** no doom clip exists on the pre-change tree — `data-avatar-clip` can
+    only carry a 12-state name, so the engaged half is unsatisfiable there (control).
 - [x] F-54 (PASS 2026-10-05 #2971 r1 — byte-equal on all vars + body + avatar outerHTML + localStorage; setters never called) (R-4, AC3) **Exit → byte-exact revert; NO persisted-setting mutation.** Snapshot all inline `--*` vars + `document.body` + avatar outerHTML + `localStorage` theme keys before enter; enter; exit; re-snapshot.
   - EXPECTED: byte-equal on every field; `Fredo_theme_overrides`/`Fredo_theme_preset`/`Fredo_user_presets` unchanged (`ThemeProvider.tsx:166,173,179`); `setOverride`/`setPreset`/`resetTheme` NEVER called (`:388-420`) — spy-verified; no flash of default.
   - Edge: exit via `doom-exit-button`, `doom` window close, app exit, spoken exit — all identical.
@@ -379,7 +398,9 @@
   - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the pipeline, not the feature; disclose.
   - Edge: managed `psql` "too many clients" → disclosed app-pool fallback (G-307), named.
 
-**R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 (armour half carried by **#3223**; base = palette) · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 · R-8→F-58.
+**R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 (armour clause **re-activated by #3223** on
+`data-avatar-clip`; the deleted hooks stay absent) · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 ·
+R-8→F-58.
 
 ---
 
