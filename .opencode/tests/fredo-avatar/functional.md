@@ -568,12 +568,24 @@
       Convergence section supersedes an earlier two-boolean design):** there is NO
       `pendingExit`/`pendingEntry` slot; every edge rewrites ONE `desiredEngaged` mirror and
       `settle()` runs on every one-shot completion. Assert the BEHAVIOUR, never a boolean name.
-      Then the settled invariant: `false→true→false→true` inside one `doom-in` ends in `holding`, and
-      `true→false→true→false` inside one `doom-out` ends in `idle` (the figure converges on the mode's
-      ACTUAL final state, never on edge order), and after EVERY `finished`
-      `desiredEngaged === (phase === 'holding' || phase === 'flourishing')` — i.e. the rendered armour
-      matches `isDoomVisualEngaged()`: **never un-armoured with the mode ON, never armoured with it
-      OFF.**
+      Then the settled invariant, asserted exactly as the suite's `expectSettled()` does — a TWO-PART
+      predicate: after EVERY `finished` (every `settle()`)
+      `desiredEngaged === (phase !== 'idle' && phase !== 'exiting')`, **and** whenever the completion
+      comes to rest (it hands over to no in-flight one-shot — the suite's `phase !== 'entering'`
+      guard) the literal `desiredEngaged === (phase === 'holding' || phase === 'flourishing')` also
+      holds. Both halves are required: the two predicates are identical on
+      `idle`/`holding`/`flourishing`/`exiting` and diverge ONLY at `entering`, the one mandated
+      hand-over (an entry edge during `exiting` → `finished(doom-out)` → `entering` while `doom-in` is
+      still in flight, so the mode reads ON before any armour clip rests) — the literal form is
+      UNSATISFIABLE at `entering`, so **do not "simplify" this back to the literal alone**. Also
+      `false→true→false→true` inside one `doom-in` ends in `holding`, and `true→false→true→false`
+      inside one `doom-out` ends in `idle` (the figure converges on the mode's ACTUAL final state,
+      never on edge order). Together: the rendered armour matches `isDoomVisualEngaged()` — **never
+      un-armoured with the mode ON, never armoured with it OFF.**
+  - **Reddens:** any completion whose `settle()` leaves `desiredEngaged` disagreeing with the settled
+      phase (`true` at `idle`/`exiting`, `false` at `holding`/`flourishing`), or a rest state where
+      the literal form fails (a completion that comes to rest in `entering` with no one-shot in
+      flight, i.e. a stranded hand-over).
 
 ## F-AV-26 `[NEW]` (REQ-13 — UX-15) — the poster host: palette only, no doom clip
 
@@ -640,14 +652,25 @@
       `true→false→true→false` inside one `doom-out` — then settle.
   **Expected:** the first burst ends in `holding` with `isDoomVisualEngaged() === true` (armoured), the
       second ends in `idle` with `isDoomVisualEngaged() === false` (un-armoured); and after EVERY
-      `finished` (`settle()`) `desiredEngaged === (phase === 'holding' || phase === 'flourishing')`
-      and `getDoomPerformanceSnapshot().clip` agrees with `isDoomVisualEngaged()` — armour rendered
-      iff the mode is engaged. **Mechanism (binding):** one `desiredEngaged` mirror rewritten by every
+      `finished` (`settle()`) `desiredEngaged === (phase !== 'idle' && phase !== 'exiting')`, **and**
+      whenever the completion comes to rest (no hand-over to an in-flight one-shot — the suite's
+      `phase !== 'entering'` guard) the literal
+      `desiredEngaged === (phase === 'holding' || phase === 'flourishing')` also holds; at rest
+      `getDoomPerformanceSnapshot().clip` agrees with `isDoomVisualEngaged()` — armour rendered iff
+      the mode is engaged. **Why two forms (do NOT simplify):** the predicates are identical on
+      `idle`/`holding`/`flourishing`/`exiting` and differ ONLY at `entering`, the one mandated
+      hand-over (entry edge during `exiting` → `finished(doom-out)` → `entering` while `doom-in` is
+      in flight and `desiredEngaged` is already `true`) — the literal form alone is UNSATISFIABLE at
+      that phase, so it is asserted at rest and never demanded mid-hand-over.
+      **Mechanism (binding):** one `desiredEngaged` mirror rewritten by every
       edge + `settle()` on every one-shot completion — the plan's Convergence section supersedes an
       earlier `pendingExit`/`pendingEntry` design, so the test asserts the snapshot and the invariant,
       never a boolean name. **Reddens after the change:** this module does not exist on the pre-change
-      tree (control). **Edge:** three edges inside one one-shot; an edge arriving exactly on the
-      `finished` callback; a suspended (teleport) burst; **an entry edge DURING `entering`** (no
-      `idle` visit) settles to `holding` on the SAME weapon — one engagement, exactly one
-      `advanceDoomWeapon` for the whole flick.
+      tree (control); and once it exists, any completion whose `settle()` leaves `desiredEngaged`
+      disagreeing with the settled phase (`true` at `idle`/`exiting`, `false` at
+      `holding`/`flourishing`), or a rest state where the literal form fails (a completion coming to
+      rest in `entering` with no one-shot in flight). **Edge:** three edges inside one one-shot; an
+      edge arriving exactly on the `finished` callback; a suspended (teleport) burst; **an entry edge
+      DURING `entering`** (no `idle` visit) settles to `holding` on the SAME weapon — one engagement,
+      exactly one `advanceDoomWeapon` for the whole flick.
 
