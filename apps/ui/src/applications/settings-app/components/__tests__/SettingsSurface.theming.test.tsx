@@ -33,6 +33,9 @@ import { resolve } from 'node:path';
 const AUDITED_FILES = [
   'src/applications/settings-app/components/SettingsSurface.tsx',
   'src/applications/settings-app/SettingsFeature.tsx',
+  // #3206 ST-3 — the Credits pane (UI/UX §6: a new Settings component joins the
+  // audit in the same landing, G-403). One component file, so exactly one line.
+  'src/applications/settings-app/credits/CreditsSettings.tsx',
   'src/shared/components/companion/CompanionSettingsPanel.tsx',
   'src/shared/components/companion/CompanionSetupWizard.tsx',
   'src/shared/components/companion/SetupStepCard.tsx',
