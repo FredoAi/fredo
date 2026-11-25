@@ -136,6 +136,12 @@
 
 ## #2850 extension — shared-avatar refactor: shell-surface no-regression
 
+> **#3210 SUPERSEDE:** the avatar is now the 3D character shell
+> (`[data-avatar-render]`/`[data-avatar-clip]` at 80×100, no `<svg>`); the md geometry-suite clause
+> and the 58-rect/mirror-math expectations below are RETIRED with the deleted geometry module.
+> Executable shell rows: `fredo-avatar/functional.md` F-AV-3 / F-AV-11 + `regression.md` R-AV-1.
+> The shell surface itself remains a NON-GOAL.
+
 > Issue #2850 — the desktop shell's launcher avatar becomes a shared-`FredoAvatar size="md"`
 > wrapper (`shared/components/fredo-avatar/`), the geometry module/test move with it, and the
 > companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
