@@ -55,14 +55,25 @@
 - [ ] **R-3.** `powershell -NoProfile -File .opencode/scripts/inspect-webview-config.ps1`.
   - **Expected:** every `CHECK <name> PASS` line, in particular
     `capabilities.expected-files` (exactly `default.json`, `mcp-bridge-dev.json`,
-    `app-commands.json` — **no new capability file**), `capabilities.all.no-shell-exec`,
-    `app.withGlobalTauri=false`, and the CSP set (`script-src` without `'unsafe-inline'`,
-    `style-src 'unsafe-inline'`, `connect-src` with `ipc:`).
-  - **Fails if:** a capability file is added or edited, `shell:allow-open` reappears, the CSP is
-    relaxed (e.g. `connect-src https:`), or `withGlobalTauri` flips to true.
-  - **Edge:** the new command is granted through `permissions/app/default.toml` +
-    `capabilities/app-commands.json` (`["main","terminal","doom","app-*"]`). Adding an
-    `installed-*` label there removes installed-app isolation (see R-5).
+    `app-commands.json`, **`installed-app-commands.json`** — **INVERTED IN PLACE by #3146**: the
+    installed tier now has its own capability file, so the release set is four, not three), the
+    installed-reach check (exactly ONE file matches an `installed-<probe>` label and it grants exactly
+    `allow-installed-app-invoke` — quote the `CHECK` line **verbatim as shipped at the tested commit**,
+    G-419), `capabilities.all.no-shell-exec`, `app.withGlobalTauri=false`, and the CSP set
+    (`script-src` without `'unsafe-inline'`, `style-src 'unsafe-inline'`, `connect-src` with `ipc:`).
+  - **Fails if:** a capability file is added **beyond the four named here** or edited in a way that
+    changes a `windows`/`permissions` array, `shell:allow-open` reappears, the CSP is relaxed (e.g.
+    `connect-src https:`), `withGlobalTauri` flips to true, or a SECOND capability matches
+    `installed-*`.
+  - **Edge (INVERTED BY #3146 — the old sentence said any `installed-*` label in
+    `permissions/app/default.toml` + `capabilities/app-commands.json` removes installed-app isolation).**
+    The two tiers are now separated by **cardinality and exact-set**, not by absence:
+    `permissions/app/default.toml` is a permission SET (no `windows` key), `capabilities/app-commands.json`
+    targets only the four built-in labels, and `capabilities/installed-app-commands.json` targets only
+    `installed-*` with exactly `["allow-installed-app-invoke"]`. What removes isolation now is the two
+    classes **overlapping**: an `installed-*` entry in `default.json`/`mcp-bridge-dev.json`/
+    `app-commands.json` (which would hand `core:*` or a shell/bridge grant to an untrusted document), or
+    a second permission in the installed capability. Both are FAILs. See R-5.
 - [ ] **R-4.** Read `apps/tauri/src-tauri/src/lib.rs`'s `generate_handler![…]` and
       `apps/ui/src/applications/settings-app/credits/CreditsSettings.tsx`.
   - **Expected:** the only new webview→OS path is `open_external_link`; no product source calls
@@ -72,14 +83,24 @@
   - **Fails if:** a `Link href`-style navigation, `window.open`, or a shell call is introduced to
     make the link "work".
 
-## R-5 — Installed applications still match no capability
+## R-5 — Installed applications match EXACTLY ONE capability (inverted in place by #3146)
 
-- [ ] **R-5.** Grep every `apps/tauri/src-tauri/capabilities/*.json` for `installed-`.
-  - **Expected:** **0** matches; and `permissions/app/default.toml` is still a permission *set*
-    (no `windows` key).
-  - **Why it can regress here:** this spec adds a *command* that launches an OS handler. The one
-    way to hand that to an installed app is a capability label — the isolation of every
-    installed application would silently disappear while every Credits row stayed green.
+- [ ] **R-5.** Enumerate every `apps/tauri/src-tauri/capabilities/*.json` with a **directory listing**
+  and parse each file's `windows`/`webviews` arrays, glob-matching the probe label `installed-<probe>`.
+  - **Expected:** **exactly ONE** file matches, and it is `installed-app-commands.json` with
+    `windows: ["installed-*"]` and `permissions: ["allow-installed-app-invoke"]` — quote the file and
+    both arrays. **Every other** file matches nothing (quote the per-file result). And
+    `permissions/app/default.toml` is still a permission *set* (no `windows` key) — quote it.
+  - **WHY NOT A GREP (G-430 — this row used to be "grep for `installed-` ⇒ 0").** The shipped
+    installed-tier capability **names** the namespace by design, so a raw token count now returns ≥1 on
+    a correct tree. The predicate is the PARSED matcher, and both the probe label and this assertion
+    live outside `capabilities/`, so the instrument cannot count its own text.
+  - **Why it can regress here:** this spec adds a *command* that launches an OS handler. The one way to
+    hand that to an installed app is a capability label — which would be a SECOND matching capability
+    and would silently widen the installed tier while every Credits row stayed green.
+  - **NON-VACUITY CONTROL (mandatory):** the same matcher matches `app-terminal` against `app-*` and
+    does **not** match `installed-app-terminal` against `app-*` — otherwise the "exactly one" reading
+    is unanchored.
 
 ## R-6 — Build hygiene and CI parity
 
