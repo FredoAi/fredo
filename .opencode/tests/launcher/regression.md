@@ -157,14 +157,18 @@
       swap only). Reference #2837 R-22 + desktop-shell R-6/R-10.
   - **PASS (live, spec/2850).** Launcher md avatar SVG `offsetWidth`=132, `offsetHeight`=165 (aspect 1014:1264, undistorted), 58 rects, crispedges, accent-token fill, `aria-hidden` — unchanged from the pre-refactor render. `git diff --stat main spec/2850 -- launcher/` = `LauncherShell.tsx +2/-2` (import swap), `PixelButler.tsx` deleted, geometry/test deleted — the ONLY launcher change is the import/wrapper swap. The launcher layout (notch, command bar, app grid, keyboard hints, clock/LED) is unchanged (verified live DOM: the launcher renders its full chrome + the md avatar at the same position).
 
-## R-27 — Geometry-suite move is byte-identical (the #2837 regression net holds)
+## R-27 — Geometry table DELETED; the icon-provenance guard is the surviving net — **INVERTED #3210**
 
-- [x] R-27: `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` move VERBATIM to the shared
-      path (content byte-equal, only the sibling import resolves); `test:run` stays green with the
-      test at its new location. The #2837 geometry invariants (F-35..F-40) — 31→58 rects, mirror
-      math, canvas bounds, as-authored center buttons — remain in force through the move.
-      Reference companion R-10 + launcher F-41.
-  - **PASS (static/build, spec/2850).** The moved geometry module + test are byte-identical to the pre-move `main` originals (Read-verified; only `../fredoAvatarGeometry` resolves to the sibling in the shared folder). `pnpm --filter @fredo/ui exec vitest run` on the moved test → 7 tests passed; `test:run` → 52 files/757 tests green. The #2837 invariants (31 source→58 expanded, mirror `x'=1014-x-width`, canvas bounds, as-authored center buttons `(492,917,30,32)`+`(491,991,31,36)`, out-of-canvas guard) hold — the geometry suite is the avatar's strongest regression net and it stays green.
+- [ ] R-27: Confirm `fredoAvatarGeometry.ts` + `fredoAvatarGeometry.test.ts` are **absent** (read the
+      exact paths — never Glob, G-024) and that `iconSourceParity.test.ts` is the surviving provenance
+      guard: run it (report the executed count) and verify
+      `apps/tauri/src-tauri/icons/fredo-icon-large.svg` is byte-identical (SHA-256).
+  **Expected:** the geometry module/suite are GONE; the re-pointed guard is green with a non-zero count
+      and the icon digest is unchanged.
+  **INVERTED (#3210):** this row previously required the geometry module + test to move VERBATIM and
+      pass unmodified — that module is deleted by the 3D cut-over, so the old expectation is a false
+      red. Executable row: `fredo-avatar/regression.md` R-AV-1.
+  - **PASS (static/build, spec/2850 — historical).** The moved geometry module + test were byte-identical to the pre-move `main` originals; `test:run` → 52 files/757 tests green.
 
 ## R-28 — Token-native + zero duplicate geometry in the launcher after the move
 
@@ -191,10 +195,18 @@
 - [ ] R-29: The rework touches only the launcher mascot size prop + the wrapper motion (git diff scope). The command bar, app grid + keyboard nav, keyboard-hints row, ESC keycap, clock/LED chrome, side ticks, dot-grid, rounded frame and the open/close lifecycle are UNCHANGED. The avatar container (`Box mb="4"`, LauncherShell.tsx:501) keeps the mascot centered above the command bar with no layout shift/clip and no new scrollbar — at default AND narrow (700×900) widths. Reference #2808 F-4 + #2850 R-26.
   - **Edge:** the −2px idle bob must not shift the command bar/grid (it is a compositor transform on the avatar only); engaged (grid open) vs resting both hold their layout.
 
-## R-30 — Frozen 58-rect geometry + the geometry regression net still hold
+## R-30 — Frozen FOOTPRINT + clip identity (geometry table retired) — **INVERTED #3210**
 
-- [ ] R-30: The shared `fredoAvatarGeometry.ts` + `__tests__/fredoAvatarGeometry.test.ts` are UNMODIFIED (byte-identical) and the suite passes in `pnpm --filter @fredo/ui test:run`. The launcher renders exactly the 58 expanded rects (31 source = 27 mirrored pairs + 4 singles), mirror math `x' = 1014 − x − width`, canvas bounds, as-authored center buttons — unchanged by #2852. The idle animation never mutates a rect. Reference #2837 F-35..F-40 + #2850 R-27/F-41.
-  - **Edge:** grep confirms the md→sm change is a `size` prop swap only (no geometry table touched); a rect-set drift = FAIL.
+- [ ] R-30: Confirm `fredoAvatarGeometry.ts` + `__tests__/fredoAvatarGeometry.test.ts` are ABSENT;
+      read the launcher avatar root's `offsetWidth`/`offsetHeight` + `data-avatar-render` /
+      `data-avatar-clip` in the resting and engaged launcher states.
+  **Expected:** ONE `[data-avatar-render]` at 80×100 in both states, `data-avatar-clip` = the resolved
+      state; no `<svg>` inside the avatar root; the idle animation never resizes the box.
+  **INVERTED (#3210):** the previous "58 expanded rects / mirror math / geometry suite UNMODIFIED"
+      expectation is RETIRED with the module. Replacement rows: `fredo-avatar/functional.md` F-AV-3 /
+      F-AV-11 / F-AV-12.
+  - **Edge:** grep confirms `<FredoAvatar size="sm" state={desktopState} />` at `LauncherShell.tsx:1773`
+    with no local geometry; a footprint drift = FAIL.
 
 ## R-31 — Token-native + no re-render loop / console clean
 
@@ -715,6 +727,12 @@
 
 ## #2917 extension — the additive fill must NOT change the launcher
 
+> **#3210 RETIREMENT (read first).** R-64/R-67 (the 58-rect + fill invariants) are **RETIRED as
+> executable rows — do not run them** (`#fredo-interior`, the rect mask and `fredo-avatar.css` are
+> DELETED with the SVG path). The surviving launcher invariants are R-65/R-68 (CLS/seat geometry —
+> footprint unchanged), R-66/R-69 (token-native/console/build), and
+> `fredo-avatar/functional.md` F-AV-3 / F-AV-11 / F-AV-12.
+
 > Issue #2917 adds an additive interior fill layer to the shared avatar. The launcher hosts only the
 > RESTING figure, so these invariants MUST hold — any FAIL is a regression. Run alongside R-1..R-63 and
 > the launcher F-108..F-112. **Verification policy: live.** G-136 note: only the 58 base rects are pinned
@@ -759,6 +777,12 @@
 ---
 
 ## #2922 extension — the body-wide fill must NOT change the launcher (G-136)
+
+> **#3210 RETIREMENT (read first).** R-67 (the `#fredo-interior` / 58-rect row) is **RETIRED as an
+> executable row — do not run it**; the fill layer it measures is deleted with the SVG. R-68 (CLS/seat
+> geometry) and R-69 (token-native/console/build) STAY in force — the footprint and the token contract
+> still govern. Replacement rows: `fredo-avatar/functional.md` F-AV-3 (footprint) / F-AV-6 (live
+> tint) / F-AV-11 (both surfaces).
 
 > Issue #2922 extends the ADDITIVE interior fill from the head to the WHOLE body. The launcher hosts
 > the RESTING figure (`.fredo-avatar-idle`, or the interactive companion seat when ON), so these
