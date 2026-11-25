@@ -118,8 +118,9 @@
   and lock behaviour the quit teardown depends on.
 - `.opencode/tests/desktop-shell/regression.md` — launcher/chrome surface (must be visually
   unchanged by a reopen: parity with a cold launch).
-- `.opencode/tests/headless-ingest/` — the OTLP receivers + `telemetry_spans` raw-persist path the
-  AC1 leg proves against.
+- `.opencode/tests/resident-ingest/` — the OTLP receivers + the `telemetry_spans` raw-persist path
+  the AC1 leg proves against, plus the single-owner/quit census (seeded #3194; replaces the retired
+  `headless-ingest/`).
 - `.opencode/tests/webview-security-boundary/` — capability boundary: the three new grants belong to
   the built-in window class only.
 - `.opencode/tests/fredo-cli/` — the `fredo` CLI client and its per-env `FREDO_CLI_PIPE` resolution.
