@@ -26,10 +26,12 @@
 > Issue #2850 — the launcher avatar renders from the shared `FredoAvatar size="md"`; the
 > companion overlay renders the same shared avatar at sm.
 
-- [ ] S-8: The shell boots with the shared md avatar — on a fresh launch the avatar SVG
-      (`viewBox="0 0 1014 1264"`, 58 crisp rects, accent fill) renders above the command bar at
-      132 × 165; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update
-      depth exceeded`; a screenshot succeeds.
+- [ ] S-8: The shell boots with the shared avatar — on a fresh launch ONE `[data-avatar-render]`
+      (a painted figure) renders above the command bar at 80 × 100 with no `<svg>` inside the avatar
+      root; `tauri_read_logs(source="console")` shows no `Error:`/`Uncaught`/`Maximum update depth
+      exceeded`; a screenshot succeeds.
+      (**#3210:** the SVG viewBox/58-rect clause and the historical 132×165 `md` size are DELETED —
+      the shell mascot is `sm`, per the #2852 note below.)
 
 > **#2852 note:** S-8's `132 × 165 md` expectation is SUPERSEDED — the shell mascot now renders at the
 > shared `sm` size (80×100) with idle bob+glow; the historical record is preserved. Reference
