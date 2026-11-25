@@ -65,10 +65,19 @@
   **Expected:** each command is present in `generate_handler![]` (`lib.rs`), in
   `COMMAND_MANIFEST` (`runtime/command_manifest.rs`) and in the grant set
   (`permissions/app/default.toml` as `allow-open-main-window`, `allow-app-lifecycle-status`,
-  `allow-quit-app`); the drift-guard test is green; the capability still matches ONLY
+  `allow-quit-app`); the drift-guard test is green; the built-in capability still matches ONLY
   `main`/`terminal`/`doom`/`app-*` (never `installed-*`); `quit_app` is wired to NO visible control
   (the tray is the only visible quit surface).
-  **Edge:** a new command reachable from an `installed-<id>` window is a FAIL (the #3147 boundary).
+  **Edge:** **the reach rule, updated by #3146** (the clause used to read "a new command reachable from
+  an `installed-<id>` window is a FAIL"). Since #3146 the installed tier legitimately reaches **exactly
+  ONE** command — `installed_app_invoke`, granted by `capabilities/installed-app-commands.json`
+  (`windows: ["installed-*"]`, `permissions: ["allow-installed-app-invoke"]`, no `core:*`). So:
+  **any** command reachable from an `installed-<id>` window **other than `installed_app_invoke`** is a
+  FAIL — including the three commands this row owns, which is the sharper statement: the resident-shell
+  control surface (window creation, lifecycle status, quit) must remain unreachable from an installed
+  document. Quote `installed-app-commands.json`'s `permissions` array beside the read of
+  `capabilities/app-commands.json` so the two tiers are visibly distinct. An installed-tier capability
+  carrying `core:*` is the specific widening this row exists to catch.
 
 ## RT-7 — one tray icon, no new asset
 
@@ -121,13 +130,17 @@
 - `.opencode/tests/resident-ingest/` — the OTLP receivers + the `telemetry_spans` raw-persist path
   the AC1 leg proves against, plus the single-owner/quit census (seeded #3194; replaces the retired
   `headless-ingest/`).
-- `.opencode/tests/webview-security-boundary/` — capability boundary: the three new grants belong to
-  the built-in window class only.
+- `.opencode/tests/webview-security-boundary/` — capability boundary. **Updated by #3146:** there are
+  now four capability files across **two** window classes — `default.json`, `mcp-bridge-dev.json` and
+  `app-commands.json` target only the built-in labels (`main`/`terminal`/`doom`/`app-*`), while
+  `installed-app-commands.json` targets only `installed-*` and grants exactly
+  `allow-installed-app-invoke`. Any overlap between the two classes is a FAIL (F-2.5/F-2.6).
 - `.opencode/tests/fredo-cli/` — the `fredo` CLI client and its per-env `FREDO_CLI_PIPE` resolution.
 
 ## Suite-level pass/fail
 
 PASS = RT-1…RT-8 all green (RT-8 judged with its pre-existing-residual attribution rule, which keeps
 every assertion). FAIL = a new chord/binding, a new persistence surface, an `rtdb/` diff,
-a changed teardown order/ownership invariant, a command reachable from an `installed-*` window, a
-second tray icon, or a weakened/deleted existing assertion.
+a changed teardown order/ownership invariant, **a command reachable from an `installed-*` window beyond
+`installed_app_invoke` (the #3146 tier rule — the installed tier reaches exactly ONE command since
+#3146, not zero)**, a second tray icon, or a weakened/deleted existing assertion.
