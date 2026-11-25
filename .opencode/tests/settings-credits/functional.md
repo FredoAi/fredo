@@ -27,6 +27,26 @@
 > `powershell -NoProfile -File .opencode/scripts/run-exitcode.ps1 -Command "<cmd>"`; read the
 > literal `EXITCODE=<n>` line. A bare chained command cannot produce an assertable exit code in
 > this sandbox.
+>
+> **Driving the licence triggers on the live pane — read this before F-4a–F-4c / F-17b.**
+> The triggers are Chakra v3 `Accordion.ItemTrigger` (`CreditsSettings.tsx:218`) → Zag machine
+> buttons. Zag accepts `TRIGGER.CLICK` only while its machine is in the `focused` state, and a
+> bridge `.click()` is an **untrusted** event that does not focus first — so a bare `.click()`
+> looks inert (`aria-expanded` stays `"false"`, the panel stays `hidden`) on a pane that works
+> fine for a human. **A pane that ignores a bare `.click()` is NOT broken — the drive is.**
+> 1. Preferred: `tauri_webview_interact` (a real pointer press focuses natively, then clicks).
+> 2. Fallback — send focus BEFORE the click:
+>    ```js
+>    const t = document.querySelector('[data-testid="credits-body-fredo-mit"]');
+>    t.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+>    t.focus();
+>    t.click();
+>    t.getAttribute('aria-expanded');   // must read "true"
+>    ```
+> 3. Re-read `aria-expanded` (and the panel's `hidden`) to confirm the drive took. A recipe that
+>    leaves `aria-expanded === "false"` is a **FAILED DRIVE** — re-drive with the other method
+>    and record which one worked; never report it as a product FAIL. This applies to every live
+>    expansion in this suite (F-4a, F-4b, F-4c, F-17b) and to `exploratory.md` E-2.
 
 ## F-1 (AC-1 · R-1.2) — the Credits nav item exists, is labelled `Credits`, and is LAST in the static group
 
@@ -54,9 +74,20 @@
     `section <= 4`, then `credits-fredo-licence`, then `credits-entry-posable-doomguy`, then
     `credits-doom-trademark`, then the canonical-source footer — assert it with
     `compareDocumentPosition` pairs, not by document text order.
-- [ ] **F-1b (live).** Boot the isolated dev env, open Settings from the launcher tile
-      `Settings` (`.opencode/tests/launcher/functional.md` F-49: the tile produces
-      `div[role="group"][aria-label="Settings"]`), then
+- [ ] **F-1b (live).** Boot the isolated dev env, open the launcher (`Ctrl+Space`, or click the
+      notch `div[role="button"][aria-label="Fredo launcher"]`), then **prove the tile before
+      clicking it**:
+      `document.querySelectorAll('#fredo-launcher-grid [role="button"][aria-label="Settings"]').length`
+      must be exactly **1**. The shipped tile is a `div[role="button"]` inside
+      `div#fredo-launcher-grid[role="grid"][aria-label="Applications"]`
+      (`LauncherAppGrid.tsx:52-56` and `:93-104`; same tile as
+      `.opencode/tests/launcher/smoke.md` S-13). The `div[role="group"][aria-label="Settings"]`
+      this row used to name is the **window the tile opens**, not a node in the launcher — so a
+      selector aimed at it returns 0 and the drive stalls silently. **A count of 0 is a FAILED
+      DRIVE**, never a PASS: re-open the launcher and re-count before reporting anything.
+      Record the count, the grid's `aria-label` and the tile's parent chain.
+  - Then click that one tile, wait for the Settings window
+      `div[role="group"][aria-label="Settings"]` to exist, then
       `tauri_webview_execute_js(script="document.querySelector('[data-testid=\"settings-nav-credits\"]').click()")`,
       then `tauri_webview_dom_snapshot(type="structure")` + `tauri_webview_screenshot`.
   - **Expected:** `settings-nav-credits` existed **before** the click (a DOM snapshot of the
@@ -142,8 +173,10 @@
 
 ## F-4 (AC-2 · R-2.2) — both full licence texts are readable in-app, untruncated and not linkified
 
-- [ ] **F-4a (live, MIT).** Expand `credits-body-fredo-mit` (execute_js `.click()` or
-      `tauri_webview_interact`), then read `[data-testid="credits-text-fredo-mit"]`.
+- [ ] **F-4a (live, MIT).** Expand `credits-body-fredo-mit` — `tauri_webview_interact`, or the
+      header's focus-then-click recipe (a bare `execute_js` `.click()` alone is a failed drive:
+      Zag needs the `focusin` first) — confirm `aria-expanded === "true"`, then
+      read `[data-testid="credits-text-fredo-mit"]`.
   - **Expected:** the element's normalised text (CRLF→LF, trailing whitespace per line trimmed)
     EQUALS `LICENSE-MIT`'s normalised text; it starts with `MIT License`; it ends with
     `SOFTWARE.`; `querySelectorAll('a').length === 0`.
@@ -420,41 +453,94 @@
 > run's OWN printed line per input, so the matrix is visible in the log instead of inferred
 > from a green summary.
 
-- [ ] **F-12a (run the seam's unit matrix).**
-      `run-exitcode.ps1 -Command "cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked open_external_link -- --nocapture"`.
+- [ ] **F-12a (run the seam's unit matrix — MODULE filter, with a pinned test count).**
+      `run-exitcode.ps1 -Command "cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked --lib applications::settings::credits::tests -- --nocapture"`.
+  - **Why the module path and not the command name — a 0-test filter is a FAILED DRIVE, never a
+    PASS:** the tests are module-qualified
+    (`applications::settings::credits::tests::<fn>`, `credits.rs:364-631`), so the old filter
+    `open_external_link` matches no test NAME and prints `running 0 tests` /
+    `test result: ok. 0 passed` — a green-looking run that proves nothing. `--lib` keeps the
+    integration targets (`apps/tauri/src-tauri/tests/*.rs`) out of the run so their own
+    `running 0 tests` blocks cannot be mistaken for this one.
+  - **Expected — the run provably SELECTED the tests:** the `Running unittests src/lib.rs` block
+    reports **7** tests (`running 7 tests`, `test result: ok. 7 passed; 0 failed`) and lists these
+    seven module-qualified names, each `... ok`:
+    `refusal_codes_are_the_closed_five`,
+    `wire_messages_are_pinned`,
+    `refusal_matrix_prints_every_input_and_launches_nothing`,
+    `accepted_urls_launch_exactly_once_with_the_exact_string`,
+    `the_length_bound_is_inclusive_at_the_maximum`,
+    `an_opener_failure_is_the_failed_family_after_one_attempt`,
+    `the_module_spawns_no_process_of_its_own`.
+    `running 0 tests`, a count below 7, or ANY of the seven names missing is a **FAILED DRIVE**
+    (wrong filter / wrong manifest) — record it as such, never as a PASS and never as a product
+    FAIL. The matrix test closes with `refusal matrix: 34 inputs, every launch count 0`; the
+    shipped matrix is LARGER than the sample table below, so a 34-vs-15 counts mismatch is
+    expected — do not hunt for `REFUSED` lines the shipped matrix never prints, and do not treat
+    the sample table as the complete matrix.
   - **Precondition (from the plan's own dependency step):** promoting `open` from a transitive
     crate to a direct dependency ALSO edits the `fredo` package's `dependencies` list in
     `Cargo.lock:1905-…` even though no new crate is resolved — so `--locked` fails until that
     lockfile update is committed. If `--locked` fails with "the lock file needs to be updated",
     that is a developer defect whose fix is committing the lock update, **never** dropping
     `--locked` from the row.
-  - **Expected:** `EXITCODE=0`; the output contains, for every input below, one line of the form
-    `REFUSED <input> code=<code> launches=0`, and for the two accept URLs
-    `ACCEPTED <url> launches=1`.
-  - **Matrix (pinned code where the command contract states it; otherwise "refused with one of
-    the five pinned codes"):**
+  - **Expected:** `EXITCODE=0`; the output contains, for every input in the table below, one line
+    of the form `REFUSED <input> code=<code> launches=0` (the printed input is Rust-`{:?}`-quoted,
+    so it reads e.g. `REFUSED "http://example.com/x" code=not-https launches=0` — the quotes are
+    the shipped form, not a defect), and for every accepted input `ACCEPTED <url> launches=1`.
+    A table row whose printed line is MISSING, or whose printed code differs from the cell, is a
+    product FAIL (the validator changed its decision). The log's closing
+    `refusal matrix: 34 inputs, every launch count 0` line is the guard against a table that
+    silently under-checks the matrix.
+  - **Matrix — every row is a LITERAL cell of the shipped matrix with the code that matrix pins**
+    (`credits.rs:426-468`; the shipped matrix prints 34 inputs in total and closes with
+    `refusal matrix: 34 inputs, every launch count 0`, so the `REFUSED` lines outnumber this
+    table — do not hunt for lines for inputs that are not written here, and do not treat this
+    table as the complete matrix):
 
     | input | expected |
     |---|---|
     | `http://example.com/x` | `not-https` |
+    | `HTTP://example.com/x` | `not-https` |
     | `ftp://example.com/x` | `not-https` |
-    | `file:///C:/Windows/win.ini` | `not-https` |
-    | `javascript:alert(1)` | refused (`not-https` or `malformed` — record which) |
-    | `data:text/html,<script>x</script>` | refused |
-    | `//evil.com/x` | refused |
+    | `file:///C:/Windows/System32/calc.exe` | `not-https` |
+    | `javascript:alert(1)` | `not-https` |
+    | `data:text/html,<script>alert(1)</script>` | `not-https` |
+    | `//evil.example/x` | `not-https` |
+    | `fredo-credits://open?url=x` | `not-https` |
+    | `https://` | `no-host` |
     | `https:///x` | `no-host` |
-    | `https://` | refused (`no-host` or `malformed` — record which) |
+    | `https://user:pw@example.com/x` | `userinfo` |
+    | `https://@example.com/x` | `userinfo` |
     | `https://localhost/x` | `loopback-host` |
+    | `https://localhost:8443/x` | `loopback-host` |
     | `https://127.0.0.1/x` | `loopback-host` |
     | `https://[::1]/x` | `loopback-host` |
     | `https://0.0.0.0/x` | `loopback-host` |
-    | `https://user:pw@example.com/x` | `userinfo` |
-    | `https://example.com/a b` (contains a space) | refused (`malformed`) |
-    | 3000-character `https://` URL | refused (`malformed` — the length bound) |
+    | `https://example.com./x` | `loopback-host` |
+    | `https://exa mple.com/x` (a space) | `malformed` |
+    | `https://example.com/?a=1&b=2` (an `&`) | `malformed` |
+    | `https://example.com/%PATH%` (a `%`) | `malformed` |
+    | `` https://example.com/`calc` `` (a backtick) | `malformed` |
+    | `https://example.com/"calc"` (quotes) | `malformed` |
+    | `https://example.com/x\..\y` (a backslash) | `malformed` |
+    | `https://example.com:99999/x` (port out of range) | `malformed` |
+    | the over-bound cell: `https://example.com/` followed by `MAX_EXTERNAL_URL_LEN` (2048) `a`s — total length is over the 2048 bound | `malformed` |
+    | the empty input `""` | `malformed` |
 
-  - **Control (G-469 — without this the matrix is vacuous):** the two `ACCEPTED … launches=1`
-    lines must be present. `launches=0` for every refused input is only meaningful because the
-    same recorder was proven to fire on accept.
+    The two cells that are NOT simple strings to retype (the over-bound URL and the empty input)
+    are still printable lines in the log — read them from the run, never reconstruct them. The
+    bound's ACCEPTING side is a different test and prints NO line at all
+    (`the_length_bound_is_inclusive_at_the_maximum` asserts silently: a URL at exactly
+    `MAX_EXTERNAL_URL_LEN` is accepted, `+1` is `malformed`), so do not look for either a
+    `REFUSED … launches=0` or an `ACCEPTED …` line for a URL of exactly 2048 bytes.
+
+  - **Control (G-469 — without this the matrix is vacuous):** the `ACCEPTED … launches=1` lines
+    must be present. The shipped accept test prints **four** (llama.cpp, doomworld, an upper-case
+    `HTTPS://…` spelling, and a non-ASCII path), so ZERO `ACCEPTED` lines is a FAILED DRIVE (the
+    matrix ran without its control) and any `launches` other than 1 on an accepted URL is a
+    product FAIL. `launches=0` for every refused input is only meaningful because the same
+    recorder was proven to fire on accept.
 - [ ] **F-12b (no shell, one call site).** Count the product-source `open::that*` call sites:
       `powershell -NoProfile -Command "Get-ChildItem -Path apps/tauri/src-tauri/src -Recurse -File -Include *.rs | Select-String -Pattern 'open::that' -SimpleMatch | ForEach-Object { $_.Path + ':' + $_.LineNumber }"`
       → exactly ONE line, inside `applications/settings/credits.rs`'s `default_opener`; and the
@@ -465,13 +551,18 @@
     `default_opener` is reachable).
   - **Edge (disclose):** if the pinned `open` 5.3.4 implementation itself shells out
     (`cmd /c start`), record it here — the refusal path is still I/O-free, and the exploratory
-    metacharacter probe (E-1) covers the accepted path.
+    accept-path leg (**E-1b**, the permitted-delimiter URL) is the only look at the accepted
+    path's framing. **E-1a is the refusal half** (shell-metacharacter payloads → `malformed`,
+    zero launches); it does NOT cover the accepted path — the earlier "E-1 covers the accepted
+    path" note was wrong because the URL it used is refused by the shipped validator.
 - [ ] **F-12c (fallback if the tester sandbox has no `cargo`).** Quote the `rust-validate` job's
       green run on the **tested commit** (the CI run of `.github/workflows/validate.yml`), plus
-      its log lines for the matrix. Record the substitution explicitly (precedent:
-      `.opencode/tests/llama-setup/functional.md` cargo rows). A code-less "refused" claim for
-      an unpinned input is acceptable; `launches=1` on ANY refused input is a FAIL; no run at
-      all (local or CI) is `UNVERIFIED`, never PASS.
+      its log lines for the matrix **and the same unittests block** — the CI log must also show
+      `running 7 tests` for `applications::settings::credits::tests`; a CI log showing
+      `running 0 tests` for that filter is a FAILED DRIVE, never a PASS. Record the substitution
+      explicitly (precedent: `.opencode/tests/llama-setup/functional.md` cargo rows). A code-less
+      "refused" claim for an unpinned input is acceptable; `launches=1` on ANY refused input is a
+      FAIL; no run at all (local or CI) is `UNVERIFIED`, never PASS.
 
 ## F-13 (AC-5) — the live refusal seam through the dev debug bridge (`https` accepted, bad URL refused, nothing launched, no window change)
 
