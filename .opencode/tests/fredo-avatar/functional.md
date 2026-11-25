@@ -101,6 +101,17 @@
     `data-avatar-render` stays `live` (canvas present, poster `visibility: hidden`) and each state's
     still is distinguishable from `idle` (UI/UX §4's table is the checklist). Substituting the poster
     would make all 12 states look like `idle` — a regression, not a pass.
+   - **`#3224` — this clause is deliberately NOT widened to the 23 (UX-21).** The still is frame 1,
+     `t = 0` by shipped contract (`drawStillFrame` → `mixer.setTime(0)`, `avatarRenderer.ts:450-465`),
+     and **every prop is authored hidden at frame 1** and revealed from frame 2
+     (`build_character.py:1909-1916`). So at `t = 0` four of the eleven emotions legitimately lose
+     their primary marker — `happy` and `uwu` (bounce / sway), `angry` and `funny` (props) — and three
+     pairs collapse (`happy`/`uwu`, `squint`/`angry`, `funny`/`idle`). Asserting "all 23 stills are
+     pairwise distinct" would guarantee a **spurious FAIL on a correct build**. AC1's "visibly
+     distinct" is the shipped **animated** 1.333 s performance, which `F-AV-30` leg E captures with
+     motion on; this still limitation is a PO/asset note (its remedy — a still phase other than
+     `t = 0` — would move the shipped 12's reduced-motion frames, so it is out of this spec). Do
+     **not** extend the pairwise claim here, and do **not** "fix" it with per-state CSS.
   - **Edge:** `talk` streaming AND not streaming; a one-shot (`teleport-out`) must not loop; the
     poster path must not spin.
   - This is the ONLY row where reduced motion is proven (a live flip is impossible — record the
@@ -249,7 +260,11 @@
   - **Edge:** sub-second states via the in-page recorder (G-220); **pairwise pixel-delta
     perceptibility is AC1 = #3224's row** — here distinctness is clip identity + a vision read of
     the captures; do NOT bind an uncommitted pixel-delta instrument (a Toolsmith gap owned by
-    #3224). An unreachable recipe is a BLOCKED-harness (named), never a static PASS.
+    #3224). An unreachable recipe is a BLOCKED-harness (named), never a static PASS. **Perceptibility pointer for the 23-state round: `F-AV-30`.**
+   - **#3224 note:** the 11 emotion ids deliberately have **no recipe in the table above** — they
+     are not selectable by a shipped product signal on this surface; `F-AV-30` drives them with the
+     DEV lever (`window.__FREDO_QA_AVATAR_FLOW__`) and `F-AV-34` proves their product reachability
+     (a model-declared status). Do not invent a recipe for them here.
   - **UI/UX §4 / UX-6 binding:** the 12 captures are read against §4's table (clip motion + prop
     marker + "how it differs from idle at a glance"). **Six states carry props** — `greeting` hat,
     `thinking` bubble + monocle, `working` tray + glasses, `error` exclamation, `teleport-out`/
@@ -358,6 +373,13 @@
     bleed); a per-state re-fit (zoom pumping) is a FAIL — the camera is fitted once per mount.
   - **Control (pre-change):** the SVG's own ink bbox is the reference; the row is `[NEW]` because the
     measured object (the 3D render) does not exist on the pre-change tree.
+   - **#3224 — these fractions are the CAMERA-FIT PIN'S GROUND.** Since #3224 the vocabulary is 23
+     and the camera fit is derived from `AVATAR_FRAMING_CLIPS` (the 12 status states only), so this
+     row's frozen fractions are what proves the widening did not re-frame the shipped figure:
+     **`F-AV-31` leg (b) requires this row to stay green with the SAME values.** Do not re-baseline
+     them to accommodate an emotion pose — an emotion that would move the fit is a PO/asset finding,
+     never a reason to accept a new fraction (`fredoAvatar/regression` R-AV-13 also pins the
+     engaged-Doom case).
 
 ## F-AV-20 `[NEW]` (R-4a — UI/UX §1) — the poster depicts the SAME character, front-on, at the idle pose
 
@@ -673,4 +695,382 @@
       edge arriving exactly on the `finished` callback; a suspended (teleport) burst; **an entry edge
       DURING `entering`** (no `idle` visit) settles to `holding` on the SAME weapon — one engagement,
       exactly one `advanceDoomWeapon` for the whole flick.
+
+---
+
+# fredo-avatar — the 23-state vocabulary (Spec #3224)
+
+> **Verification policy: live.** AC1 is a rendered performance a user can see; AC2's "no stray
+> marker, no crash" clause is observable in the live DOM. One row (F-AV-35) is a
+> **static-by-artifact** build pin inside the live policy — the ABSENCE of a DEV-only token is read
+> from the BUILT chunk's own files, never by driving the surface claimed absent (G-408).
+>
+> **The round's live receipt (disclosed):** the avatar/boot surfaces emit **no OTLP span** — a
+> companion turn runs through the in-process engine, not the OTLP plugin. The round therefore
+> carries (a) one genuine `telemetry_spans` query (non-zero count + recent `max(ingested_at)`) that
+> proves the **live pipeline**, explicitly disclosed as *not* evidence for this feature (the #3223
+> precedent), and (b) a per-row `tauri_webview_screenshot(...)` capture **paired with** a same-task
+> `execute_js` DOM read. A capture without its DOM read is UNVERIFIED; a static-only PASS is a false
+> PASS.
+>
+> **Instruments (defined once, used by every row below).**
+> **Q-1 `QA_FLOW` — the DEV drive lever** (ST-2, `qaAvatarFlowLever.ts`):
+> `window.__FREDO_QA_AVATAR_FLOW__ = '<state>'` for a member of the 23. Unset = inert; a page
+> reload clears it; it enters the resolver at **normal rank**, so a teleport still outranks it.
+> **Precondition for every lever row:** companion at rest (`data-streaming` absent), bar un-engaged,
+> no stream, no teleport, no skill pending, no Doom engagement.
+> **Q-2 `QA_READ` — the three mount paths of the ONE shared shell.** **L1** = the launcher seat
+> mascot with the companion **OFF** (wrapper `.fredo-avatar-idle` `data-state`,
+> `LauncherShell.tsx:1784`; inner `[data-avatar-render]` `data-avatar-clip`); **C-seat** = the
+> companion at the home seat (`.fredo-companion-avatar`, `surface="seat"`); **C-overlay** = the
+> companion floated (`surface="overlay"`, same wrapper class). Per path read the wrapper
+> `data-state` + `aria-label` and the inner root's `data-avatar-clip` / `data-avatar-motion` /
+> `data-avatar-render` in ONE `execute_js` task.
+> **Q-3 `QAClipRecorder`** — inherited verbatim from this file's **I-1** (a per-frame `rAF` log of
+> `{t, clip, state}` re-querying the document each frame). Sub-second and one-shot states are read
+> from this log, never a serial driver round-trip.
+> **Q-4 the two teleport one-shots** are driven by their SHIPPED trigger (Ctrl+right-click, the
+> recipe table above), not by Q-1: a levered `teleport-out` clamps on its final frame (the empty
+> seat, `avatarRenderer.test.ts:138-141`), so a lever-driven capture would be a dead seat rather
+> than the dissolve. Their `data-avatar-clip` identity **is** lever-drivable and is read that way.
+> **Q-5 `QAClipEcho` — the applied-clip seam (jsdom tier).** `probeAvatar3d()` is `false` under
+> jsdom so the real renderer never mounts (`FredoAvatar.tsx:96`); the leg stubs
+> `WebGL2RenderingContext` (`avatarRenderer.test.ts:69` precedent) and injects a fake through the
+> SHIPPED seam `setAvatarRendererFactoryForTests` (`avatarRenderer.ts:144`) whose `setState(next)`
+> calls `onClipChange(next)` **only when `next` is a key of an action map built from the GLB's own
+> animation names** — mirroring `applyClip`'s `if (!action) return;` (`avatarRenderer.ts:498-499`).
+> That mirror is what makes the instrument non-tautological: a union member with no clip in the GLB
+> reports NO clip change, so `data-avatar-clip` keeps its previous value and the row reddens.
+>
+> **Drive coverage (G-440).** All 23 are drivable on all three mount paths. The 12 keep their
+> shipped recipes on C-seat/C-overlay, but **the launcher's product selection set is 4**
+> (`LauncherShell.tsx:687-690` passes no `modelStatus`/`captureActive`/`teleporting`), so **19 of the
+> 23 are unreachable on L1 without Q-1** — that substitution is stated, not hidden (F-AV-30). The 11
+> emotions are unreachable on EVERY surface by a shipped product signal except a model-declared
+> status, so their matrix leg is lever-driven while F-AV-34 proves the product reach.
+>
+> **Two cadence edges — a FAILED DRIVE, never a product FAIL.** (a) `useFredoRestingCadence(12000/
+> 1800)` injects a `playful` CANDIDATE: an emotion outranks it (the band is above `playful`) but the
+> BASE state `talk` does not, so a levered `talk` reads `playful` during the 1.8 s beat — sample the
+> ≈10.2 s resting-idle window. (b) A levered `idle` reads `playful` in the same window, so `idle` is
+> captured only on an `idle` reading (poll ≤14 s; re-capture if the beat lands).
+>
+> **Tag legend:** `[NEW]` must redden on the pre-change tree (the control is named in the row);
+> `[RETAINED]` / `[GUARD]` are green today and must stay green.
+
+## F-AV-30 `[NEW]` (R-1a / R-1b / R-1c / R-1d — AC1, two tiers) — the 23-state matrix on all three mount paths
+
+- [ ] F-AV-30 **leg A (union ⇄ clip 1:1, structural).** Read `fredoAvatarStates.ts` +
+      `avatarClips.ts`; assert `FREDO_AVATAR_STATES.length === 23`; `FREDO_AVATAR_STATES` deep-equals
+      `[...FREDO_AVATAR_STATUS_STATES, ...FREDO_AVATAR_EMOTION_STATES]`;
+      `FREDO_AVATAR_STATUS_STATES` equals the pre-change 12 **in the same order**
+      (`idle, talk, teleport-out, teleport-in, thinking, happy, playful, joking, listening,
+      working, error, greeting`); `FREDO_AVATAR_EMOTION_STATES` equals the 11 ids in
+      `ASSET.md:103-116` order (`uwu, love, sad, surprised, sleepy, skeptical, confused, silly,
+      squint, angry, funny`); `Object.keys(AVATAR_CLIPS)` equals the 23 names, every `loop: true`
+      except `teleport-out`/`teleport-in`; `AvatarClipName` still accepts every `FredoAvatarState`
+      (compile-enforced by `Readonly<Record<AvatarClipName, AvatarClipSpec>>` — report the build exit).
+  **Expected:** all of the above green.
+      **Control (pre-change):** `FREDO_AVATAR_STATES.length === 12` and `AVATAR_CLIPS` has no `uwu`
+      entry (adding one is a TS error pre-change) → red.
+  - **Edge:** a duplicate id; the 12 re-ordered; a `doom-*` name leaking into `AVATAR_CLIPS`; a 24th
+    invented id added to only one of the two arrays.
+
+- [ ] F-AV-30 **leg B (all 23 clips really are in the shipped asset).** Extend the committed
+      `__tests__/avatarAssetContract.test.ts` pin: the 23 union names are a **subset** of the
+      shipped GLB's animation names (parsed from its own JSON chunk), each at `1.333 s` (±`0.01`)
+      and matching the authoring manifest's `loop` flag. Report the executed count and the resolved
+      GLB path.
+  **Expected:** 23/23 present at the authored duration and loop flag; the existing "32 clips" and
+      "manifest list equality" pins stay **green and unmodified** (the 3 unowned extras —
+      `analyzing`, `planning`, `complete` — stay outside the union).
+  - **Edge:** a clip renamed in a re-export (the set-equality pin catches it); a duplicated
+    animation name in the GLB; an asset-gated pin that early-returns on a missing file is
+    **corroboration only** (G-435) — leg B is a hard `existsSync` assert, never a skip.
+
+- [ ] F-AV-30 **leg C (no two clips are the same performance).** Extend the same committed pin: for
+      each of the 23, locate its animation's **sampler OUTPUT** accessors in the GLB's BIN chunk and
+      digest those bytes; compare all **253 pairwise combinations** (23·22/2 — *the plan's "276
+      pairs" is 24·22/2 and is corrected here*). Print the 23 digests and the **minimum pairwise
+      distance**, and paste the plan's number beside the measured one.
+  **Expected:** 23 distinct payloads, 0 identical pairs, a printed non-zero minimum. **ST-1 owns the
+      first run** (its Phase-0 diagnostic) and must paste the per-pair minimum; if a pair IS
+      byte-identical the shipped art aliases two performances — record a PO/asset scope finding and
+      **do not weaken the assertion**.
+  - **Edge:** an exporter that de-duplicates identical samplers to one accessor (that IS an alias —
+    FAIL); two clips differing only by a scalar keyframe.
+
+- [ ] F-AV-30 **leg D (per-state applied clip through the renderer seam, Q-5).** In a new committed
+      case in `__tests__/avatarRenderer.test.ts` (or a sibling), mount `<FredoAvatar state={S} />`
+      for all 23 with Q-5 installed; record `data-avatar-clip` per state.
+  **Expected:** for all 23 `data-avatar-clip === S`; **`idle` is the ONLY state whose applied clip is
+      `idle`**; a state whose clip is missing from the GLB reports NO change (the previous clip
+      persists) — so this leg cannot pass by falling back.
+  - **Edge:** `talk` with `streaming` false/true; reduced motion (all 23 still resolve a clip);
+    `teleport-out`/`teleport-in` (clamp, no loop).
+  - **Poster clause (UX-24):** repeat one pass on the shipped poster path (the `F-AV-2` asset lever,
+    or jsdom which is always the poster path): all 23 paint the SAME authored idle figure,
+    `data-avatar-clip` is **absent** by contract (`FredoAvatar.tsx:161` — `live && status.clip`), the
+    wrapper `data-state` is still correct, and **no copy is added** to explain it. A run that reads
+    the poster as "the wrong state" is THAT run's defect, not a FAIL of this clause.
+
+- [ ] F-AV-30 **leg E (the live 23-state PHASE-SHEET matrix + the bounded vision read — the AC1 tier
+      that needs eyes).** Per state, capture a **phase sheet, never a still**: **8 samples across one
+      1.333 s loop at `t = 0.10 s + k·0.15 s`** (k = 0…7) — the sampling starts after the prop reveal
+      (every prop is authored hidden at frame 1 and shown from f2) and spans `funny`'s wink
+      (f9–f13) and both of `happy`'s humps; it **never** samples the t = 0 pose that several states
+      share. A 3-frame minimum (`t ≤ 0.15 / 0.35–0.45 / 0.85–0.95 s`) is acceptable if tiling is
+      unavailable. **Named trap:** a `canvas.toDataURL()` composite of the WebGL canvas is blank
+      without `preserveDrawingBuffer` — build the sheet from screenshots, not the GL canvas.
+      Artifacts: **23 sheets on S1** (the floating companion) + **4 sheets on S2** (the launcher seat,
+      companion OFF) for the four members of the two Architect-named pairs — `happy`, `uwu`, `squint`,
+      `angry` — at the same phase (the wrapper rules are surface-scoped CSS, so "both surfaces" is a
+      per-surface claim) + **1 duplicate control** + **23 S2 DOM reads**. Drive each state with
+      **Q-1** (the two teleports via **Q-4**), read **Q-3** for every state, and read each sheet against
+      `ASSET.md:101-116` (the asset's own per-clip description) — the UI/UX §2 marker table is the
+      review checklist and §3 is the full same-glyph inventory.
+  **Expected (the legibility premise, stated so no reviewer files it as a defect):** at 80 × 100 CSS px
+      an eye glyph is ≈6–7 px wide with a ≈1.5 px curve, so eye **family** (curve / chevron / ring /
+      bar / heart / droop) is legible and eye **polarity** is not; every emotion is therefore carried
+      by a **second channel** — a prop, a mouth, a posture, or a beat direction — and the eye family
+      only confirms. Per sheet: the state's **primary marker is PRESENT**, **no other state's primary
+      marker is present**, and the sheet is not the idle pose.
+  **Expected (the 8 declared comparisons — each state's single nearest neighbour; this bounds the read,
+      it is not 253 pairwise judgements):** `{uwu, happy}`, `{love, happy}`, `{sad, idle}`,
+      `{surprised, confused}`, `{sleepy, skeptical}`, `{silly, idle}`, `{squint, angry}`,
+      `{funny, idle}`. Each is presented **blind** (unlabelled, random order); the reviewer commits
+      which is which **before** reading any filename or DOM label and names the feature used. PASS =
+      both assignments correct **and** the named feature is the **declared discriminator**, not "it
+      moved". **The declared discriminator, named per pair:**
+      · `happy` / `uwu` — `happy` rises **twice** with squash-and-stretch plus the −3 px whole-wrapper
+        bounce (`companion.css:86-95`, `fredoAvatarIdle.css:29-32`); `uwu` rises **once** while the
+        head sweeps laterally. **Motion only — a still is INADMISSIBLE for this pair.**
+      · `squint` / `angry` — `angry` adds **steam + hat + both arms raised** and the fastest lateral
+        head shake; `squint` is chev eyes with an **empty silhouette**. **A still at t ≥ ~0.17 s IS
+        admissible** (the props are large and static-visible); **never at t ≈ 0**, where both are
+        "chev + nothing".
+      · `sleepy` / `skeptical` (the **third** same-glyph pair — the asset has three, not two) — both
+        call `eyes("lid")`; the discriminator is the **axis**: `sleepy` droops **down** (vertical,
+        body sinks), `skeptical` sweeps **level and lateral**.
+      · `confused` / `surprised` (a shared **single** glyph) — **count**: one ring + one bar vs two
+        rings.
+      · `love` / `happy` (watched, not a declared pair) — a **filled** 7-slab blob vs a **thin** arc;
+        if a reviewer cannot separate them, report it.
+      · `sad` / `idle`, `silly` / `idle`, `funny` / `idle` — posture, the only `:v` mouth, and the
+        hat + monocle respectively.
+  **Expected (the duplicate control):** one comparison is the SAME state under two labels. A reviewer
+      who "distinguishes" it has failed the **method** — the whole read is REPEATED, never merely
+      re-marked.
+  **Expected (DOM, all three paths):** `data-avatar-clip === S` and wrapper `data-state === S` for the
+      same driven state; `aria-label="Fredo companion -- <S>"` on C-seat/C-overlay (an **emotion id is
+      LEGITIMATE in the accessible name** — the label is a state-id echo; banning it would invert R-1b).
+  **Five FAIL conditions — any ONE fails the leg:** (i) a wrong assignment; (ii) a correct assignment
+      reachable only from the artifact's timestamp/label; (iii) the declared discriminator invisible at
+      80 × 100 (i.e. the reviewer needed evidence the shipped surface does not produce); (iv) a sheet
+      matching `idle` (that is AC1's "no silent fallback" clause); (v) the duplicate control split.
+      A failed PAIR is recorded **by name** as an asset-legibility finding for the PO — never a
+      source change, never a relaxed criterion.
+  - **Drive substitutions, named (not hidden):** the launcher seat (S2) reaches only 4 states by
+    product signal (`LauncherShell.tsx:687-690`), so **19 of 23 are lever-driven there**; the 11
+    emotions on **every** surface are lever-driven (their product reach is F-AV-34's); the two
+    teleports use their shipped Ctrl+right-click recipe, captured ~150 ms into the dissolve.
+  - **Edge:** a sheet taken during a resting `playful` beat is a **FAILED DRIVE** (re-capture); a sheet
+    taken while `data-avatar-render !== "live"` is a FAILED DRIVE **except** on a poster host, where
+    the run asserts `data-state` only and records it (UX-24: the poster is state-blind for all 23 —
+    `data-avatar-clip` is absent by contract, `FredoAvatar.tsx:161`); clear Q-1 at the end and re-read
+    the resting state (a stale lever poisons later Doom/teleport rows); both surfaces for a state must
+    report the SAME clip.
+  - **Disclosed residual:** "visibly distinct" is proven by (legs A–D) structural identity + this
+    **bounded human read of documented markers**, not by a pixel metric. The pixel instrument remains
+    a named Toolsmith gap — do not improvise one.
+  - **Annexes these clauses cite (UI/UX §2/§3/§4 — UX-15…UX-20):** §2's per-emotion marker table is
+    the review checklist; §3's inventory is the FULL same-glyph set; §4 is the capture protocol and
+    the decision rule above.
+
+## F-AV-31 `[NEW]` (R-1e — AC1's framing clause) — the camera fit stays the 12's; no emotion pose clips
+
+- [ ] F-AV-31 **leg (a) — the framing set is the 12, exactly.** Read `avatarClips.ts`: assert
+      `AVATAR_FRAMING_CLIPS` deep-equals `FREDO_AVATAR_STATUS_STATES` (12 members, same order) and is
+      a **strict subset** of `FREDO_AVATAR_STATES`.
+  **Expected:** set identity holds. **Control:** on the pre-change tree `AVATAR_FRAMING_CLIPS` does
+      not exist (the fit is measured over every clip in the action map, `avatarRenderer.ts:263`) → red.
+  - **Edge:** the set listing all 23 (red — that is precisely the regression); the set listing the 12
+    in a different order (harmless to the fit but red, so the order is never silently re-derived).
+
+- [ ] F-AV-31 **leg (b) — the 12's silhouette is byte-identical before/after.** Re-run **F-AV-19** on
+      the spec tip and compare with its FROZEN fractions: silhouette bbox `0.8284 W × 0.9233 H`
+      (±2 %), feet baseline `0.9763 H`, horizontally centred.
+  **Expected:** the fractions hold to the same tolerance as on the pre-change tree — the widening did
+      not move the shipped figure. Report the measured W/H/baseline beside the frozen values.
+  - **Edge:** an emotion whose prop/POP would have entered the union if the pin were missing — that is
+    exactly what this leg detects; a per-state re-fit (zoom pumping) is a FAIL.
+
+- [ ] F-AV-31 **leg (c) — the frozen framing baseline (ST-1's artifact, G-409).** Confirm the
+      committed framing baseline (the framed camera rect measured on the **pre-change tip**, stored
+      as literals with the commit they were taken on) is reproduced by the shipped measurement.
+  **Expected:** equality within the pin's stated tolerance. Report the delta between the 12-clip fit
+      and the all-23 fit: a **non-zero** delta is the proof the pin is doing work; a **zero** delta
+      must be disclosed (`pin unproven by this leg; legs (a)+(b) carry it`) — never silently PASSed.
+  - **Edge:** a baseline captured on the POST-change tip (vacuous — the receipt must name the commit);
+    a missing baseline artifact is UNVERIFIED, never a PASS.
+
+- [ ] F-AV-31 **leg (d) — no emotion pose is clipped by the frame (live).** With Q-1 set to each of
+      the 11 emotions in turn on C-overlay, capture `s3224-frame-<S>.jpeg` at 4× zoom
+      (`style.transform='scale(4)'` + `transformOrigin='top left'` on the avatar wrapper, removed in
+      the next task — the #3223 **I-2** aid) and read the character's head/prop regions.
+  **Expected:** the character mesh (head, hat, the emotive props: the `angry`/`funny` hat,
+      `surprised`'s pop-up, `sad`/`sleepy` head-down, `silly`'s `:v`) stays fully inside the reserved
+      80×100 box; a character-attached prop cut by the frame edge is a FAIL, **pure FX may bleed**
+      (the #3210 rule).
+  - **Edge:** a character-attached prop overflowing the box = **PO/asset finding** (no re-fit is
+    allowed); the same read with Doom engaged is R-AV-13's.
+
+## F-AV-32 `[NEW]` (R-2a / R-2d — AC2's boundary clause) — a non-member never renders a marker, never throws
+
+- [ ] F-AV-32 **leg A (live — the display boundary).** Companion visible and floated, at rest, bar
+      un-engaged. Record the current state. Then, for EACH of `explode`, `dancing`, `IDLE`, `uuu`,
+      `"  uwu  "`, `hyper` (a 24th invented id): set **Q-1** to that literal, wait 2 frames, read
+      **Q-2** on all mounted paths **and**
+      `document.querySelector('.fredo-companion-avatar').outerHTML`; then single-click the companion
+      and confirm a turn still settles.
+  **Expected:** after each write, `data-state` is a member of the 23 **and equals the state recorded
+      immediately before the write** (the flow/idle holds — record which); `aria-label` matches it;
+      `data-avatar-clip` is a member of the 23; the literal written (`explode`, `hyper`, …) appears
+      **nowhere** in any `data-state` / `aria-label` / `data-avatar-clip` or the wrapper
+      `outerHTML`; the click still produces a reply; console has no `Error:` / `Uncaught`.
+      **Control (pre-change):** the lever module does not exist, so Q-1 cannot be written at all →
+      the row cannot run and is red.
+  - **`"  uwu  "` is REJECTED, not trimmed** — the lever is exact-match; a trimmed acceptance is a
+    FAIL (a boundary that silently repairs input is the over-permissive direction AC2 forbids).
+  - **Edge:** a non-string (`null`, `{}`, `23`) must not throw; the raw value `undefined` must leave
+    the surface exactly as it was; two consecutive non-members (no latch); then a member (`angry`)
+    still renders — the boundary did not wedge the surface.
+
+- [ ] F-AV-32 **leg B (unit — the two-way matrix: under-drop AND over-drop).** In
+      `__tests__/fredoAvatarResolver.test.ts`:
+      **`[GUARD]` (green today)** `resolveCompanionAvatarState({flow:'idle', modelStatus:'explode'})`
+      → `'idle'`; `{flow:'working', modelStatus:'explode'}` → `'working'` (the **flow** holds, not
+      `idle`); `'IDLE'` / `''` / `' success '` / `dancing` / `waiting` / `hyper` → dropped;
+      **`[NEW]`** `{flow:'idle', modelStatus:'uwu'}` → `'uwu'`, and every one of the 23 used as
+      `modelStatus` resolves to itself.
+  **Expected:** both halves green. A widening that forgets the boundary reddens the `[GUARD]` half;
+      a boundary still closed over 12 reddens the `[NEW]` half. Also assert the lever reader returns
+      `undefined` for a non-member (the lever is never a bypass).
+  - **Edge:** a value equal to a *Doom* clip name (`doom-idle`) — dropped; a Symbol/number; `'idle '`
+    (trailing space — dropped, exact match).
+
+## F-AV-33 `[NEW]` (R-2c — AC2's order + teleport clauses) — the 20-ranked order, and a teleport still wins
+
+- [ ] F-AV-33 **leg A (the order is data).** In `__tests__/fredoAvatarResolver.test.ts`:
+      `FREDO_AVATAR_STATE_PRIORITY.length === 20`; the 9 status states appear as a **subsequence in
+      the shipped order** (`working > error > happy > joking > listening > greeting > thinking >
+      playful > idle`); the 11 emotions form one **contiguous band** between `thinking` and
+      `playful` in `ASSET.md` order; `talk`/`teleport-out`/`teleport-in` absent; no duplicates; every
+      member ∈ the 23.
+      Adjacency proofs: for every adjacent pair `(hi, lo)` drive `lo` as `flow` + `hi` as
+      `modelStatus` → `hi`. Band boundaries: `thinking` outranks every emotion; every emotion
+      outranks `playful` (i.e. `{flow:'idle', resting:'playful', modelStatus: E}` → `E`).
+  **Expected:** all green. **The pre-change 9-member assertion at `:28-40` is RE-CUT to the
+      subsequence form, NEVER deleted** — it is the only guard that the 12 did not move.
+      **Control:** the 20-member length is red on the pre-change tree (9).
+  - **Edge:** an emotion placed BELOW `playful` (masked by the resting beat — G-220); an emotion
+    ABOVE `thinking` (steals `thinking`'s sole trigger); a duplicate rank; `talk` accidentally ranked.
+
+- [ ] F-AV-33 **leg B (live — a teleport outranks a levered emotion).** C-overlay, **Q-1 set to
+      `angry`**, **Q-3** running. Ctrl+right-click out of the main window, then Ctrl+right-click
+      inside `run-cli-terminal` to arrive.
+  **Expected:** the recorded sequence is `angry` → `teleport-out` → `teleport-in` → `angry`; `angry`
+      NEVER appears during either teleport window; `data-avatar-clip` is never left on a
+      `teleport-*` name after settle (≤2 s); the wrapper `data-state` matches the clip at each step.
+      Captures `s3224-lever-teleport-out.jpeg` / `-in.jpeg`.
+  - **Why this leg exists, and which capsule owns it (binding — G-273/G-409):** the override must be
+    applied to the resolver's **non-teleport candidate path only**. Placed before the teleport branch
+    (`fredoAvatarResolver.ts:119`), it would return the LEVER value while `teleporting` is true, so a
+    debug lever would beat a teleport — weakening AC2 even in a DEV build. The owning capsule is
+    **ST-2** ("the 11 documented priority positions + the DEV-only QA drive lever"), which ships
+    `qaAvatarFlowLever.ts` **and** the resolver's one-line read together; its non-goals already state
+    "the lever never bypasses the resolver's ordering (a teleport still wins over it)". This row is
+    that clause's executable proof, and the capsule must also record the placement in the code
+    comment it lands. **If the lever is absent the row is UNVERIFIED (never a PASS); if the lever
+    defeats the teleport the row FAILs and the fix is the placement, never the assertion.**
+  - **Edge:** a teleport during a stream; two teleports in quick succession; the lever cleared
+    mid-teleport (must still land on a resting state, never a stranded one-shot).
+
+## F-AV-34 `[NEW]` (R-2b / R-2d / R-2e) — the 18-value emittable contract, three-way pinned, and an emotion that reaches the pixel
+
+- [ ] F-AV-34 **leg A (the contract, three sources).**
+      (i) **Rust** (`cargo test applications::llm_server::status`; report the count):
+      `FREDO_STATUS_VALUES.len() == 18`; `fredo_status_schema()`'s enum order-equals it;
+      `fredo_status_only_schema()` order-equals it; `STATUS_INSTRUCTION` and
+      `STATUS_ONLY_INSTRUCTION` EACH contain all 18; `DEFAULT_FREDO_STATUS == "happy"`.
+      (ii) **TS** (`fredoReplyStatus.test.ts`): `FREDO_REPLY_STATUSES` order-equals
+      `apps/tauri/src-tauri/src/applications/llm_server/fredo_status_contract.json`'s `values`
+      (read from cwd `apps/ui` — precedent `avatarAssetContract.test.ts:326`); `default == "happy"`.
+      (iii) **Three-way equality:** the fixture `values` == `FREDO_STATUS_VALUES` (a Rust
+      `include_str!` parity test) == `FREDO_REPLY_STATUSES`.
+      (iv) **Non-vacuity:** the TS leg asserts the fixture file **exists**, `values.length === 18`,
+      and every value is a member of the 23 — a missing/blank/empty fixture is a hard FAIL.
+      (v) **`funny` is first-class:** `resolveReplyStatus('funny') === 'funny'`,
+      `resolveReplyStatus('FUNNY') === 'funny'`, and for EVERY member `M`,
+      `resolveReplyStatus(M) === M` (no alias may shadow a member).
+  **Expected:** 18 values in one order across three sources; `talk`/`teleport-out`/`teleport-in`/
+      `error`/`greeting` stay non-emittable; the other 6 aliases (`success`, `reasoning`, `busy`,
+      `focused`, `neutral`, `calm`) unchanged; `DEFAULT_FREDO_STATUS` unchanged.
+  - **Drift detection is the EQUALITY of three independently-read sources plus (iv).** The tester
+    holds no write grant outside `.opencode/`, so a mutation drive is NOT planned and must not be
+    improvised: paste the three read value lists into the receipt.
+  - **Edge:** a value in the JSON absent from Rust (reddens (iii)); an order swap (the equality is
+    ORDERED); `funny` still aliased (reddens (v)); the fixture deleted (reddens (iv)).
+
+- [ ] F-AV-34 **leg B (live — an emotion reaches `data-state` through the model's channel).** C-seat
+      at rest. Inject `{"reply":"…","status":"uwu"}` on the real `llm-token` channel via
+      `tauri_ipc_emit_event` (the `companion/functional.md` **LV2** lever, `:2357-2359`), then
+      `llm-status` `uwu`, then `llm-done`; sample **Q-3** at 50 ms across the whole turn and the
+      `HAPPY_HOLD_MS = 5000` hold. Then ONE real model turn; record which of the 18 it declared.
+  **Expected:** the settle reads `data-state === "uwu"` and `data-avatar-clip === "uwu"` for the
+      hold, then returns to `idle` when the hold ends; the injected status word never appears as
+      reply text; the real turn's settled `data-state` is a member of the 23 (report it — the schema
+      pins what the model MAY emit; AC1 does not require one particular word from one sample).
+      Captures `s3224-settle-uwu.jpeg`.
+  - **Edge:** a status arriving on the last token; `uwu` while streaming (gated to `undefined` —
+    R-2e); an `llm-status` carrying a non-member (F-AV-32 holds).
+
+- [ ] F-AV-34 **leg C `[RETAINED]` (R-2e — the shipped #2918 gate is unchanged).** With an emotion
+      settled, drive (i) a stream, (ii) a teleport, (iii) a pending skill call, (iv) live voice
+      capture; re-read `data-state` at each.
+  **Expected:** the emotion is NOT asserted while any of the four owns the expression
+      (`CompanionEntity.tsx:560-563`); `pnpm --filter @fredo/ui test:run` keeps
+      `CompanionEntity.replyStatus.test.ts` green **unmodified**.
+  - **Edge:** two of the four at once; the gate releasing while the hold is still running (record —
+    the hold is timer-owned, so a shortened emotion is a finding to report, not to patch here).
+
+## F-AV-35 `[NEW]` (lever safety, static-by-artifact) — the DEV lever is absent from a production build
+
+- [ ] F-AV-35 Run `pnpm --filter @fredo/ui build` (report the exit code), then grep every
+      `apps/ui/dist/assets/*.js` for `__FREDO_QA_AVATAR_FLOW__`. Print the resolved glob, the file
+      count scanned and the hit count. **Independent control (G-408):** run the same grep over the
+      same files for a production token that MUST be present (`data-avatar-clip`) and require
+      **non-zero** hits.
+  **Expected:** **zero** hits for `__FREDO_QA_AVATAR_FLOW__` in the built chunks; a **non-zero**
+      control hit count (proving the target path and the grep are live — a control of 0 is a FAILED
+      DRIVE: wrong path, or the build never ran). Unit: `readQaAvatarFlowOverride()` returns
+      `undefined` when the global is unset and when it holds a non-member; the guard is
+      `import.meta.env.DEV` (constant-folded in a build). Source: no product module other than the
+      lever module and the resolver's single read references the global; no component, test id or
+      `data-*` attribute was added for it.
+  **Control (pre-change):** the token and the module do not exist on the pre-change tree → red.
+  - **UX-22 / UX-23 static clauses (same row):** assert **zero** new authored strings naming an
+    emotion (no label, tooltip, settings row, toast or onboarding sentence; `CompanionEntity.tsx:1881`'s
+    shipped `title` names no state), **zero** new focusable nodes and **zero** `[data-state='<emotion>']`
+    CSS rule (the only wrapper state rule is the shipped `happy` one — an emotion rule is a FAIL, not
+    a fix); the lever module imports no React/JSX and emits no `data-*`/`aria-*`/console/tooltip; it is
+    not persisted and not reachable from a URL/query/hash; and no other product module references the
+    global except the resolver's single read.
+  - **G-430/G-431 note:** the scan universe is the BUILT output (`apps/ui/dist/assets/**`); this
+    suite's own prose (which spells the global) is outside it, so the row cannot hit itself.
+  - **Edge:** a token surviving only as a source-map string (the grep covers `*.js` — report whether
+    maps are emitted and say so); the DEV-served app legitimately carries it (that is the point —
+    never scan `src/` for this clause).
+  - **Why not `live`:** driving the built app to prove the lever is gone would use the very surface
+    claimed absent (G-408). This row is a static-by-artifact clause INSIDE the live policy.
 
