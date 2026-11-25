@@ -379,7 +379,11 @@ try {
   $holder.Start()
 } catch {
   if ($holder) { try { $holder.Stop() } catch {} }
-  Refuse ("HOLDER_BIND_FAILED port=$targetPort: " + $_.Exception.Message)
+  # Braced on purpose: an UNBRACED variable immediately followed by a colon
+  # parses as a scope/drive-qualified name and makes the whole file unloadable
+  # (PARSE_ERRORS=1 - the round-1 defect). Every interpolation in this file that
+  # is followed by a colon uses the `${...}` form.
+  Refuse ("HOLDER_BIND_FAILED port=${targetPort}: " + $_.Exception.Message)
 }
 Write-Line "HOLDER_PORT=$targetPort"
 Write-Line "HOLDER_PID=$PID"
