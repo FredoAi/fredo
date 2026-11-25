@@ -42,10 +42,11 @@
 > geometry module + test move to the shared path. The launcher md render must be VISUALLY
 > UNCHANGED.
 
-- [x] S-11: The launcher still renders the md avatar — open the launcher; the avatar SVG
-      (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above
-      the command bar at 132 × 165 layout px, and `tauri_webview_screenshot` succeeds; console
-      clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-11: The launcher still renders the avatar — open the launcher; ONE `[data-avatar-render]`
+      (a painted figure) appears above the command bar at 80 × 100 (the historical 132×165 `md` size
+      is SUPERSEDED by the #2852 note below; #3210 deletes the SVG viewBox/58-rect clause), and
+      `tauri_webview_screenshot` succeeds; console clean of
+      `Error:`/`Uncaught`/`Maximum update depth exceeded`.
   - **PASS (live, spec/2850).** The launcher rendered the shared `FredoAvatar size="md"` SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent-token fill `var(--accent-primary)`/`currentColor`, `aria-hidden`) above the `>` command bar at `offsetWidth`=132/`offsetHeight`=165. `tauri_webview_screenshot` succeeded; console clean (no `Error:`/`Uncaught`/`Maximum update depth exceeded`).
 
 ## #2852 extension — desktop mascot 80×100 + idle animation smoke
@@ -56,7 +57,12 @@
 > companion's idle bob+glow. **OVERRIDE:** S-11's 132×165 md-size expectation is SUPERSEDED —
 > the required render is now 80×100.
 
-- [ ] S-12: The launcher renders the sm mascot with its idle animation — open the launcher; the mascot SVG (`viewBox="0 0 1014 1264"`, crispEdges, 58 rects, accent fill, `aria-hidden`) appears above the command bar at `offsetWidth`=80/`offsetHeight`=100, its wrapper carries a running `fredo-idle-bob` + `fredo-idle-glow` 2.4 s animation, and `tauri_webview_screenshot` succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+- [ ] S-12: The launcher renders the mascot with its idle animation — open the launcher; ONE
+      `[data-avatar-render]` (a painted figure, 80×100) appears above the command bar at
+      `offsetWidth`=80/`offsetHeight`=100 with no `<svg>` inside the avatar root, its wrapper carries
+      a running `fredo-idle-bob` + `fredo-idle-glow` 2.4 s animation, and `tauri_webview_screenshot`
+      succeeds; console clean of `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+      (**#3210:** the shared-SVG/viewBox/58-rect clause is DELETED.)
 
 ## #2868 extension — Settings tile in the grid smoke
 
