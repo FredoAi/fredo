@@ -14,6 +14,8 @@
 //! | [`archive`] | ZIP reading, entry-name safety (zip-slip, reserved paths, non-regular entries) and the three archive budgets |
 //! | [`store`] | the on-disk install root, `manifest.json`/`record.json`/`files/`, SHA-256 pinning, the atomic install transaction, and the registry listing |
 //! | [`commands_install`] | exactly `installed_app_install` and `installed_apps_list` |
+//! | [`consent`] | the host-owned per-application consent store (`installed-apps-consent.json`) |
+//! | [`commands_consent`] | exactly `installed_app_consent_grant` and `installed_app_consent_revoke` |
 //! | [`scheme`] | the `fredoapp` URI-scheme handler: routing, path-escape refusal, verify-at-serve, MIME, the child document's CSP and the served document |
 //! | [`window`] | the window lifecycle: `installed-<id>` labels, the served document URL, the verify-before-open gate, the singleton build/focus and the close |
 //! | [`commands_window`] | exactly `installed_app_open` and `installed_app_close` |
@@ -45,8 +47,10 @@
 
 pub mod archive;
 pub mod authority;
+pub mod commands_consent;
 pub mod commands_install;
 pub mod commands_window;
+pub mod consent;
 pub mod dispatch;
 pub mod manifest;
 pub mod scheme;
@@ -91,6 +95,31 @@ pub const RESERVED_PATH_SEGMENT: &str = "__fredo";
 
 /// The one manifest schema this build understands (`manifestVersion`).
 pub const SUPPORTED_MANIFEST_VERSION: u32 = 1;
+
+/// The one **capability-contract** major this build implements
+/// (`capabilities.version`, Spec #3146).
+///
+/// The capability object is versioned separately from `manifestVersion`: within
+/// a major the contract is **additive only** (no capability id is removed or
+/// re-pointed), so a package can rely on the ids it declares. A major this host
+/// does not implement is refused LOUDLY at install — never silently ignored,
+/// because "the host did not understand my declaration" read as "accepted" is
+/// the exact failure the additive rule exists to prevent.
+pub const CAPABILITY_MANIFEST_VERSION: u32 = 1;
+
+/// The one version of the host-owned consent file
+/// (`<app_data_dir>/installed-apps-consent.json`).
+///
+/// The capability ID vocabulary is NOT re-declared in this module: the closed set
+/// and its high-risk test live ONCE, in [`authority::CapabilityId`]. This module
+/// owns the contract MAJOR and the consent store's constants.
+pub const CONSENT_STORE_VERSION: u32 = 1;
+
+/// The consent file's name. It lives directly under `<app_data_dir>` — OUTSIDE
+/// the integrity-pinned `<app_data_dir>/installed-apps/<id>/` tree, because a
+/// user grant must be writable without ever touching a package's pinned bytes.
+pub const CONSENT_STORE_FILENAME: &str = "installed-apps-consent.json";
+
 
 /// The running Fredo version, used for the `engines.fredo` range check.
 ///
@@ -413,5 +442,22 @@ mod tests {
         let parsed = semver::Version::parse(HOST_FREDO_VERSION)
             .expect("CARGO_PKG_VERSION must be SemVer for the engines check");
         assert!(parsed.major == 0, "unexpected major bump: {parsed}");
+    }
+
+    #[test]
+    fn the_capability_contract_major_is_one() {
+        // The id vocabulary + its high-risk test are pinned ONCE, in
+        // `authority::CapabilityId` (`capability_ids_are_an_ordered_exact_set`).
+        assert_eq!(CAPABILITY_MANIFEST_VERSION, 1);
+    }
+
+    #[test]
+    fn the_consent_store_constants_are_the_plans_values() {
+        assert_eq!(CONSENT_STORE_VERSION, 1);
+        assert_eq!(CONSENT_STORE_FILENAME, "installed-apps-consent.json");
+        // The file is host-owned data, so it must never be mistaken for a
+        // package artifact name.
+        assert_ne!(CONSENT_STORE_FILENAME, PACKAGE_MANIFEST_FILENAME);
+        assert_ne!(CONSENT_STORE_FILENAME, INSTALLED_RECORD_FILENAME);
     }
 }

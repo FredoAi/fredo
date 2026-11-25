@@ -8,6 +8,8 @@
  * | `openInstalledApp` | `installed_app_open` | `appId` | `()` |
  * | `closeInstalledApp` | `installed_app_close` | `appId` | `bool` |
  * | `pushTheme` | `installed_apps_push_theme` | `payload` | `()` |
+ * | `grantCapabilityConsent` | `installed_app_consent_grant` | `appId`, `capability` | `InstalledAppCapabilityStatus` |
+ * | `revokeCapabilityConsent` | `installed_app_consent_revoke` | `appId`, `capability` | `InstalledAppCapabilityStatus` |
  *
  * # Transport
  *
@@ -31,6 +33,7 @@ import { adapterBridge } from '../utils/adapterBridge';
 import {
   isInstalledAppRefusalCode,
   type FredoThemeTokens,
+  type InstalledAppCapabilityStatus,
   type InstalledAppEntry,
   type InstalledAppError,
   type InstalledAppRefusalCode,
@@ -192,11 +195,57 @@ export async function pushTheme(payload: FredoThemeTokens): Promise<void> {
   }
 }
 
-/** The five wrappers, also available as one object for injection in tests. */
+/**
+ * Grant one declared high-risk capability to one application (Spec #3146).
+ *
+ * The command's returned status is the AUTHORITY for that row — the settings
+ * surface must not paint "Allowed" before this resolves (a grant is a claim about
+ * the host's record, so optimistic UI would lie about a security fact), and it
+ * must not re-read the projection afterwards (a reconcile read can paint a false
+ * `io_error` verdict over a successful grant).
+ *
+ * A refusal is a typed [`InstalledAppsCommandError`] carrying one of the frozen
+ * 22 install codes (`manifest_invalid_field` with `field: "capability"` for a
+ * capability the package did not declare, `id_not_installed` for an unknown id).
+ */
+export async function grantCapabilityConsent(
+  appId: string,
+  capability: string,
+): Promise<InstalledAppCapabilityStatus> {
+  try {
+    const status = await adapterBridge.invoke<InstalledAppCapabilityStatus>(
+      'installed_app_consent_grant',
+      { appId, capability },
+    );
+    return requireResult(status, 'record that permission');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/** Revoke one capability for one application. Returns the authoritative status. */
+export async function revokeCapabilityConsent(
+  appId: string,
+  capability: string,
+): Promise<InstalledAppCapabilityStatus> {
+  try {
+    const status = await adapterBridge.invoke<InstalledAppCapabilityStatus>(
+      'installed_app_consent_revoke',
+      { appId, capability },
+    );
+    return requireResult(status, 'revoke that permission');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/** The seven wrappers, also available as one object for injection in tests. */
 export const installedAppsClient = {
   installPackage,
   listInstalledApps,
   openInstalledApp,
   closeInstalledApp,
   pushTheme,
+  grantCapabilityConsent,
+  revokeCapabilityConsent,
 };

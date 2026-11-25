@@ -1251,6 +1251,15 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // webview's own window label — never from the payload — then decides
             // declared capability, consent and data ownership on EVERY call.
             applications::installed_apps::dispatch::installed_app_invoke,
+            // Spec #3146 — the per-application consent commands
+            // (`applications::installed_apps::commands_consent`): the settings
+            // pane's Allow/Revoke controls. Built-in tier only — the installed
+            // capability grants exactly one command, so an installed document
+            // cannot consent for itself (the ACL refuses before this code runs).
+            // Both return the application's full capability status, which is the
+            // authority the surface renders instead of an optimistic guess.
+            applications::installed_apps::commands_consent::installed_app_consent_grant,
+            applications::installed_apps::commands_consent::installed_app_consent_revoke,
             // Spec #3192 ST-1 — the resident shell (`infrastructure::app_lifecycle`):
             // `open_main_window` focuses the `main` window or rebuilds it when it was
             // destroyed (the SAME `ensure_main_window` the tray Open item and the

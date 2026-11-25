@@ -339,15 +339,33 @@ impl AuthorityGrants {
 ///   `{ "version": 1, "grants": { "<id>": ["<capability id>", …] } }`) for
 ///   [`AuthorityGrants::consented`].
 ///
-/// Until those read paths land this returns the EMPTY set, which is the
-/// fail-closed direction and the honest state of the tree: a package whose
-/// `capabilities` key cannot be validated yet is refused at install
-/// (`manifest_unknown_field`), and an application whose declarations cannot be
-/// read is refused `action_not_declared` rather than granted reach it cannot
-/// prove. It must be **replaced in place** — never duplicated beside a second
-/// reader, and never cached across calls (R-3.5 / NFR complete mediation).
-pub fn read_authority_grants(_app_data_dir: &Path, _app_id: &str) -> AuthorityGrants {
-    AuthorityGrants::default()
+/// Both are re-read HERE on every call (R-3.5 / NFR complete mediation): nothing
+/// this function returns survives a window open, a subscribe or a previous call.
+///
+/// # Fail-closed
+///
+/// A package with no install directory, no readable canonical manifest or no
+/// `capabilities` key declares nothing. Consent ids are filtered through
+/// [`CapabilityId::parse`] and [`CapabilityId::is_high_risk`], so a stale or
+/// hand-edited consent file can never widen a declaration — and a grant for an
+/// id this build cannot name grants nothing.
+pub fn read_authority_grants(app_data_dir: &Path, app_id: &str) -> AuthorityGrants {
+    let app_dir = super::store::app_dir(&super::store::install_root(app_data_dir), app_id);
+    let Ok(manifest) = super::store::read_manifest_file(&app_dir) else {
+        return AuthorityGrants::default();
+    };
+    let Some(capabilities) = manifest.capabilities.as_ref() else {
+        return AuthorityGrants::default();
+    };
+
+    AuthorityGrants {
+        declared: capabilities.declared_ids(),
+        consented: super::consent::grants_for(app_data_dir, app_id)
+            .iter()
+            .filter_map(|id| CapabilityId::parse(id))
+            .filter(|id| id.is_high_risk())
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -522,7 +540,66 @@ mod tests {
         assert_eq!(
             read_authority_grants(Path::new("unused"), "qa3146-app-a"),
             AuthorityGrants::default(),
-            "the authority read is fail-closed while the declaration surfaces are unreadable"
+            "an unreadable install root declares and consents to nothing"
         );
+    }
+
+    /// The handoff seam reads BOTH surfaces per call: the package's declaration
+    /// and the host-owned consent record for the SAME id.
+    #[test]
+    fn the_authority_read_joins_the_declaration_and_this_apps_consent() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let root = super::super::store::install_root(data.path());
+        for id in ["qa3146-app-a", "qa3146-app-b"] {
+            let dir = super::super::store::app_dir(&root, id);
+            std::fs::create_dir_all(&dir).expect("app dir");
+            let manifest = format!(
+                r#"{{
+  "manifestVersion": 1,
+  "id": "{id}",
+  "displayName": "QA3146 {id}",
+  "version": "1.0.0",
+  "engines": {{ "fredo": ">=0.0.0" }},
+  "entry": {{ "document": "index.html", "module": "main.js" }},
+  "capabilities": {{
+    "version": 1,
+    "data": {{ "tables": [] }},
+    "highRisk": ["high-risk.database-query", "high-risk.database-reset"]
+  }}
+}}"#
+            );
+            std::fs::write(
+                dir.join(super::super::INSTALLED_MANIFEST_FILENAME),
+                manifest,
+            )
+            .expect("write manifest");
+        }
+
+        // The user allows ONE capability, for A only.
+        super::super::consent::grant(data.path(), "qa3146-app-a", "high-risk.database-query")
+            .expect("grant");
+
+        let a = read_authority_grants(data.path(), "qa3146-app-a");
+        assert_eq!(
+            a.declared,
+            [
+                CapabilityId::DataTables,
+                CapabilityId::HighRiskDatabaseQuery,
+                CapabilityId::HighRiskDatabaseReset,
+            ],
+            "the declaration is read from the package's canonical manifest"
+        );
+        assert_eq!(a.consented, [CapabilityId::HighRiskDatabaseQuery]);
+        assert!(a.has_consent(CapabilityId::HighRiskDatabaseQuery));
+        assert!(!a.has_consent(CapabilityId::HighRiskDatabaseReset));
+
+        // B declares the same capabilities and is NOT consented (R-4.2).
+        let b = read_authority_grants(data.path(), "qa3146-app-b");
+        assert_eq!(b.declared, a.declared);
+        assert!(b.consented.is_empty(), "a grant to A never enables B");
+
+        // A package that declares nothing reaches nothing.
+        let none = read_authority_grants(data.path(), "qa3146-never-installed");
+        assert_eq!(none, AuthorityGrants::default());
     }
 }

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::Manager;
 
+use super::consent;
 use super::store::{self, InstalledAppEntry};
 use super::{InstalledAppError, InstalledAppRefusalCode, InstalledAppResult};
 
@@ -40,7 +41,10 @@ const PACKAGE_DIALOG_EXTENSIONS: [&str; 1] = ["zip"];
 /// installed apps follow `FREDO_DATA_DIR` exactly like every other app-data
 /// consumer. A failure to resolve the OS dir is `io_error` — the app cannot
 /// work without it.
-fn app_data_dir(app: &tauri::AppHandle) -> InstalledAppResult<PathBuf> {
+///
+/// `pub(super)` so the consent commands resolve the SAME directory (the consent
+/// file is a sibling of the install root) rather than re-deriving it.
+pub(super) fn app_data_dir(app: &tauri::AppHandle) -> InstalledAppResult<PathBuf> {
     let os_dir = app.path().app_data_dir().map_err(|error| {
         InstalledAppError::new(
             InstalledAppRefusalCode::IoError,
@@ -130,19 +134,34 @@ pub async fn installed_app_install(
 ///
 /// The ONLY reader of the install root. Deliberately NOT called at startup
 /// (R-5.5) — the settings pane asks when it mounts.
+///
+/// The projection's `capabilities.consented` is filled from the host-owned consent
+/// record (Spec #3146) — one read of `<app_data_dir>/installed-apps-consent.json`
+/// for the whole listing, never one per row — and a grant is applied to the ONE
+/// application it names.
 #[tauri::command]
 pub async fn installed_apps_list(app: tauri::AppHandle) -> InstalledAppResult<Vec<InstalledAppEntry>> {
     let data_dir = app_data_dir(&app)?;
     let root = store::install_root(&data_dir);
 
-    tauri::async_runtime::spawn_blocking(move || store::list_installed(&root))
-        .await
-        .map_err(|error| {
-            InstalledAppError::new(
-                InstalledAppRefusalCode::IoError,
-                format!("the listing task could not be run: {error}"),
-            )
-        })?
+    tauri::async_runtime::spawn_blocking(move || -> InstalledAppResult<Vec<InstalledAppEntry>> {
+        let entries = store::list_installed(&root)?;
+        let document = consent::read_document(&data_dir);
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                let granted = document.grants.get(&entry.id).cloned().unwrap_or_default();
+                entry.with_consented(&granted)
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("the listing task could not be run: {error}"),
+        )
+    })?
 }
 
 #[cfg(test)]

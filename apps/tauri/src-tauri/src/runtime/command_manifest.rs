@@ -189,6 +189,12 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // caller from its own webview's window label and decides declared reach,
     // consent and data ownership per call.
     "installed_app_invoke",
+    // Spec #3146 — the per-application consent commands. Built-in windows only:
+    // the settings pane's Allow/Revoke controls call them, and the installed tier's
+    // one capability (`installed-app-commands.json`) grants neither, so an
+    // installed document can never consent for itself.
+    "installed_app_consent_grant",
+    "installed_app_consent_revoke",
 ];
 
 #[cfg(test)]

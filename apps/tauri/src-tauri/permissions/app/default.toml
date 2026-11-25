@@ -148,6 +148,14 @@ permissions = [
   # installed tier reaches it through `capabilities/installed-app-commands.json`
   # (windows `installed-*`), never through this set's capability.
   "allow-installed-app-invoke",
+  # Spec #3146 — the per-application consent commands, called by the settings
+  # pane's Allow/Revoke controls (a BUILT-IN window). Like the install pipeline's
+  # commands they must be granted here because every registered command needs an
+  # allow-<command> entry in this set; the `installed-<id>` window does NOT match
+  # this capability, and its own one grants only `allow-installed-app-invoke`, so
+  # an installed document can never consent for itself.
+  "allow-installed-app-consent-grant",
+  "allow-installed-app-consent-revoke",
   # Spec #3192 ST-1 — the resident shell. Granted to the built-in window class
   # only (`open_main_window` is also the tray/second-launch seam; `quit_app` is
   # the IPC seam and is never rendered in any UI).
