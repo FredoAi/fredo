@@ -18,8 +18,13 @@ beyond the script.
   several minutes in `Failed`, and does it stop cleanly with no leaked interval after `Down`?
 - [ ] **E-3:** With TWO webviews open on the same app, do both render the same banner state, and does
   confirming reset in one clear it in the other within one poll interval (backend-global snapshot)?
-- [ ] **E-4:** Does a reset invoked while the supervisor is `attached` (headless daemon owns the data
-  dir) return `ok:false` with a clear `-reset-error`, and leave the state unchanged?
+- [ ] **E-4 (retargeted by #3194):** Does a reset invoked while a SECOND Fredo instance holds the
+  exclusive data-dir lock (so this instance is `state:"failed"`) return `ok:false` with a clear
+  `-reset-error`, and leave the state unchanged? (The old form named a supervisor in the `attached`
+  state; that state and the whole attach path were removed by #3194 —
+  `.opencode/tests/resident-ingest/functional.md` F-3 drives the surviving contention case. The
+  unconditional-allow consequence is asserted there too: `pg_database_reset` no longer hits a
+  `refuse_when_attached` guard because the guard was deleted.)
 - [ ] **E-5:** If the forced/real auth mismatch is present at boot, is the fail-closed engine's
   `engine not ready` family the ONLY flood, or do other unrelated errors also repeat unthrottled?
 - [ ] **E-6:** Does a DISTINCT storage error (not the engine-not-ready family) still emit at full rate
