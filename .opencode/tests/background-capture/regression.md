@@ -1,7 +1,8 @@
 # background-capture — Regression
 
 The "must not change" baseline for issue **#3193**, plus links to the prior suites whose surface
-this feature edits.
+this feature edits. Extended by **#3195** (RT-13: AC2 stays a regression invariant; RT-14: the
+capture line and the sign-in line stay separate statements).
 
 > **Verification policy: mixed.** RT-1/RT-5/RT-9/RT-10 are `static` (source + committed pins);
 > RT-3/RT-4/RT-6/RT-8 have live legs. Every live leg states its tree condition (served env at the
@@ -94,8 +95,30 @@ this feature edits.
 
 - [ ] **RT-12 (theme.)** The pane uses semantic tokens only: no hex/rgba literal in
   `apps/ui/src/applications/ingest/**`; renders in both light and dark presets; the disabled switch
-  is legible in both. Links: `.opencode/tests/theme-contract/`,
-  `.opencode/tests/contrast-gate/`.
+  is legible in both. **#3195 adds:** the three capture-state colours come from tokens
+  (`status.success` / `status.warning` / `status.info` + `fg.muted`) and `tint()` — an alpha-append
+  on a `var()` reference is invalid CSS and is a FAIL (see `functional.md` F-12e). Links:
+  `.opencode/tests/theme-contract/`, `.opencode/tests/contrast-gate/`.
+
+- [ ] **RT-13 (#3195 — AC2 is a REGRESSION INVARIANT: the pane reads the REAL registry on mount).**
+  *Shipped by #3193; #3195 must not regress it while the status line moves off the login-entry
+  boolean.* Drive `functional.md` **F-2a → F-2b → F-2c → F-2d**.
+  **Expected:** the toggle writes/removes the exact `"<exe>" --background` value; the OUT-OF-BAND
+  registry mutation performed while the pane is unmounted is what the reopened pane renders
+  (`switchChecked` follows the registry, never a cached/optimistic value); the host is restored
+  (`RESTORED_MATCH=True`).
+  **FAIL:** a pane that shows the pre-unmount value after the registry changed (a cached UI value);
+  a disable that deletes a value the product does not own; a host left mutated.
+
+- [ ] **RT-14 (#3195 — the capture line and the sign-in line are SEPARATE statements, and the old
+  capture vocabulary stays dead).** Drive `functional.md` **F-9c** (cross-state absence), **F-10a /
+  F-10b** (running vs not running) and **F-12c / F-12d** (retired id + copy absent from
+  `apps/ui/src`).
+  **Expected:** the capture line reflects `stream_health` in every state; the sign-in state is
+  stated ONLY by the switch + `timing`; `settings-ingest-autostart-status` exists only as an absence
+  pin; `Background capture: On|Off|Unavailable on this platform` has zero hits.
+  **FAIL:** the two statements coupled again (the retired line re-introduced, or the capture line
+  derived from the login entry); a rendered retired string.
 
 ## Prior suites this feature touches
 
@@ -109,7 +132,9 @@ this feature edits.
 
 ## Suite-level pass/fail
 
-PASS = RT-1…RT-12 hold. FAIL = any CLI surface change beyond the sole-argument `--background`
+PASS = RT-1…RT-14 hold. FAIL = any CLI surface change beyond the sole-argument `--background`
 branch; a foreground cold launch that does not show `main`; a second postmaster/`fredo.exe` around
 the probe; an RTDB/classifier/storage diff; a new Tauri command or ACL drift; an `AGENTS.md` /
-`opencode.json` edit; a registry read that mutates the value.
+`opencode.json` edit; a registry read that mutates the value; **a pane that renders a cached rather
+than the registry's sign-in state (RT-13)**; **a re-introduced `Background capture: On|Off` line or
+a capture line derived from the login entry (RT-14)**.
