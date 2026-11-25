@@ -294,7 +294,15 @@
 
 ## F-35 (AC-1) — Comparison gate PERFORMED; every deviation listed
 
-- [ ] F-35: TWO legs. (1) Source/structural: compare the implementation's geometry table (`fredoAvatarGeometry.ts` or equivalent) against the `fredo-avatar.html` rect calls — each wireframe rect transcribed 1:1 into the 1014×1264 viewBox space, mirrored pairs intact, no "fixes". (2) Live/visual: render the avatar on the running `spec/2837` launcher; capture a screenshot + a zoomed capture; Read the three reference assets by EXPLICIT absolute path; compare the rendered avatar against the `fredo-avatar.html` geometry (PNGs as visual context). In the AC-1 evidence list EVERY remaining geometry/proportion deviation (forehead band; head side steps/diagonals; main head walls; lower face; eye size/placement; bow-tie cluster; body fragmentation/arm separation; leg length/width; feet; proportions) AND any extra/absent feature — the #2827 row-13 mouth bar must be GONE (the wireframe has no mouth). The deviation list is about GEOMETRY/PROPORTION, NOT texture (html `.pixel` gradient/`::after` seam/`::before` halo + PNG glow are visual context). A code-inspection-only comparison or a skipped gate ⇒ FAIL.
+- [ ] F-35: **INVERTED (#3210) — the geometry table is DELETED, so this row now proves the ICON
+      PROVENANCE instead.** (1) Read `apps/tauri/src-tauri/icons/fredo-icon-large.svg` and assert its
+      own invariants (58 `<rect>`, the literal bbox `87,67,840,1167`, a single `<path d>`, one uniform
+      `scale(S)`) + its SHA-256 against the recorded pre-change digest (byte-identical), and run the
+      re-pointed `iconSourceParity.test.ts`. (2) Live/visual: render the launcher character on the
+      running spec branch and capture `launcher-character.jpeg`; read `[data-avatar-render]` +
+      `data-avatar-body-color` beside it. A code-inspection-only comparison or a skipped gate ⇒ FAIL.
+      The historical geometry-transcription comparison is retired with the module (a rect-table
+      comparison has no subject); the icon remains the frozen provenance record.
   - **Edge:** capture from the running `spec/2837` build (never a stale `main` render); comparison is image/geometry-read (mandatory — #2827 passed code review and was still wrong); screenshots go under `.opencode/tmp/2837/e2e/` then `upload-evidence --base spec/2837`; PNG-vs-wireframe conflict → the WIREFRAME governs and the conflict is flagged to the SI (G-109).
 
 ## F-36 (AC-2) — Head/face geometry
@@ -396,29 +404,31 @@
 > `.opencode/wireframes/fredo-avatar.png`.
 > Map 1:1 to `.opencode/tmp/2852/triage.md` `## QA Expert` (REQ-1..REQ-4 / F-44..F-47).
 
-## F-44 (REQ-1/AC1) — Desktop mascot renders 80 × 100 (same sm as the companion)
+## F-44 (REQ-1/AC1) — Desktop mascot renders 80 × 100 in the reserved seat
 
-- [ ] F-44: Open the launcher's resting desktop surface on the running `spec/<N>` build (no window covering). Locate the mascot SVG above `input[role="searchbox"]` (LauncherShell.tsx:501-503). Read `offsetWidth`/`offsetHeight` (G-040 — NOT the transform-scaled `getBoundingClientRect`, which the idle bob would perturb), the SVG `width`/`height`/`viewBox` attributes, and the source constant `AVATAR_SM`.
-  **Expected:** `offsetWidth = 80`, `offsetHeight = 100` (`Math.round(80 × 1264/1014) = 100`); SVG `width="80" height="100" viewBox="0 0 1014 1264"`; rendered aspect 1014:1264 (0.8022) — undistorted, no letterbox/stretch; the value equals the companion's `AVATAR_SM`; NO `size="md"` / 132×165 remains anywhere in the launcher.
-  - **Edge:** narrow viewport (700×900) — still 80×100, fully visible, not clipped/cropped/scaled; fractional OS scale/zoom; light preset AND the dark base; height derives from the ONE shared `FREDO_AVATAR_SPACE` aspect (never a separate height literal); the SVG still renders exactly 58 crisp `crispEdges` rects. Reference #2850 F-4 / companion F-4.
+- [ ] F-44: Open the launcher's resting desktop surface on the running `spec/<N>` build (no window covering). Locate the avatar above `input[role="searchbox"]` (`LauncherShell.tsx:1765-1773`) and read the avatar root's `data-avatar-render`/`data-avatar-clip`, `offsetWidth`/`offsetHeight` (G-040 — NOT the transform-scaled `getBoundingClientRect`, which the idle bob would perturb), and the source constants `AVATAR_SM`/`AVATAR_SM_CSS`.
+  **Expected:** ONE `[data-avatar-render]` with `offsetWidth = 80`, `offsetHeight = 100`; a painted figure (`fredo-avatar/functional.md` F-AV-5's ink metric); NO `size="md"` / 132×165 in the launcher.
+  **#3210 re-point:** the SVG `width`/`height`/`viewBox` attributes and the 58-rect clause are DELETED; the footprint + render hook are the observables.
+  - **Edge:** narrow viewport (700×900) — still 80×100, fully visible, not clipped/cropped/scaled; fractional OS scale/zoom; light preset AND the dark base; the height still derives from the ONE shared aspect constant (never a separate height literal). Reference #2850 F-4 / companion F-4.
 
 ## F-45 (REQ-2/AC2) — Resting mascot plays the companion's EXACT idle bob + glow, on the wrapper
 
-- [ ] F-45: On the resting desktop (no window covering), read `getComputedStyle` of the mascot's CONSUMER wrapper AND of the SVG element; rAF-sample the wrapper `transform` and `filter` through ≥1 full 2.4 s cycle (set `.fredo-companion-avatar`/launcher equivalent `animationPlayState` unchanged; read the raw animated values).
-  **Expected:** wrapper `animation-name` includes BOTH `fredo-idle-bob` AND `fredo-idle-glow` (identical names to `companion.css:14-29` — PO 2026-09-10: no distinct/calmer variant), `animation-duration: 2.4s`, `animation-timing-function: ease-in-out`, `animation-iteration-count: infinite`; sampled `matrix().f`/`translateY` varies 0 → −2px → 0 and `filter` varies `drop-shadow(0 0 0 …)` → `drop-shadow(0 0 6px …)` tinted from `var(--accent-primary)` (22% `color-mix`). The SVG element's OWN `animation-name = none` (whole-element motion is on the wrapper, NEVER the frozen geometry). The command bar, grid, hints row and clock rects are unchanged; no layout shift; no clip/overflow/scrollbar.
-  - **Edge:** resting vs engaged (grid open) — the loop must not break either way; rapid launcher open/close restarts the loop cleanly (no stuck/ghost frame/flicker); CSS-only (no JS state per frame → no re-render loop / no `Maximum update depth exceeded`); re-theme mid-animation keeps the glow on the live `var(--accent-primary)` (no stale color). Reference companion F-3 idle + #2850 R-1.
+- [ ] F-45: On the resting desktop (no window covering), read `getComputedStyle` of the mascot's CONSUMER wrapper AND of the avatar root; rAF-sample the wrapper `transform` and `filter` through ≥1 full 2.4 s cycle.
+  **Expected:** wrapper `animation-name` includes BOTH `fredo-idle-bob` AND `fredo-idle-glow` (identical names to `companion.css:14-29` — PO 2026-09-10: no distinct/calmer variant), `animation-duration: 2.4s`, `timing-function: ease-in-out`, `iteration-count: infinite`; sampled `matrix().f`/`translateY` varies 0 → −2px → 0 and `filter` varies `drop-shadow(0 0 0 …)` → `drop-shadow(0 0 6px …)` tinted from `var(--accent-primary)` (22% `color-mix`). The avatar ROOT's own `animation-name = none` (whole-element motion is on the wrapper, NEVER inside the avatar; the scene animates only inside the canvas, #2850). The command bar, grid, hints row and clock rects are unchanged; no layout shift; no clip/overflow/scrollbar.
+  - **Edge:** resting vs engaged (grid open) — the loop must not break either way; rapid launcher open/close restarts the loop cleanly (no stuck/ghost frame/flicker); CSS-only (no JS state per frame → no re-render loop); re-theme mid-animation keeps the glow on the live `var(--accent-primary)`. Reference companion F-3 idle + #2850 R-1.
 
 ## F-46 (REQ-3/AC3) — prefers-reduced-motion: reduce suppresses the idle animation; size persists
 
-- [ ] F-46: Force `prefers-reduced-motion: reduce` (OS "Show animations in Windows" off / driver media emulation) and re-inspect the resting mascot (computed style + `offsetWidth`/`offsetHeight` + rect count). If the driver cannot emulate reduced motion, record the tooling limitation and verify the `@media (prefers-reduced-motion: reduce)` suppression rule in the stylesheet PLUS re-measure the live size.
-  **Expected:** under reduce, the wrapper `animation-name = none` (bob + glow suppressed → static mascot) while `offsetWidth/offsetHeight` STILL = 80×100 and all 58 rects render; the figure is still VISIBLE (not hidden/faded by the suppression); no layout shift; console clean.
-  - **Edge:** toggling reduce while the mascot is mounted produces no geometry jump (size invariant across motion modes); reduced-motion OFF → animation returns; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; reduced-motion live emulation is a documented tooling limitation today (mirrors companion F-19) — do NOT convert a static CSS check into a live PASS without recording the limitation.
+- [ ] F-46: Force `prefers-reduced-motion: reduce` (jsdom stub — the MCP driver cannot emulate it, G-053) and re-inspect the resting mascot (computed style + `offsetWidth`/`offsetHeight`); in jsdom assert `data-avatar-motion="still"` and one rendered frame. If only the stylesheet can be read live, record the tooling limitation and verify the `@media (prefers-reduced-motion: reduce)` suppression rule PLUS re-measure the live size.
+  **Expected:** under reduce, the wrapper `animation-name = none` (bob + glow suppressed → static mascot) while `offsetWidth/offsetHeight` STILL = 80×100 and the resolved clip's still frame is painted (the figure is still VISIBLE, not hidden/faded); no layout shift; console clean.
+  - **Edge:** toggling reduce while the mascot is mounted produces no geometry jump; reduced-motion OFF → animation returns; no `Error:`/`Uncaught`/`Maximum update depth exceeded`; do NOT convert a static CSS check into a live PASS without recording the limitation (`fredo-avatar/functional.md` F-AV-4 is the render-level row).
 
-## F-47 (REQ-4/AC4) — Frozen 58-rect geometry byte-identical; companion unchanged at 80×100
+## F-47 (REQ-4/AC4) — the reserved footprint + clip identity; companion unchanged at 80×100 — **INVERTED #3210**
 
-- [ ] F-47: Read the launcher SVG's full `<rect>` set (x/y/width/height, in document order) at several animation frames, in a light preset and the dark base, and under reduced motion; diff it against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)` AND against the companion sm avatar's rect set. Then measure `.fredo-companion-avatar` (`offsetWidth`/`offsetHeight`) and read its idle `animation-name`.
-  **Expected:** the launcher SVG carries exactly the 58 base rects, byte-identical to the shared source and to the companion `sm` set, invariant across frames/themes/reduced-motion; `#fredo-expression` is ABSENT (idle); no `<rect>` carries an animation/transform (the frozen geometry is never animated). The companion `.fredo-companion-avatar` remains `offsetWidth = 80` / `offsetHeight = 100`, its 58-rect set and its `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle UNCHANGED by this spec.
-  - **Edge:** compare both surfaces in the SAME theme (rect sets identical); the geometry suite `fredoAvatarGeometry.test.ts` passes UNMODIFIED in `test:run`; launcher open/close cycles do not mutate the rect set; the companion is byte/visually identical to its pre-#2852 render. Reference #2850 R-26/R-28 + companion R-10.
+- [ ] F-47: Read the launcher avatar root's `offsetWidth`/`offsetHeight`, `data-avatar-render` and `data-avatar-clip` at several animation frames, in a light preset and the dark base, and under reduced motion; compare with the companion `sm` avatar. Then measure `.fredo-companion-avatar` (`offsetWidth`/`offsetHeight`) and read its idle `animation-name`.
+  **Expected:** the launcher seat renders ONE `[data-avatar-render]` at 80×100 with the resolved clip, invariant across frames/themes/reduced-motion; no `<svg>` inside the avatar root; the footprint never changes. The companion `.fredo-companion-avatar` remains `offsetWidth = 80` / `offsetHeight = 100`, its `fredo-idle-bob`/`fredo-idle-glow` 2.4 s idle UNCHANGED.
+  **INVERTED (#3210):** the previous expectation — "exactly the 58 base rects byte-identical … the geometry suite passes UNMODIFIED" — is RETIRED with the SVG/geometry table (a rect assertion would be a false red). Replacement rows: `fredo-avatar/functional.md` F-AV-3 / F-AV-11 / F-AV-12 + `regression.md` R-AV-1 (the icon-provenance guard).
+  - **Edge:** compare both surfaces in the SAME theme (same clip when the same state resolves); launcher open/close cycles do not change the footprint; the companion is visually identical to its pre-cut-over render apart from the character itself. Reference #2850 R-26/R-28 + companion R-10.
 
 ---
 
@@ -1813,6 +1823,12 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 
 ## #2917 extension — solid Fredo on the launcher seat
 
+> **#3210 RETIREMENT (read first).** The SVG fill layer, `#fredo-interior` and the 58-rect mask are
+> **DELETED** with the SVG render path. **F-108..F-110 are RETIRED as executable rows — do not run
+> them.** The surviving properties are carried by `fredo-avatar/functional.md` F-AV-5 (ink present),
+> F-AV-6/F-AV-7 (live accent re-tint) and F-AV-3 (footprint). F-111 (CLS/console) and F-112 (live
+> receipt) stay in force.
+
 > Issue #2917 fills the avatar's hollow interior additively and audits/extends the status vocabulary. The
 > launcher hosts only the RESTING figure (decorative `.fredo-avatar-idle` at the centre seat, or the
 > interactive companion seat when ON) — the expression rows are proxied on the companion surface
@@ -1880,6 +1896,13 @@ The FIXED composition suppresses the hint chip in model mode (REQ-3), so the mod
 ---
 
 ## #2922 extension — solid Fredo on the launcher seat, whole body (revises #2917)
+
+> **#3210 RETIREMENT (read first).** F-113/F-114/F-115 measure the SVG fill (`#fredo-interior`, the
+> rect mask, `seeThrough`/`leak`) that the 3D cut-over **DELETES**. **They are RETIRED as executable
+> rows — do not run them.** The opaque-body property is true by construction; the launcher's surviving
+> rows are F-111 (CLS/console) + `fredo-avatar/functional.md` F-AV-3/F-AV-6/F-AV-11. The reachable
+> state set for the seat (`idle`/`thinking`/`happy`/`playful`) is still binding and is quoted by
+> F-AV-12.
 
 > Issue #2922 revises #2917: the interior fill covered the head + mouth void only; the BODY
 > (viewBox `y ≈ 812–1234`) is still see-through. This file owns the LAUNCHER surface — the decorative
