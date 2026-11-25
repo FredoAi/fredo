@@ -29,8 +29,10 @@ note). The Tester adds probes below beyond the script.
   loopback-only bind hold and does the port never collide with 4317/4318/9223?
 - [ ] **E-7:** Scan the PG log + `telemetry_logs` for the loopback password / connection string
   after a saturated session — is anything captured in cleartext?
-- [ ] **E-8:** With the headless daemon owning the cluster (headless-ingest surface), can a second
-  GUI client + `psql` both connect within the same budget, and is the same `S` in effect?
+- [ ] **E-8 (retargeted by #3194):** With the resident app owning the cluster, can a second GUI
+  client + a bounded `psql` both connect within the same budget, and is the same `S` in effect?
+  (`headless-ingest`'s daemon+GUI pair no longer exists — a second Fredo *instance* fails on the
+  lock and never serves; `.opencode/tests/resident-ingest/functional.md` F-3.)
 - [ ] **E-9:** Re-run the saturation immediately after an app restart — is the headroom identical
   (no per-boot drift), and does a stale `postmaster.pid`/orphan change admission?
 - [ ] **E-10:** Set the server limit to a large value in an override data dir — does the app still
