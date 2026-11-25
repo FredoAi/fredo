@@ -17,9 +17,14 @@
  * them would leave the unavailable and stale-entry states unrenderable even
  * after the backend sends them.
  *
- * The daemon-status read (`pg_supervisor_status`) was retired with the headless
- * status row — the resident instance IS this application now, so a liveness row
- * on this surface is redundant (`PostgresSettings` owns supervisor status).
+ * Capture LIVENESS is NOT this store's concern and is never derived here: this
+ * module owns the LOGIN ENTRY only. Whether the process is receiving agent
+ * activity right now is read from the existing `stream_health` command by the
+ * pane-local fetcher (`captureStatus.ts`) — Spec #3195. A liveness row derived
+ * from this view's boolean would render the login entry in capture vocabulary,
+ * which is the defect #3195 removes. (`PostgresSettings` owns the embedded
+ * Postgres SUPERVISOR status; it answers a different question and is never read
+ * from this surface.)
  */
 
 import { adapterBridge } from '../../shared/utils/adapterBridge';
