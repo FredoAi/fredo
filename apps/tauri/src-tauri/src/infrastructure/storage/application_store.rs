@@ -228,12 +228,15 @@ impl DynamicTableStore {
         Ok(DynamicTableStore { engine })
     }
 
-    /// Build the full table name: `feature_{applicationId}_{tableName}`.
+    /// Build the canonical (physical) table name: `feature_{applicationId}_{tableName}`.
     ///
     /// `feature_` is the frozen NO-MIGRATE on-disk prefix
     /// ([`LEGACY_TABLE_PREFIX`]); the output is byte-identical to the shipped
-    /// generator.
-    fn full_table_name(application_id: &str, table_name: &str) -> String {
+    /// generator. Spec #3146 made this the crate-visible ONE composer: the
+    /// installed tier's ownership resolver (`applications::installed_apps::scope`)
+    /// calls it instead of re-deriving the name, because a second implementation
+    /// would drift and reopen the composition bypass AC-3 closes.
+    pub(crate) fn canonical_table_name(application_id: &str, table_name: &str) -> String {
         let sanitized = application_id.replace('-', "_");
         format!("{LEGACY_TABLE_PREFIX}_{}_{}", sanitized, table_name)
     }
@@ -243,13 +246,13 @@ impl DynamicTableStore {
     ///
     /// Spec #3075 (REQ-3.1): both components are charset-gated first, so a
     /// dynamic identifier can never carry SQL metacharacters — that makes the
-    /// prefix check below meaningful rather than a tautology. `full_table_name`
+    /// prefix check below meaningful rather than a tautology. `canonical_table_name`
     /// output is unchanged (byte-identical to the shipped generator).
     pub(crate) fn validate_namespace(application_id: &str, table_name: &str) -> Result<String> {
         Self::validate_identifier_charset("applicationId", application_id)?;
         Self::validate_identifier_charset("tableName", table_name)?;
         let sanitized = application_id.replace('-', "_");
-        let full = Self::full_table_name(application_id, table_name);
+        let full = Self::canonical_table_name(application_id, table_name);
         let expected_prefix = format!("{LEGACY_TABLE_PREFIX}_{}_", sanitized);
         if !full.starts_with(&expected_prefix) {
             bail!(
@@ -1101,14 +1104,14 @@ mod tests {
 
         // Dash sanitization + prefix, exactly as shipped.
         assert_eq!(
-            DynamicTableStore::full_table_name("mission-monitor", "sessions"),
+            DynamicTableStore::canonical_table_name("mission-monitor", "sessions"),
             "feature_mission_monitor_sessions"
         );
 
         // The terminal sessions table (namespace `terminal`, table `sessions`)
         // resolves to the frozen literal.
         assert_eq!(
-            DynamicTableStore::full_table_name("terminal", "sessions"),
+            DynamicTableStore::canonical_table_name("terminal", "sessions"),
             LEGACY_TERMINAL_SESSIONS_TABLE
         );
         assert_eq!(LEGACY_TERMINAL_SESSIONS_TABLE, "feature_terminal_sessions");
@@ -1385,7 +1388,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                DynamicTableStore::full_table_name(application, table),
+                DynamicTableStore::canonical_table_name(application, table),
                 expected,
                 "the generator output is the frozen on-disk contract"
             );

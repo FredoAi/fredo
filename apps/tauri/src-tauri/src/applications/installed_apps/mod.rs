@@ -19,6 +19,9 @@
 //! | [`commands_window`] | exactly `installed_app_open` and `installed_app_close` |
 //! | [`theme_state`] | the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror |
 //! | [`theme_push`] | exactly `installed_apps_push_theme`: validate, write the mirror, and `Webview::eval` the theme into every live `installed-*` window |
+//! | [`authority`] | the installed tier's authority surface (Spec #3146): caller tier + identity from the window label, the closed capability vocabulary and the six-code refusal shape |
+//! | [`dispatch`] | exactly `installed_app_invoke` (Spec #3146): the ONE command an installed window can reach, the ordered action→capability table, and the per-call gate |
+//! | [`scope`] | the pure data-scope chokepoint (Spec #3146): ownership + declaration + canonical-name unambiguity |
 //!
 //! # Why the refusal codes live here
 //!
@@ -41,10 +44,13 @@
 //! [`theme_state`] is empty until the host's theme effect pushes a value.
 
 pub mod archive;
+pub mod authority;
 pub mod commands_install;
 pub mod commands_window;
+pub mod dispatch;
 pub mod manifest;
 pub mod scheme;
+pub mod scope;
 pub mod store;
 pub mod theme_push;
 pub mod theme_state;

@@ -1243,6 +1243,14 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // without reloading (R-1.5). No database, no file, and nothing at
             // startup — the host's theme effect is the only caller.
             applications::installed_apps::theme_push::installed_apps_push_theme,
+            // Spec #3146 — the installed tier's ONE command
+            // (`applications::installed_apps::dispatch`): `installed_app_invoke`
+            // is the ONLY command an `installed-<id>` window can reach
+            // (`capabilities/installed-app-commands.json` grants exactly
+            // `allow-installed-app-invoke`). It derives the caller from the IPC
+            // webview's own window label — never from the payload — then decides
+            // declared capability, consent and data ownership on EVERY call.
+            applications::installed_apps::dispatch::installed_app_invoke,
             // Spec #3192 ST-1 — the resident shell (`infrastructure::app_lifecycle`):
             // `open_main_window` focuses the `main` window or rebuilds it when it was
             // destroyed (the SAME `ensure_main_window` the tray Open item and the

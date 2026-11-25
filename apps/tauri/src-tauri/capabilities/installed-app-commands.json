@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability.json",
+  "identifier": "installed-app-commands",
+  "description": "Spec #3146: the installed tier's ENTIRE authority surface. Exactly one command (`installed_app_invoke`), granted by exactly one permission (`allow-installed-app-invoke`), to exactly the installed window-label family (`installed-*`) — and no `core:*` permission, so an installed document cannot create a window, listen for events or drag. Every other capability still matches no installed label, so any other registered command stays ACL-refused to an installed window; the dispatcher then decides declared reach, consent and data ownership from the IPC webview's own window label. This file supersedes (does not delete) the #3147 invariant that zero capabilities reach `installed-*`: isolation is now cardinality plus exact-set. runtime::capability_guard pins all of it.",
+  "platforms": ["linux", "macOS", "windows"],
+  "windows": ["installed-*"],
+  "permissions": ["allow-installed-app-invoke"]
+}

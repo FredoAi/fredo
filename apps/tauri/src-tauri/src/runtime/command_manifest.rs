@@ -183,6 +183,12 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // `https`-only, refused BEFORE any I/O by a pure validator, and handed to the
     // OS default browser through the `open` crate. A refusal launches nothing.
     "open_external_link",
+    // Spec #3146 — the installed tier's ONE command. An `installed-<id>` window
+    // reaches this and nothing else (`capabilities/installed-app-commands.json`
+    // grants exactly `allow-installed-app-invoke`); the command derives the
+    // caller from its own webview's window label and decides declared reach,
+    // consent and data ownership per call.
+    "installed_app_invoke",
 ];
 
 #[cfg(test)]
