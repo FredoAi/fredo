@@ -11,9 +11,10 @@ policy is **static** (asset + config + build domain).
 > - `release-pipeline/regression.md` — the icon set is a shipped artifact of the release bundle and
 >   `tauri.conf.json` is the release workflow's config. The #2801 validate gate, `release.yml`
 >   triggers, and CODEOWNERS must be untouched.
-> - `desktop-shell/regression.md` + `launcher/regression.md` — the in-app avatar geometry and its
->   consumers are NOT changed by this spec (the icon generator must not mutate
->   `fredoAvatarGeometry.ts` or any avatar component).
+> - `desktop-shell/regression.md` + `launcher/regression.md` — the in-app avatar surface is NOT
+>   changed by this spec (the icon generator must not write into the avatar tree). **#3210 note:** the
+>   avatar tree changes BY DESIGN in the 3D cut-over, so the baseline is the GENERATOR's
+>   non-mutation (R-7), never a byte-identical-avatar clause.
 
 > ### #2930 round 1 run record (2026-09-22, `spec/2930` @ `e7ea8c00`)
 > The decisive lever for "unchanged" claims is the **whole-tree**
@@ -65,12 +66,20 @@ policy is **static** (asset + config + build domain).
 
 ## R-3 — In-app avatar + theming untouched
 
-- [x] R-7: `apps/ui/src/shared/components/fredo-avatar/**` is byte-identical to the `main` tip (the
-      frozen 58-rect table and its geometry test must NOT be the generator's output target).
-      EXPECT: unchanged.
-      **OBSERVED (#2930 r1):** the only change under that directory is the parity test
+- [ ] R-7: The icon MASTER (`apps/tauri/src-tauri/icons/fredo-icon-large.svg`) and every generated
+      artifact under `apps/tauri/src-tauri/icons/` are byte-identical to the `main` tip for this
+      spec, and `scripts/generate-app-icons.mjs` writes **nothing** under
+      `apps/ui/src/shared/components/fredo-avatar/` (it is not the generator's output target).
+      EXPECT: the generator's non-mutation — NOT "the avatar tree is byte-identical".
+      **NARROWED (#3210):** the previous `apps/ui/src/shared/components/fredo-avatar/**` byte-identical
+      clause is a false red for every avatar spec (this base rewrites the avatar tree by design). The
+      surviving intent is exactly what is written above; the geometry module's deletion does not
+      affect it.
+      **OBSERVED (#2930 r1):** the only change under that directory was the parity test
       `__tests__/iconSourceParity.test.ts` (the ST-4 rewrite). `fredoAvatarGeometry.ts`,
-      `FredoAvatar.tsx` and every other file are absent from the whole-tree diff → byte-identical.
+      `FredoAvatar.tsx` and every other file were absent from the whole-tree diff → byte-identical.
+      **#3210:** `fredoAvatarGeometry.ts` is now deleted and `FredoAvatar.tsx` rewritten; the icon
+      master + artifacts must still be untouched (verify their SHA-256).
 - [x] R-8: No new hardcoded color literal enters `apps/ui/src` — if the generator or any helper is
       TS/JS under `apps/ui`, the token-first rule still applies (brand cyan `#00D1D1`/brand dark
       `#0C1117` may appear as *generator input data*, never as component color usage); no
@@ -81,13 +90,13 @@ policy is **static** (asset + config + build domain).
 
 ## R-4 — Other icon-like surfaces not disturbed
 
-- [ ] R-9: The in-app launcher/companion avatar renders unchanged in a dev run (dev-run DOM: the
-      shared `FredoAvatar` still paints its 58 rects; no console error). EXPECT: no regression from
-      the asset work.
-      **NOT RUN (#2930 r1) — NAMED BLOCKER:** the round brief prohibits launching the dev instance
-      for this static-asset spec (`dev-env.ps1 -Action Status` → `stopped`; no webview driving).
-      Source-level identity is covered by R-7 (the avatar module is byte-identical to `main`), and
-      the parity test re-asserts the 58-rect table equals `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
+- [ ] R-9: The in-app launcher/companion avatar renders in a dev run (dev-run DOM: ONE
+      `[data-avatar-render="live"]` with `data-avatar-clip="idle"` at 80×100 and a painted figure, no
+      `<svg>` inside the avatar root; no console error). EXPECT: no regression from the asset work.
+      **#3210 re-point:** "the shared `FredoAvatar` still paints its 58 rects" is DELETED — read the
+      render/clip hooks. Executable detail rows: `fredo-avatar/functional.md` F-AV-11 / F-AV-14.
+      **NOT RUN (#2930 r1) — NAMED BLOCKER:** the round brief prohibited launching the dev instance
+      for that static-asset spec; source-level identity was covered by R-7.
 - [x] R-10: `apps/ui/src/assets/` gains no replacement bitmap (the icon set lives under
       `apps/tauri/src-tauri/icons/`; UI assets are not reintroduced as an icon source). EXPECT: no
       new unreferenced bitmap dropped into UI assets.
@@ -121,16 +130,15 @@ policy is **static** (asset + config + build domain).
       row for `fredo-icon-small` (nor for the large master). Two consecutive fresh `--out`
       regenerations reproduce the same 17 rows byte-for-byte (modulo the CRLF working-tree smudge on
       the text file). `pnpm icons:check` → exit 0.
-- [x] R-13: `apps/ui/src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` is
-      rewritten for the single master (no two-master / head-only expectation) and passes. EXPECT:
-      `vitest run …/iconSourceParity.test.ts` green; exactly one uniform `scale(S)`; no
-      `scale(sx, sy)`.
+- [ ] R-13: `apps/ui/src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` is
+      **re-pointed** by #3210 to the icon SVG's own invariants (58 `<rect>`, the literal bbox
+      `87,67,840,1167`, single `<path d>`, one uniform `scale(S)`, baked palette) + a SHA-256 pin, and
+      passes. EXPECT: `vitest run …/iconSourceParity.test.ts` green with a **NON-ZERO executed count**;
+      the test count legitimately CHANGES (the geometry-derived expectations became literals) — record
+      old → new; exactly one uniform `scale(S)`; no `scale(sx, sy)`.
       **OBSERVED (#2930 r1):** `pnpm --filter @fredo/ui exec vitest run
-      src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` → **9/9 passed**; the
-      rewritten suite keeps the frozen 58-rect multiset, the interior-path equality, the
-      single-uniform-`scale(S)` pin (a two-argument `scale()` is mechanically rejected) and the
-      palette-only/no-effects checks, and adds the small-master-absent + generator-selects-no-second-
-      source guards.
+      src/shared/components/fredo-avatar/__tests__/iconSourceParity.test.ts` → **9/9 passed** (the
+      pre-#3210 form). **#3210:** the icon itself stays byte-identical; the count is re-recorded.
 
 _Evidence convention: pass cases keep `- [x]` + append the observed file/line/receipt; fail cases
 leave `- [ ]` marked `FAIL` with expected-vs-actual + repro._
