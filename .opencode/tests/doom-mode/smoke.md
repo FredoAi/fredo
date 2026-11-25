@@ -40,14 +40,18 @@
 > recent `max(ingested_at)`; managed `psql` on the PG default, G-284, or a disclosed app-pool
 > fallback, G-307). Doom emits no span. A static-only smoke cannot pass.
 
-- [ ] S-17 (updated #3210 — the avatar armour clause MOVED to #3223): **Enter quick path (REAL
-      engine)** — re-stage the engine (G-319); from a fresh inactive boot type `iddqd`:
+- [ ] S-17 (updated #3223 — the avatar armour clause is RE-ACTIVATED): **Enter quick path (REAL
+      engine)** — from a fresh inactive boot type `iddqd` (no staging: the shipped in-process engine
+      needs none — `scripts/doom/stage-doom-fixture.ps1` was retired by #3023):
       `<html class="doom-mode" data-doom-mode="engaged">`; the app surfaces restyle via the token
-      contract. **#3210:** `data-doom-armor` / `#fredo-armor` are DELETED with the SVG overlay, and
-      the base renders **no** armour (the clip-driven armour is **#3223's** landing — do NOT assert
-      it here, and do NOT fail its absence). The base's only avatar-visible Doom row is the palette:
-      `data-avatar-body-color` equals the Doom-resolved `--accent-primary`
-      (`fredo-avatar/functional.md` F-AV-10). (A stub-only receipt is a FALSE PASS.)
+      contract; **the companion visibly arms** — `data-avatar-clip` becomes a doom clip (`doom-in`
+      then the engagement's weapon clip) and `data-avatar-body-color` equals the Doom-resolved
+      `--accent-primary` (`#8fbf3f`, channel triple). `data-doom-armor` / `#fredo-armor` /
+      `[data-avatar-doom-phase]` stay DOM-absent (they are deleted/never-existent — the observable is
+      the clip, never a hook). On exit `data-avatar-clip` returns to a 12-state name and the palette
+      reverts. (A stub-only receipt is a FALSE PASS. The full performance rows are
+      `fredo-avatar/functional.md` F-AV-22…F-AV-29; `doom-mode/functional.md` F-53 is this suite's
+      detailed leg.)
 - [x] S-18 (PASS 2026-10-05 #2971 r1 — `doom-exit-button` → every `--*` var + body + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; `Fredo_theme_*` unchanged) (updated #3007 — exit is the native close, not the removed button): **Exit quick path via native close** — close the `doom` window natively: every `--*` var + `document.body` + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; persisted `Fredo_theme_*` keys unchanged.
 - [x] S-19 (PASS 2026-10-05 #2971 r1 — no Doom in `ThemePresetSelector`/`allPresets` (18 built-ins); no Doom `SettingsSurface` nav item; no Doom token applied; avatar unarmored): **Secrecy** — before activation, no "Doom" entry in `ThemePresetSelector`/`allPresets`, no Doom `SettingsSurface` nav item, no Doom token applied, avatar unarmored.
 - [x] S-20 (PASS 2026-10-05 #2971 r1 — `tauri_read_logs(console)` clean across enter/exit; only a pre-existing `motion()` deprecation WARN): **No console errors** — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded` across the enter/exit legs.
