@@ -214,7 +214,8 @@ mod tests {
         );
     }
 
-    /// Every pre-existing invocation keeps its parse result and exit code.
+    /// Every surviving invocation keeps its parse result and exit code, and the
+    /// `ingest` removal (#3194) keeps its parse error.
     #[test]
     fn the_existing_cli_surface_is_unchanged() {
         // `--help` / `--version` still exit 0.
@@ -237,9 +238,19 @@ mod tests {
             "`fredo emit` must still dispatch to the emit command"
         );
 
-        // The retained subcommands still resolve, including the daemon whose
-        // reference docs #3194 owns.
-        for subcommand in ["ingest", "open-terminal", "open-app", "setup", "doom"] {
+        // The subcommands the binary still ships. `ingest` is NOT here by
+        // design: #3194 removed it, so it must not be listed as surviving
+        // surface. `fredo --help` no longer listing it is asserted by the CLI
+        // help-coverage test
+        // (`infrastructure::cli::tests::cli_help_does_not_expose_the_retired_ingest_subcommand`);
+        // the removal is asserted POSITIVELY below.
+        for subcommand in [
+            "open-terminal",
+            "open-app",
+            "setup",
+            "doom",
+            "companion",
+        ] {
             let error = Cli::try_parse_from(argv(&["fredo", subcommand, "--help"]))
                 .expect_err("`--help` is rendered through a clap error");
             assert_eq!(
@@ -249,6 +260,24 @@ mod tests {
                 error.kind()
             );
         }
+
+        // The removal is proven, not merely omitted: `fredo ingest` is now an
+        // unknown subcommand — a clap parse error on the pre-existing path,
+        // which `main.rs` turns into exit 1 (`invalid-argument`).
+        let removed = Cli::try_parse_from(argv(&["fredo", "ingest"]))
+            .expect_err("the retired `ingest` subcommand must not parse");
+        assert_eq!(
+            removed.kind(),
+            clap::error::ErrorKind::InvalidSubcommand,
+            "`fredo ingest` must be an unknown subcommand, got {:?}",
+            removed.kind()
+        );
+        assert_eq!(
+            exit_code_for_parse_error(removed.kind()),
+            1,
+            "`fredo ingest` must exit 1, got {:?}",
+            removed.kind()
+        );
     }
 
     /// Spec #3193 ST-1 (R-5a) — the STATIC dispatch-order pin. `main.rs` must
