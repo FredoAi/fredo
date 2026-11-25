@@ -24,10 +24,12 @@
   `teardown_doom_on_window_close` (stop the agent first, then the bounded engine stop ≤ 5 s with a
   hard-kill fallback) and publishes `doom-mode-changed {active:false}`; there is NO in-window close
   control. (Links: `doom-mode/functional.md` F-108/F-110.)
-- [ ] R-4: **Doom theme + armored avatar unchanged** — while engaged the `DOOM_PALETTE` token layer
-  and the `data-doom-armor="true"` / `#fredo-armor` overlay apply exactly as today; both revert
-  byte-exactly on exit; no Doom token leaks into Settings. (Links: `theming/functional.md`,
-  `doom-mode/functional.md` #2971 slice.)
+- [ ] R-4: **Doom theme unchanged; the avatar armour is #3223's** — while engaged the `DOOM_PALETTE`
+  token layer applies exactly as today and reverts byte-exactly on exit; no Doom token leaks into
+  Settings. **#3210:** the `data-doom-armor="true"` / `#fredo-armor` overlay is DELETED (the base
+  renders no armour); the avatar's base-scope observable is `data-avatar-body-color` following the
+  Doom accent (`fredo-avatar/functional.md` F-AV-10). Do not re-assert the deleted hooks here.
+  (Links: `theming/functional.md`, `doom-mode/functional.md` #2971 slice.)
 - [ ] R-5: **Save/resume command surface** — `get_doom_save`/`reset_doom_save` and the
   `DoomSaveStatus` wire shape are UNCHANGED; the resume point persists in the `feature_doom_save`
   singleton row (app-pool read; no control-plane `doom_save_v1` key). **Map set rescoped to E1**
