@@ -40,7 +40,14 @@
 > recent `max(ingested_at)`; managed `psql` on the PG default, G-284, or a disclosed app-pool
 > fallback, G-307). Doom emits no span. A static-only smoke cannot pass.
 
-- [x] S-17 (PASS 2026-10-05 #2971 r1 — typed `iddqd` (real engine, pid 24460) → `<html class="doom-mode" data-doom-mode="engaged">`; token restyle; `data-doom-armor="true"` + `#fredo-armor`): **Enter quick path (REAL engine)** — re-stage the engine (G-319); from a fresh inactive boot type `iddqd`: `<html class="doom-mode" data-doom-mode="engaged">`; the app surfaces restyle via the token contract; the avatar shows `data-doom-armor="true"` + `#fredo-armor`. (A stub-only receipt is a FALSE PASS.)
+- [ ] S-17 (updated #3210 — the avatar armour clause MOVED to #3223): **Enter quick path (REAL
+      engine)** — re-stage the engine (G-319); from a fresh inactive boot type `iddqd`:
+      `<html class="doom-mode" data-doom-mode="engaged">`; the app surfaces restyle via the token
+      contract. **#3210:** `data-doom-armor` / `#fredo-armor` are DELETED with the SVG overlay, and
+      the base renders **no** armour (the clip-driven armour is **#3223's** landing — do NOT assert
+      it here, and do NOT fail its absence). The base's only avatar-visible Doom row is the palette:
+      `data-avatar-body-color` equals the Doom-resolved `--accent-primary`
+      (`fredo-avatar/functional.md` F-AV-10). (A stub-only receipt is a FALSE PASS.)
 - [x] S-18 (PASS 2026-10-05 #2971 r1 — `doom-exit-button` → every `--*` var + body + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; `Fredo_theme_*` unchanged) (updated #3007 — exit is the native close, not the removed button): **Exit quick path via native close** — close the `doom` window natively: every `--*` var + `document.body` + avatar byte-equal the pre-enter snapshot; no `doom-mode`/`data-doom-armor`; persisted `Fredo_theme_*` keys unchanged.
 - [x] S-19 (PASS 2026-10-05 #2971 r1 — no Doom in `ThemePresetSelector`/`allPresets` (18 built-ins); no Doom `SettingsSurface` nav item; no Doom token applied; avatar unarmored): **Secrecy** — before activation, no "Doom" entry in `ThemePresetSelector`/`allPresets`, no Doom `SettingsSurface` nav item, no Doom token applied, avatar unarmored.
 - [x] S-20 (PASS 2026-10-05 #2971 r1 — `tauri_read_logs(console)` clean across enter/exit; only a pre-existing `motion()` deprecation WARN): **No console errors** — `tauri_read_logs(source="console", lines=50)` shows no `Error:`/`Uncaught`/`Maximum update depth exceeded` across the enter/exit legs.
