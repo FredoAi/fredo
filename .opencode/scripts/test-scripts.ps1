@@ -1825,6 +1825,184 @@ Test-Script "link-revision is orchestrator/PO-gated and idempotent" {
   }
 }
 
+# ── edit-issue (the machine can CORRECT a live issue, not only create one) ────
+# #3210's human-approved split had to narrow the parent's ACs after two children
+# were created. Only `create-issue` existed and every `gh issue edit` is denied to
+# every agent, so the parent kept gating itself on clauses it had moved until a
+# human/main-session edit unblocked it. The issue BODY is the single PO backlog, so
+# a scope change recorded only in a comment is not a scope change. `edit-issue`
+# replaces the body under the SAME PO-template gate, records ONE `issue.edited`
+# event (issue number + body hash), and never rewrites history.
+function New-EditDraft([string]$Path, [string]$Acceptance) {
+  $body = @"
+## Title
+temp: editable issue
+## Problem / Why now
+scratch
+## Intended users
+n/a
+## Proposed behavior / Scope
+scratch
+## Success metrics
+n/a
+## Acceptance criteria
+$Acceptance
+## Out of scope
+nothing
+## Priority
+P3
+"@
+  [System.IO.File]::WriteAllText($Path, $body, [System.Text.UTF8Encoding]::new($false))
+}
+
+Test-Script "edit-issue replaces the body, records one issue.edited, and is idempotent" {
+  $draft = Join-Path $env:TEMP "fredo-edit-draft.md"
+  $initial = Join-Path $env:TEMP "fredo-edit-initial.md"
+  New-EditDraft $initial "- [ ] 1. old acceptance"
+  New-EditDraft $draft "- [ ] 1. new acceptance"
+  $url = Mock-IssueCreate "temp: editable issue" (Get-Content $initial -Raw) ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent product-owner --action edit-issue --body-file $draft 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "edit-issue failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "EDITED: #$issueNum") { throw "expected EDITED:, got: $outStr" }
+    $stored = Mock-IssueBody $issueNum
+    if ($stored -notmatch "new acceptance") { throw "body was not replaced: $stored" }
+    if ($stored -match "old acceptance") { throw "old body survived the edit: $stored" }
+    $logPath = ".opencode/state/issues/$issueNum.jsonl"
+    $log = Get-Content $logPath -Raw
+    if ($log -notmatch '"event_name":"issue\.edited"') { throw "missing issue.edited event: $log" }
+    if ($log -notmatch '"body_hash":"[0-9a-f]{16}"') { throw "issue.edited missing a 16-hex body hash: $log" }
+    # Identical content on a re-run is a NO-OP that records nothing.
+    $again = & rust-script $ps --issue $issueNum --agent product-owner --action edit-issue --body-file $draft 2>&1
+    $againStr = if ($again -is [array]) { $again -join "`n" } else { "$again" }
+    if ($LASTEXITCODE -ne 0) { throw "idempotent edit failed: $againStr" }
+    if ($againStr -notmatch "NO-OP") { throw "expected NO-OP for identical content, got: $againStr" }
+    $events = ([regex]::Matches((Get-Content $logPath -Raw), '"event_name":"issue\.edited"')).Count
+    if ($events -ne 1) { throw "identical content recorded $events issue.edited events (expected 1)" }
+    return "edit-issue replaced the body + recorded exactly one issue.edited event on #$issueNum"
+  } finally {
+    Mock-Cleanup $issueNum
+    Remove-Item $draft, $initial -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "edit-issue refuses an invalid body naming the missing sections" {
+  $initial = Join-Path $env:TEMP "fredo-edit-initial2.md"
+  $bad = Join-Path $env:TEMP "fredo-edit-bad.md"
+  New-EditDraft $initial "- [ ] 1. untouched acceptance"
+  [System.IO.File]::WriteAllText($bad, "## Title`nscratch", [System.Text.UTF8Encoding]::new($false))
+  $url = Mock-IssueCreate "temp: edit invalid" (Get-Content $initial -Raw) ""
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $out = & rust-script $ps --issue $issueNum --agent product-owner --action edit-issue --body-file $bad 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -eq 0) { throw "expected failure for an invalid body, got exit 0: $outStr" }
+    if ($outStr -notmatch "INTAKE INVALID") { throw "expected INTAKE INVALID, got: $outStr" }
+    if ($outStr -notmatch "## Acceptance criteria") { throw "expected the missing section named, got: $outStr" }
+    $stored = Mock-IssueBody $issueNum
+    if ($stored -notmatch "untouched acceptance") { throw "an invalid draft was written: $stored" }
+    $logPath = ".opencode/state/issues/$issueNum.jsonl"
+    if ((Test-Path $logPath) -and ((Get-Content $logPath -Raw) -match '"event_name":"issue\.edited"')) {
+      throw "an invalid draft recorded an issue.edited event"
+    }
+    return "invalid edit refused (INTAKE INVALID, body untouched)"
+  } finally {
+    Mock-Cleanup $issueNum
+    Remove-Item $initial, $bad -Force -ErrorAction SilentlyContinue
+  }
+} -ExpectedExitCode 1
+
+Test-Script "edit-issue refuses a done or canceled issue (new issue + --revises instead)" {
+  $draft = Join-Path $env:TEMP "fredo-edit-closed.md"
+  New-EditDraft $draft "- [ ] 1. replacement acceptance"
+  # done = the `done` label on an OPEN issue (awaiting the human close).
+  $url = Mock-IssueCreate "temp: edit done" "old body" "done"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $doneNum = [int]$m.Groups[1].Value
+  # canceled = a CLOSED issue.
+  $url2 = Mock-IssueCreate "temp: edit canceled" "old body" ""
+  $url2Str = if ($url2 -is [array]) { $url2 -join "" } else { "$url2" }
+  $m2 = [regex]::Match($url2Str, "issues/(\d+)")
+  if (-not $m2.Success) { throw "could not parse issue: $url2Str" }
+  $cancelNum = [int]$m2.Groups[1].Value
+  try {
+    $doneOut = & rust-script $ps --issue $doneNum --agent product-owner --action edit-issue --body-file $draft 2>&1
+    $doneStr = if ($doneOut -is [array]) { $doneOut -join "`n" } else { "$doneOut" }
+    if ($LASTEXITCODE -ne 0) { throw "a refused edit should exit 0 with BLOCKED:, got: $doneStr" }
+    if ($doneStr -notmatch "BLOCKED: issue is done") { throw "expected a done refusal, got: $doneStr" }
+    if ($doneStr -notmatch "--revises") { throw "done refusal should point at the new-issue path, got: $doneStr" }
+    Mock-IssueClose $cancelNum
+    $cancelOut = & rust-script $ps --issue $cancelNum --agent product-owner --action edit-issue --body-file $draft 2>&1
+    $cancelStr = if ($cancelOut -is [array]) { $cancelOut -join "`n" } else { "$cancelOut" }
+    if ($LASTEXITCODE -ne 0) { throw "a refused edit should exit 0 with BLOCKED:, got: $cancelStr" }
+    if ($cancelStr -notmatch "BLOCKED: issue is canceled") { throw "expected a canceled refusal, got: $cancelStr" }
+    if ((Mock-IssueBody $doneNum) -match "replacement acceptance") { throw "a done issue body was edited" }
+    if ((Mock-IssueBody $cancelNum) -match "replacement acceptance") { throw "a canceled issue body was edited" }
+    return "done and canceled issues refused (new issue + --revises is the path)"
+  } finally {
+    Mock-Cleanup $doneNum
+    Mock-Cleanup $cancelNum
+    Remove-Item $draft -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "edit-issue refuses a non-PO edit in a live round (triage contract rule)" {
+  $draft = Join-Path $env:TEMP "fredo-edit-live.md"
+  New-EditDraft $draft "- [ ] 1. PO-only acceptance"
+  # `ready-for-dev` is the implementation-phase label.
+  $url = Mock-IssueCreate "temp: edit live round" "old body" "ready-for-dev"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "could not parse issue: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    $orch = & rust-script $ps --issue $issueNum --agent orchestrator --action edit-issue --body-file $draft 2>&1
+    $orchStr = if ($orch -is [array]) { $orch -join "`n" } else { "$orch" }
+    if ($LASTEXITCODE -ne 0) { throw "a refused edit should exit 0 with BLOCKED:, got: $orchStr" }
+    if ($orchStr -notmatch "only product-owner") { throw "expected the mid-round PO-only rule, got: $orchStr" }
+    if ((Mock-IssueBody $issueNum) -match "PO-only acceptance") { throw "a non-PO edit changed the body mid-round" }
+    $po = & rust-script $ps --issue $issueNum --agent product-owner --action edit-issue --body-file $draft 2>&1
+    $poStr = if ($po -is [array]) { $po -join "`n" } else { "$po" }
+    if ($LASTEXITCODE -ne 0) { throw "the Product Owner must be allowed mid-round, got: $poStr" }
+    if ($poStr -notmatch "EDITED:") { throw "expected EDITED: for the PO, got: $poStr" }
+    if ((Mock-IssueBody $issueNum) -notmatch "PO-only acceptance") { throw "the PO edit was not written" }
+    return "mid-round edit refused for orchestrator, allowed for product-owner"
+  } finally {
+    Mock-Cleanup $issueNum
+    Remove-Item $draft -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# ── Action enumeration (`--action help`) ─────────────────────────────────────
+# The tool can confirm its own surface: help prints the action names with their
+# actor gates from the SAME table `actor_allowed` enforces, so a role-gate change
+# and the documented surface cannot drift. No `--issue` is required.
+Test-Script "action help enumerates actions with actor gates (no issue required)" {
+  $out = & rust-script $ps --action help 2>&1
+  $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+  if ($LASTEXITCODE -ne 0) { throw "help failed (exit $LASTEXITCODE): $outStr" }
+  if ($outStr -notmatch "create-issue") { throw "help missing create-issue: $outStr" }
+  if ($outStr -notmatch "create-issue\s+product-owner \| orchestrator") { throw "help missing create-issue's actor gate: $outStr" }
+  if ($outStr -notmatch "edit-issue") { throw "help missing the newly added edit-issue: $outStr" }
+  if ($outStr -notmatch "edit-issue\s+product-owner \| orchestrator") { throw "help missing edit-issue's actor gate: $outStr" }
+  # A bare `--help` reaches the same listing (no issue, no action).
+  $bare = & rust-script $ps --help 2>&1
+  $bareStr = if ($bare -is [array]) { $bare -join "`n" } else { "$bare" }
+  if ($LASTEXITCODE -ne 0) { throw "bare --help failed (exit $LASTEXITCODE): $bareStr" }
+  if ($bareStr -notmatch "edit-issue\s+product-owner \| orchestrator") { throw "bare --help did not print the action gates: $bareStr" }
+  return "action help lists create-issue + edit-issue with gates"
+}
+
 # The honest self-improvement signal: acceptance rate (specs not later revised or
 # reopened) with an interval + a change test + link coverage + raw counts.
 Test-Script "improvement action reports acceptance with interval and raw counts" {

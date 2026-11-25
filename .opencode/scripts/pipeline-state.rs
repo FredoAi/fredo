@@ -2113,6 +2113,11 @@ struct GhLabel {
 #[derive(Deserialize)]
 struct GhIssue {
     labels: Vec<GhLabel>,
+    /// GitHub's `OPEN`/`CLOSED` state. `done` is a LABEL on an OPEN issue (it waits
+    /// for the human close); `canceled` is a CLOSED issue. `edit-issue` needs both
+    /// to refuse a closed spec, so the state is read alongside the labels.
+    #[serde(default)]
+    state: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -5912,6 +5917,77 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 let _ = std::fs::remove_file(&body_path);
             }
         }
+        "edit-issue" => {
+            // Correct a live issue's BODY. The issue body IS the single PO backlog,
+            // so a scope change recorded only in a comment leaves the parent gating
+            // itself on clauses it no longer owns (#3210's human-approved split
+            // deadlocked here: `create-issue` existed, every `gh issue edit` was
+            // denied, and the parent kept its moved ACs). The correction REPLACES
+            // the body — ONE event, never a history rewrite (GitHub keeps the prior
+            // body in its own timeline).
+            if !actor_allowed(a.action.as_str(), &a.actor) {
+                append_event(req_issue(a).unwrap_or(0), a.action.as_str(), &a.actor, "unknown", "blocked", &format!("actor {} not allowed to {}", a.actor, a.action))?;
+                println!("BLOCKED: actor {} not allowed to {}", a.actor, a.action);
+                return Ok(());
+            }
+            let issue = req_issue(a)?;
+            // Explicit-body-file only: an implicit default could republish a draft
+            // left on disk by an earlier, withdrawn amendment.
+            let body_file = a.body_file.as_deref().ok_or_else(|| anyhow::anyhow!(
+                "edit-issue requires --body-file <path> — the replacement body must be named explicitly (there is no implicit default)"
+            ))?;
+            let new_body = std::fs::read_to_string(body_file)
+                .map_err(|e| anyhow::anyhow!("cannot read body {}: {}", body_file, e))?;
+            let current = get_issue(issue)?
+                .ok_or_else(|| anyhow::anyhow!("edit-issue: issue #{} does not exist or is unreadable", issue))?;
+            let phase = current.labels.iter()
+                .find_map(|l| phase_from_label(&l.name))
+                .unwrap_or(Phase::Backlog);
+            // A closed spec (done = label on an OPEN issue awaiting human close;
+            // canceled = CLOSED) is revised by a NEW issue linked with `--revises`,
+            // never by editing history.
+            if phase == Phase::Done || current.state.eq_ignore_ascii_case("CLOSED") {
+                let msg = if phase == Phase::Done {
+                    "issue is done — a closed spec is revised by a NEW issue with --revises, never by editing this one"
+                } else {
+                    "issue is canceled — a closed spec is revised by a NEW issue with --revises, never by editing this one"
+                };
+                append_event(issue, "edit-issue", &a.actor, phase.as_str(), "blocked", msg)?;
+                println!("BLOCKED: {}", msg);
+                return Ok(());
+            }
+            // Triage must not silently rewrite the plan's contract mid-round: once a
+            // round is live (implementation/testing/audit) ONLY the Product Owner —
+            // the contract's author — may replace the body.
+            if matches!(phase, Phase::Implementation | Phase::Testing | Phase::Audit) && a.actor != "product-owner" {
+                let msg = format!(
+                    "edit-issue is refused in the {} phase for actor {} — only product-owner may replace the body once a round is live (triage must not rewrite the plan's contract mid-round)",
+                    phase.as_str(), a.actor
+                );
+                append_event(issue, "edit-issue", &a.actor, phase.as_str(), "blocked", &msg)?;
+                println!("BLOCKED: {}", msg);
+                return Ok(());
+            }
+            // The replacement is still a PO backlog draft, so the SAME template gate
+            // `create-issue` applies runs here: an invalid draft names its missing
+            // sections and is never written.
+            let missing = intake_missing_sections(&new_body);
+            if !missing.is_empty() {
+                anyhow::bail!("INTAKE INVALID: missing section(s): {}", missing.join(", "));
+            }
+            // Idempotent: identical content records nothing (EOL/trailing-space
+            // insensitive so a CRLF round-trip is not mistaken for an edit).
+            if normalize_body(&current.body) == normalize_body(&new_body) {
+                println!("NO-OP: #{} body is unchanged (identical content); nothing recorded", issue);
+                return Ok(());
+            }
+            let hash = body_hash_hex(&normalize_body(&new_body));
+            run_gh(&["issue", "edit", &issue.to_string(), "--body-file", body_file])?;
+            append_event_attrs(issue, "issue.edited", &a.actor, phase.as_str(), "success",
+                &format!("replaced issue body (body hash {})", hash),
+                &[("issue", &issue.to_string()), ("body_hash", hash.as_str())])?;
+            println!("EDITED: #{} body replaced (body hash {})", issue, hash);
+        }
         "link-revision" => {
             // Backfill a revision link the PO missed at intake (`feature.revised`
             // on the NEW issue). Idempotent; validates the target. The SI runs this
@@ -7509,56 +7585,97 @@ fn req_issue(a: &ActionArgs) -> anyhow::Result<u32> {
 /// Role gate for write actions: the `--agent` arg is self-declared, so authority
 /// is enforced per-action here. Read-only / non-authoritative actions allow any
 /// actor. Unknown actions default to allowed (they fail later on the match arm).
+///
+/// The gate is sourced from `ACTION_SPECS` — the SAME table `--action help` prints,
+/// so the enumerable surface and the enforced surface cannot drift apart.
 fn actor_allowed(action: &str, actor: &str) -> bool {
-    match action {
-        "create-issue" => matches!(actor, "product-owner" | "orchestrator"),
-        // Product Owner posts non-gate comments (`Status` amendments/decisions,
-        // `Question` clarifications). Gate-critical prefixes (`Decision`,
-        // `Evidence`) remain restricted by the prefix gate in the comment action —
-        // the PO can never forge an exit guard. (#2734: the PO had no way to record
-        // an AC amendment and had to route through the SI.)
-        "comment" => true,
-        "transition" => actor == "orchestrator",
-        "block" | "unblock" => matches!(actor, "orchestrator" | "developer" | "tester"),
-        "close-issue" => actor == "orchestrator",
-        "create-worktree" => actor == "developer",
-        "remove-worktree" => actor == "developer",
-        "update-plan" => actor == "orchestrator",
-        "triage-init" => actor == "orchestrator",
-        // The ONLY sanctioned writer of `opencode.json` agent `agents.<role>.permissions`
-        // rule arrays: the SI grants a missing allowlist verb to a role instead of
-        // routing a sandbox change to the human (G-142). Scoped to those arrays by
-        // construction — the editor refuses everything else.
-        "set-permission" => actor == "machinist",
-        "tests-commit" => matches!(actor, "tester" | "orchestrator"),
-        "audit-record" => actor == "auditor",
-        "upload-evidence" => matches!(actor, "tester" | "orchestrator"),
-        "post-comments" => matches!(actor, "orchestrator" | "tester"),
-        // The sanctioned verdict SUPERSEDE (#3152) — same two roles that may post a
-        // verdict, since it IS a verdict post (with a stricter gate).
-        "reconcile-verdict" => matches!(actor, "tester" | "orchestrator"),
-        "record-improvement" => actor == "curator",
-        // The operator's accept/reject at the done human-review window: recorded by
-        // the Product Owner — the human-facing proxy (the human has no machine
-        // identity) — never by the machine itself (research/27 §4.1b).
-        "human.review" => actor == "product-owner",
-        // The post-audit gate opens the single SPEC MAINT PR (the gate runner is
-        // the orchestrator).
-        "maint-pr" => actor == "orchestrator",
-        // The spec-branch ⇄ trunk sync (#3198): the machine merges origin/main into
-        // the live spec branch because no agent's sandbox grants `git merge`.
-        "sync-spec-branch" => actor == "orchestrator",
-        // Root alignment to the spec tip (G-052): the machine performs the checkout
-        // the Orchestrator has no grant to run itself.
-        "align-root" => actor == "orchestrator",
-        "link-revision" => matches!(actor, "orchestrator" | "product-owner"),
-        "hardening-lock-open-issues" => actor == "machinist",
-        "interaction-limit" => actor == "machinist",
-        "close-dependabot-prs" => actor == "machinist",
-        "audit" | "prune" | "metrics" | "health" | "improvement" | "verify" | "context" => true,
-        _ => true,
+    match action_spec(action) {
+        Some(spec) => match spec.gate {
+            ActionGate::Any => true,
+            ActionGate::Roles(roles) => roles.iter().any(|r| *r == actor),
+        },
+        // Unknown actions are rejected by the dispatcher's match; keeping them
+        // "allowed" here preserves the historical ordering of those failures.
+        None => true,
     }
 }
+
+/// One shipped action and its actor gate. This is the single source of truth for
+/// both enforcement (`actor_allowed`) and enumeration (`--action help`).
+struct ActionSpec {
+    name: &'static str,
+    gate: ActionGate,
+}
+
+#[derive(Clone, Copy)]
+enum ActionGate {
+    /// Any (or no) `--agent` identity: reads and idempotent hygiene.
+    Any,
+    /// Only these self-declared actor roles may run the action.
+    Roles(&'static [&'static str]),
+}
+
+const ACTION_SPECS: &[ActionSpec] = &[
+    ActionSpec { name: "context", gate: ActionGate::Any },
+    ActionSpec { name: "create-issue", gate: ActionGate::Roles(&["product-owner", "orchestrator"]) },
+    ActionSpec { name: "edit-issue", gate: ActionGate::Roles(&["product-owner", "orchestrator"]) },
+    ActionSpec { name: "link-revision", gate: ActionGate::Roles(&["orchestrator", "product-owner"]) },
+    ActionSpec { name: "comment", gate: ActionGate::Any },
+    ActionSpec { name: "post-comments", gate: ActionGate::Roles(&["orchestrator", "tester"]) },
+    ActionSpec { name: "reconcile-verdict", gate: ActionGate::Roles(&["tester", "orchestrator"]) },
+    ActionSpec { name: "record-improvement", gate: ActionGate::Roles(&["curator"]) },
+    ActionSpec { name: "transition", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "block", gate: ActionGate::Roles(&["orchestrator", "developer", "tester"]) },
+    ActionSpec { name: "unblock", gate: ActionGate::Roles(&["orchestrator", "developer", "tester"]) },
+    ActionSpec { name: "close-issue", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "create-worktree", gate: ActionGate::Roles(&["developer"]) },
+    ActionSpec { name: "remove-worktree", gate: ActionGate::Roles(&["developer"]) },
+    ActionSpec { name: "update-plan", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "triage-init", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "tests-commit", gate: ActionGate::Roles(&["tester", "orchestrator"]) },
+    ActionSpec { name: "prune", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "metrics", gate: ActionGate::Any },
+    ActionSpec { name: "audit", gate: ActionGate::Any },
+    ActionSpec { name: "audit-record", gate: ActionGate::Roles(&["auditor"]) },
+    ActionSpec { name: "upload-evidence", gate: ActionGate::Roles(&["tester", "orchestrator"]) },
+    ActionSpec { name: "health", gate: ActionGate::Any },
+    ActionSpec { name: "improvement", gate: ActionGate::Any },
+    ActionSpec { name: "verify", gate: ActionGate::Any },
+    ActionSpec { name: "hardening-lock-open-issues", gate: ActionGate::Roles(&["machinist"]) },
+    ActionSpec { name: "interaction-limit", gate: ActionGate::Roles(&["machinist"]) },
+    ActionSpec { name: "close-dependabot-prs", gate: ActionGate::Roles(&["machinist"]) },
+    ActionSpec { name: "set-permission", gate: ActionGate::Roles(&["machinist"]) },
+    ActionSpec { name: "human.review", gate: ActionGate::Roles(&["product-owner"]) },
+    ActionSpec { name: "maint-pr", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "sync-spec-branch", gate: ActionGate::Roles(&["orchestrator"]) },
+    ActionSpec { name: "align-root", gate: ActionGate::Roles(&["orchestrator"]) },
+];
+
+fn action_spec(action: &str) -> Option<&'static ActionSpec> {
+    ACTION_SPECS.iter().find(|s| s.name == action)
+}
+
+fn gate_text(gate: ActionGate) -> String {
+    match gate {
+        ActionGate::Any => "any".to_string(),
+        ActionGate::Roles(roles) => roles.join(" | "),
+    }
+}
+
+/// `--action help`: enumerate the shipped action set with each action's actor gate.
+/// Requires no `--issue` — the tool can confirm its own surface instead of the
+/// agent trusting a skill or reading the script (#3210 follow-up).
+fn print_action_help() {
+    println!("pipeline-state — actions (actor gate)");
+    println!();
+    for spec in ACTION_SPECS {
+        println!("  {:<28} {}", spec.name, gate_text(spec.gate));
+    }
+    println!();
+    println!("Usage: pipeline-state.rs --issue <N> --agent <role> --action <action> [args]");
+    println!("Run without --action (plus --issue <N> --agent <role>) for the phase context block.");
+}
+
 
 // ── opencode.json agent-permission editor (`set-permission`) ─────────────────
 //
@@ -8149,6 +8266,32 @@ fn intake_missing_sections(body: &str) -> Vec<&'static str> {
         .copied()
         .filter(|s| !has_section(body, s))
         .collect()
+}
+
+/// Canonical form used ONLY for `edit-issue` idempotence comparison and hashing:
+/// BOM stripped, CRLF → LF, trailing whitespace per line trimmed, trailing blank
+/// lines dropped. It never rewrites what is posted (the caller's file is sent
+/// as-is) — it just makes "identical content" mean content, not line endings.
+fn normalize_body(body: &str) -> String {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    body.replace("\r\n", "\n")
+        .lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
+/// Stable, dependency-free body hash recorded on `issue.edited` (FNV-1a 64, hex).
+/// It identifies WHICH body was written without storing the body in the record.
+fn body_hash_hex(body: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in body.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", hash)
 }
 
 /// Match a `## Heading` on its own line, allowing a continuation suffix where the
@@ -9389,11 +9532,19 @@ fn parse_args() -> ActionArgs {
 fn main() {
     let raw = env::args().any(|a| a == "--raw");
     let a = parse_args();
+    // `--action help` (and a bare `--help`) enumerate the shipped action set with
+    // each action's actor gate — no `--issue` required. The listing is generated
+    // from `ACTION_SPECS`, the same table `actor_allowed` enforces, so it cannot
+    // drift from the real surface.
+    let wants_help = a.action == "help" || env::args().any(|x| x == "--help" || x == "-h");
     // H1: the mock-repo passthrough verbs are test-harness plumbing, not a
     // production surface. They are accepted ONLY under FREDO_MOCK_GH=1; otherwise
     // they are unknown actions (removed from the shipped action set).
     let is_mock_verb = matches!(a.action.as_str(), "mock-gh" | "mock-git" | "mock-commit");
-    let result = if is_mock_verb && !mock_mode() {
+    let result = if wants_help {
+        print_action_help();
+        Ok(())
+    } else if is_mock_verb && !mock_mode() {
         Err(anyhow::anyhow!("unknown action: {}", a.action))
     } else {
         match a.action.as_str() {
