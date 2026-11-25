@@ -57,6 +57,12 @@
 
 ## #2850 extension — shared-avatar refactor: shell invariants (must-not-change)
 
+> **#3210 SUPERSEDE:** the avatar markup changed again (3D shell). R-11's "md avatar at 132×165 with
+> 58 rects" clause and R-12's `var(--accent-primary)`/`currentColor` SVG-attribute clause are
+> RETIRED. Shell chrome/layout invariants stay in force; the avatar's observable is now
+> `[data-avatar-render]` at 80×100 + `data-avatar-body-color` (the accent contract).
+> Executable rows: `fredo-avatar/functional.md` F-AV-11 / F-AV-6 / F-AV-9.
+
 > Issue #2850 — the launcher avatar becomes a shared `FredoAvatar size="md"` wrapper; the
 > companion overlay switches from the raster sprite pipeline to the same shared vector avatar.
 > The shell surface is a NON-GOAL — these invariants MUST hold after the refactor. Run alongside
