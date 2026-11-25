@@ -1,7 +1,9 @@
 # background-capture — Smoke
 
 Feature: capture at login without a window (`--background` + the per-user `FredoIngest` login
-entry). Seeded at issue **#3193**. Short sanity checks before the deeper rows in `functional.md`.
+entry). Seeded at issue **#3193**; extended by **#3195** (the pane's status line is about CAPTURE —
+`settings-ingest-capture-status` replaced the retired `settings-ingest-autostart-status`). Short
+sanity checks before the deeper rows in `functional.md`.
 
 > **Verification policy: LIVE** — receipts are a live `telemetry_spans` read, the registry
 > instrument's raw output, a native window reading, and a DOM snapshot. Static-only smoke cannot
@@ -23,14 +25,20 @@ entry). Seeded at issue **#3193**. Short sanity checks before the deeper rows in
   opening the pane.
   **Expected:** no `Error:` / `Uncaught` / `Maximum update depth exceeded`.
 
-- [ ] **S-3: The Background capture pane is reachable and carries the new hooks.**
+- [ ] **S-3: The Background capture pane is reachable and carries the CURRENT hooks.**
   Open Settings (`…invoke('open_app_window', { appId: 'settings' })`), click
-  `[data-testid="settings-nav-ingest"]`, then snapshot the structure.
+  `[data-testid="settings-nav-ingest"]`, then snapshot the structure and read the pane with the
+  `functional.md` PANE READING snippet.
   **Expected:** the nav label reads `Background capture`; the pane renders
   `settings-ingest-autostart-section`, `settings-ingest-autostart-toggle`,
-  `settings-ingest-autostart-status`, `settings-ingest-autostart-timing`; the status text is one of
-  `Background capture: On` / `Background capture: Off` / `Background capture: Unavailable on this
-  platform`; `settings-ingest-daemon-status` is ABSENT.
+  `settings-ingest-autostart-timing`, **`settings-ingest-capture-status`** and
+  **`settings-ingest-capture-detail`**; the capture `status` word is one of `Capture: Running` /
+  `Capture: Not running` / `Capture: Status unavailable` (never `Background capture: On|Off`);
+  `retiredStatusPresent:false` and `daemonStatusPresent:false`; exactly one `role="status"` INSIDE
+  the section, `aria-live="polite"`.
+  **INVERTED by #3195:** this case previously expected `settings-ingest-autostart-status` and the
+  `Background capture: On/Off/Unavailable on this platform` text. That id and those strings are
+  RETIRED — expecting them is now a FAIL of the smoke.
 
 - [ ] **S-4: The registry instrument reads this host truthfully — including "not installed".**
   `run-exitcode.ps1 -Command "powershell -File .opencode/tests/background-capture/registry-entry.ps1
@@ -62,11 +70,14 @@ entry). Seeded at issue **#3193**. Short sanity checks before the deeper rows in
   **Expected:** the row exists and is attributable to this run's prefix. A static-only receipt is a
   FALSE PASS.
 
-- [ ] **S-7: Registry restored after smoke.** `registry-entry.ps1 -Restore`.
+- [ ] **S-7: Registry restored after smoke.** `registry-entry.ps1 -Restore -BackupPath
+  .opencode/tmp/3195/registry-backup.json`.
   **Expected:** `RESTORED_MATCH=True` and exit 0 (the local that shadowed the `[switch]$Backup`
   parameter is gone; `-Restore` is callable). With NO backup file present it must print
   `ERROR: no backup to restore at <path> ...` and exit 2 — record that negative control too. The
   host's per-user Run entry must not be left mutated by a smoke run.
+  **Note (#3195):** pass `-BackupPath` on EVERY call in this smoke so the round's backup is its own
+  (`functional.md` F-0 records the pre-test state; the script's default path is the #3193 file).
 
 ## Suite-level pass/fail
 
