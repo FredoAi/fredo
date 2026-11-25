@@ -18,6 +18,7 @@ import {
   AVATAR_ONE_SHOT_CLIPS,
   resolveAvatarMotion,
 } from '../avatarClips';
+import { DOOM_CLIPS, DOOM_ONE_SHOT_CLIPS, type DoomClipName } from '../doomClips';
 import { FREDO_AVATAR_STATES, type FredoAvatarState } from '../fredoAvatarStates';
 
 /**
@@ -196,6 +197,49 @@ describe('avatar asset contract — the 12 clips this base plays', () => {
       expect(scale).toBeGreaterThan(3);
       expect(AVATAR_CLIPS[clip].durationSeconds / scale).toBeCloseTo(0.4, 6);
     }
+  });
+});
+
+describe('#3223 avatar asset contract — the six Doom performance clips', () => {
+  const DOOM_NAMES = Object.keys(DOOM_CLIPS) as DoomClipName[];
+
+  it('declares the six authored armour clips at 1.333 s, outside the frozen 12', () => {
+    expect(DOOM_NAMES).toHaveLength(6);
+    expect(DOOM_NAMES.sort()).toEqual(
+      ['doom-in', 'doom-idle', 'doom-mg', 'doom-out', 'doom-shoot', 'doom-sword'].sort(),
+    );
+    for (const name of DOOM_NAMES) {
+      expect(DOOM_CLIPS[name].durationSeconds).toBeCloseTo(1.333, 3);
+      expect(AVATAR_CLIPS).not.toHaveProperty(name);
+    }
+    // The 12-state contract is untouched by the parallel table.
+    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(12);
+  });
+
+  it('agrees with the authoring manifest on duration and loop flag', () => {
+    for (const name of DOOM_NAMES) {
+      const spec = DOOM_CLIPS[name];
+      const authored = manifest.clips.find((clip) => clip.name === name);
+      expect(authored, `manifest must carry the "${name}" clip`).toBeDefined();
+      expect(authored!.duration).toBeCloseTo(spec.durationSeconds, 3);
+      expect(authored!.loop, `"${name}" loop flag`).toBe(spec.loop);
+    }
+  });
+
+  it('carries every Doom clip in the shipped GLB at the authored duration', () => {
+    for (const name of DOOM_NAMES) {
+      const clip = glbClips.find((candidate) => candidate.name === name);
+      expect(clip, `GLB must carry the "${name}" clip`).toBeDefined();
+      expect(Math.abs(clip!.duration - DOOM_CLIPS[name].durationSeconds), `"${name}" duration`).toBeLessThan(0.01);
+    }
+  });
+
+  it('marks exactly `doom-in` / `doom-out` as one-shots', () => {
+    const oneShots = DOOM_NAMES.filter((name) => !DOOM_CLIPS[name].loop);
+    expect(oneShots).toEqual(['doom-in', 'doom-out']);
+    expect([...DOOM_ONE_SHOT_CLIPS]).toEqual(['doom-in', 'doom-out']);
+    // `doom-shoot` LOOPS: a flourish ended by a mixer `finished` would never end.
+    expect(DOOM_CLIPS['doom-shoot'].loop).toBe(true);
   });
 });
 
