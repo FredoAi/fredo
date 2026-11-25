@@ -39,15 +39,17 @@
     is whole-element transform only — the neutral gate uses the transform:0 frame, never a
     mid-animation frame.
 
-## F-3 (Q-4 / AC-2) — Four states visually distinguishable; base rects frozen across states
+## F-3 (Q-4 / AC-2) — the four states are visually distinguishable — **INVERTED #3210**
 
-- [x] F-3: Trigger each state and capture DOM + screenshot per state: idle (no overlay),
-      talk (mouth overlay in the hollow lower-face region), teleport-out (closed-eye lines +
-      shrink/fade + ≤1-frame energy streak), teleport-in (sparkle highlights + grow-in + settle).
-      **Expected:** the four state DOMs differ ONLY by the expression overlay `<g>`/whole-element
-      transform — probe the DOM rect set in each state: the 58 base rects are byte-identical
-      across ALL four states (the UI/UX frozen-geometry invariant). A viewer can read the state
-      from a glance at the 80×100 sm scale; idle = base figure only.
+- [ ] F-3: Trigger each state and capture the avatar crop per state: idle, talk, teleport-out,
+      teleport-in. Read `data-avatar-clip` beside each capture.
+  **Expected:** each state reports its own applied clip and each capture is distinguishable from the
+      others; `idle` is the only state whose clip is `idle`; the footprint is 80×100 in every state.
+  **INVERTED (#3210):** "the 58 base rects are byte-identical across ALL four states" and the
+      expression-overlay DOM clause are RETIRED — the SVG, the rect table and the overlay are deleted
+      (SC-2). Replacement row: `fredo-avatar/functional.md` F-AV-12.
+  - **Edge:** a state whose capture is indistinguishable from `idle` = FAIL; probe at the 80×100 sm
+    render; the teleport states are one-shots (sample via the in-page recorder).
   - **PASS (live, spec/2850).** Live DOM per-state rect-set probe: idle = 58 base rects ONLY (`baseRects:58`, `exprRects:0`, no `#fredo-expression`); talk = 58 base + 2 mouth overlay rects `(440,692,134,14)`/`(440,675,134,38)` (`totalRects:60`, `#fredo-expression[data-state=talk]`); teleport-out = 58 base + 3 rects `(323,564,68,14)`/`(623,564,68,14)`/`(499,180,16,520)` (`totalRects:61`); teleport-in = 58 base + 2 sparkles `(340,452,16,16)`/`(658,452,16,16)` (`totalRects:60`). **The 58 base rects are byte-identical across ALL 4 states** (frozen-geometry invariant). The expression is a separate `<g id="fredo-expression">` + whole-element wrapper motion (`companion.css` idles bob/glow 2.4s, talk scaleY, teleport-out shrink/fade 400ms, teleport-in grow+settle 400ms+50). The CSS overlay keyframes sit in `fredo-avatar.css` (scoped to `#fredo-expression`, never animating the base rects). During active talk streaming the 2×14px cursor blinked on `Fredo-cursor-blink` and the mouth overlay rendered. `aria-hidden` on the decorative `<svg>`; wrapper `aria-label="Fredo companion -- <state>"` + `data-state`.
   - **Edge:** the mouth (talk) must be legible at sm (no subpixel smear — crispEdges); the
     teleport-out brightness flash shows ≤1 frame; the mouth keyframe (~180 ms per half-cycle)
@@ -289,11 +291,15 @@
   - **Exit-gate note:** a static-only PASS with no F-17 receipt is a FALSE PASS under the live
     policy.
 
-## F-18 (Q-20 / AC-6) — Build + suite gates (geometry suite at the shared path)
+## F-18 (Q-20 / AC-6) — Build + suite gates
 
-- [x] F-18: `pnpm --filter @fredo/ui build` → zero TS errors; `pnpm --filter @fredo/ui test:run`
-      → green (the moved `fredoAvatarGeometry.test.ts` under `shared/fredo-avatar/__tests__/` +
-      all existing suites); repo grep for the removed assets/keyframes/fields/keys → zero.
+- [ ] F-18: `pnpm --filter @fredo/ui build` → zero TS errors; `pnpm --filter @fredo/ui test:run`
+      → green (all surviving suites, each with a non-zero executed count); repo grep for the removed
+      assets/keyframes/fields/keys → zero.
+  - **#3210 re-point:** the moved `fredoAvatarGeometry.test.ts` is **DELETED** — the gate now requires
+    the **re-pointed** `iconSourceParity.test.ts` green (non-zero count) plus `avatarAssetContract.test.ts`
+    green, and a build with the geometry module gone. The historical PASS below is a record of the
+    pre-cut-over tree.
   - **PASS (static/build, spec/2850).** `pnpm --filter @fredo/ui exec vitest run src/shared/components/fredo-avatar/__tests__/fredoAvatarGeometry.test.ts` → **7 tests passed** at the shared path. `pnpm --filter @fredo/ui test:run` → **52 files, 757 tests all passed** (the moved geometry suite + all existing suites green). `pnpm --filter @fredo/ui build` → exit 0, zero TypeScript errors (only the pre-existing chunk-size WARN, not a TS error). Repo grep `apps/ui/src` for `spritesheet.png`/`Fredo-sprite-loop`/`Fredo-sprite-once`/`ROW_Y`/`SHEET_DISPLAY_*`/`FRAMES_PER_ROW`/`Fredo_companion_color`/`Fredo_companion_auto_walk`/`toggleAutoWalk`/`setColor` → **ZERO** (all removed surfaces gone). `Fredo-cursor-blink` RETENTION confirmed (`companion.css:94` + used `SpeechBubble.tsx:160`). No Rust touched (no `cargo check` needed).
   - **Edge:** a dangling import of the deleted `spritesheet.png`/keyframe name/Context member
     anywhere (incl. `__tests__` fixtures) is a FAIL; Rust `cargo check` zero warnings if Rust is
@@ -324,11 +330,22 @@
 > `md` render — now BOTH surfaces render the identical `sm` geometry. The companion itself is
 > unchanged (see regression R-11).
 
-## F-20 (REQ-1/REQ-4) — Launcher sm and companion sm are the SAME 80×100 geometry
+## F-20 (REQ-1/REQ-4) — Launcher seat and companion render the SAME character at 80×100
 
-- [ ] F-20: Render the launcher mascot and the companion in the SAME theme. `tauri_webview_execute_js` reads every mounted avatar `<rect>` (x/y/width/height) in BOTH SVGs and both `offsetWidth`/`offsetHeight`; screenshot both at the neutral (transform:0) frame.
-  **Expected:** both SVGs carry the IDENTICAL 58-rect coordinate set, both `offsetWidth = 80` / `offsetHeight = 100` (aspect 1014:1264), both `shapeRendering="crispEdges"`, both single-accent `color="var(--accent-primary)"` + `fill="currentColor"`, both `aria-hidden`, no state overlay in idle. The launcher is no longer `md` — the previous 132×165 vs 80×100 difference is gone.
-  - **Edge:** repeat in a light preset AND the dark base; the companion's idle bob/glow is whole-element transform only — the neutral gate uses the transform:0 frame, never a mid-animation frame; reduced motion suppresses both without changing size. Reference #2850 F-2 + launcher F-44/F-47.
+- [ ] F-20: Render the launcher mascot and the companion in the SAME theme. `tauri_webview_execute_js`
+      reads, per surface, the avatar root's `data-avatar-render`/`data-avatar-clip`/
+      `data-avatar-body-color` and both `offsetWidth`/`offsetHeight`; screenshot both at the neutral
+      (transform:0) frame.
+  **Expected:** both surfaces render ONE `[data-avatar-render]` at `offsetWidth = 80` /
+      `offsetHeight = 100`; when both resolve the same state they report the SAME `data-avatar-clip`;
+      both roots are `aria-hidden`; no `<svg>` inside either root; the away/overlay surface renders
+      the same character. **#3210 re-point:** the 58-rect coordinate set, `shapeRendering` and the
+      `color="var(--accent-primary)"` SVG attribute are DELETED — parity is now clip + footprint +
+      the tint hook. Executable rows: `fredo-avatar/functional.md` F-AV-11 / F-AV-12.
+  - **Edge:** repeat in a light preset AND the dark base (the body tint follows the accent on both);
+    the companion's idle bob/glow is whole-element transform only — the neutral gate uses the
+    transform:0 frame, never a mid-animation frame; reduced motion suppresses both without changing
+    size. Reference #2850 F-2 + launcher F-44/F-47.
 
 ---
 
@@ -439,37 +456,32 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 > MCP driver `com.fredo.app`); LLM model + mmproj loaded for F-31..F-34; short idle timeout
 > for F-39.
 
-## F-30 (REQ-1 / AC-1, Q1) — Four new statuses exposed; all 8 states pairwise distinct
+## F-30 (REQ-1 / AC-1, Q1) — the states are exposed; each renders its OWN clip
 
-- [ ] F-30: Drive each of the 8 states — `idle`, `talk`, `teleport-out`, `teleport-in`,
-      `thinking`, `happy`, `playful`, `joking` — on the shared avatar. Per state, via
-      `tauri_webview_execute_js`, record the consumer wrapper `data-state` + `aria-label`;
-      `#fredo-expression` presence + its `data-state`; every overlay `<rect>` x/y/width/height;
-      `getComputedStyle(wrapper).animationName` and each overlay child's computed
-      `animationName`. Screenshot each and compare the 8 fingerprints.
+- [ ] F-30: Drive each state — `idle`, `talk`, `teleport-out`, `teleport-in`, `thinking`, `happy`,
+      `playful`, `joking` — on the shared avatar. Per state, via `tauri_webview_execute_js`, record the
+      consumer wrapper `data-state` + `aria-label`, the avatar root's `data-avatar-clip` +
+      `data-avatar-motion`, and the consumer wrapper's computed `animationName`. Screenshot each.
   **Expected:** `FredoAvatarState` (and `CompanionState`, re-exported from `apps/ui/src/index.ts`)
-  include `thinking`/`happy`/`playful`/`joking`; every new state renders a NON-empty, UNIQUE
-  fingerprint — a distinct `#fredo-expression[data-state=<s>]` overlay rect set and/or a
-  distinct whole-element `animationName`; all 8 fingerprints are pairwise different (no new
-  state collapses to `talk`/`idle`); `idle` = the 58 base rects only, no overlay; each is
-  distinguishable at the 80×100 sm render. Probe at the mounted companion + mascot sm scale
-  AND the shared component at md (132×165) — the vocabulary is scale-agnostic.
-  **Probe contract (UI/UX §3):** thinking → `.fredo-thinking-dot` ×3 + `.fredo-thinking-bubble`
-  ×3 + `fredo-thinking-ponder`; joking → `.fredo-joking-mouth` + `.fredo-joking-tongue` +
-  `.fredo-joking-laugh` ×2 + `fredo-joking-jiggle`; happy → `.fredo-happy-mouth` ×5 +
-  `.fredo-happy-star` ×3 + `fredo-happy-bounce`; playful → `.fredo-playful-smirk` ×2 +
-  `.fredo-playful-brow` + `.fredo-playful-star` + `fredo-playful-wobble`.
-  - **Edge:** a new state reusing the `talk` overlay DOM (same rect set AND same animationName)
-    = FAIL; overlay rects at integer viewBox coords (crisp at sm); `teleport-out`/`teleport-in`
-    and all four new states remain mutually distinct. Reference #2850 F-3 + #2852 F-20.
+      include `thinking`/`happy`/`playful`/`joking`; each state reports `data-avatar-clip === <state>`
+      (the mixer's APPLIED clip) and `data-state === <state>`; **`idle` is the only state whose
+      applied clip is `idle`** (no new state collapses to `idle`/`talk`); each is distinguishable at
+      the 80×100 render; probe at the mounted companion + mascot AND the component at `md` in jsdom.
+  - **#3210 re-point:** the `#fredo-expression` overlay rect set and its "overlay rect count" probe
+    contract are DELETED. The per-state discriminator is `data-avatar-clip` + the capture (fast
+    states via the in-page recorder). Pairwise pixel-delta perceptibility is **AC1 = #3224's** row.
+    Executable rows: `fredo-avatar/functional.md` F-AV-12.
+  - **Edge:** a state reusing another's applied clip = FAIL; an unreachable recipe is a BLOCKED-harness
+    (named), never a static PASS. Reference #2850 F-3 + #2852 F-20.
 
 ## F-31 (REQ-2 / AC-2, Q2) — Companion LLM wait shows `thinking` (not `talk`)
 
 - [ ] F-31: Start `tauri_ipc_monitor`; single-click the companion. Interval/rAF-sample the
       wrapper `data-state` + the bubble text from the click through the pending phase.
   **Expected:** during the pending phase (bubble `💭 Thinking...`, before the first real token)
-      `data-state="thinking"` and `#fredo-expression[data-state=thinking]` render — NOT `talk`.
-      The state is observable from the click until the first streamed token.
+      `data-state="thinking"` and `data-avatar-clip="thinking"` (the applied clip) — NOT `talk`/`idle`.
+      The state is observable from the click until the first streamed token. (**#3210:** the
+      `#fredo-expression[data-state=thinking]` overlay no longer exists — read the clip hook.)
   - **Edge:** the model-mid-load `⏳ Loading model...` path shows `thinking` (never a stuck
     `talk`/`idle`); Ctrl+right-click during the wait hands off cleanly (no stuck `thinking`).
     Reference #2850 F-7.
@@ -477,10 +489,11 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 ## F-32 (REQ-2 / AC-2, Q2) — Active joke delivery shows `joking`
 
 - [ ] F-32: While F-31's joke stream is live (first token → `llm-done`), sample the wrapper
-      `data-state` + overlay.
-  **Expected:** from the first real token through stream-end `data-state="joking"` with its
-      distinct overlay — NOT `talk`. On `llm-done` the state shows `happy` (~1400 ms hold) then
-      returns to rest (the existing 5 s message-hide); console clean.
+      `data-state` + the avatar root's `data-avatar-clip`.
+  **Expected:** from the first real token through stream-end `data-state="joking"` with
+      `data-avatar-clip="joking"` — NOT `talk`. On `llm-done` the state shows `happy` (~1400 ms hold)
+      then returns to rest (the existing 5 s message-hide); console clean. (**#3210:** the overlay
+      group is deleted; the applied clip is the discriminator.)
   - **Edge:** an instant/zero-token stream still transitions `thinking`→`joking`→rest; the
     streaming cursor (`Fredo-cursor-blink`) still blinks; control tokens stripped from the
     bubble text. Reference #2850 F-7.
@@ -502,9 +515,10 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - [ ] F-34: Play TicTacToe to each outcome (X win / Fredo win / draw) and complete a joke;
       probe the wrapper `data-state` + overlay on each completion.
   **Expected:** on ANY TicTacToe outcome (X win / Fredo win / draw — UI/UX §4 default) and on
-      joke completion `data-state="happy"` + `#fredo-expression[data-state=happy]` render,
-      distinct from `idle` and `playful`. `happy` is transient — it returns to the resting
-      state after its moment.
+      joke completion `data-state="happy"` + `data-avatar-clip="happy"` render, distinct from
+      `idle` and `playful`. `happy` is transient — it returns to the resting clip after its moment.
+      (**#3210:** the overlay is deleted by the cut-over (the expression lives in the clip); the
+      applied clip is the discriminator.)
   - **Edge:** win vs loss vs draw classification per the UI/UX draft (Discussion #4);
     `happy` on the companion AND the mascot surface (F-36); a joke that ends in an error
     does not falsely show `happy`. Reference #2850 F-7/F-8.
@@ -514,8 +528,8 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 - [ ] F-35: Let the companion rest (no interaction) past its status moment and probe; repeat
       on the mascot with the companion OFF/auto-hidden.
   **Expected:** on the `useFredoRestingCadence` resting trigger (delay ≈12 s sustained rest →
-      `playful` for ≈1.8 s, then back to `idle`) `data-state="playful"` + its distinct
-      overlay/motion render, visibly distinguishable from `idle` and `happy` per F-30.
+      `playful` for ≈1.8 s, then back to `idle`) `data-state="playful"` + `data-avatar-clip="playful"`
+      render, visually distinguishable from `idle` and `happy` per F-30.
   - **Edge:** playful-vs-idle semantics keyed to the drafted definition (Discussion #1);
     grounded in the real resting lifecycle, not a hardcoded class. Reference F-30.
 
@@ -523,36 +537,43 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 
 - [ ] F-36: With the companion OFF (or auto-hidden) so the desktop/launcher mascot renders,
       drive/expose each new status on the mascot surface and probe the mascot wrapper
-      `data-state` + the `#fredo-expression` overlay; then repeat on the companion.
+      `data-state` + the avatar root's `data-avatar-clip`; then repeat on the companion.
   **Expected:** the mascot wrapper (`.fredo-avatar-idle`, currently a hardcoded
       `data-state="idle"`) and the companion wrapper (`.fredo-companion-avatar`) BOTH carry
-      the new statuses via the same shared `FredoAvatarState` and render the matching
-      expression overlay. Exactly one Fredo at a time is preserved (#2853 F-21).
+      the new statuses via the same shared `FredoAvatarState` and render the matching applied clip.
+      Exactly one Fredo at a time is preserved (#2853 F-21). (**#3210:** read `data-avatar-clip`, not
+      an expression overlay.)
   - **Edge:** the mascot's status source/trigger is defined by the Architect (Discussion #3);
     switching the companion ON/OFF mid-status does not leave the mascot stuck in a status;
     per-window presence rules hold. Reference #2852 F-20 + #2853 F-21/F-22.
 
-## F-37 (REQ-4 / AC-4, Q4) — Frozen 58 base rects byte-identical across ALL 8 states
+## F-37 (REQ-4 / AC-4, Q4) — the reserved FOOTPRINT is byte-identical across ALL states — **INVERTED #3210**
 
-- [ ] F-37: In each of the 8 states read every mounted avatar `<rect>` (x/y/width/height) and
-      diff the base rects against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
-  **Expected:** the 58 base rects are byte-identical across ALL states
-      (idle/talk/teleport-out/teleport-in/thinking/happy/playful/joking) — a new status only
-      adds its `#fredo-expression` overlay; it never replaces or mutates a base rect. The
-      first 58 rects in every state equal the 58-item source set.
-  - **Edge:** a status that adds/removes/reorders base rects = FAIL; overlay rects are appended
-    after the 58; probe both sm (companion/mascot) and md renders. Reference #2850 F-3.
+- [ ] F-37: In each state read the avatar root's `offsetWidth`/`offsetHeight` and the WINDOW's
+      `scrollWidth/Height`; on BOTH surfaces and at the 900×600 minimum.
+  **Expected:** the reserved footprint is 80×100 in EVERY state (idle/talk/teleport-out/teleport-in/
+      thinking/happy/playful/joking, and the #2917 states) — a state change never resizes the box, the
+      seat slot, or the launcher column. **INVERTED (#3210):** the previous expectation — "the 58 base
+      rects are byte-identical in every state" — is **retired** with the SVG: the rect table, the
+      overlay and the geometry module are deleted (SC-2), so a rect-count assertion would be a false
+      red. The surviving invariant is the footprint + `data-avatar-clip` identity
+      (`fredo-avatar/functional.md` F-AV-3 / F-AV-12).
+  - **Edge:** a state sampled mid-teleport (the wrapper re-keys; the box must not jump); probe both
+    surfaces; reduced motion must not change the size.
 
-## F-38 (REQ-4 / AC-4, Q4) — Reduced motion respected; expression still legible
+## F-38 (REQ-4 / AC-4, Q4) — Reduced motion: a STILL frame, no animation loop
 
-- [ ] F-38: Drive a `prefers-reduced-motion: reduce` pass and re-run the F-30 state legs;
-      read the computed `animation-name` on the wrapper + overlay.
-  **Expected:** under reduced motion the whole-element motion is suppressed (computed
-      `animation-name:none`, or the teleport opacity crossfade at ~400 ms) while each state's
-      expression overlay stays legible and distinguishable; the new statuses do not become
-      motion-only.
-  - **Edge:** every new state under reduced motion must remain readable via the overlay
-      (not motion alone); the teleport timing is preserved. Reference #2850 F-19 + #2852 E-11.
+- [ ] F-38: jsdom + a stubbed `matchMedia('(prefers-reduced-motion: reduce)')` (G-053: the live
+      webview cannot be flipped); render the component through the production poster path and drive
+      the renderer factory seam; re-run the F-30 state legs.
+  **Expected:** `data-avatar-motion="still"` for every state, exactly ONE rendered frame per mount and
+      ZERO animation-loop ticks after it; each state is still distinguishable (its applied clip is
+      still set — motion is what is suppressed, not state); no `opacity:0` and no strobe (WCAG 2.3.1);
+      the consumer wrapper's `fredoAvatarIdle.css` motion is suppressed by its own rule.
+  - **#3210:** the expression overlay is deleted — "legible" now means the still frame of the resolved
+    clip is painted (F-AV-5's ink metric). Executable row: `fredo-avatar/functional.md` F-AV-4.
+  - **Edge:** `talk` streaming AND not streaming; a one-shot under reduced motion must not loop; the
+    teleport timing is preserved (R-19). Reference #2850 F-19 + #2852 E-11.
 
 ## F-39 (REQ-4 / AC-4, Q4) — No state sticks; teleport timing unchanged
 
@@ -850,7 +871,12 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 ## F-60 (R-1b/R-1c / AC1, Q-2/Q-3) — OFF ⇒ decorative mascot at the SAME seat; no corner state anywhere
 
 - [ ] F-60: Toggle the companion OFF; probe the seat. Then, after both an ON and an OFF, probe for any bottom-right/corner position state (DOM + grep the changed companion files for the removed corner default).
-  **Expected:** OFF ⇒ the decorative mascot (`.fredo-avatar-idle`, `<FredoAvatar size="sm">`, 58 rects) renders at the SAME centre home seat; the interactive seat entity is gone; persisted `Fredo_companion_visible="false"`. No component reads/writes a bottom-right default position (the old `{x: innerWidth−120, y: innerHeight−160}` corner default is REMOVED, not merely unused); no corner wrapper node exists at settle; the centre-seat x/y is the slot's flow position, not fixed corner coords.
+  **Expected:** OFF ⇒ the decorative mascot (`.fredo-avatar-idle`, `<FredoAvatar size="sm">`, one
+      painted `[data-avatar-render]` at 80×100) renders at the SAME centre home seat; the interactive
+      seat entity is gone; persisted `Fredo_companion_visible="false"`. No component reads/writes a
+      bottom-right default position (the old `{x: innerWidth−120, y: innerHeight−160}` corner default
+      is REMOVED, not merely unused); no corner wrapper node exists at settle; the centre-seat x/y is
+      the slot's flow position, not fixed corner coords. (**#3210:** "58 rects" → the render hook.)
   - **Edge:** OFF with the terminal open; OFF immediately after an auto-return; OFF while a game bubble is open (bubble cleaned); grep the changed files for the corner default.
 
 ## F-61 (R-2a/R-2b/R-2c / AC2, Q-4/Q-5/Q-6) — Turn-on welcome bubble, ~4 s auto-hide, no TTS (G-140 transient capture)
@@ -2172,6 +2198,15 @@ clean.
 
 ## #2917 extension — solid Fredo + richer status vocabulary (companion seat)
 
+> **#3210 RETIREMENT (read first).** The SVG this block measures is DELETED by the 3D cut-over:
+> `#fredo-interior`, the interior fill token, the `#fredo-expression` overlay and the 58-rect mask
+> **do not exist**. **F-116..F-119 are RETIRED as executable rows — do not run them.** The properties
+> they carried survive as: "the body is opaque" (true by construction for a 3D body; see
+> `fredo-avatar/functional.md` F-AV-5 ink metric), "the body follows the accent live"
+> (`fredo-avatar/functional.md` F-AV-6/F-AV-7), and "each state renders distinctly"
+> (`fredo-avatar/functional.md` F-AV-12). The vocabulary rows that need no fill (F-120/F-121) stay in
+> force below with their mechanism re-pointed to a capture of the avatar crop.
+
 > Issue #2917 fills the avatar's hollow head interior + mouth void (additively) and audits/extends the
 > status vocabulary. Rows map 1:1 to the QA Plan in `.opencode/tmp/2917/triage.md` `## QA Expert`
 > (Q-1..Q-9). **Verification policy: live** — every row is judged on RENDERED output. A PASS built only
@@ -2213,16 +2248,13 @@ clean.
 ## F-118 (Q-2 / REQ-2 / AC2) — Every existing expression stays legible over the fill
 
 - [ ] F-118: Force `talk`, `teleport-out`, `teleport-in`, `thinking`, `happy`, `playful`, `joking` and
-      `idle`; per state capture a still, probe `#fredo-expression[data-state=<s>]` rects and the fill
-      layer, and read the DOM paint order.
-  **Expected:** every distinguishing shape renders ON TOP of the fill and is visible (talk mouth toggle;
-      teleport-out closed-eye lines + streak; teleport-in sparkles; thinking dots + bubble trail; happy
-      arc + stars; playful smirk/brow/cheek star); each state is distinguishable at a glance from
-      `idle`, `talk` and every other state (vision/human filmstrip read at sm); the overlay `<g
-      id="fredo-expression">` is a SEPARATE conditional sibling painted AFTER the fill.
-  - **Edge (negative):** a `currentColor`-over-`currentColor` overlay invisible in principle (#2850
-    E-25 pattern) is a FAIL; no expression hidden, blended away, or drawn beneath the fill; probe at
-    80×100 sm.
+      `idle`; per state capture the avatar crop and read `data-avatar-clip`.
+  **Expected:** each state's applied clip is its own and each capture is distinguishable at a glance
+      from `idle` and every other state (vision/filmstrip read at sm); no state renders `idle`.
+      **#3210:** the expression overlay (`#fredo-expression`) and the paint-order clause are RETIRED —
+    the expression is part of the clip. Executable row: `fredo-avatar/functional.md` F-AV-12.
+  - **Edge (negative):** a state whose crop is indistinguishable from `idle` is a FAIL; probe at
+    80×100 sm and report the crop box.
 
 ## F-119 (Q-3 / REQ-3 / AC3) — Per-state before→after audit table (dense metric)
 
@@ -2264,16 +2296,17 @@ clean.
 
 ## F-122 (Q-6 / REQ-6 / AC5) — Frozen geometry + overlay separation + reduced-motion legibility
 
-- [ ] F-122: In EVERY state (existing + new) read the 58 base rects and diff against
-      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; read where whole-element motion lives; drive the
-      reduced-motion pass; probe `#fredo-expression` presence per state.
-  **Expected:** 58 base rects byte-identical in every state; the expression is a separate conditional
-      overlay `<g>`; whole-element motion stays on the CONSUMER wrapper (never inside `FredoAvatar`);
-      under reduced motion every distinguishing frame stays legible with NO `opacity:0` and NO strobe
-      (WCAG 2.3.1 — motion suppressed, shape retained).
-  - **Edge:** the driver cannot flip `prefers-reduced-motion` live (G-053) ⇒ named blocker + a
-    static-CSS/unit pin; a strobe (>3 flashes/s) or an `opacity:0` state is a FAIL; the geometry/sizes
-    suites pass UNMODIFIED.
+- [ ] F-122: In EVERY state read the avatar root's footprint + `data-avatar-clip`; read where
+      whole-element motion lives; drive the reduced-motion pass (jsdom stub, G-053).
+  **Expected:** the footprint is 80×100 in every state; **whole-element motion stays on the CONSUMER
+      wrapper** (never inside `FredoAvatar` — the renderer animates only inside the canvas, #2850);
+      under reduced motion the rendered still frame is legible with NO `opacity:0` and NO strobe
+      (WCAG 2.3.1 — motion suppressed, the resolved clip's still frame retained).
+      **INVERTED (#3210):** "58 base rects byte-identical" and "the expression is a separate overlay
+      `<g>`" are RETIRED with the SVG — a rect assertion would be a false red. Replacement rows:
+      `fredo-avatar/functional.md` F-AV-3 (footprint) + F-AV-4 (reduced motion).
+  - **Edge:** a strobe (>3 flashes/s) or an `opacity:0` state is a FAIL; the resolver/sizes suites must
+    pass UNMODIFIED (the geometry suite is deleted — see regression R-10).
 
 ## F-123 (Q-6 / REQ-6 / AC5) — Existing per-state pins still pass
 
@@ -2329,8 +2362,9 @@ clean.
 > - **LV4** the pure pins: `resolveCompanionAvatarState` + the reply-request builder + the object
 >   parser (in-repo unit tests).
 >
-> **Frozen hooks:** wrapper `.fredo-companion-avatar` `data-state`; `#fredo-expression[data-state=…]`;
-> `[data-testid="fredo-reply-surface"]`; `[data-testid="fredo-reply-scroll"]`;
+> **Frozen hooks:** wrapper `.fredo-companion-avatar` `data-state`; avatar root `[data-avatar-render]`
+> / `[data-avatar-clip]` / `[data-avatar-motion]` (**#3210: `#fredo-expression[data-state=…]` is
+> DELETED — read the applied clip**); `[data-testid="fredo-reply-surface"]`; `[data-testid="fredo-reply-scroll"]`;
 > `[data-testid="fredo-companion-live-region"]`; `[data-testid="fredo-game-bubble"]`;
 > `[data-testid="launcher-command-bar"]`/`"launcher-command-input"`. Vocabulary `FREDO_AVATAR_STATES`
 > (`apps/ui/src/shared/components/fredo-avatar/fredoAvatarStates.ts`); resolver
@@ -2351,7 +2385,8 @@ clean.
       contract, NOT a tool call. The parsed status is applied to the companion's user-visible state
       for that turn: (a) the two real-intent replies render DIFFERENT `data-state` values (record
       both; each ∈ `FREDO_AVATAR_STATES`); (b) `happy` vs `joking` render as different `data-state`
-      + a different `#fredo-expression[data-state]` overlay; (c) absent status → the Architect-bound
+      + a different `data-avatar-clip` (the applied clip; `#fredo-expression` is deleted by #3210);
+      (c) absent status → the Architect-bound
       safe default (record its literal; ∈ `FREDO_AVATAR_STATES`). The status word never appears as
       text in `[data-testid="fredo-reply-surface"]`.
   - **Edge:** a status equal to a base state (`talk`/`idle`) still renders; two consecutive turns
@@ -2498,6 +2533,15 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 ---
 
 ## #2922 extension — the WHOLE body must render solid (revises #2917's head-only fill)
+
+> **#3210 RETIREMENT (read first).** The SVG fill these rows measure (`#fredo-interior`, the
+> geometry-derived `seeThrough`/`leak` masks over the 58-rect rasterisation, the 17 interior bands)
+> is **DELETED** with the SVG render path. **F-135..F-143 are RETIRED as executable rows — do not run
+> them.** The property they carried ("no surface shows through the body") is now true **by
+> construction** for an opaque 3D mesh; the surviving checks are
+> `fredo-avatar/functional.md` F-AV-5 (ink present, never blank), F-AV-14 (one render path) and
+> F-AV-12 (each state renders its own clip). The state-recipe table below IS still binding and is
+> carried into `fredo-avatar/functional.md` — use it from there.
 
 > Issue #2922 revises #2917 (PR #2919): #2917 filled the head interior + mouth void ONLY
 > (`FREDO_AVATAR_INTERIOR_RECTS`, 9 bands, `y = 106…761`, `fredoAvatarGeometry.ts:184-194`); the BODY
