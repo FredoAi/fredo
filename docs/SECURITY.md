@@ -60,6 +60,7 @@ The embedded-PostgreSQL subsystem ships the **lifecycle supervisor, the PostgreS
 **Protections:**
 - The managed postmaster is started on every boot (PostgreSQL is the default engine); it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
 - Spawned/stopped only through `applications/pg_supervisor` — by the Fredo desktop process itself; nothing else starts it ad-hoc. That process holds the **exclusive data-dir lock**, so a second instance **fails** to start a cluster instead of attaching to, adopting, or sharing the running one (there is no descriptor-published cluster and no non-GUI owner)
+- The resident Fredo process is the **only** owner of both the cluster and the OTLP receivers, and a login launch does not change that: `"<current_exe>" --background` starts the same single process with no window shown, so there is no second owner even when no window exists
 - Every start/readiness/stop wait carries a **finite wall-clock cap** with a hard-kill (`taskkill /T /F`) fallback and guaranteed teardown on normal, error, and panic paths — the observed ~11 h unbounded `pg.stop()` hang (#2948) is closed
 - A PID-reuse-guarded startup sweep reclaims a previous run's orphan (killed only when its image is `postgres.exe`); an exclusive data-dir lock prevents two launches from touching one cluster
 - The cluster password is a generated local-only secret stored in the **OS keychain** (service `fredo.postgres`, account `loopback:password`); it is never written to a file, a log, or telemetry. A fixed loopback-only fallback is used only when the keychain is unavailable (never logged)
@@ -73,6 +74,7 @@ The embedded-PostgreSQL subsystem ships the **lifecycle supervisor, the PostgreS
 **Limitations:**
 - The loopback cluster is reachable by any process on the same machine (no per-client auth beyond the local password)
 - A hard-kill/power-loss can still orphan a postmaster; the next start's sweep reclaims it (residual accepted for this slice)
+- Capture and the cluster run for exactly as long as the Fredo process does, and that is accepted behaviour rather than a fault: quitting ends them through the bounded teardown, while a crash, a force-kill, or a reboot before sign-in ends them abruptly. The next start resumes capture (the login entry is a per-user value, so nothing starts before sign-in) and reclaims a postmaster a hard kill orphaned. Full mechanism: [ARCHITECTURE.md → The resident shell](ARCHITECTURE.md#the-resident-shell)
 - With `bundled`, the archive is fetched at **build time** from the crate's upstream host, outside Fredo's SHA-pinned integrity surface (see above)
 
 ---

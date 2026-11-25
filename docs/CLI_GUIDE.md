@@ -3,9 +3,15 @@
 The `fredo` binary is installed alongside the desktop app and added to your system PATH. It has two modes:
 
 1. **GUI mode** (no arguments) — launches the Fredo desktop window
-2. **CLI mode** (with arguments) — forwards commands to the running app via the local IPC socket
+2. **CLI mode** (with arguments) — forwards commands to the running Fredo process via the local IPC socket
 
-> **Prerequisite**: The Fredo desktop app must be running for CLI commands to work — except `fredo companion probe`, which is self-contained. If the app is not open, a CLI command prints an error to stderr and exits with code `2`.
+> **Prerequisite**: The Fredo **process** must be running for CLI commands to work — a window is not required — except `fredo companion probe`, which is self-contained. If no Fredo process is running, a CLI command prints an error to stderr and exits with code `2`.
+
+## How Fredo runs
+
+Fredo is one resident process. It owns the embedded PostgreSQL cluster and the OTLP receivers, and it serves the local IPC socket the `fredo` CLI talks to. **The IPC socket belongs to the process, not to a window**: a login launch (`"<current_exe>" --background`) serves CLI commands, the receivers and the ingest pipeline with no window on screen, and closing the main window destroys the webview while capture continues. The **notification area** icon is the control surface and offers exactly two verbs — **`Open`** shows a hidden or rebuilds a destroyed main window, **`Quit`** ends the process and runs the bounded teardown. A second launch does not start a second stack: it hands off to the resident instance, which shows its main window, and the second process exits.
+
+Settings → **Background capture** installs one per-user login entry that starts Fredo **at sign in with no window** — its command is exactly `"<current_exe>" --background` — and needs no administrator rights; disabling the toggle removes the entry. Capture runs exactly as long as the process does, so it ends on quit, a crash, a force-kill, or a reboot before sign-in. Full mechanism: [ARCHITECTURE.md → The resident shell](ARCHITECTURE.md#the-resident-shell).
 
 ## Commands
 
@@ -212,7 +218,7 @@ fredo companion probe [--prompt <TEXT>]
 
 > `fredo companion probe` runs entirely in this process: no app instance is needed, and nothing is written to the app's persisted companion state.
 
-> **Login auto-start.** Settings → **Background capture** manages a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`); disabling it removes the entry. An entry written by an earlier version (`fredo ingest`) is migrated in place — at startup or on the next toggle — and an entry the product does not own is never modified. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
+> **Login auto-start.** Settings → **Background capture** manages a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`); disabling it removes the entry, and no administrator rights are required. An entry an earlier version wrote is rewritten in place — at startup or on the next toggle, with its enabled state preserved — and an entry the product does not own is never modified. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
 
 ---
 
@@ -236,7 +242,7 @@ Setup is driven through the **Fredo Setup** wizard in the Fredo UI — reachable
 
 ## Fallback Behaviour
 
-If the Fredo desktop app is **not running**, CLI commands exit with code `2` and print:
+If no Fredo **process** is running, CLI commands exit with code `2` and print:
 
 ```
 Fredo app is not running. Start it first with `fredo` (no arguments), then retry.
