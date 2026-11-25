@@ -50,6 +50,24 @@ instrument output that produced them.
   open `main` and check the session history does not flash `No sessions yet` (the #3192 F-6c
   gate). Record which surface rendered the fixture.
 
+- [ ] **E-10 (#3195) — a capture STATUS read that never answers.** What does the pane do if the
+  first `stream_health` invoke neither resolves nor rejects (a hung bridge)? Expected by contract:
+  the region stays `aria-busy="true"` with a skeleton and NEVER renders `Capture: Not running`
+  (unresolved ≠ stopped). There is no product seam to hang the bridge; if you cannot induce it,
+  record the blocker and cite the component pin (`ingestFailure`/`unknown` legs) instead — never
+  report a guessed outcome as observed.
+
+- [ ] **E-11 (#3195) — two Settings webviews at once.** Open Settings, then invoke
+  `open_app_window { appId: 'settings' }` again (the builder is focus-if-exists). Does the second
+  call create a SECOND webview (two panes, two pollers, two `role="status"` regions in the
+  document) or focus the existing one? Expected: exactly ONE `app-settings` window and one pane.
+  Record the window list and the document-wide live-region count with the observation that the
+  STATUS BAR is itself a live region (a count of 2 is not by itself a defect).
+
+- [ ] **E-12 (#3195) — the capture line across a theme switch mid-state.** Put the pane in the
+  `not running` state (F-10b's recipe) and toggle light↔dark. Expected: the warning/success tokens
+  re-resolve (no literal colour left behind), the word line unchanged, no console error.
+
 ## Notes
 
 - Do not invent instruments: if a probe needs a new lever, report it to the QA Expert as a suite
