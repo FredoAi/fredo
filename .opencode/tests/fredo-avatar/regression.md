@@ -69,17 +69,33 @@
     (`LauncherShell.tsx:1765,1773`; `CompanionEntity.tsx:1875,1882`) — the plan's SC-1 `md` clause
     is bound to this row (see `## Discussion`).
 
-## R-AV-6 `[GUARD]` — names MOVED to #3223 / #3224 must not appear in base code
+## R-AV-6 `[GUARD]` — names still MOVED to #3224 must not appear; #3223's landed names are LEGITIMATE
 
 - [ ] R-AV-6: Comment-stripped grep the base code for `data-avatar-doom-phase`,
-      `resolveAvatarClip`, `doomPerformance`, `poster-detail-doom`, the 11 emotion ids
+      `resolveAvatarClip`, `poster-detail-doom`, the 11 emotion ids
       (`uwu`,`love`,`sad`,`surprised`,`sleepy`,`skeptical`,`confused`,`silly`,`squint`,`angry`,
       `funny`) and a 23-member `FREDO_AVATAR_STATES`; run a non-vacuity control against a tree that
       DOES carry them.
   **Expected:** zero hits in base code; `FREDO_AVATAR_STATES.length === 12`; the durable-suite rows
-      that own those names are POINTERS to #3223/#3224, never re-assertions.
-  - **Edge:** a pointer sentence that NAMES a moved hook is compliance (judge polarity); the base
-    must not pre-create a stub Doom machine or a widened vocabulary.
+      that own those names are POINTERS to **#3224**, never re-assertions.
+  - **Edge:** a pointer sentence that NAMES a moved hook is compliance (judge polarity); above all the
+    base must not pre-create **#3224's** widened vocabulary. (#3223's own Doom machine is legitimate —
+    it lives in `doomPerformance.ts`/`doomClips.ts`, and `FredoAvatar.tsx` still takes a plain boolean
+    and names none of it.)
+  - **AMENDED by #3223 — `doomPerformance` (and `doomClips`) are REMOVED from the banned list.** This
+    spec LANDS `doomClips.ts` (`DOOM_CLIPS`, `DOOM_ONE_SHOT_CLIPS`, `DOOM_WEAPON_ORDER`,
+    `DOOM_WEAPON_CLIP`, `DOOM_SUPPRESSING_STATES`, `isDoomClipName`, `DoomClipName`, `DoomWeapon`) and
+    `doomPerformance.ts` (`doomPerformance`, `DOOM_FLOURISH_INTERVAL_MS`, `DOOM_FLOURISH_MS`,
+    `resolveDoomClip`, `advanceDoomWeapon`, `getDoomWeapon`, `setDoomPerformanceEngaged`,
+    `completeDoomOneShot`, `setDoomPerformanceSuspended`, `getDoomPerformanceSnapshot`,
+    `subscribeDoomPerformance`, `resetDoomPerformanceForTests`). Keeping either name banned reddens
+    this guard on the spec's own success — the ban is NARROWED, not dropped: every name above still
+    has zero hits.
+  - **Universe (G-441):** the base avatar PRODUCT tree (the tree minus `__tests__`/`__mocks__`/
+    `*.test.*`), comment-stripped; report the scanned count, the excluded count and the tree the scan
+    ran in, plus the non-vacuity control's hit list. `FredoAvatar.tsx` still imports nothing from the
+    Doom store — the shell takes a plain boolean — and the #3210 source scan
+    (`fredoAvatarShell.test.tsx:151-172`) stays green UNMODIFIED.
 
 ## R-AV-7 `[RETAINED]` — the resolver and the size values do not move
 
@@ -118,3 +134,27 @@
   **Expected:** every frame shows ink inside the avatar box (poster or canvas) — the seat never
       collapses to background for even one frame; the box rect is constant across the remount.
   - **Edge:** a remount mid-crossfade; a remount while the asset is still loading.
+
+## R-AV-11 `[NEW]` (REQ-10 — UX-17) — click / double-click / Ctrl+right-click with Doom ENGAGED
+
+- [ ] R-AV-11 Engage Doom Mode and settle into the armour idle (`get_doom_mode_status.phase ===
+      "active"`, `data-avatar-clip` = a doom weapon clip). Then drive each gesture from `R-AV-3` again
+      on the LIVE engaged surface, reading `data-state` / `data-streaming` / `data-avatar-clip` and
+      capturing each leg.
+  **Expected (each leg identical to the shipped tree, plus the overlay's independence):**
+      (a) **single click** — the composer opens / the joke fires: `data-state` reaches `thinking` and
+      then `joking` while `data-avatar-clip` STAYS the doom weapon clip (the armour overlay does not
+      consume or block the flow), and the reply surface behaves as `F-7`/`R-AV-3` describe;
+      (b) **double click** — the Tic-Tac-Toe card toggles and measures exactly **208×268**
+      (`[data-testid="fredo-game-bubble"]`), no joke fires (the 250 ms discriminator,
+      `CompanionEntity.tsx:1632-1656`), and a legal X→O move still completes;
+      (c) **Ctrl+right-click** — leave and arrive performances still play and the companion lands at
+      the shipped clamped target (`F-AV-27` owns the Doom-specific suspension clause; this row asserts
+      the gesture's OUTCOME is unchanged), ending on a resting clip, never mid-teleport.
+      Captures: `doom-on-click.jpeg`, `doom-on-doubleclick.jpeg`, `doom-on-teleport.jpeg`.
+  - **Reddens after the change:** the engagement is what this row needs — on `main`'s tip no doom clip
+    exists, so the invariant clause ("the clip stays a doom weapon clip while the flow moves") cannot
+    be produced. The three gesture outcomes alone are green today and are the `[RETAINED]` half
+    (`R-AV-3`), which must stay green unchanged.
+  - **Edge:** a click during `doom-in` and during `doom-out`; the discriminator boundary (~240 ms =
+    double, ~260 ms = single); a teleport while `flourishing`; the gesture with the composer open.
