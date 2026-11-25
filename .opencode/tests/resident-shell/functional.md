@@ -31,8 +31,9 @@ tauri_webview_execute_js(script="(() => window.__TAURI_INTERNALS__.invoke('<comm
 - `open_main_window` → `{ recreated, focused }` — the SAME `ensure_main_window` the `tray-open`
   item dispatches.
 - `quit_app` → the SAME `quit()` (`AppHandle::exit(0)`) the `tray-quit` item dispatches.
-- `pg_supervisor_status` → `{ state, port, pid, dataDir, attached, … }` (`pid` = postmaster PID
-  while `Ready`).
+- `pg_supervisor_status` → `{ state, port, pid, dataDir, logPath, failureKind }` (`pid` = this
+  process's postmaster PID while `Ready`; **no `attached` key and no `attached` state** — the
+  attach mode was removed by #3194, `.opencode/tests/resident-ingest/functional.md` F-1/F-4).
 - **Close the main window through the runtime close path:**
   `…invoke('plugin:window|close', { label: 'main' })` — `Window::close()` emits
   `RunEvent::CloseRequested` then destroys (capability `core:window:allow-close` is granted to
