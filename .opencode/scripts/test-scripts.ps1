@@ -1,6 +1,178 @@
 param(
-  [string]$TestIssue = "633"
+  [string]$TestIssue = "633",
+  # Opt-in LIVE proof for `dev-env.ps1 -Action WebviewOnly` (frontend-only
+  # serving for post-quit legs). The default harness run stays fully offline;
+  # this mode runs ONLY that one live leg (start -> HTTP probe -> idempotent
+  # second call -> stop -> port closed) and exits with its status.
+  [switch]$SelfTestWebviewOnly
 )
+
+if ($SelfTestWebviewOnly) {
+  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+  $devEnv = Join-Path $PSScriptRoot "dev-env.ps1"
+  $selfRoot = Join-Path $repoRoot ".opencode\tmp\webview-only-selftest"
+  $manifestPath = Join-Path $selfRoot "manifest.json"
+  $port = 0
+  $envId = ""
+  $failed = $false
+  try {
+    if (-not (Test-Path -LiteralPath $devEnv)) { throw "dev-env.ps1 not found at $devEnv" }
+    if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw "pnpm is not on PATH -- cannot prove the live Vite start" }
+
+    # Recover a prior self-test leg that left its server behind (and possibly a
+    # pipe-blocked inline caller): stop its recorded roles through the verb, give
+    # the prior caller a bounded moment to unwind, then reset the scratch root.
+    if (Test-Path -LiteralPath $manifestPath) {
+      $staleEnv = ""
+      try {
+        $staleManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $staleEnv = [string]$staleManifest.envId
+      } catch {}
+      if ($staleEnv) {
+        Write-Host "  [live] cleaning a prior self-test server (env $staleEnv)..."
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -Stop -EnvId $staleEnv -Manifest $manifestPath -TimeoutSecs 30 2>&1 | Out-Host
+        Start-Sleep -Seconds 5
+      }
+    }
+
+    if (Test-Path -LiteralPath $selfRoot) { Remove-Item -LiteralPath $selfRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path $selfRoot -Force | Out-Null
+
+    for ($i = 0; $i -lt 20 -and $port -eq 0; $i++) {
+      $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+      $listener.Start()
+      $candidate = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+      $listener.Stop()
+      if ($candidate -gt 1024 -and $candidate -lt 65000) { $port = $candidate }
+    }
+    if ($port -eq 0) { throw "could not allocate a throwaway port" }
+    $envId = "wvonly$port"
+
+    $manifest = [ordered]@{
+      envId           = $envId
+      spec            = 0
+      servingCheckout = $repoRoot
+      servedCommit    = ""
+      ports           = [ordered]@{ vite = $port; mcp = $port + 1; otlpGrpc = $port + 2; otlpHttp = $port + 3; pg = 0 }
+      dataDir         = (Join-Path $selfRoot "data")
+      dbPath          = (Join-Path $selfRoot "data")
+      pipe            = "\\.\pipe\fredo-ipc-$envId"
+      webviewProfile  = (Join-Path $selfRoot "webview")
+      appIdentity     = "com.fredo.app#$envId"
+      processes       = @()
+    }
+    [System.IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+
+    Write-Host "  [live] start: dev-env.ps1 -Action WebviewOnly -EnvId $envId -Manifest $manifestPath (port $port)"
+    $out1 = & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -EnvId $envId -Manifest $manifestPath -TimeoutSecs 180 2>&1
+    $exit1 = $LASTEXITCODE
+    $text1 = (($out1 | ForEach-Object { [string]$_ }) -join "`n")
+    Write-Host $text1
+    if ($exit1 -ne 0) { throw "start exited $exit1" }
+    if ($text1 -notmatch "WEBVIEW-ONLY SERVING port=$port pid=\d+") { throw "start did not print the serving line" }
+
+    $resp = Invoke-WebRequest -Uri "http://localhost:$port/" -UseBasicParsing -TimeoutSec 10
+    if ([int]$resp.StatusCode -ne 200) { throw "HTTP probe returned $($resp.StatusCode)" }
+    if ($resp.Content -notmatch 'id="root"') { throw "HTTP 200 did not carry the app shell (index.html)" }
+    Write-Host "  [live] HTTP 200 from http://localhost:$port/ (index.html shell)"
+
+    $out2 = & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -EnvId $envId -Manifest $manifestPath -TimeoutSecs 180 2>&1
+    $exit2 = $LASTEXITCODE
+    $text2 = (($out2 | ForEach-Object { [string]$_ }) -join "`n")
+    Write-Host $text2
+    if ($exit2 -ne 0) { throw "idempotent second call exited $exit2" }
+    if ($text2 -notmatch "WEBVIEW-ONLY ALREADY SERVING port=$port pid=\d+") { throw "second call did not take the idempotent already-serving path" }
+
+    $out3 = & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -Stop -EnvId $envId -Manifest $manifestPath -TimeoutSecs 30 2>&1
+    $exit3 = $LASTEXITCODE
+    $text3 = (($out3 | ForEach-Object { [string]$_ }) -join "`n")
+    Write-Host $text3
+    if ($exit3 -ne 0) { throw "stop exited $exit3" }
+    if ($text3 -notmatch "Vite port $port closed\.|STILL BOUND") { throw "stop did not report the port state" }
+
+    $closed = $false
+    for ($i = 0; $i -lt 20; $i++) {
+      $stillOpen = $false
+      foreach ($probeUri in @("http://localhost:$port/", "http://127.0.0.1:$port/")) {
+        try {
+          $null = Invoke-WebRequest -Uri $probeUri -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+          $stillOpen = $true
+        } catch {
+          if ($_.Exception.Response) { $stillOpen = $true }
+        }
+      }
+      if (-not $stillOpen) { $closed = $true; break }
+      Start-Sleep -Milliseconds 500
+    }
+    if (-not $closed) { throw "port $port is still serving after the stop" }
+
+    $after = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $left = @($after.processes | Where-Object { $_ -and ([string]$_.role -like 'vite-only*') })
+    if ($left.Count -gt 0) { throw "manifest still records webview-only roles after stop" }
+
+    # Refusal legs: fail closed BEFORE any server start (bounded, no Vite launch).
+    function Invoke-WebviewOnlyRefusal([string]$UseManifest, [string]$Expected) {
+      $rout = & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -EnvId $envId -Manifest $UseManifest -TimeoutSecs 15 2>&1
+      $rexit = $LASTEXITCODE
+      $rtext = (($rout | ForEach-Object { [string]$_ }) -join "`n")
+      if ($rexit -eq 0) { throw "refusal leg '$Expected' exited 0 (expected a refusal)" }
+      if ($rtext -notmatch [regex]::Escape($Expected)) { throw "refusal leg did not report '$Expected':`n$rtext" }
+      Write-Host "  [live] refusal: $Expected (exit $rexit)"
+    }
+
+    Invoke-WebviewOnlyRefusal (Join-Path $selfRoot "missing\manifest.json") "has no manifest"
+
+    $refusePorts = [ordered]@{ vite = 0; mcp = 0; otlpGrpc = 0; otlpHttp = 0; pg = 0 }
+    $noPortManifest = Join-Path $selfRoot "manifest-noport.json"
+    $noPort = [ordered]@{
+      envId = $envId; spec = 0; servingCheckout = $repoRoot; servedCommit = ""
+      ports = $refusePorts; dataDir = (Join-Path $selfRoot "data"); dbPath = (Join-Path $selfRoot "data")
+      pipe = "\\.\pipe\fredo-ipc-$envId"; webviewProfile = (Join-Path $selfRoot "webview")
+      appIdentity = "com.fredo.app#$envId"; processes = @()
+    }
+    [System.IO.File]::WriteAllText($noPortManifest, ($noPort | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+    Invoke-WebviewOnlyRefusal $noPortManifest "records no Vite port"
+
+    $holder = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $holder.Start()
+    try {
+      $heldPort = ([System.Net.IPEndPoint]$holder.LocalEndpoint).Port
+      $heldManifest = Join-Path $selfRoot "manifest-portbound.json"
+      $held = [ordered]@{
+        envId = $envId; spec = 0; servingCheckout = $repoRoot; servedCommit = ""
+        ports = [ordered]@{ vite = $heldPort; mcp = ($heldPort + 1); otlpGrpc = ($heldPort + 2); otlpHttp = ($heldPort + 3); pg = 0 }
+        dataDir = (Join-Path $selfRoot "data"); dbPath = (Join-Path $selfRoot "data")
+        pipe = "\\.\pipe\fredo-ipc-$envId"; webviewProfile = (Join-Path $selfRoot "webview")
+        appIdentity = "com.fredo.app#$envId"; processes = @()
+      }
+      [System.IO.File]::WriteAllText($heldManifest, ($held | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+      Invoke-WebviewOnlyRefusal $heldManifest "already bound by PID"
+    } finally {
+      $holder.Stop()
+    }
+
+    Write-Host "WEBVIEW-ONLY SELFTEST PASS (port ${port}: start -> HTTP 200 -> idempotent -> stop -> closed; refusals: no manifest / no port / port bound)"
+  } catch {
+    $failed = $true
+    Write-Host "WEBVIEW-ONLY SELFTEST FAIL: $($_.Exception.Message)" -ForegroundColor Red
+    # Surface the launcher's own log before cleanup (diagnosis, not a retry).
+    foreach ($lf in @("webview-only-stdout.log", "webview-only-stderr.log")) {
+      $lp = Join-Path (Join-Path $selfRoot "logs") $lf
+      if (Test-Path -LiteralPath $lp) {
+        Write-Host "--- $lf (tail) ---" -ForegroundColor Yellow
+        Get-Content -LiteralPath $lp -Tail 60 | ForEach-Object { Write-Host $_ }
+      }
+    }
+    # Best-effort stop so a failed leg does not leave the throwaway server up.
+    if ($envId) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File $devEnv -Action WebviewOnly -Stop -EnvId $envId -Manifest $manifestPath -TimeoutSecs 30 2>&1 | Out-Host
+    }
+  } finally {
+    Remove-Item -LiteralPath $selfRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  if ($failed) { exit 1 }
+  exit 0
+}
 
 # Offline mock mode: the whole harness runs against a local mock repo
 # (FREDO_MOCK_GH=1) so the ~19 scratch issues / PRs / spec-branch pushes per run
@@ -3130,6 +3302,162 @@ Low
   }
 }
 
+# --- `**Feature tests:**` — the sanctioned "no suite, deliberately" form ---
+# A docs-only spec seeds no durable suite. Before #3196 the only way to say so was a
+# bare `none`, which the token parser read as a suite NAME and the G-240 shape guard
+# then fired on. `none` (case-insensitive, optional parentheses) is now the explicit
+# no-suite form: nothing persisted, no guard.fired, and a visible note. An empty
+# marker is still a forgotten declaration and must keep warning.
+Write-Host "Feature-tests declaration (no-suite form):" -ForegroundColor Cyan
+
+function New-FeatureTestsDraft([string]$IssueNum, [string]$MarkerLine) {
+  # Converged A2A draft with every section the planning exit guard requires.
+  return @(
+    "# Implementation Plan #$IssueNum - scratch",
+    "",
+    "## Software Architect",
+    "",
+    "### Domain Model (file:line)",
+    "scratch",
+    "",
+    "### Requirements",
+    "scratch",
+    "",
+    "### API Contracts & Data Models",
+    "scratch",
+    "",
+    "### Sub-issue Decomposition + Effort Estimates",
+    "",
+    "- [ ] Sub-task 1: Feature-tests marker widget",
+    "",
+    "## UI/UX Expert",
+    "",
+    "### Design Assets (or N/A)",
+    "N/A",
+    "",
+    "## QA Expert",
+    "",
+    "### QA Plan",
+    "",
+    "| REQ | Test case | Expected | Edge cases |",
+    "|-----|-----------|----------|------------|",
+    "| REQ-1 | widget renders | visible | none |",
+    "",
+    $MarkerLine,
+    "",
+    "## Summary",
+    "goal + acceptance criteria",
+    "",
+    "## Staffing Plan",
+    "1 developer",
+    "",
+    "## Deployment Notes",
+    "none",
+    "",
+    "## Risks & Mitigations",
+    "none",
+    "",
+    "## Discussion",
+    "",
+    "## Convergence: agreed"
+  ) -join "`n"
+}
+
+Test-Script "planning -> implementation: '**Feature tests:** none' persists nothing and fires no G-240 guard" {
+  $url = Mock-IssueCreate "temp: no suites declared" "no-suite scratch" "planning"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  try {
+    New-Item -ItemType Directory -Path (Split-Path $a2a) -Force | Out-Null
+    $draft = New-FeatureTestsDraft $issueNum "**Feature tests:** none"
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "planning->implementation failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch [regex]::Escape("NO SUITES (declared none)")) { throw "expected the explicit no-suite note, got: $outStr" }
+    if ($outStr -match "WARNING:") { throw "a declared-none marker must not warn, got: $outStr" }
+    $events = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json }
+    $gf = @($events | Where-Object { $_.event_name -eq "guard.fired" -and $_.attributes.guardId -eq "G-240" })
+    if ($gf.Count -ne 0) { throw "declared-none must fire no G-240 guard.fired, got $($gf.Count)" }
+    if (Test-Path ".opencode/tests/none") { throw "declared-none must not create/persist a suite directory" }
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\none"
+    if (Test-Path $mainTree) { throw "declared-none must persist nothing to main: $mainTree" }
+    return "none: NO SUITES note, no guard.fired, nothing persisted (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\none") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "planning -> implementation: an EMPTY '**Feature tests:**' marker still warns (G-240)" {
+  $url = Mock-IssueCreate "temp: empty tests marker" "empty-marker scratch" "planning"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  try {
+    New-Item -ItemType Directory -Path (Split-Path $a2a) -Force | Out-Null
+    $draft = New-FeatureTestsDraft $issueNum "**Feature tests:** "
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "planning->implementation failed (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "WARNING:") { throw "an empty marker must keep warning, got: $outStr" }
+    if ($outStr -match [regex]::Escape("NO SUITES (declared none)")) { throw "an empty marker is NOT a declared-none, got: $outStr" }
+    $events = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json }
+    $gf = @($events | Where-Object { $_.event_name -eq "guard.fired" -and $_.attributes.guardId -eq "G-240" })
+    if ($gf.Count -ne 1) { throw "an empty marker must fire exactly one G-240 guard.fired, got $($gf.Count)" }
+    return "empty marker: WARNING + one G-240 guard.fired (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "planning -> implementation: a real feature name still persists its suite (no regression)" {
+  $url = Mock-IssueCreate "temp: real tests marker" "real-marker scratch" "planning"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $feat = "marker-$issueNum"
+  $a2a = ".opencode/tmp/$issueNum/triage.md"
+  $testDir = ".opencode/tests/$feat"
+  try {
+    New-Item -ItemType Directory -Path (Split-Path $a2a) -Force | Out-Null
+    $draft = New-FeatureTestsDraft $issueNum "**Feature tests:** $feat"
+    [System.IO.File]::WriteAllText($a2a, $draft, [System.Text.UTF8Encoding]::new($false))
+    New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$testDir/functional.md", "- [ ] F-1: marker functional case`n", [System.Text.UTF8Encoding]::new($true))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "planning->implementation failed (exit $LASTEXITCODE): $outStr" }
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
+    if (-not (Test-Path "$mainTree\functional.md")) { throw "the declared suite was not persisted to main: $mainTree" }
+    if ($outStr -match [regex]::Escape("NO SUITES (declared none)")) { throw "a real name must not trigger the no-suite note: $outStr" }
+    return "real name '$feat' persisted to main (#$issueNum)"
+  } finally {
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # Pre-implementation rescope: a human scope decision loops implementation -> planning
 # (the "loop back to Phase 2" rule). The backward leg bypasses the forward
 # "commits beyond main" gate (no dev work exists to strand) and re-seeds the A2A
@@ -4584,6 +4912,64 @@ Test-Script "dev-env.ps1: emits no companion llama port in the manifest/evidence
     throw "the per-env companion dir override must survive the port retirement (AC-27)"
   }
   return "no llama port in manifest/evidence/status; companion-dir override present; seeded control caught"
+}
+
+# --- WebviewOnly: frontend-only serving for post-quit legs ---
+# #3194/#3195/#3206 rows need "app quit (OTLP ports free) but a webview still
+# loads". The product's quit path tears down Vite, so the sanctioned answer is
+# this verb: ONLY the env's recorded Vite dev server, recorded under distinct
+# manifest roles so the env-scoped Down/Clean reap it. Static pins over the
+# stable contract (never line numbers).
+Write-Host "WebviewOnly frontend-only serving pins:" -ForegroundColor Cyan
+
+Test-Script "dev-env.ps1: WebviewOnly declared, dispatched, and records distinct roles" {
+  if ($devEnvSrc -notmatch '\[ValidateSet\([^)]*"WebviewOnly"') { throw "WebviewOnly missing from the -Action ValidateSet" }
+  if ($devEnvSrc -notmatch '(?m)^\s*"WebviewOnly"\s*\{') { throw "WebviewOnly dispatch arm missing from the Action switch" }
+  if ($devEnvSrc -notmatch 'function Invoke-WebviewOnlyStart\b') { throw "Invoke-WebviewOnlyStart missing" }
+  if ($devEnvSrc -notmatch 'function Invoke-WebviewOnlyStop\b') { throw "Invoke-WebviewOnlyStop missing" }
+  if ($devEnvSrc -notmatch 'function Stop-WebviewOnlyRoles\b') { throw "env-scoped, image-guarded Stop-WebviewOnlyRoles missing" }
+  if ($devEnvSrc -notmatch '"vite-only"') { throw "manifest role 'vite-only' missing" }
+  if ($devEnvSrc -notmatch '"vite-only-launcher"') { throw "manifest role 'vite-only-launcher' missing" }
+  if ($devEnvSrc -notmatch '\[switch\]\$Stop\b') { throw "-Stop switch missing" }
+  return "WebviewOnly + -Stop declared/dispatched; vite-only roles recorded; scoped stop present"
+}
+
+Test-Script "dev-env.ps1: WebviewOnly refuses without manifest/port and never starts the app/PG" {
+  foreach ($needle in @(
+    'WEBVIEW-ONLY REFUSED: env ''\$EnvId'' has no manifest',
+    'records no Vite port',
+    'is still RUNNING',
+    'already bound by PID',
+    'function Get-HttpStatus\b',
+    'WEBVIEW-ONLY ALREADY SERVING port=',
+    'WEBVIEW-ONLY SERVING port=',
+    'taskkill /PID \$t\.pid /T'
+  )) {
+    if ($devEnvSrc -notmatch $needle) { throw "WebviewOnly contract missing: $needle" }
+  }
+  $start = $devEnvSrc.IndexOf('function Invoke-WebviewOnlyStart')
+  $end = $devEnvSrc.IndexOf('# Remove one env artifact, refusing the repo root', $start)
+  if ($start -lt 0 -or $end -le $start) { throw "cannot scope the WebviewOnly start function body" }
+  $startBody = $devEnvSrc.Substring($start, $end - $start)
+  foreach ($forbidden in @('tauri dev', 'pnpm dev:tauri', 'initdb', 'pg_ctl')) {
+    if ($startBody -match [regex]::Escape($forbidden)) { throw "WebviewOnly start body must never launch the app/PG: found '$forbidden'" }
+  }
+  if ($startBody -notmatch 'pnpm --filter @fredo/tauri exec vite') { throw "WebviewOnly does not launch the Vite dev server" }
+  return "refusals present; start body launches ONLY Vite (no app/PG tokens)"
+}
+
+Test-Script "dev-environment skill documents WebviewOnly (verb + stop + failure modes)" {
+  $skill = Get-Content ".opencode/skills/dev-environment/SKILL.md" -Raw
+  foreach ($needle in @(
+    '-Action WebviewOnly -Spec <N>',
+    '-Action WebviewOnly -Stop',
+    'WEBVIEW-ONLY SERVING port=<p> pid=<pid>',
+    'Recorded Vite port already bound by a foreign owner',
+    'no manifest for the env'
+  )) {
+    if ($skill -notmatch [regex]::Escape($needle)) { throw "dev-environment skill missing WebviewOnly contract: $needle" }
+  }
+  return "skill documents the verb, its -Stop path, the readiness line, and the failure modes"
 }
 
 Test-Script "verify-env-isolation.ps1: no llama port entry and no llama role" {
@@ -6195,6 +6581,79 @@ Test-Script "align-root: refuses a conflicting dirty path and does not check out
   } finally {
     Remove-Item (Mock-StorePath "align-dirty") -Force -ErrorAction SilentlyContinue
     Remove-Item (Mock-StorePath "align-target-changed") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "align-root: a redundant dirty path (content equals the target) is discarded losslessly" {
+  # The planning-time `tests-commit` reconcile: the staged set's content EQUALS the
+  # target (it was committed to origin/main, and spec/<N> was cut from that main).
+  # Being dirty is not the hazard — LOSING content is. A path whose content already
+  # equals the target must be allowed, restored from the target, and reported.
+  $url = Mock-IssueCreate "temp: align redundant" "align redundant scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-dirty"), "docs/SETUP.md", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-target-changed"), "docs/SETUP.md", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-redundant"), "docs/SETUP.md", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action align-root 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "a provably-redundant dirty path must NOT refuse (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "ROOT ALIGNED") { throw "Expected ROOT ALIGNED, got: $outStr" }
+    if ($outStr -notmatch "Discarded-redundant uncommitted path\(s\): docs/SETUP\.md") { throw "the success line must report the redundant path by name, got: $outStr" }
+    if ($outStr -notmatch "Preserved uncommitted path\(s\): none") { throw "a redundant path must not be reported as preserved, got: $outStr" }
+    if (-not (Test-Path (Mock-StorePath "checkout-base"))) { throw "the checkout must run when the dirty path is redundant" }
+    $ev = Get-Content ".opencode/state/issues/$issueNum.jsonl" | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "root.aligned" -and $_.outcome -eq "success" } | Select-Object -Last 1
+    if (-not $ev) { throw "no root.aligned success recorded" }
+    if ($ev.attributes.discarded_redundant -notmatch "docs/SETUP\.md") { throw "root.aligned discarded_redundant attr wrong: $($ev.attributes.discarded_redundant)" }
+    if ($ev.attributes.preserved -ne "none") { throw "root.aligned preserved attr wrong: $($ev.attributes.preserved)" }
+    return "redundant dirty path discarded losslessly and named (#$issueNum)"
+  } finally {
+    Remove-Item (Mock-StorePath "align-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "align-target-changed") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "align-redundant") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "align-root: an EOL-only dirty difference against the target succeeds" {
+  # A CRLF/autocrlf artefact carries no content change, so it is provably lossless
+  # (same rule as maint-pr's checkout cleanliness, #3192) and must not block.
+  $url = Mock-IssueCreate "temp: align eol" "align eol scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-dirty"), "apps/tauri/src-tauri/gen/schemas/eol.json", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Mock-StorePath "align-target-changed"), "apps/tauri/src-tauri/gen/schemas/eol.json", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Mock-StorePath "dirty-eol-only"), "apps/tauri/src-tauri/gen/schemas/eol.json", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action align-root 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "an EOL-only difference must NOT refuse (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "ROOT ALIGNED") { throw "Expected ROOT ALIGNED, got: $outStr" }
+    if ($outStr -notmatch "Discarded-redundant uncommitted path\(s\): apps/tauri/src-tauri/gen/schemas/eol\.json") { throw "an EOL-only path is redundant and must be reported, got: $outStr" }
+    if (-not (Test-Path (Mock-StorePath "checkout-base"))) { throw "the checkout must run for an EOL-only difference" }
+    return "EOL-only difference against the target aligned losslessly (#$issueNum)"
+  } finally {
+    Remove-Item (Mock-StorePath "align-dirty") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "align-target-changed") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "dirty-eol-only") -Force -ErrorAction SilentlyContinue
     Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
