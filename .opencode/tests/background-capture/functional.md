@@ -347,8 +347,12 @@ row.
   **0** and prints the same subcommand set as before (list them), `--version` exits 0. `--background`
   is absent from `--help`'s output.
   **Edge:** `--Background` / `-background` (wrong case ⇒ clap parse error, exit 1); `["--background"]`
-  alone must NOT be a parse error (it starts the app — F-1a proves it); `fredo ingest --help` is
-  unchanged (the retained subcommand is out of scope — #3194 decides its fate).
+  alone must NOT be a parse error (it starts the app — F-1a proves it). **Superseded by #3194:**
+  this edge previously said "`fredo ingest --help` is unchanged (the retained subcommand is out of
+  scope)". That subcommand was **REMOVED**; the assertion now lives in
+  `.opencode/tests/resident-ingest/functional.md` **F-9** (`--help` lists no `ingest`;
+  `fredo ingest --help` exits **1** as a clap unknown-subcommand error) and the seam absence in
+  **F-12**. Do not assert an "unchanged ingest help" here.
 
 - [ ] **F-5b (LIVE DOM + STATIC sweep) — no install/recommend surface offers `fredo ingest`.**
   (i) Read the rendered text of `[data-testid="settings-ingest-autostart-section"]` (`textContent`)
@@ -368,12 +372,16 @@ row.
   source paths named above, and the login-entry builder's call site. This suite file and the
   retired-string lists in it are NOT in that universe — they spell the tokens deliberately as the
   absence contract, and a repo-wide scan is not the instrument this row binds (G-431).
-  **Out of scope, recorded not failed:** the retained
-  `fredo ingest` SUBCOMMAND and its reference docs (`docs/CLI_GUIDE.md:216-246`,
-  `docs/SETUP.md:234-237,247,276`, `docs/ARCHITECTURE.md:210,321`) — #3194 decides its fate; the
-  login/auto-start doc sentences (`docs/SETUP.md:241`, `docs/CLI_GUIDE.md:7,9,252`,
-  `docs/FAQ.md:159`, `docs/ARCHITECTURE.md:399,401,407`) are owned by **#3196 ST-5** and are
-  reported with their owner, not FAILed here.
+  **INVERTED by #3194 (was "out of scope, recorded not failed"):** the retired subcommand is now a
+  POSITIVE absence assertion, not a parked item. The sweep below extends to the product documents
+  that used to offer it — `docs/CLI_GUIDE.md`, `docs/SETUP.md`, `docs/SECURITY.md`,
+  `docs/ARCHITECTURE.md`, `docs/FAQ.md` — and any hit for the literal `fredo ingest` outside the
+  legacy-VALUE allowlist (`applications/settings/autostart.rs` + its tests,
+  `__tests__/IngestAutostartSettings.test.tsx` RETIRED_COPY, `.opencode/tests/**`) is a **FAIL** of
+  `.opencode/tests/resident-ingest/functional.md` **F-9(4)**, reported there with its file:line.
+  The two legacy-migration sentences (`docs/CLI_GUIDE.md:252`, `docs/SETUP.md:241`) stay
+  **byte-identical** — they narrate a stored registry VALUE, not a mode (owned by **#3196 ST-5**);
+  they are reported with their owner, never FAILed here.
   **Edge:** a `title=` tooltip carrying the retired copy (DOM `textContent` misses it — read the
   section's `outerHTML` for `title=` and report); the `Daemon:` row removed but ``Daemon:` surviving
   in a test/comment (comments are not product surfaces — disposition them, do not fail).
