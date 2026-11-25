@@ -17,6 +17,15 @@ const port = Number.isInteger(parsedEnvPort) && parsedEnvPort > 0 ? parsedEnvPor
 
 export default defineConfig({
   plugins: [react()],
+  /**
+   * The avatar's shipped binaries (the character GLB and the two poster passes)
+   * live ONCE, in the UI package that owns the component and its asset contract
+   * (`apps/ui/public/avatar/`). The webview build serves that same committed copy:
+   * Vite copies `public/` verbatim into `dist`, so `/avatar/<file>` resolves in
+   * the browser-only dev server, the webview dev server and the packaged app with
+   * no second copy, no build step and nothing inlined into the JS chunk.
+   */
+  publicDir: resolve(__dirname, '../ui/public'),
   resolve: {
     alias: {
       // Resolve @fredo/ui directly from source for fast HMR

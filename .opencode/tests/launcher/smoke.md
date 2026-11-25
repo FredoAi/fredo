@@ -308,6 +308,12 @@
 
 ## #2922 extension — whole-body solid Fredo quick paths on the launcher
 
+> **#3210 RETIREMENT (read first).** S-35/S-36/S-37 measure the SVG fill (`#fredo-interior`, the
+> 58-rect mask, `seeThrough`) that the 3D cut-over **DELETES**. **They are RETIRED as executable
+> rows — do not run them.** An opaque 3D body is solid by construction; the launcher's surviving
+> quick paths are S-11/S-12/S-34 (footprint + `[data-avatar-render]`) and
+> `fredo-avatar/functional.md` F-AV-3/F-AV-11.
+
 > Issue #2922 extends the additive interior fill from the head to the WHOLE body. Quick paths only —
 > the full matrix lives in `functional.md` F-113..F-117 / `regression.md` R-67..R-69; the metric
 > definition is in `.opencode/tests/companion/functional.md` `#2922 extension`. **Verification

@@ -351,6 +351,11 @@
       shared location (`apps/ui/src/shared/components/fredo-avatar/`) against the pre-move
       launcher files (only the relative import path must still resolve to the sibling). Run
       `pnpm --filter @fredo/ui exec vitest run` on the moved test AND the full `test:run`.
+      **#3210 re-point:** the geometry module AND its suite are **DELETED** with the SVG render
+      path, so the byte-identical clause is INVERTED to "absent, replaced by the 3D path". The
+      surviving provenance net is the RE-POINTED icon guard (`fredo-avatar/regression.md` R-AV-1);
+      the executable launcher rows are F-45/F-46/F-47 + `fredo-avatar/functional.md` F-AV-11.
+      The historical PASS below is a record of the pre-cut-over tree.
       **Expected:** all 8 assertions pass unchanged (FREDO_AVATAR_SPACE 1014×1264 centerX 507;
       viewBox `0 0 1014 1264`; 31 source rects — 27 mirrored pairs + 4 center singles → 58
       expanded; mirror math `x' = 1014 − x − width`; canvas bounds; as-authored center buttons;

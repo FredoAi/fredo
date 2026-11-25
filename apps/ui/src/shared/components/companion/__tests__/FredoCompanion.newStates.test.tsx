@@ -2,8 +2,8 @@
  * #2917 ST-4 / ST-5 — the four NEW status states at the CONSUMER seam.
  *
  * Drives the REAL `CompanionEntity` through each new state's product trigger and
- * pins the consumer wrapper's `data-state` + the shared overlay's rendered
- * `#fredo-expression[data-state]`:
+ * pins the consumer wrapper's `data-state` + the shared avatar shell's render
+ * motion (`[data-avatar-render]` / `[data-avatar-motion]`):
  *   - `listening` ← the live voice-capture signal (`stt:state { listening: true }`)
  *   - `working`   ← a validated skill selection (`onSkillCall`) OR the deterministic
  *                   push itself (FIX-1 `WORKING_BEAT_MS`), then superseded by the
@@ -12,6 +12,13 @@
  *                   reply, held for the UNCHANGED `ERROR_HOLD_MS` (from the settle)
  *   - `greeting`  ← an ambient context message with no generation in flight,
  *                   while the context `animState` STAYS `talk`
+ *
+ * #3210 ST-7 NAMED REFRESH: the `#fredo-expression` overlay and its per-state
+ * SVG rect fingerprints are DELETED with the SVG render path. Under jsdom the
+ * avatar renders the production POSTER path, so the surviving seam observables
+ * are the shell's `data-avatar-render` / `data-avatar-motion` (plus the wrapper's
+ * `data-state`, unchanged). Per-state perceptual distinctness is #3224's live
+ * row, never a jsdom rect pin.
  *
  * Round-2 FIX-1 refreshed this file's `working`/non-success sequencing and added
  * the RC-1 same-dispatch race pin, the beat-vs-holds invariant and the timer-leak
@@ -94,8 +101,22 @@ const OPEN_APP_CALL: LlmSkillCall = { skill: 'open_app', arguments: { app: 'Note
 
 const avatarState = (container: HTMLElement): string | null =>
   container.querySelector('.fredo-companion-avatar')?.getAttribute('data-state') ?? null;
-const overlayState = (container: HTMLElement): string | null =>
-  container.querySelector('#fredo-expression')?.getAttribute('data-state') ?? null;
+/** The shared avatar shell (the ONE render path's stable probe root). */
+const avatarShell = (container: HTMLElement): HTMLElement | null =>
+  container.querySelector('[data-avatar-render]');
+const avatarRender = (container: HTMLElement): string | null =>
+  avatarShell(container)?.getAttribute('data-avatar-render') ?? null;
+const avatarMotion = (container: HTMLElement): string | null =>
+  avatarShell(container)?.getAttribute('data-avatar-motion') ?? null;
+/** The poster path is the one jsdom exercises (no WebGL2 on this host). */
+const expectPosterShell = (container: HTMLElement): void => {
+  const shell = avatarShell(container);
+  expect(shell).not.toBeNull();
+  expect(shell!.getAttribute('data-avatar-render')).toBe('poster');
+  expect(shell!.querySelector('[data-avatar-poster-layer]')).not.toBeNull();
+  expect(shell!.querySelector('svg')).toBeNull();
+  expect(shell!.querySelector('canvas')).toBeNull();
+};
 
 async function mountEntity() {
   localStorage.clear();
@@ -163,8 +184,9 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     });
 
     expect(avatarState(container)).toBe('listening');
-    expect(overlayState(container)).toBe('listening');
-    expect(container.querySelectorAll('.fredo-listening-bar')).toHaveLength(3);
+    // #3210 refresh: the per-state SVG meter is deleted — the shell still renders
+    // the poster path for the state (perceptual distinctness is #3224's row).
+    expectPosterShell(container);
     expect(consoleError).not.toHaveBeenCalled();
   });
 
@@ -176,7 +198,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     act(() => { (skills as unknown as SkillDriver).onSkillCall(OPEN_APP_CALL); });
 
     expect(avatarState(container)).toBe('working');
-    expect(overlayState(container)).toBe('working');
+    expect(avatarMotion(container)).toBe('play');
 
     // FIX-1 (r2): the pushed settle first completes the bounded `working` beat,
     // THEN runs the shipped `happy` settle. (Refreshed from the round-1 assertion
@@ -186,7 +208,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(avatarState(container)).toBe('working');
     act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(container)).toBe('happy');
-    expect(overlayState(container)).toBe('happy');
+    expect(avatarMotion(container)).toBe('play');
     expect(consoleError).not.toHaveBeenCalled();
   });
 
@@ -206,7 +228,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(skills).not.toBeNull();
     // The zero-length window is gone: `working` commits before the settle.
     expect(avatarState(container)).toBe('working');
-    expect(overlayState(container)).toBe('working');
+    expect(avatarMotion(container)).toBe('play');
 
     act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(container)).toBe('happy');
@@ -231,7 +253,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     act(() => { (skills as unknown as SkillDriver).onError('the companion server returned HTTP 500'); });
 
     expect(avatarState(container)).toBe('error');
-    expect(overlayState(container)).toBe('error');
+    expect(avatarMotion(container)).toBe('play');
 
     // The typed error leg is UNCHANGED by FIX-1 (no beat): the shipped 8 s hold
     // is still measured from the error event — 7999 ms error, 8000 ms idle.
@@ -239,7 +261,9 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(avatarState(container)).toBe('error');
     act(() => { vi.advanceTimersByTime(1); });
     expect(avatarState(container)).toBe('idle');
-    expect(overlayState(container)).toBeNull();
+    // #3210 refresh: the deleted overlay no longer distinguishes idle; the shell
+    // stays the one poster path and the wrapper carries the state.
+    expectPosterShell(container);
     expect(consoleError).not.toHaveBeenCalled();
   });
 
@@ -258,7 +282,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     expect(avatarState(container)).toBe('working');
     act(() => { vi.advanceTimersByTime(WORKING_BEAT_MS); });
     expect(avatarState(container)).toBe('error');
-    expect(overlayState(container)).toBe('error');
+    expect(avatarMotion(container)).toBe('play');
 
     // …and the shipped ERROR_HOLD_MS is measured FROM THE SETTLE.
     act(() => { vi.advanceTimersByTime(7999); });
@@ -306,7 +330,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
 
     // t=0 — the bounded greeting beat (the round-1 expectation, unchanged).
     expect(avatarState(container)).toBe('greeting');
-    expect(overlayState(container)).toBe('greeting');
+    expectPosterShell(container);
     // The #2853 busy/presence marker is untouched; it now doubles as the
     // invariant across the beat (greeting → talk → idle all keep `animState` talk).
     expect(api.state.animState).toBe('talk');
@@ -317,19 +341,15 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     // round-1 pin asserted `greeting` for the whole window, which masked `talk`).
     act(() => { vi.advanceTimersByTime(GREETING_BEAT_MS); });
     expect(avatarState(container)).toBe('talk');
-    expect(overlayState(container)).toBe('talk');
+    // #3210 — a non-streaming `talk` is a held first frame (the deleted CSS mouth
+    // toggle only ever animated under `[data-streaming='true']`).
+    expect(avatarMotion(container)).toBe('still');
     expect(api.state.animState).toBe('talk');
 
-    // AC2 static-frame expectation for the `talk` leg: the overlay group is
-    // present and painted LAST; the persistent closed-mouth rect renders; the
-    // streaming mark is ABSENT (so the open-mouth rect rests at opacity 0).
-    const expression = container.querySelector("#fredo-expression[data-state='talk']");
-    expect(expression).not.toBeNull();
-    expect(expression!.querySelector('.fredo-talk-mouth-closed')).not.toBeNull();
+    // The talk leg renders the one poster shell; the stream mark is ABSENT.
+    expectPosterShell(container);
     const wrapper = container.querySelector('.fredo-companion-avatar');
     expect(wrapper?.hasAttribute('data-streaming')).toBe(false);
-    const svg = container.querySelector('svg') as SVGElement;
-    expect(svg.lastElementChild?.id).toBe('fredo-expression');
 
     // Still `talk` immediately before the message clears…
     act(() => { vi.advanceTimersByTime(3999 - GREETING_BEAT_MS); });
@@ -338,7 +358,7 @@ describe('#2917 ST-4 — new states at the consumer seam', () => {
     // …and `idle` at the existing 4000 ms welcome window (message clear).
     act(() => { vi.advanceTimersByTime(1); });
     expect(avatarState(container)).toBe('idle');
-    expect(overlayState(container)).toBeNull();
+    expectPosterShell(container);
     expect(consoleError).not.toHaveBeenCalled();
   });
 

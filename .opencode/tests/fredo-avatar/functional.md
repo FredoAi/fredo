@@ -159,7 +159,7 @@
 
 - [ ] F-AV-9: Comment- and string-text-stripped scan (G-419) of the new avatar code
       (`shared/components/fredo-avatar/**` incl. `three/**`, `useAvatarRenderer.ts`,
-      `AvatarPoster.tsx`) for `#[0-9a-fA-F]{3,8}`, `rgb(`, `rgba(`, `hsla(`. Run a **non-vacuity
+      `AvatarPoster.tsx`) for `#[0-9a-fA-F]{3,8}`, `\brgb\(`, `\brgba\(`, `hsla(`. Run a **non-vacuity
       control**: a planted probe file carrying `#ff00ff` must be reported.
   **Expected:** zero hits in code; the control is reported (the scan is live);
       `data-avatar-body-color` is runtime DATA (exempt, named); the only colour inputs are
@@ -321,4 +321,20 @@
       the poster raster is 0.800 aspect (no distortion) scaled with `100% 100%` (never `contain`).
   - **Edge:** an undecoded/failed mask must not paint the accent rectangle (check `opacity` before and
     after decode); `image-rendering` is NOT `pixelated`/`crispEdges`.
+
+## F-AV-21 `[NEW]` (R-3a) — the tint exists on the stock theme
+
+- [ ] F-AV-21: With **no** selected preset and **no** per-token override (both storage keys
+      absent/empty) and Doom off, cold-reload. Once `data-avatar-render="live"`, read
+      `data-avatar-body-color`, the computed `--accent-primary` via
+      `getComputedStyle(document.documentElement)`, and the poster body layer's resolved
+      `background-color`.
+  **Expected:** `data-avatar-body-color` is **present** and its **channels** equal the channels of the
+      computed `--accent-primary` — compared **numerically**, never as a string (the hook is
+      `#rrggbb`, the var is `rgb(...)`) — and the poster's body layer resolves the **same** accent.
+  - **Control (pre-change):** red on the pre-fix build — `data-avatar-body-color` is absent for the
+    whole mount while the poster is already accent-correct. This is the row that separates "the
+    accent re-tints" from "the accent re-tints, but only after the user has already touched it".
+  - **Edge:** a first-frame read before `render="live"` is not a failure (the hook is only promised
+    live); re-read after the live transition.
 

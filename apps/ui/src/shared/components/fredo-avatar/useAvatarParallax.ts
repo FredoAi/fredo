@@ -5,8 +5,8 @@ import { useEffect, useRef } from 'react';
  *
  * Attach the returned ref to the **consumer's wrapper** around `<FredoAvatar>`,
  * never inside the shared component: whole-element motion belongs to the
- * consumer (see the header of `fredo-avatar.css`, #2850) so the launcher's idle
- * DOM stays byte-identical.
+ * consumer (see the header of `fredoAvatarIdle.css`, #2850) so the launcher's
+ * idle DOM stays byte-identical.
  *
  * The wrapper drifts a few pixels toward the cursor and tilts about a degree.
  * It writes the standalone `translate` / `rotate` CSS properties rather than

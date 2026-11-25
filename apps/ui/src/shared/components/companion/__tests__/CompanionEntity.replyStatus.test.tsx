@@ -104,8 +104,21 @@ const avatarEl = (container: HTMLElement): HTMLElement | null =>
   container.querySelector('.fredo-companion-avatar');
 const avatarState = (container: HTMLElement): string | null =>
   avatarEl(container)?.getAttribute('data-state') ?? null;
-const overlayState = (container: HTMLElement): string | null =>
-  container.querySelector('#fredo-expression')?.getAttribute('data-state') ?? null;
+/**
+ * #3210 ST-7 NAMED REFRESH — the `#fredo-expression` overlay is DELETED with the
+ * SVG render path. The avatar's rendered identity is now the shared shell; under
+ * jsdom (no WebGL2) that is the production POSTER path. The per-state clause is
+ * the wrapper's `data-state` (asserted above each call); the deleted overlay's
+ * duplicate state read has no replacement observable, so this asserts the one
+ * shell renders (no SVG, no canvas).
+ */
+const expectAvatarShell = (container: HTMLElement): void => {
+  const shell = container.querySelector('[data-avatar-render]');
+  expect(shell).not.toBeNull();
+  expect(shell!.getAttribute('data-avatar-render')).toBe('poster');
+  expect(shell!.querySelector('svg')).toBeNull();
+  expect(shell!.querySelector('canvas')).toBeNull();
+};
 
 async function mountEntity() {
   localStorage.clear();
@@ -180,7 +193,7 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
     // Success settle → the resolved model status (flow at base `idle`).
     act(() => { lastGen().onDone(); });
     expect(avatarState(container)).toBe('thinking');
-    expect(overlayState(container)).toBe('thinking');
+    expectAvatarShell(container);
 
     // Held for exactly the existing HAPPY_HOLD_MS (5000)…
     act(() => { vi.advanceTimersByTime(4999); });
@@ -188,7 +201,7 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
     // …then released to idle.
     act(() => { vi.advanceTimersByTime(1); });
     expect(avatarState(container)).toBe('idle');
-    expect(overlayState(container)).toBeNull();
+    expectAvatarShell(container);
     expect(consoleError).not.toHaveBeenCalled();
   });
 
@@ -201,7 +214,7 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
     act(() => { lastGen().onDone(); });
 
     expect(avatarState(container)).toBe('happy');
-    expect(overlayState(container)).toBe('happy');
+    expectAvatarShell(container);
 
     act(() => { vi.advanceTimersByTime(4999); });
     expect(avatarState(container)).toBe('happy');
@@ -222,7 +235,7 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
 
     act(() => { lastGen().onToken('Hi'); });
     expect(avatarState(container)).toBe('joking');
-    expect(overlayState(container)).toBe('joking');
+    expectAvatarShell(container);
   });
 
   it('does NOT assert the model status on the error path (error holds ERROR_HOLD_MS)', async () => {
@@ -234,7 +247,7 @@ describe('#2918 ST-5 — reply-status assertion at the success settle', () => {
     act(() => { lastGen().onError('the companion server returned HTTP 500'); });
 
     expect(avatarState(container)).toBe('error');
-    expect(overlayState(container)).toBe('error');
+    expectAvatarShell(container);
 
     act(() => { vi.advanceTimersByTime(7999); });
     expect(avatarState(container)).toBe('error');
@@ -321,7 +334,7 @@ describe('#2918 ST-8 — every hold-cancelling path releases the turn-scoped sta
     // teleport ends): the wrapper returns to the shipped `idle`.
     act(() => { vi.advanceTimersByTime(450); });
     expect(avatarState(container)).toBe('idle');
-    expect(overlayState(container)).toBeNull();
+    expectAvatarShell(container);
 
     // The settled status must NEVER come back. Past the 12 s rest delay the
     // shipped resting cadence may tint `idle` with its bounded `playful` beat
@@ -375,7 +388,7 @@ describe('#2918 ST-8 — every hold-cancelling path releases the turn-scoped sta
 
     act(() => { vi.advanceTimersByTime(450); });
     expect(avatarState(container)).toBe('idle');
-    expect(overlayState(container)).toBeNull();
+    expectAvatarShell(container);
 
     act(() => { vi.advanceTimersByTime(20000); });
     expect(avatarState(container)).not.toBe(settledStatus);

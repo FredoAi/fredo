@@ -63,7 +63,7 @@ Never bake the body colour into the asset — it is a runtime choice
 - **Units:** 1 Blender unit = 1 metre. Character is **1.8 m** tall.
 - **Origin:** ground level, centred between the feet.
 - **Facing:** −Y in Blender → **+Z** after glTF Y-up conversion.
-- **Mesh:** one skinned mesh, quad-based, ~42 k triangles, 15 material slots.
+- **Mesh:** one skinned mesh, quad-based, **~43 k triangles** (43,104), **17 material slots**.
 - **Skeleton:** 77 bones (body joints, face shapes, props, wardrobe).
 - **Colour:** materials ship **neutral white**. Tint at runtime:
 

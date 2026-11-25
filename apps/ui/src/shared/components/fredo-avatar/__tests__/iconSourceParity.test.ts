@@ -1,34 +1,34 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildInteriorPathD,
-  expandFredoRects,
-  FREDO_AVATAR_INTERIOR_RECTS,
-  FREDO_AVATAR_SOURCE_RECTS,
-} from '../fredoAvatarGeometry';
-
 /**
  * #2926 ST-1 / #2930 ST-4 — parity + legibility guard for the committed icon source.
+ * #3210 ST-7 — RE-POINTED (not deleted) at the 3D character cut-over.
  *
  * The shipped OS icon set is rasterised from exactly ONE committed SVG source
- * (`apps/tauri/src-tauri/icons/fredo-icon-large.svg` — the full bust) for every
+ * (`apps/tauri/src-tauri/icons/fredo-icon-large.svg` — the flat bust) for every
  * target size, including the 16 px and 24 px ICO/ICNS frames. Nothing else is an
- * input. This suite is the drift guard:
+ * input.
  *
- *  - the source is PROVABLY the frozen canonical geometry — its 58 `<rect>`
- *    values equal `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)` as a multiset and
- *    its single interior `<path d>` equals `buildInteriorPathD(expandFredoRects(
- *    FREDO_AVATAR_INTERIOR_RECTS))`, so a geometry change that the icon was not
- *    re-derived from fails CI;
- *  - the transform is ONE uniform `scale(S)` about the figure bbox inside the
- *    86% content box — `scale(sx, sy)` is forbidden (no-stretch, R-3);
- *  - the source bakes only the three explicitly scoped palette literals and
- *    carries no effects (no gradient/filter/shadow/bevel);
- *  - the retired head-only master is gone and the generator selects no second
- *    source (the single-master guards below).
+ * Until #3210 this guard proved the source was the frozen canonical geometry by
+ * importing `fredoAvatarGeometry` and comparing against `expandFredoRects` /
+ * `buildInteriorPathD`. That module is DELETED with the SVG avatar render path,
+ * so the same invariant is now pinned against the committed SVG ITSELF:
+ *
+ *  - one figure group carrying exactly 58 integer `<rect>` entries;
+ *  - exactly one interior `<path>` whose `d` holds 17 closed bands (the frozen
+ *    interior fill), filled with the baked interior token literal;
+ *  - the single uniform `translate(tx ty) scale(s)` transform, recomputed from
+ *    the FROZEN body bbox `87, 67, 840, 1167` (the literal the deleted rect table
+ *    produced) inside the 86% content box — `scale(sx, sy)` is forbidden;
+ *  - the baked palette only, and no effects (no gradient/filter/shadow/bevel);
+ *  - a SHA-256 pin: the icon is a BYTE-IDENTICAL artifact, so a geometry or art
+ *    drift can never ship silently (and the cut-over must not move it);
+ *  - the retired head-only master stays gone and the generator selects no second
+ *    source, and writes nothing under `shared/components/fredo-avatar/`.
  *
  * Files are read with `readFileSync(resolve(process.cwd(), ...))` — vitest runs
  * with cwd = `apps/ui`, matching the established convention in this workspace
@@ -49,6 +49,29 @@ const BAKED_PALETTE = ['#0c1117', '#00d1d1', '#0a373c'];
 
 const LARGE_CANVAS = 1024;
 const CONTENT_BOX_RATIO = 0.86;
+
+/** The frozen body bbox the deleted `FREDO_AVATAR_SOURCE_RECTS` expansion produced. */
+const FIGURE_BBOX = { x: 87, y: 67, width: 840, height: 1167 } as const;
+
+/** The frozen figure rect count (the 31 authored calls → 58 with mirrors). */
+const FIGURE_RECT_COUNT = 58;
+
+/** The frozen interior fill: 17 closed bands (head bands + whole-body bands). */
+const INTERIOR_BAND_COUNT = 17;
+
+/** The first interior band, verbatim — the fill's own identity check. */
+const FIRST_INTERIOR_BAND = 'M 364 106 h 286 v 43 h -286 Z';
+
+/**
+ * SHA-256 of `fredo-icon-large.svg` at the #3210 cut-over, computed over the
+ * LF-NORMALISED text. The 3D avatar landing must not move the shipped icon: this
+ * is the byte/content-identity pin. (The repo declares no `.gitattributes` EOL
+ * rule, so a Windows checkout materialises CRLF while CI materialises LF;
+ * normalising keeps ONE digest valid on every checkout — a raw-bytes digest would
+ * pass here and fail on CI. Geometry drift is additionally caught by the rect /
+ * bbox / path / transform assertions above, which are EOL-agnostic.)
+ */
+const ICON_SHA256 = 'fbaf56a783618cd9d94608596db8a48f19b1937b2a4bd815bdf30017062a1e1d';
 
 interface SvgRect {
   x: number;
@@ -92,15 +115,6 @@ function fillLiterals(svg: string): string[] {
   return out;
 }
 
-const rectKey = (r: { x: number; y: number; width: number; height: number }): string =>
-  `${r.x},${r.y},${r.width},${r.height}`;
-
-function multisetOf(keys: readonly string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
-  return counts;
-}
-
 function largeFigureGroup(svg: string): string {
   const match = svg.match(/<g\b[^>]*\bdata-part="figure"[^>]*>([\s\S]*?)<\/g>/);
   if (!match) throw new Error('fredo-icon-large.svg: <g data-part="figure"> not found');
@@ -133,7 +147,7 @@ function assertNoEffects(svg: string): void {
   }
 }
 
-describe('#2930 icon source — the one master is the frozen canonical geometry', () => {
+describe('#3210 icon source — the one master is the frozen canonical geometry', () => {
   it('declares the 1024 square canvas with crisp edges', () => {
     expect(LARGE).toContain('viewBox="0 0 1024 1024"');
     expect(LARGE).toContain('width="1024"');
@@ -150,47 +164,52 @@ describe('#2930 icon source — the one master is the frozen canonical geometry'
     expect(fullCanvas).toHaveLength(1);
   });
 
-  it('has exactly one figure group whose 58 rects equal expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)', () => {
+  it('has exactly one figure group carrying the frozen 58 rects', () => {
     expect((LARGE.match(/<g\b/g) ?? []).length).toBe(1);
     const group = largeFigureGroup(LARGE);
-    const expected = expandFredoRects(FREDO_AVATAR_SOURCE_RECTS);
-    expect(expected).toHaveLength(58);
-
     const actual = parseRects(group);
-    expect(actual).toHaveLength(58);
+
+    expect(actual).toHaveLength(FIGURE_RECT_COUNT);
     for (const rect of actual) {
       expect(Number.isInteger(rect.x)).toBe(true);
       expect(Number.isInteger(rect.y)).toBe(true);
       expect(rect.fill).toBe('#00D1D1');
     }
-    expect(multisetOf(actual.map(rectKey))).toEqual(multisetOf(expected.map(rectKey)));
+
+    // The frozen body bbox (the literal the deleted rect table produced) — the
+    // union of the 58 rect entries must still be exactly this box.
+    const bbox = {
+      x: Math.min(...actual.map((r) => r.x)),
+      y: Math.min(...actual.map((r) => r.y)),
+      width: Math.max(...actual.map((r) => r.x + r.width)) - Math.min(...actual.map((r) => r.x)),
+      height: Math.max(...actual.map((r) => r.y + r.height)) - Math.min(...actual.map((r) => r.y)),
+    };
+    expect(bbox).toEqual({ ...FIGURE_BBOX });
   });
 
-  it('has exactly one interior <path> equal to buildInteriorPathD(expandFredoRects(FREDO_AVATAR_INTERIOR_RECTS))', () => {
+  it('has exactly one interior <path> with the frozen 17 closed bands', () => {
     const group = largeFigureGroup(LARGE);
     const paths = [...group.matchAll(/<path\b([^>]*?)\/?>/g)];
     expect(paths).toHaveLength(1);
-    const expectedD = buildInteriorPathD(expandFredoRects(FREDO_AVATAR_INTERIOR_RECTS));
-    expect(attr(paths[0][1], 'd')).toBe(expectedD);
+
+    const d = attr(paths[0][1], 'd');
+    expect(d).not.toBeNull();
+    expect(d).toContain(FIRST_INTERIOR_BAND);
+    // One `M` per closed band — the additive interior fill's own count.
+    expect((d!.match(/\bM\b/g) ?? []).length).toBe(INTERIOR_BAND_COUNT);
+    // Every band closes.
+    expect((d!.match(/\bZ\b/g) ?? []).length).toBe(INTERIOR_BAND_COUNT);
     expect(attr(paths[0][1], 'fill')).toBe('#0A373C');
   });
 
-  it('uses ONE uniform scale about the figure bbox inside the 86% content box (no stretch)', () => {
+  it('uses ONE uniform scale about the frozen body bbox inside the 86% content box (no stretch)', () => {
     const transform = largeFigureTransform(LARGE);
     // Exactly `translate(<tx> <ty>) scale(<s>)` — a two-argument scale() is forbidden.
     const match = transform.match(/^translate\((-?[\d.]+) (-?[\d.]+)\) scale\(([\d.]+)\)$/);
     expect(match).not.toBeNull();
     if (!match) return;
 
-    const rects = expandFredoRects(FREDO_AVATAR_SOURCE_RECTS);
-    const bbox = {
-      x: Math.min(...rects.map((r) => r.x)),
-      y: Math.min(...rects.map((r) => r.y)),
-      width: Math.max(...rects.map((r) => r.x + r.width)) - Math.min(...rects.map((r) => r.x)),
-      height: Math.max(...rects.map((r) => r.y + r.height)) - Math.min(...rects.map((r) => r.y)),
-    };
-    expect(bbox).toEqual({ x: 87, y: 67, width: 840, height: 1167 });
-
+    const bbox = FIGURE_BBOX;
     const expectedScale = (CONTENT_BOX_RATIO * LARGE_CANVAS) / Math.max(bbox.width, bbox.height);
     const expectedTx = LARGE_CANVAS / 2 - (bbox.x + bbox.width / 2) * expectedScale;
     const expectedTy = LARGE_CANVAS / 2 - (bbox.y + bbox.height / 2) * expectedScale;
@@ -204,9 +223,20 @@ describe('#2930 icon source — the one master is the frozen canonical geometry'
     assertPaletteOnly(LARGE);
     assertNoEffects(LARGE);
   });
+
+  it('is byte-identical to the pre-cut-over master (SHA-256 pin)', () => {
+    const text = readFileSync(resolve(ICONS_DIR, 'fredo-icon-large.svg'), 'utf8');
+    const normalised = text.replace(/\r\n/g, '\n');
+    const digest = createHash('sha256').update(normalised).digest('hex');
+    expect(digest).toBe(ICON_SHA256);
+    // Non-vacuity: the pin is over real, non-empty content and the normalisation
+    // is the identity function on an LF checkout (so the pin is not a no-op).
+    expect(normalised.length).toBeGreaterThan(5_000);
+    expect(normalised).not.toContain('\r');
+  });
 });
 
-describe('#2930 icon source — exactly one master drives every artifact', () => {
+describe('#3210 icon source — exactly one master drives every artifact', () => {
   it('does not ship the retired head-only master', () => {
     expect(existsSync(resolve(ICONS_DIR, 'fredo-icon-small.svg'))).toBe(false);
   });
@@ -219,5 +249,9 @@ describe('#2930 icon source — exactly one master drives every artifact', () =>
 
   it('generator derives every target from the one large master', () => {
     expect(GENERATOR_SOURCE).toContain('fredo-icon-large.svg');
+  });
+
+  it('generator writes nothing under the avatar component tree', () => {
+    expect(GENERATOR_SOURCE).not.toContain('shared/components/fredo-avatar');
   });
 });
