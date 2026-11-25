@@ -6,9 +6,10 @@
 > second process or an ingestion gap, and the Settings → **Background capture** surface.
 >
 > Inherits `.opencode/tests/resident-shell/` (the resident process, tray `Open`/`Quit`, the
-> single-instance probe, the exit gate), `.opencode/tests/headless-ingest/` (the retained
-> `fredo ingest` daemon, whose login-entry row is SUPERSEDED by this suite — see
-> `headless-ingest/functional.md` F-8), and `.opencode/tests/settings/` (the settings shell).
+> single-instance probe, the exit gate), `.opencode/tests/resident-ingest/` (the ONE resident owner
+> of the cluster and the OTLP receivers — its predecessor `headless-ingest/` was RETIRED by #3194;
+> the row-by-row disposition is `resident-ingest/retirement-ledger.md`), and
+> `.opencode/tests/settings/` (the settings shell).
 >
 > **Verification policy: LIVE.** F-1…F-4 and F-6 assert runtime observables of a running artifact
 > (a launch, a registry write, a window, a persisted span, a rendered pane). A static-only receipt

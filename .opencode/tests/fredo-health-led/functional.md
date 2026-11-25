@@ -48,7 +48,7 @@ Durable suite for the whole-system health LED (feature #3052). One `- [ ]` case 
 
 ## Induction levers (all in-repo; inert when unset — G-275 / G-300)
 
-- **Postgres `failed` (F-1/F-4):** `FREDO_PG_FORCE_START_FAIL=1` (`pg_supervisor/mod.rs:183`) → `PgRuntime::start` fails closed without spawning → the boot leg publishes `Failed` (`state.rs:476-479`). Alternative: `FREDO_PG_DATA_DIR` → a stale-locked dir under `.opencode/tmp/3052/pgdata` with no live descriptor → `failed_only` (`state.rs:427-438`).
+- **Postgres `failed` (F-1/F-4):** `FREDO_PG_FORCE_START_FAIL=1` (`pg_supervisor/mod.rs:183`) → `PgRuntime::start` fails closed without spawning → the boot leg publishes `Failed` (`state.rs:476-479`). Alternative: `FREDO_PG_DATA_DIR` → a stale-locked dir under `.opencode/tmp/3052/pgdata` → `failed_only` (the lock is held, so the boot leg fails closed instead of adopting a cluster).
 - **Postgres `disabled` (F-4b):** NOT live-reachable (PostgreSQL is unconditional — `state.rs:395-398`; the no-state fallback is `state.rs:1465-1477`) → static pin, non-AC.
 - **Telemetry stream down (F-3):** stop the agent/opencode process feeding the stream (`dev-environment` stop) so the Tauri connection listener sets `isConnected=false`; restart to recover.
 - **Companion never installed (F-5):** a fresh env with no companion config.

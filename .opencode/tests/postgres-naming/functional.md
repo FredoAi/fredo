@@ -181,8 +181,7 @@ non-loopback bind, a plaintext secret, a regressed `max_connections`, or a stati
 - Scratch root: `.opencode/tmp/3036/` — `pgdata-fresh/`, `pgdata-legacy/`, `lock/`, `install/`,
   `e2e/` (in-repo only; no out-of-repo asset/model/media).
 - Induction seams: `FREDO_PG_DATA_DIR` (`mod.rs:95`), `FREDO_PG_INSTALL_DIR` (`:102`),
-  `FREDO_PG_LOCK_DIR` (`:63`); headless `FREDO_INGEST_DESCRIPTOR` (`:70`),
-  `FREDO_INGEST_SHUTDOWN_FILE`, `FREDO_INGEST_RUN_MS`; fault `FREDO_PG_POOL_FORCE_FAIL` (`:115`),
+  `FREDO_PG_LOCK_DIR` (`:63`); fault `FREDO_PG_POOL_FORCE_FAIL` (`:115`),
   `FREDO_PG_FORCE_START_FAIL` (`:133`). **Architect lever needed for the seed:** a database-only
   test-only seed lever (env-gated, inert unset) OR the merge-base pre-change build.
 - Live app lever: `powershell -File .opencode/scripts/dev-env.ps1 -Action Up|Down|Restart

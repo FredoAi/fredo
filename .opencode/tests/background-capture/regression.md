@@ -55,9 +55,10 @@ this feature edits.
 
 - [ ] **RT-6 (no RTDB / classifier / storage change).**
   `git diff --stat origin/main...HEAD -- apps/tauri/src-tauri/src/infrastructure/rtdb` is EMPTY;
-  the span→row pipeline rows of `.opencode/tests/headless-ingest/functional.md` F-2 and
+  the span→row pipeline rows of `.opencode/tests/resident-ingest/functional.md` F-5 (successor to
+  the retired `headless-ingest/` F-2 — see `resident-ingest/retirement-ledger.md`) and
   `.opencode/tests/event-persistence/` still hold.
-  **Expected:** EMPTY diff pasted; F-2's HTTP/gRPC parity still green.
+  **Expected:** EMPTY diff pasted; F-5's HTTP/gRPC parity still green.
 
 - [ ] **RT-7 (tray + exit gate unchanged).** `app_lifecycle_status` still reports `trayItems`
   exactly `[Open, Quit]`; the exit gate is still `code.is_none() && tray_installed`; the macOS

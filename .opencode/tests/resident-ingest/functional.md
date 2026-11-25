@@ -245,7 +245,10 @@ row disposition). Inherits `.opencode/tests/stream-health/`, `postgres-lifecycle
   help page, NOT exit 0; (3) exit **1** with the same class of parse error; (4) zero hits for the
   literal `fredo ingest` in `docs/CLI_GUIDE.md`, `docs/SETUP.md`, `docs/SECURITY.md`,
   `docs/ARCHITECTURE.md`, `docs/FAQ.md`, `apps/ui/src/**`, `apps/tauri/src-tauri/src/**`, outside
-  the named allowlist: `applications/settings/autostart.rs` (+ its tests),
+  the named allowlist: the two legacy-VALUE migration sentences (the `CLI_GUIDE.md` "Login
+  auto-start" note and the `SETUP.md` "Auto-start at login" paragraph — both narrate the stored
+  registry VALUE an older install left behind, kept byte-identical and owned by #3196 ST-5),
+  `applications/settings/autostart.rs` (+ its tests),
   `applications/ingest/__tests__/IngestAutostartSettings.test.tsx` (its RETIRED_COPY list),
   `.opencode/tests/**` (this suite spells the retired token deliberately — G-431), and historical
   `docs/agentic-pipeline/**`.
