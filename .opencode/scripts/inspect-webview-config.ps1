@@ -15,11 +15,18 @@
     * the production CSP has no inline-script escape (no 'unsafe-inline' or
       'unsafe-eval' in script-src, no wildcard / remote script source);
     * the dev CSP differs only by the dev-only 'unsafe-inline' script allowance;
-    * the capability set is the expected release set, with no shell permissions
-      (shell:allow-spawn / shell:allow-execute / shell:allow-open);
-    * no capability `windows`/`webviews` entry can reach an `installed-*`
-      window label (the installed-app isolation boundary), and every capability
-      declares an explicit window reach;
+    * the capability set is exactly the expected release set (four files:
+      default, mcp-bridge-dev, app-commands, installed-app-commands), with no
+      shell permissions (shell:allow-spawn / shell:allow-execute /
+      shell:allow-open); BOTH directions fail — an unaccounted capability file
+      and a missing one (most importantly the installed tier disappearing);
+    * the installed tier is EXACTLY ONE capability matching exactly the
+      `installed-*` window family, granting exactly one permission
+      (`allow-installed-app-invoke`, for the `installed_app_invoke` command) and
+      NO `core:*` — and every OTHER capability matches no `installed-*` label.
+      This is the POSITIVE form Spec #3146 shipped: it supersedes (never
+      deletes) the #3147 invariant "zero capabilities reach an installed
+      window"; isolation is cardinality plus exact-set;
     * the MCP bridge capability is dev-only and its plugin registration is
       `#[cfg(debug_assertions)]`-gated, so it is inert in a release build;
     * product source contains no `__TAURI__` global.
@@ -46,14 +53,16 @@
 
 .PARAMETER ExpectedCapabilities
   The capability file names that make up the expected release set. Default:
-  `default.json,mcp-bridge-dev.json,app-commands.json`.
+  `default.json,mcp-bridge-dev.json,app-commands.json,installed-app-commands.json`.
 
-  This is a SET-EQUALITY check on FILE NAMES (count first, then elements), not a
-  "contains" check: the `capabilities/` directory must contain exactly these
-  files. A new capability file is therefore a DELIBERATE edit — add it to this
-  list in the same change that adds the file (the release-set assertion moves
-  with the file). It is never an automatic pass; a removal likewise requires
-  removing the name here.
+  This is a SET-EQUALITY check on FILE NAMES, not a "contains" check, and BOTH
+  directions are FAILs: a file present but not named here (an unaccounted
+  capability) and a name here with no file (most importantly
+  `installed-app-commands.json` — losing it silently drops the installed
+  application command surface). A new capability file is therefore a
+  DELIBERATE edit — add it to this list in the same change that adds the file,
+  and extend the installed-tier check if the new file touches the
+  `installed-*` namespace.
 
 .EXAMPLE
   powershell -File .opencode/scripts/inspect-webview-config.ps1
@@ -66,7 +75,7 @@ param(
   [string]$ConfigPath = '',
   [string]$CapabilitiesDir = '',
   [string]$LibPath = '',
-  [string[]]$ExpectedCapabilities = @('default.json', 'mcp-bridge-dev.json', 'app-commands.json')
+  [string[]]$ExpectedCapabilities = @('default.json', 'mcp-bridge-dev.json', 'app-commands.json', 'installed-app-commands.json')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -200,7 +209,13 @@ Add-Check 'capabilities.dir.present' ($capFiles.Count -gt 0) "files=$($capFiles.
 
 $actualNames = @($capFiles | ForEach-Object { $_.Name } | Sort-Object)
 $expectedNames = @($ExpectedCapabilities | Sort-Object)
-Add-Check 'capabilities.expected-files' (Test-SetEqual $actualNames $expectedNames) "actual=[$($actualNames -join ',')] expected=[$($expectedNames -join ',')]"
+$missingNames = @($expectedNames | Where-Object { $actualNames -notcontains $_ })
+$unexpectedNames = @($actualNames | Where-Object { $expectedNames -notcontains $_ })
+# The installed tier is PART of the expected truth, named here so a disappearance
+# reads as "the installed tier is gone" and not merely as a count mismatch.
+$installedTierPresent = $actualNames -contains 'installed-app-commands.json'
+$expectedFilesOk = ($missingNames.Count -eq 0) -and ($unexpectedNames.Count -eq 0) -and $installedTierPresent
+Add-Check 'capabilities.expected-files' $expectedFilesOk "actual=[$($actualNames -join ',')] expected=[$($expectedNames -join ',')] installedTier=$installedTierPresent missing=[$($missingNames -join ',')] unexpected=[$($unexpectedNames -join ',')]"
 
 $capDocs = @{}
 foreach ($file in $capFiles) {
@@ -249,55 +264,105 @@ $releaseBridgeOk = if ($hasExplicitCapabilities) { -not ($explicitCaps -contains
 $releaseDetail = if ($hasExplicitCapabilities) { "explicit=[$($explicitCaps -join ',')]" } else { 'auto-includes the capabilities dir; bridge permission is inert because the plugin is cfg(debug_assertions)-gated' }
 Add-Check 'capabilities.release-set.excludes-bridge' $releaseBridgeOk $releaseDetail
 
-# ---- Installed-app isolation: no capability may reach an installed-* window --
+# ---- Installed tier: exactly ONE capability, exactly ONE command --------------
 # The ACL glob-matches a capability's `windows`/`webviews` entries against the
 # window label. An installed app's label always begins with `installed-`
-# (INSTALLED_APP_WINDOW_LABEL_PREFIX, Spec #3147), and the isolation AC-2 depends
-# on is that NO capability matches such a label. This asserts every declared
-# pattern fails to match the canonical installed label, and that no pattern even
-# names it.
+# (INSTALLED_APP_WINDOW_LABEL_PREFIX), and the built-in family is
+# `main`/`terminal`/`doom`/`app-*` — different prefixes, so no label is both.
+#
+# Spec #3146 SUPERSEDED the #3147 invariant "NO capability may reach an
+# installed-* label" (supersedes, never deletes) with the positive property:
+#   an installed window matches EXACTLY ONE capability, which grants EXACTLY ONE
+#   command (`installed_app_invoke`, via `allow-installed-app-invoke`) and
+#   carries NO `core:*`; every OTHER capability still matches no installed label.
+# The second clause is what makes "exactly one command" true at the ACL: with
+# the app manifest registered, a command reaches a window only through a
+# capability whose permissions grant it, so a second matching capability (or a
+# second permission in the one that matches) is a widening and this check
+# reddens on it.
+#
+# The predicate is the PARSED matcher — never a token grep: the installed
+# capability names the installed namespace BY DESIGN, so a literal `installed-`
+# search now legitimately hits a correct tree (G-430). The probe label lives in
+# this instrument, which is outside the scanned root, so it cannot count itself.
 function Test-GlobMatch {
   param([string]$Pattern, [string]$Label)
   if ([string]::IsNullOrWhiteSpace($Pattern)) { return $false }
   return $Label -like $Pattern   # Tauri window patterns are globs: * ? [..]
 }
 
-# NON-VACUITY CONTROL: the matcher MUST match app-terminal against app-* and MUST
-# NOT match the same label once it is installed-*, or the assertion below would
-# pass by matching nothing at all.
-$matchControlOk = (Test-GlobMatch -Pattern 'app-*' -Label 'app-terminal') -and
-  (-not (Test-GlobMatch -Pattern 'app-*' -Label 'installed-app-terminal'))
-
+$installedCapabilityFile = 'installed-app-commands.json'
+$installedCapabilityIdentifier = 'installed-app-commands'
+$installedPermission = 'allow-installed-app-invoke'
 $probeLabel = 'installed-fixture'
-$reachViolations = @()
+
+# NON-VACUITY CONTROL, both directions: the built-in class is reachable through
+# `app-*`; an installed label is NOT; `installed-*` matches an installed label;
+# and `installed-*` does NOT swallow any built-in label. A matcher that matched
+# everything (or nothing) would blur the two tiers while every count below still
+# read correctly.
+$matchControlOk = (Test-GlobMatch -Pattern 'app-*' -Label 'app-terminal') -and
+  (-not (Test-GlobMatch -Pattern 'app-*' -Label 'installed-app-terminal')) -and
+  (Test-GlobMatch -Pattern 'installed-*' -Label 'installed-app-terminal') -and
+  (-not (Test-GlobMatch -Pattern 'installed-*' -Label 'app-terminal')) -and
+  (-not (Test-GlobMatch -Pattern 'installed-*' -Label 'main'))
+
+$matchedFiles = @()
+$otherReach = @()
 $undeclaredReach = @()
+$installedDoc = $null
+$installedWindows = @()
+$installedWebviews = @()
+$installedPermissions = @()
 foreach ($file in $capFiles) {
   $doc = $capDocs[$file.Name]
   if ($null -eq $doc) { $undeclaredReach += "$($file.Name):unparseable"; continue }
   $windowEntries  = @($doc.windows  | Where-Object { $null -ne $_ })
   $webviewEntries = @($doc.webviews | Where-Object { $null -ne $_ })
+  $reachEntries = @($windowEntries + $webviewEntries)
+  # An entry either glob-matches the probe or (a specific installed id, a
+  # narrower glob) names the namespace without matching it. Both are reach.
+  $hitEntries = @($reachEntries | Where-Object {
+    $entryText = [string]$_
+    (Test-GlobMatch -Pattern $entryText -Label $probeLabel) -or ($entryText -match '(?i)installed')
+  })
+  if ($hitEntries.Count -gt 0) { $matchedFiles += $file.Name }
+
+  if ($file.Name -eq $installedCapabilityFile) {
+    $installedDoc = $doc
+    $installedWindows = @($windowEntries | ForEach-Object { [string]$_ })
+    $installedWebviews = @($webviewEntries | ForEach-Object { [string]$_ })
+    $installedPermissions = @($doc.permissions | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    continue
+  }
+
   # Fail CLOSED: a capability with neither list declares no reach we can prove
   # excludes installed-*. An absent/empty `windows` (and no `webviews`) FAILS
   # here rather than being skipped as "matches nothing" (Spec #3147 QA row F-2.5).
-  if ($windowEntries.Count -eq 0 -and $webviewEntries.Count -eq 0) {
-    $undeclaredReach += "$($file.Name):no-windows-or-webviews"
-    continue
-  }
-  foreach ($entry in @($windowEntries + $webviewEntries)) {
-    $text = [string]$entry
-    if (Test-GlobMatch -Pattern $text -Label $probeLabel) {
-      $reachViolations += "$($file.Name):$text"
-    } elseif ($text -match '(?i)installed') {
-      # Names the installed namespace without glob-matching the probe: still a
-      # boundary edit — flag it, never let it pass silently.
-      $reachViolations += "$($file.Name):$text"
-    }
+  if ($reachEntries.Count -eq 0) { $undeclaredReach += "$($file.Name):no-windows-or-webviews" }
+  if ($hitEntries.Count -gt 0) {
+    $otherReach += "$($file.Name):$(@($hitEntries | ForEach-Object { [string]$_ }) -join '|')"
   }
 }
 
-$reachOk = $matchControlOk -and ($reachViolations.Count -eq 0) -and ($undeclaredReach.Count -eq 0)
-$reachDetail = "matchControl=$matchControlOk probe=$probeLabel reachable=[$($reachViolations -join ' ')] undeclared=[$($undeclaredReach -join ' ')]"
-Add-Check 'capabilities.no-installed-window-reach' $reachOk $reachDetail
+$installedCore = @($installedPermissions | Where-Object { $_ -match '^core:' })
+$installedIdentifier = if ($null -ne $installedDoc) { [string]$installedDoc.identifier } else { '' }
+$installedTierOk =
+  $matchControlOk -and
+  ($matchedFiles.Count -eq 1) -and
+  ($matchedFiles[0] -eq $installedCapabilityFile) -and
+  ($null -ne $installedDoc) -and
+  ($installedIdentifier -eq $installedCapabilityIdentifier) -and
+  ($installedWindows.Count -eq 1) -and
+  ($installedWindows[0] -eq 'installed-*') -and
+  ($installedWebviews.Count -eq 0) -and
+  ($installedPermissions.Count -eq 1) -and
+  ($installedPermissions[0] -eq $installedPermission) -and
+  ($installedCore.Count -eq 0) -and
+  ($otherReach.Count -eq 0) -and
+  ($undeclaredReach.Count -eq 0)
+$installedTierDetail = "matching=[$($matchedFiles -join ',')] identifier=$installedIdentifier windows=[$($installedWindows -join ',')] webviews=[$($installedWebviews -join ',')] permissions=[$($installedPermissions -join ',')] core=[$($installedCore -join ',')] expectedPermission=$installedPermission matchControl=$matchControlOk probe=$probeLabel otherReach=[$($otherReach -join ' ')] undeclared=[$($undeclaredReach -join ' ')]"
+Add-Check 'capabilities.installed-tier.exact' $installedTierOk $installedTierDetail
 
 # ---- The bridge plugin registration must be debug-only ----------------------
 $libText = if (Test-Path -LiteralPath $LibPath) { Get-Content -Raw -LiteralPath $LibPath } else { '' }
