@@ -206,10 +206,8 @@ src-tauri/src/
 |       +-- runtime.rs          — bounded `PgRuntime` (setup/start/readiness/stop) + synchronous watchdog hard-kill + RAII `Drop` teardown
 |       +-- sweep.rs            — PID-marker + `postmaster.pid` image-guarded orphan sweep (kill only a live `postgres.exe`)
 |       +-- lock.rs             — exclusive PG data-dir lock (single-instance guard, acquired before the sweep) + caller-controlled `acquire_in` lock dir
-|       +-- descriptor.rs       — published `HeadlessDescriptor` (pid + port, atomic write) + bounded liveness guard — lets the GUI attach to a headless-owned cluster
-|       +-- headless.rs         — the non-GUI `fredo ingest` daemon: owns the cluster + OTLP receivers, shares the data dir/credential, bounded teardown (Spec #2992)
 |       +-- config.rs           — typed `PgSupervisorConfig` sidecar (`<app_data_dir>/postgres-supervisor.json`: non-secret `port` + `logVerbosity`; the password is NEVER a field) — atomic load/save, defaults on absent/malformed, read before the cluster starts (Spec #3022)
-|       +-- state.rs            — `start_supervisor`/`stop_on_exit` wiring, `await_ready` gate, `PgState::Attached` GUI-attach path, `pg_supervisor_status` + `pg_server_log_tail` commands; the config commands `pg_config_get`/`pg_config_apply`/`pg_database_reset` (bounded restart, `EngineHandle::swap` re-point, SQLSTATE-based `failureKind`, refuse when attached; Spec #3022)
+|       +-- state.rs            — `start_supervisor`/`stop_on_exit` wiring, `await_ready` gate, `pg_supervisor_status` + `pg_server_log_tail` commands; the config commands `pg_config_get`/`pg_config_apply`/`pg_database_reset` (bounded restart, `EngineHandle::swap` re-point, SQLSTATE-based `failureKind`; Spec #3022)
 |       +-- acquisition.rs      — build-time acquisition mode (`runtime-download` default / `bundled` feature) + priced constants + integrity-pinned archive acquisition (reuses the ONE streaming engine)
 |       +-- extraction.rs       — verified-archive extraction (streaming tar/gz, single top-level component stripped) + trusted-install marker (`.fredo-pg-extracted`)
 |       +-- credentials.rs     — OS-keychain PG loopback credential (service `fredo.postgres`, account `loopback:password`; fixed loopback-only fallback + `FREDO_PG_PASSWORD_FILE`/`FREDO_PG_KEYCHAIN_DISABLED` test seams)
@@ -318,9 +316,8 @@ src-tauri/src/
     |       +-- mod.rs
     |       +-- emit.rs         — emit event command
     |       +-- setup.rs        — setup subcommand
-    |       +-- ingest.rs       — `fredo ingest` headless daemon subcommand (local, no IPC)
     +-- otlp/                   — OTLP receivers
-        +-- mod.rs              — `ReceiverContext` + AppHandle-free `start_with` (used by the headless daemon) + `start(app)` GUI wrapper
+        +-- mod.rs              — `ReceiverContext` + the typed `start_with_ports` entry point (the ONE OTLP receiver entry point)
         +-- ingest.rs           — raw span/metric/log → telemetry_* mapping, persisted on receipt
         +-- raw.rs              — raw OTLP persistence helpers (SpanStore::insert_raw_spans)
         +-- grpc.rs             — gRPC receiver (:4317)
@@ -391,20 +388,6 @@ The RTDB ingest classifier (`rtdb/ingest.rs`) maintains the correlation maps (po
 - **`session_to_correlation`**: Maps session IDs to correlation IDs so `correlation_id === session_id` for pure-OTLP sessions, with the per-turn counter (REQ-639) and the ST9 span→correlation reuse guard
 
 `chat` child-span content lands in the canonical chat rows; the Mission Monitor derives its graph from them.
-
----
-
-## Headless Ingest Daemon (Spec #2992)
-
-`fredo ingest` runs the OTLP receivers and the RTDB pipeline **without the GUI**. It is the same telemetry path the desktop app uses, hosted by a long-lived non-GUI process:
-
-- **Cluster ownership.** The daemon starts the embedded PostgreSQL cluster through `applications/pg_supervisor` using the **same data dir and the same control-plane credential** as the GUI, and holds the **exclusive data-dir lock** (`lock.rs`) so exactly one owner starts the cluster. A second `fredo ingest` — or the GUI's own cluster start — fails fast on the lock.
-- **GUI attach.** The daemon publishes a `HeadlessDescriptor` (pid + ephemeral PG port, `descriptor.rs`) after readiness. When the GUI's own cluster start hits the held lock and a live descriptor is present, the supervisor **attaches** to the headless-owned cluster (`PgState::Attached`) — it builds its pool against the published port/credential, runs the same pre-install schema/migration leg, and never starts or later stops a postmaster.
-- **Receivers.** The OTLP gRPC (`:4317`) / HTTP (`:4318`) receivers were refactored to an AppHandle-free `ReceiverContext { classifier, span_store }` (`otlp/mod.rs`), so they run identically in the GUI and the daemon. Ingest stays unconditional (never subscription-gated) and the classifier/`SpanStore` are the only emission paths — no alternate row route.
-- **Bounded lifecycle (G-263).** On SIGINT, a shutdown file, or `--run-ms`, the daemon drains/flushes the write-behind queue, closes the pool, stops the cluster within a finite bound with a hard-kill fallback, releases the lock, and clears the descriptor — guaranteed on normal/error/panic paths, no orphan postmaster.
-- **Markers.** The daemon never reads or writes the one-shot `rtdb.backfill.*` markers and never writes `telemetry_spans` from the backfill path; `telemetry_spans` stays read-only to that path.
-
-The GUI Settings → **Ingest** toggle installs/removes a per-user login entry that launches `fredo ingest` at sign-in (OS-level service installation is out of scope).
 
 ---
 
