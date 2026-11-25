@@ -5,8 +5,10 @@ Durable functional suite for the **embedded-PostgreSQL cluster identity** featur
 superuser role stays `postgres`** — **NO role rename** — with a **one-time, catalog-only,
 no-data-loss migration** for existing installs whose tables currently live under the `postgres`
 database. Seeded at issue **#3036**. Inherits `.opencode/tests/postgres-lifecycle/`,
-`postgres-config/`, `postgres-client/`, `postgres-stores/`, `headless-ingest/`, and
+`postgres-config/`, `postgres-client/`, `postgres-stores/`, `resident-ingest/`, and
 `postgres-connection-headroom/` on the overlapping connection/lifecycle surface.
+(`headless-ingest/` was RETIRED by #3194 — the embedded cluster now has ONE owner, the resident
+desktop process; its replacement suite is `resident-ingest/`.)
 
 > **Feature tests:** postgres-naming.
 
@@ -83,11 +85,16 @@ database. Seeded at issue **#3036**. Inherits `.opencode/tests/postgres-lifecycl
   **FAIL** = the DATABASE component is `postgres` (that literal is the migration SOURCE only,
   never an application target).
 
-- [ ] **F-6 (REQ-3 / AC2) — attach/headless URL targets the `fredo` database.**
-  With a headless daemon owning the cluster, boot the GUI and inspect the attach URL
-  (`state.rs:1296-1298`).
-  **Expected:** `postgresql://postgres:<pw>@<host>:<port>/fredo`; the GUI attaches (`attached`).
-  **FAIL** = the DATABASE component is `postgres`, or a failed attach.
+- [ ] **F-6 (REQ-3 / AC2) — the resident process's own pool URL targets the `fredo` database
+  (retargeted by #3194 — there is no attach URL any more).**
+  With the resident app owning the cluster (`pg_supervisor_status.state:"ready"`), inspect the pool
+  URL the process builds for itself (`runtime.rs` — the same URL the settings/queries use) and the
+  live pool.
+  **Expected:** `postgresql://postgres:<pw>@127.0.0.1:<port>/fredo`; the user role is `postgres`
+  (UNCHANGED), the database is `fredo`; `pg_supervisor_status` carries no `attached` key (the
+  attach URL it used to describe was deleted with `PgState::Attached` — #3194).
+  **FAIL** = the DATABASE component is `postgres`, or an `attached` key/state appears in the status
+  shape.
 
 - [ ] **F-7 (REQ-3 / AC3) — `ALTER USER postgres PASSWORD` role UNCHANGED.**
   Inspect the built statement (`runtime.rs:273`); change the password via Settings → PostgreSQL.
