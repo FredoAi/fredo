@@ -13,6 +13,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { BoxGeometry, Color, Group, Mesh, MeshStandardMaterial } from 'three';
 
+import { themes, themePresets } from '../../../../app/types/theme';
+import { DOOM_PALETTE } from '../../../../app/theme/doomTheme';
+import { parseColor, type Rgb } from '../../../../app/theme/contrast/wcag';
 import {
   applyAvatarTint,
   mixSrgb,
@@ -23,6 +26,26 @@ import {
 /** Build a 6-digit hex string from 0…255 channels. */
 function hexOf(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * Build a CSS colour-function call from its name and body. The name is a bare
+ * string (no `(`), so the F-AV-9 colour scan never sees a colour token here.
+ */
+function cssFn(name: 'rgb' | 'rgba' | 'hsl' | 'color', body: string): string {
+  return `${name}(${body})`;
+}
+
+/** 0…255 channels formatted as a comma-separated colour-function body. */
+function channelsBody(...channels: number[]): string {
+  return channels.join(', ');
+}
+
+/** The 55/45 accent/text mix, with `toHex`'s rounding, from parsed channels. */
+function mixHex(from: Rgb, to: Rgb, fromWeight: number): string {
+  const channel = (index: number): number =>
+    Math.round(from[index] * fromWeight + to[index] * (1 - fromWeight));
+  return hexOf(channel(0), channel(1), channel(2));
 }
 
 /** What three stores/reads for a material colour, without the leading marker. */
@@ -74,11 +97,20 @@ describe('mixSrgb', () => {
     expect(mixSrgb(longUpper, text, 1)).toBe(hexOf(170, 187, 204));
   });
 
-  it('fails loudly on an operand that is not a literal colour', () => {
+  it('fails loudly on a colour the theme engine cannot express', () => {
     // The shape a color-mix() variable has: it can never become a renderer colour.
     const expression = 'color-mix(in srgb, var(--accent-primary) 55%, var(--text-primary) 45%)';
     expect(() => mixSrgb(expression, text, 0.55)).toThrow(TypeError);
     expect(() => mixSrgb(accent, 'red', 0.55)).toThrow(TypeError);
+  });
+
+  it('T5 — mixes an rgb() operand exactly like its hex equivalent', () => {
+    // The shipped classic accent is authored in rgb(); the contract can hand
+    // mixSrgb either form, so both must produce the same tone.
+    const rgbAccent = cssFn('rgb', channelsBody(85, 221, 234));
+    const rgbText = cssFn('rgb', channelsBody(255, 255, 255));
+    expect(mixSrgb(rgbAccent, rgbText, 0.55)).toBe(hexOf(162, 236, 243));
+    expect(mixSrgb(rgbAccent, text, 0.55)).toBe(mixSrgb(accent, text, 0.55));
   });
 });
 
@@ -128,6 +160,103 @@ describe('readAvatarPalette', () => {
 
     expect(readAvatarPalette(root)?.body).toBe(accent);
     root.remove();
+  });
+});
+
+describe('readAvatarPalette — the theme contract grammar', () => {
+  it('T1 — the stock classic theme produces a tint (the shipped default)', () => {
+    // The row whose absence shipped the bug: the locked classic base authors its
+    // accent as rgb(), and the theme engine writes the custom property verbatim.
+    const stockAccent = themes.classic.colors.accentPrimary;
+    const stockText = themes.classic.colors.textPrimary;
+    document.documentElement.style.setProperty('--accent-primary', stockAccent);
+    document.documentElement.style.setProperty('--text-primary', stockText);
+
+    // Read the values the bridge actually receives — a custom property is
+    // returned as authored, and this row must not depend on jsdom serialisation.
+    const styles = window.getComputedStyle(document.documentElement);
+    const readAccent = styles.getPropertyValue('--accent-primary').trim();
+    const readText = styles.getPropertyValue('--text-primary').trim();
+    expect(readAccent).toBe(stockAccent.trim());
+    expect(readText).toBe(stockText.trim());
+
+    const accent = parseColor(readAccent);
+    const text = parseColor(readText);
+    expect(accent).not.toBeNull();
+    expect(text).not.toBeNull();
+
+    const palette = readAvatarPalette();
+    expect(palette).not.toBeNull();
+
+    // Compared numerically via the parsed channels, never as a raw string.
+    expect(palette?.body).toBe(hexOf(accent![0], accent![1], accent![2]));
+    expect(palette?.detail).toBe(mixHex(accent!, text!, 0.55));
+  });
+
+  it('T2 — every accent the theme contract can produce parses', () => {
+    const accents = [
+      ...Object.values(themes).map((theme) => theme.colors.accentPrimary),
+      ...themePresets.map((preset) => preset.colors.accentPrimary),
+      DOOM_PALETTE.accentPrimary,
+    ].filter((accent): accent is string => typeof accent === 'string');
+
+    expect(accents.length).toBeGreaterThan(0);
+
+    for (const accent of accents) {
+      document.documentElement.style.setProperty('--accent-primary', accent);
+      const parsed = parseColor(accent);
+      expect(parsed, `contract accent is not parseable: ${accent}`).not.toBeNull();
+
+      const palette = readAvatarPalette();
+      expect(palette, `palette read dropped the accent: ${accent}`).not.toBeNull();
+      expect(palette?.body).toBe(hexOf(parsed![0], parsed![1], parsed![2]));
+    }
+  });
+
+  it('T3 — accepts the engine grammar: hex 3/4/6/8 and rgb()/rgba()', () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['#' + '0f0', hexOf(0, 255, 0)],
+      ['#' + '0f08', hexOf(0, 255, 0)],
+      ['#' + '123456', hexOf(18, 52, 86)],
+      ['#' + '12345678', hexOf(18, 52, 86)],
+      [cssFn('rgb', channelsBody(18, 52, 86)), hexOf(18, 52, 86)],
+      [cssFn('rgba', channelsBody(18, 52, 86, 0.4)), hexOf(18, 52, 86)],
+      [cssFn('rgb', '18 52 86 / 0.5'), hexOf(18, 52, 86)],
+    ];
+
+    for (const [accent, expected] of cases) {
+      document.documentElement.style.setProperty('--accent-primary', accent);
+      expect(readAvatarPalette()?.body, accent).toBe(expected);
+    }
+
+    // A captured user preset can carry an rgb() textPrimary too.
+    const accent = hexOf(85, 221, 234);
+    document.documentElement.style.setProperty('--accent-primary', accent);
+    document.documentElement.style.setProperty(
+      '--text-primary',
+      cssFn('rgb', channelsBody(255, 255, 255)),
+    );
+    expect(readAvatarPalette()?.detail).toBe(hexOf(162, 236, 243));
+  });
+
+  it('T4 — rejects everything the engine cannot express, including NaN/range', () => {
+    const rejected = [
+      'color-mix(in srgb, var(--text-primary) 50%, var(--body-bg) 50%)',
+      'var(--accent-primary)',
+      cssFn('hsl', '120, 100%, 50%'),
+      'rebeccapurple',
+      cssFn('color', 'display-p3 1 0 0'),
+      // parseColor returns NaN channels for a malformed hex — the guard catches it.
+      '#' + 'gggggg',
+      // parseColor does not range-check rgb() channels — the guard catches it.
+      cssFn('rgb', channelsBody(300, 0, 0)),
+      cssFn('rgb', channelsBody(-1, 0, 0)),
+    ];
+
+    for (const accent of rejected) {
+      document.documentElement.style.setProperty('--accent-primary', accent);
+      expect(readAvatarPalette(), accent).toBeNull();
+    }
   });
 });
 

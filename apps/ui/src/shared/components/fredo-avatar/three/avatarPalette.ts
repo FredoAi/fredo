@@ -3,22 +3,33 @@
  *
  * The rendered body must follow the user's accent with NO remount, and every
  * avatar colour must originate in the theme contract. Two hard rules shape this
- * module (`### Resolved Unknowns` U-3):
+ * module:
  *
- *  1. ONLY literal-valued CSS variables are parsed. `--accent-primary` is written
- *     as a literal colour string by `ThemeProvider` in every branch (base, preset,
- *     override, Doom), so it parses. `--accent-strong` is a live `color-mix()`
+ *  1. The bridge reads the grammar the theme ENGINE writes, and nothing wider:
+ *     `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` (alpha dropped) and `rgb()` /
+ *     `rgba()`. `ThemeProvider` writes `--accent-primary` as a literal token
+ *     stream in every branch (base, preset, override, Doom), and
+ *     `getComputedStyle` returns a custom property AS AUTHORED — a custom
+ *     property's computed value is its substituted token stream, not a
+ *     normalised colour. The shipped `classic` base therefore arrives as
+ *     `rgb(147, 51, 234)`, not a hex. `--accent-strong` is a live `color-mix()`
  *     expression and CANNOT become a renderer colour — parsing it paints black.
  *  2. The expression tone is therefore DERIVED in JS: `mixSrgb(accent, text, 0.55)`
  *     reproduces `color-mix(in srgb, … 55% / 45%)`, which interpolates the
  *     gamma-encoded sRGB channels — exactly what `mixSrgb` does.
  *
- * There is no colour table in this module: the wardrobe / brass / FX materials
- * ship authored colours in the GLB and are never touched. The four neutral
- * body-family materials are the only tint targets (`applyAvatarTint`).
+ * Parsing is delegated to the shared engine parser (`app/theme/contrast/wcag`
+ * `parseColor`) plus a finite/0–255 guard, so the avatar accepts exactly the
+ * colours the rest of the theme can reason about — and never `hsl()`, named
+ * colours, `color()` or `color-mix()`. There is no colour table in this module:
+ * the wardrobe / brass / FX materials ship authored colours in the GLB and are
+ * never touched. The four neutral body-family materials are the only tint
+ * targets (`applyAvatarTint`).
  */
 
 import { Color, type Material, type Mesh, type Object3D } from 'three';
+
+import { parseColor } from '../../../../app/theme/contrast/wcag';
 
 /** The two CSS variables the avatar is allowed to read (both literal-valued). */
 const ACCENT_VARIABLE = '--accent-primary';
@@ -49,32 +60,26 @@ interface RgbChannels {
   readonly b: number;
 }
 
-const HEX_DIGITS = /^[0-9a-f]+$/i;
+/**
+ * Parse a theme colour into 0…255 sRGB channels, or `null` when it is not a value
+ * the theme engine can express.
+ *
+ * Delegates to the shared engine parser (the same one `themeCapture` consumes)
+ * and then enforces what that parser leaves out: every channel must be finite and
+ * within 0…255. Without the guard `#gggggg` would yield NaN channels and
+ * `rgb(300, 0, 0)` would yield 300 — values the engine's own `parseAccentRgb`
+ * rejects. With the guard the avatar's acceptance is exactly the engine's.
+ */
+function parseChannels(value: string): RgbChannels | null {
+  const channels = parseColor(value);
+  if (!channels) return null;
 
-/** Parse a literal hex colour (3- or 6-digit) into 0…255 sRGB channels. */
-function parseHex(value: string): RgbChannels | null {
-  const text = value.trim().toLowerCase();
-  if (!text.startsWith('#')) return null;
+  const [r, g, b] = channels;
+  const inRange = (channel: number): boolean =>
+    Number.isFinite(channel) && channel >= 0 && channel <= 255;
+  if (!inRange(r) || !inRange(g) || !inRange(b)) return null;
 
-  const digits = text.slice(1);
-  if (!HEX_DIGITS.test(digits)) return null;
-
-  if (digits.length === 3) {
-    const r = Number.parseInt(digits[0] + digits[0], 16);
-    const g = Number.parseInt(digits[1] + digits[1], 16);
-    const b = Number.parseInt(digits[2] + digits[2], 16);
-    return { r, g, b };
-  }
-
-  if (digits.length === 6) {
-    return {
-      r: Number.parseInt(digits.slice(0, 2), 16),
-      g: Number.parseInt(digits.slice(2, 4), 16),
-      b: Number.parseInt(digits.slice(4, 6), 16),
-    };
-  }
-
-  return null;
+  return { r, g, b };
 }
 
 /** Format 0…255 sRGB channels as a lowercase 6-digit hex string. */
@@ -100,17 +105,17 @@ function mixChannels(
 }
 
 /**
- * Mix two literal colours exactly as `color-mix(in srgb, a <weight>, b …)` does.
+ * Mix two theme-expressible colours exactly as `color-mix(in srgb, a <weight>, b …)` does.
  *
  * A malformed operand is a programming error: callers hand it values that already
  * passed {@link readAvatarPalette}'s validation, so it fails loudly instead of
  * silently painting the wrong colour.
  */
 export function mixSrgb(a: string, b: string, aWeight: number): string {
-  const from = parseHex(a);
-  const to = parseHex(b);
+  const from = parseChannels(a);
+  const to = parseChannels(b);
   if (!from || !to) {
-    throw new TypeError('mixSrgb expects two literal hex colours');
+    throw new TypeError('mixSrgb expects two colours the theme engine can express');
   }
   const weight = Number.isFinite(aWeight) ? aWeight : 1;
   return toHex(mixChannels(from, to, weight));
@@ -130,10 +135,10 @@ export function readAvatarPalette(root?: HTMLElement | null): AvatarPalette | nu
   if (!element) return null;
 
   const styles = window.getComputedStyle(element);
-  const accent = parseHex(styles.getPropertyValue(ACCENT_VARIABLE));
+  const accent = parseChannels(styles.getPropertyValue(ACCENT_VARIABLE));
   if (!accent) return null;
 
-  const text = parseHex(styles.getPropertyValue(TEXT_PRIMARY_VARIABLE));
+  const text = parseChannels(styles.getPropertyValue(TEXT_PRIMARY_VARIABLE));
   const body = toHex(accent);
 
   return {
