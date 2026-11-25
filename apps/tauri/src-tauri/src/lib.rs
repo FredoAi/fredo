@@ -1059,6 +1059,11 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // `available`/`owned` so the settings surface states the truth.
             applications::settings::autostart::ingest_autostart_get,
             applications::settings::autostart::ingest_autostart_set,
+            // Spec #3206 ST-4 — Settings → Credits: the ONE outbound link
+            // hand-off. `https`-only, refused before any I/O, handed to the OS
+            // default browser through the `open` crate; a refusal launches
+            // nothing (AC-5 / R-5.1 / R-5.2).
+            applications::settings::credits::open_external_link,
             applications::terminal::commands::open_terminal_window,
             applications::terminal::commands::spawn_terminal_session,
             applications::terminal::commands::list_terminal_sessions,

@@ -1,9 +1,12 @@
 # Third-Party Notices
 
 This file records the third-party components that Fredo **bundles** or **depends on**, together
-with their licenses and required attributions. Fredo itself is dual-licensed under the MIT and
-Apache-2.0 licenses — see the repository-root [`LICENSE`](../LICENSE),
-[`LICENSE-MIT`](../LICENSE-MIT), and [`LICENSE-APACHE-2.0`](../LICENSE-APACHE-2.0).
+with their licenses and required attributions.
+
+Fredo itself is dual-licensed under the MIT and Apache-2.0 licenses. The SPDX expression for
+Fredo's own license is `MIT OR Apache-2.0` (as recorded in the root `package.json`); the license
+texts are the repository-root [`LICENSE`](../LICENSE), [`LICENSE-MIT`](../LICENSE-MIT), and
+[`LICENSE-APACHE-2.0`](../LICENSE-APACHE-2.0).
 
 > **Scope.** Fredo ships three classes of third-party component with a distribution obligation:
 >
@@ -51,10 +54,10 @@ The release build enables the `vulkan` backend (with CPU always available) so gg
 device at runtime. The backend links against a vendor redistributable that the installer therefore
 ships or depends on:
 
-| Component | Role | License / terms | Upstream |
-|-----------|------|-----------------|----------|
-| **Vulkan** (loader + headers; the GPU driver's Vulkan ICD is supplied by the machine's graphics driver) | The GPU backend for the `vulkan` build feature | **Apache-2.0** (Vulkan-Headers / Vulkan-Loader, Khronos Group) | https://www.vulkan.org/ · https://github.com/KhronosGroup/Vulkan-Loader |
-| **ggml** (in-tree in `llama.cpp`) | The tensor/graph backend both the GPU path and the CPU path run on | **MIT** (same upstream `llama.cpp` repository) | https://github.com/ggml-org/ggml |
+| Component | Role | License / terms | Upstream | Distribution form |
+|-----------|------|-----------------|----------|-------------------|
+| **Vulkan** (loader + headers; the GPU driver's Vulkan ICD is supplied by the machine's graphics driver) | The GPU backend for the `vulkan` build feature | **Apache-2.0** (Vulkan-Headers / Vulkan-Loader, Khronos Group) | https://www.vulkan.org/ · https://github.com/KhronosGroup/Vulkan-Loader | Loader and headers linked by the shipped `engine-payload/` DLL set beside `fredo.exe`; the Vulkan ICD (driver) is supplied by the machine's graphics driver and is **not** bundled |
+| **ggml** (in-tree in `llama.cpp`) | The tensor/graph backend both the GPU path and the CPU path run on | **MIT** (same upstream `llama.cpp` repository) | https://github.com/ggml-org/ggml | Built in-tree from `llama.cpp` and shipped as part of the `engine-payload/` DLL set beside `fredo.exe` — never downloaded at runtime |
 
 **Notes.**
 - The Vulkan ICD (driver) is **not** bundled — it comes from the user's installed graphics driver;
@@ -130,6 +133,9 @@ POSSIBILITY OF SUCH DAMAGE.
 | Content | id Software DOOM, **shareware** release — Episode 1, "Knee-Deep in the Dead" (`E1M1`–`E1M9`) |
 | Provenance | id Software's shareware distribution of DOOM v1.9 (distribution archive `doom19s.zip`), released for free redistribution |
 | Modification | **Unmodified** — the upstream shareware IWAD, byte-for-byte |
+| License | **id Software shareware** — the shareware episode is redistributable free of charge in its original, unmodified form (see *Redistribution note*); no OSI open-source license applies |
+| Upstream | https://www.doomworld.com/idgames/?id=7043 |
+| Distribution form | Bundled unmodified shareware IWAD, embedded into the binary at build time (`include_bytes!`) and shipped in the app bundle — never downloaded at runtime |
 | Use in Fredo | The native engine's IWAD input; embedded into the binary at build time (`include_bytes!`) and embedded in the app bundle. |
 
 **Redistribution note.** The DOOM shareware release is the first episode of DOOM, which id Software
@@ -205,6 +211,7 @@ because the design derives from it and its licence requires attribution.
 | Licence URL | https://creativecommons.org/licenses/by/4.0/ |
 | Used for | Proportion study and part decomposition for the doom-mode armour kit - helmet / visor / respirator, torso, shoulder pads, belt, knee pads and boots |
 | Redistributed | **No**. Reference only. The reference files (`.blend`, STL, textures) are not committed to this repository, not bundled with the app, and not redistributed in any form |
+| Distribution form | **Reference only — no geometry shipped** — the reference files (`.blend`, STL, textures) are not committed to this repository, are not bundled with the app, and are not redistributed in any form |
 
 **Why attribution is still owed.** CC BY 4.0 requires credit for the original
 even when only the *derived design* is published, and the acknowledgement costs

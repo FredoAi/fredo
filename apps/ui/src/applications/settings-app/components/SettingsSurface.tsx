@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Button, HStack, Icon, Text, VStack } from '@chakra-ui/react';
-import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuMonitorDot, LuAppWindow, LuLayoutGrid, LuPackageOpen, LuServer } from 'react-icons/lu';
+import { LuPalette, LuBot, LuSave, LuSettings2, LuActivity, LuMonitorDot, LuAppWindow, LuLayoutGrid, LuPackageOpen, LuServer, LuFileText } from 'react-icons/lu';
 import { CompanionSettingsPanel } from '../../../shared/components/companion/CompanionSettingsPanel';
 import { SettingsSaveProvider, useSettingsSaveContext } from '../../settings/SettingsSaveContext';
 import { ThemingSettings } from '../../theming';
@@ -13,6 +13,7 @@ import { AppPresentationSettings } from './AppPresentationSettings';
 import { InstalledAppsSettings } from './InstalledAppsSettings';
 import { LayoutSettings, LAYOUT_NAV_ID } from './LayoutSettings';
 import { PostgresSettings } from './PostgresSettings';
+import { CreditsSettings } from '../credits/CreditsSettings';
 
 /**
  * SettingsSurface — the inner Settings shell (Spec #2868 ST-1).
@@ -126,7 +127,7 @@ export const SettingsSurface: React.FC = () => {
     [],
   );
 
-  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest' | 'layout' | 'installed-apps';
+  type StaticSection = 'appearance' | 'companion' | 'telemetry' | 'ingest' | 'layout' | 'installed-apps' | 'credits';
   type SectionId = StaticSection | string;
   const [activeSection, setActiveSection] = useState<SectionId>('companion');
 
@@ -198,6 +199,11 @@ export const SettingsSurface: React.FC = () => {
             `Applications` header reads as the other tier. */}
         <NavItem id="installed-apps" label="Installed applications" icon={LuPackageOpen} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-installed-apps" />
 
+        {/* Static: Credits (Spec #3206 ST-3). LAST in the static group — a legal
+            reference document belongs after the operational panes, and the
+            following `Applications` header still reads as the other tier. */}
+        <NavItem id="credits" label="Credits" icon={LuFileText} activeSection={activeSection} onClick={setActiveSection} testId="settings-nav-credits" />
+
         {/* Feature settings */}
         {featureSettingsTabs.length > 0 && (
           <Text
@@ -258,6 +264,9 @@ export const SettingsSurface: React.FC = () => {
             )}
             {activeSection === 'installed-apps' && (
               <Box minH="100%"><InstalledAppsSettings /></Box>
+            )}
+            {activeSection === 'credits' && (
+              <Box p={5} minH="100%"><CreditsSettings /></Box>
             )}
             {featureSettingsTabs.map((feature) =>
               activeSection === feature.id ? (

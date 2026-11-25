@@ -179,6 +179,10 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // (`trayItems`); the tray itself and its macOS application-menu Quit item are
     // Rust-side and expose no command.
     "app_lifecycle_status",
+    // Spec #3206 ST-4 — Settings → Credits: the ONE outbound link hand-off.
+    // `https`-only, refused BEFORE any I/O by a pure validator, and handed to the
+    // OS default browser through the `open` crate. A refusal launches nothing.
+    "open_external_link",
 ];
 
 #[cfg(test)]

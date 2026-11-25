@@ -1143,6 +1143,16 @@ An installed application is **never** a registered Fredo application. That is th
 
 ---
 
+### Settings → Credits (Spec #3206)
+
+Settings gains a static **Credits** section — the last item of the static nav group (after Installed applications, before the registry-driven `Applications` group). It is a legal reference document rather than a console: the third-party components Fredo bundles or depends on, Fredo's own dual licence with both texts readable in-app, the CC BY 4.0 design reference, and the DOOM trademark / non-affiliation notice, in the canonical doc's own reading order.
+
+**One content authority — generated, never hand-copied.** The pane renders `apps/ui/src/applications/settings-app/credits/credits.generated.ts`, produced by `scripts/generate-credits.mjs` (root script `pnpm credits:generate`) from the canonical `docs/THIRD_PARTY_NOTICES.md` (§1–§4 and §7 only; §5–§6 contribute nothing) plus the root `LICENSE-MIT` and `LICENSE-APACHE-2.0`. The artifact is **checked in**, and no build step regenerates it — deliberately: CI runs `build` before `test:run`, so a build-time regeneration would make the drift gate vacuous. `credits/__tests__/creditsGenerator.test.ts` byte-compares the committed artifact against a fresh generation (both sides EOL-normalised) and **fails the suite on drift**, naming the regeneration command, while the generator itself fails closed on a doc shape it cannot read.
+
+**Files.** `applications/settings-app/credits/CreditsSettings.tsx` (the pane), `credits/externalLink.ts` (the ONE `adapterBridge.invoke('open_external_link')` seam — no client-side URL validation, so there is exactly one authority), and the generated module. Every activatable affordance is a `Button` that calls the backend command: the pane contains no `<a href>` and no `target="_blank"` — a same-tab anchor would navigate the Settings document away (`default-src 'self'` does not restrict top-level navigation) and `_blank` is cancelled by wry. Licence bodies are plain `<pre>` text, never markdown-rendered and never linkified, so an `http://` address inside a licence text cannot become activatable. The command's accept/refuse posture is documented in `docs/SECURITY.md` § Opening an external link.
+
+---
+
 ## Tauri Commands
 
 All commands registered in `generate_handler![]` in `lib.rs`:
@@ -1161,6 +1171,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `application_data_write` | ApplicationData | Write application-owned columns on a declared row (an unchanged value is a silent no-op — no version bump, no notification) |
 | `application_data_delete` | ApplicationData | Delete a declared row and tombstone it (emits a removal; the projection never re-creates it) |
 | `save_setting` / `get_setting` | settings | Persist/retrieve KV settings from SettingsStore. `save_setting` (and `save_control_setting` on the control plane) validates the THREE sensitive path keys — `llama_server_companion_dir`, `terminal_copilot_path`, `terminal_pwsh_path`: a non-empty value must be absolute, control-character-free and `..`-free; every other key is stored unchanged (Spec #3078; `llama_server_path` was removed with the out-of-process runtime in #3141, and any persisted value is inert and never deleted) |
+| `open_external_link` | settings | Hand a validated `https` URL to the OS default browser → `()`, or a typed refusal — `external link refused: <code>` (`not-https` / `malformed` / `no-host` / `userinfo` / `loopback-host`) decided PURELY before any I/O, or `external link failed: <os error>` after the hand-off was attempted. The only webview-reachable OS-launch path (Spec #3206; see `docs/SECURITY.md` § Opening an external link) |
 | `open_terminal_window` | terminal | Resolve binary, open PTY, spawn child |
 | `list_terminal_sessions` | terminal | List terminal session status |
 | `get_pty_buffer` | terminal | Return buffered PTY output |
