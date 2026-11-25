@@ -33,11 +33,16 @@
       the local-dev vs Tauri `companion-teleport` broadcast split are unchanged — only the clamp
       math source (80/80 → real dims) changes. Reference functional F-6/F-9/F-10.
   - **PASS (live, spec/2850).** Same-window teleport: state sequence `idle→teleport-out→teleport-in→idle` at preserved ~400ms+50ms timing. Cross-window (main↔terminal): source plays out + hides (`present:false`), destination plays in + settles, hidden elsewhere. `isTeleportingRef` guard + `+50` settle + the `IS_TAURI` broadcast/local split all unchanged.
-- [x] **R-5 (launcher md avatar unchanged):** The launcher renders the md avatar (132 × 165,
-      aspect 1014:1264, crispEdges, accent fill, `aria-hidden`) visually unchanged after the
-      shared refactor. Launcher layout (app grid, command bar, keyboard hints, clock/LED chrome,
-      open/close lifecycle) is NOT changed by this spec. Cross-reference `.opencode/tests/launcher/`
-      regression R-16/R-22..R-25 + functional F-39b/F-39c.
+- [ ] **R-5 (launcher seat avatar unchanged):** The launcher renders ONE avatar in its reserved
+      seat (80×100 — `LauncherShell.tsx:1765,1773`; the historical `md` 132×165 render was retired by
+      #2852) with the launcher layout (app grid, command bar, keyboard hints, clock/LED chrome,
+      open/close lifecycle) unchanged. Cross-reference `.opencode/tests/launcher/` regression
+      R-16/R-22..R-25 + functional F-39b/F-39c.
+  - **#3210 SUPERSEDE:** the avatar markup is now the 3D shell. Re-pointed assertion: ONE
+    `[data-avatar-render]` at `offsetWidth=80`/`offsetHeight=100` on the seat with a painted figure,
+    **no `<svg>` inside the avatar root**, launcher layout unchanged. Executable rows:
+    `fredo-avatar/functional.md` F-AV-11 + `fredo-avatar/regression.md` R-AV-3. The historical pass
+    below is preserved as a record of the pre-cut-over render.
   - **PASS (live, spec/2850).** md avatar 132×165, 58 rects, crispEdges, accent fill, `aria-hidden` — unchanged; launcher layout verified unchanged (only the import swap).
 - [x] **R-6 (persisted legacy keys tolerated):** A pre-existing install that carries
       `Fredo_companion_color` and/or `Fredo_companion_auto_walk` in its store must boot clean and
@@ -58,14 +63,19 @@
       modal (ProfileSettingsModal Companion nav item) still mounts `CompanionSettingsPanel`
       without an orphan section/crash. Reference functional F-12/F-13.
   - **PASS (live, spec/2850).** Companion settings section (with the legacy keys seeded) renders ONLY the toggle + tip; the model-missing banner (token-native `tint('var(--status-error)',…)`) + toggle survive the color-section deletion; no orphan nav item/crash.
-- [x] **R-10 (geometry-suite move):** `fredoAvatarGeometry.test.ts` passes UNMODIFIED from its new
-      shared path inside `pnpm --filter @fredo/ui test:run` — the #2837 geometry invariants (31
-      source rects → 58 expanded; mirror math `x' = 1014 − x − width`; canvas bounds; as-authored
-      center buttons) are the strongest regression net for the avatar asset.
-  - **PASS (static/build).** Moved test passes UNMODIFIED (7 tests) at `shared/fredo-avatar/__tests__/` inside the full `test:run` (52 files/757 tests green) — byte-identical to the pre-move source.
-  - **Edge:** the launcher regression rows R-22..R-25 in `.opencode/tests/launcher/regression.md`
-    (#2837 avatar geometry invariants) remain in force — the launcher render stays geometry-correct
-    through the shared move.
+- [ ] **R-10 (geometry-suite move → icon-provenance guard):** `fredoAvatarGeometry.test.ts` and its
+      table are **deleted** by #3210; the surviving regression net for the mascot's provenance is the
+      **re-pointed** `iconSourceParity.test.ts` (the committed OS-icon SVG's own invariants + a
+      SHA-256 pin, icon byte-identical). **INVERTED (#3210)**: this row previously required the
+      geometry suite to pass UNMODIFIED — that module no longer exists, and asserting it would be a
+      false red.
+  - **Re-pointed assertion:** `vitest run …/iconSourceParity.test.ts` green with a non-zero executed
+    count; `apps/tauri/src-tauri/icons/fredo-icon-large.svg` byte-identical (SHA-256). Executable
+    row: `fredo-avatar/regression.md` R-AV-1.
+  - **PASS (static/build, spec/2850 — historical).** Moved test passed UNMODIFIED (7 tests) at `shared/fredo-avatar/__tests__/` inside the full `test:run` (52 files/757 tests green) — a record of the
+    pre-cut-over tree, not an instruction.
+  - **Edge:** the launcher seat/footprint rows R-22..R-25 in `.opencode/tests/launcher/regression.md`
+    remain in force (the footprint does not move); only the byte-identical-geometry clause inverts.
 
 ## Overlapping prior-feature suites (run alongside)
 
@@ -163,14 +173,28 @@
 
 ## R-19 — Existing 4 states + teleport timing unchanged
 
-- [ ] R-19: Drive idle/talk/teleport-out/teleport-in on the companion; probe the wrapper `data-state`, `#fredo-expression` overlay rect set, and computed `animationName`; timestamp a same-window teleport.
-  **Expected:** the pre-#2854 fingerprints for idle/talk/teleport-out/teleport-in are unchanged (same overlay rect sets + same wrapper motion); teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `ANIM_DURATION` unchanged; the click discriminator (250 ms), the joke, and TicTacToe still work.
-  - **Edge:** a new status must not hijack an existing state's overlay selector; teleport timing on the tested tip. Reference #2850 F-3/F-6/F-7/F-8 + R-2/R-4.
+- [ ] R-19: Drive idle/talk/teleport-out/teleport-in on the companion; probe the wrapper
+      `data-state`/`data-streaming`, the avatar root's `data-avatar-clip` + `data-avatar-motion`, and
+      the consumer wrapper's computed `animationName`; timestamp a same-window teleport.
+  **Expected:** the four states still resolve to themselves (`data-avatar-clip` equals the resolved
+      state) and the wrapper motion is unchanged (`companion.css`); teleport out ≈400 ms / in
+      ≈400 ms + ~50 ms settle (the one-shot clip is normalised into that window); `ANIM_DURATION`
+      unchanged; the click discriminator (250 ms), the joke, and TicTacToe still work.
+  - **#3210 re-point:** the `#fredo-expression` overlay rect set and the SVG are DELETED — the
+    per-state discriminator is now `data-avatar-clip` (the mixer's applied clip), never an overlay
+    rect count. Executable rows: `fredo-avatar/functional.md` F-AV-12 + `regression.md` R-AV-3.
+  - **Edge:** a state change mid-one-shot must crossfade (no stranded pose); teleport timing on the
+    tested tip. Reference #2850 F-3/F-6/F-7/F-8 + R-2/R-4.
 
-## R-20 — Frozen-geometry invariant holds
+## R-20 — Frozen-geometry invariant → frozen FOOTPRINT invariant
 
-- [ ] R-20: Read the 58 base rects in every state (old + new) and diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`.
-  **Expected:** the 58 base rects are byte-identical across ALL states; the shared geometry suite (`fredoAvatarGeometry.test.ts`) passes unmodified. Reference F-37 + #2850 R-10.
+- [ ] R-20: In every state read the avatar root's `offsetWidth`/`offsetHeight` and the wrapper's
+      `data-avatar-clip`; confirm no `<svg>` exists inside the avatar root.
+  **Expected:** the reserved footprint is 80×100 in EVERY state (the "frozen geometry" invariant
+      becomes a frozen footprint: the figure never changes the box); the applied clip is the resolved
+      state; no legacy SVG node survives. **INVERTED (#3210)** — the 58-rect byte-identity and the
+      `fredoAvatarGeometry.test.ts` requirement are retired with the module (see R-10). Reference
+      F-37 + `fredo-avatar/functional.md` F-AV-12.
 
 ## R-21 — Joke / TicTacToe / speech-bubble behaviors untouched
 
@@ -734,32 +758,39 @@
 
 ## #2917 extension — the solid interior + richer vocabulary must NOT change existing behavior
 
+> **#3210 RETIREMENT (read first).** R-58/R-59's overlay-rect and 58-rect clauses are **RETIRED as
+> executable rows — do not run them** (`#fredo-expression`, the rect table and `fredo-avatar.css` are
+> DELETED). Their surviving contracts (state behaviour, teleport timing, gestures, footprint) stay in
+> force via R-19/R-20/R-21/R-64 above + `fredo-avatar/functional.md` F-AV-3/F-AV-12.
+
 > Issue #2917 adds an additive interior fill layer and audits/extends the status vocabulary. These
 > invariants MUST hold after the slice — any FAIL is a regression. Run alongside R-1..R-57 and the
 > companion F-116..F-125. **Verification policy: live.** G-136 note: the fill layer is ADDITIVE, so the
 > frozen-geometry rows stay in force unchanged (only the 58 base rects are pinned, not the total node
 > count).
 
-## R-58 — Existing state fingerprints + consumer timing unchanged
+## R-58 — Existing state behaviour + consumer timing unchanged (re-pointed by #3210)
 
-- [ ] R-58: Drive `idle`/`talk`/`teleport-out`/`teleport-in`; probe the wrapper `data-state`,
-      `#fredo-expression` overlay rect set, computed `animationName`; timestamp a same-window teleport.
-  **Expected:** the pre-#2917 fingerprints for the four states are unchanged (same overlay rect sets +
-      same wrapper motion); teleport out ≈400 ms / in ≈400 ms + ~50 ms settle; `ANIM_DURATION`
-      unchanged; the 250 ms click discriminator, the joke, and TicTacToe still work. The fill layer
-      does not hijack an existing state's overlay selector or rect set. Reference R-19/R-33 + F-118.
-  - **Edge:** a new status must not shadow an existing `#fredo-expression[data-state=…]` selector; the
-    fill must not be inserted between the base rects and the overlay in paint order.
+- [ ] R-58: Drive `idle`/`talk`/`teleport-out`/`teleport-in`; probe the wrapper `data-state` +
+      `data-streaming`, the avatar root's `data-avatar-clip`, computed `animationName`; timestamp a
+      same-window teleport.
+  **Expected:** the four states still resolve to their own clips; teleport out ≈400 ms / in ≈400 ms +
+      ~50 ms settle; `ANIM_DURATION` unchanged; the 250 ms click discriminator, the joke, and
+      TicTacToe still work. (**#3210:** the overlay rect set is deleted — read the applied clip.)
+      Reference R-19/R-33 + F-118.
+  - **Edge:** a state change mid-one-shot crossfades (no stranded pose); whole-element motion stays on
+    the consumer wrapper.
 
-## R-59 — Frozen 58-rect geometry + additive fill
+## R-59 — Footprint + clip identity (retired geometry table) — **INVERTED #3210**
 
-- [ ] R-59: Read the 58 base rects in every state (old + new) and diff against
-      `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`; confirm the fill is a separate additive layer.
-  **Expected:** the 58 base rects are byte-identical across ALL states; the shared geometry suite
-      (`fredoAvatarGeometry.test.ts`) passes UNMODIFIED; the fill is additive (a separate layer/group),
-      never a geometry edit, and never removes a base rect. Reference R-20/#2850 R-10 + F-122.
-  - **Edge:** a fill implemented by mutating `FREDO_AVATAR_SOURCE_RECTS` or the expansion math is a
-    FAIL; the `fredoAvatarSizes.test.ts` suite passes unmodified.
+- [ ] R-59: Read the avatar root's `offsetWidth`/`offsetHeight` and `data-avatar-clip` in every state
+      (old + new); confirm no `<svg>` exists inside the avatar root.
+  **Expected:** the footprint is 80×100 in EVERY state; each state reports its own applied clip;
+      `fredoAvatarSizes.test.ts` passes UNMODIFIED (the size values do not move).
+  **INVERTED (#3210):** the previous "58 base rects byte-identical / geometry suite UNMODIFIED"
+      expectation is RETIRED with the module (R-20's inversion carries the same change). Replacement
+      rows: `fredo-avatar/functional.md` F-AV-3 / F-AV-12.
+  - **Edge:** a state that resizes the box = FAIL; reduced motion must not change the size.
 
 ## R-60 — Joke / TicTacToe / bubble / presence / persisted keys untouched
 
@@ -829,18 +860,21 @@
   - **Edge:** a skill selection in the same turn as a structured reply object; the probe re-run with
     both sub-reports present; a skill turn while the reply object is malformed.
 
-## R-64 — Pinned per-state `data-state` behavior + the 58-rect/overlay invariants unchanged
+## R-64 — Pinned per-state `data-state` behavior + clip identity (re-pointed by #3210)
 
-- [ ] R-64: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the #2917 states and read the wrapper
-      `data-state`, the `#fredo-expression[data-state=…]` overlay rect set, and the 58 base rects
-      (diff against `expandFredoRects(FREDO_AVATAR_SOURCE_RECTS)`); run the existing companion pins
-      (`FredoCompanion.devMode.test.tsx`, `FredoCompanion.seatTeleport.test.tsx`,
-      `FredoCompanion.crossWindow.test.tsx`, `skillSettle.test.tsx`, the resolver/geometry suites).
-  **Expected:** the pre-#2918 per-state fingerprints are unchanged for every state that carries no
-      model status; the 58 base rects stay byte-identical in every state; the existing pins pass
-      UNMODIFIED (a pin that must change for the new status input is named per G-125, never silently
-      weakened); teleport timing (`~400 ms` out / `~400 ms` + `~50 ms` settle) and `ANIM_DURATION`
-      are unchanged.
+- [ ] R-64: Drive `idle`/`talk`/`teleport-out`/`teleport-in` + the remaining status states and read
+      the wrapper `data-state`, the avatar root's `data-avatar-clip`/`data-avatar-motion`, and the
+      companion pins (`FredoCompanion.devMode.test.tsx`, `FredoCompanion.seatTeleport.test.tsx`,
+      `FredoCompanion.crossWindow.test.tsx`, `skillSettle.test.tsx`, the resolver suite).
+  **Expected:** the pre-#2918 per-state BEHAVIOUR is unchanged for every state that carries no model
+      status — each resolved state reports its own `data-avatar-clip` (never `idle` for a non-idle
+      state); the companion pins pass UNMODIFIED through the production poster path (a pin that must
+      change is named per G-125, never silently weakened); teleport timing (`~400 ms` out / `~400 ms`
+      + `~50 ms` settle) and `ANIM_DURATION` are unchanged.
+  - **#3210 re-point:** the `#fredo-expression` overlay rect set and the 58 base rects are DELETED
+    (the SVG path is gone, SC-2). The per-state fingerprint is `data-avatar-clip` + the rendered
+    capture, not an overlay rect count. Executable rows: `fredo-avatar/functional.md` F-AV-12 /
+    `regression.md` R-AV-4 + R-AV-3.
   - **Edge:** a model status driven mid-status; a status-free turn after a status-bearing one; the
     resolver's `modelStatus` seam must not reorder the existing priority comparison.
 
@@ -885,6 +919,15 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
 ---
 
 ## #2922 extension — the body-wide interior fill must NOT disturb the shipped avatar/companion contracts
+
+> **#3210 RETIREMENT (read first).** The SVG fill this block measures (`#fredo-interior`, the
+> 58-rect rasterisation mask, the `seeThrough`/`leak` oracles) is **DELETED** with the SVG render
+> path. **R-66..R-69 below are RETIRED as executable rows — do not run them** (a metric bound to
+> deleted DOM cannot produce a reading). Their surviving property — "the body is solid, no backdrop
+> shows through" — is now true **by construction** (an opaque 3D body) and is covered by
+> `fredo-avatar/functional.md` F-AV-5 (ink present, never blank) + F-AV-14 (one render path) +
+> `regression.md` R-AV-2/R-AV-3. The non-fill contracts in R-67/R-68 (timing, gestures, presence,
+> persisted keys) stay in force via R-19/R-21/R-22/R-64/R-65 above.
 
 > Issue #2922 extends the ADDITIVE interior fill (`#fredo-interior`, one `<path>`) from the head-only
 > `y 106–761` bands to the WHOLE body (`y ≈ 812–1234`). The fill stays ADDITIVE, so the frozen-geometry
