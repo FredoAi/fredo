@@ -157,15 +157,35 @@
 
 ## F-AV-9 `[NEW]` (R-3d) — no avatar colour originates outside the theme/accent contract
 
-- [ ] F-AV-9: Comment- and string-text-stripped scan (G-419) of the new avatar code
-      (`shared/components/fredo-avatar/**` incl. `three/**`, `useAvatarRenderer.ts`,
-      `AvatarPoster.tsx`) for `#[0-9a-fA-F]{3,8}`, `\brgb\(`, `\brgba\(`, `hsla(`. Run a **non-vacuity
-      control**: a planted probe file carrying `#ff00ff` must be reported.
-  **Expected:** zero hits in code; the control is reported (the scan is live);
-      `data-avatar-body-color` is runtime DATA (exempt, named); the only colour inputs are
+- [ ] F-AV-9: Comment-stripped colour scan (the committed scanner's own semantics:
+      `apps/ui/src/app/theme/contrast/rawColorScan.ts:43-51` — patterns `#[0-9a-fA-F]{3,8}\b`,
+      `\b(?:rgba?|hsla?)\s*\(`, `var\(--[a-z0-9-]+\)[0-9]`, comments stripped before matching) of
+      the avatar tree `apps/ui/src/shared/components/fredo-avatar/**` (`*.ts`/`*.tsx`/`*.css`; incl.
+      `three/**`, `useAvatarRenderer.ts`, `AvatarPoster.tsx`, `__tests__/**`), reporting file:line
+      for EVERY hit. Run a **non-vacuity control**: a planted probe file in the PRODUCT tree
+      carrying `#ff00ff` must be reported (remove the probe afterwards).
+  **Expected:** the avatar **product** modules — the tree minus `__tests__/`/`__mocks__`/
+      `*.test.*`, the canonical `NON_SOURCE` rule at `rawColorScan.ts:108` — carry **zero hits** of
+      every class; the corrected `\brgb\(` count in the product tree is 0 (`avatarPalette.ts`'s
+      `rgb()` mentions are prose in comments, stripped). A **widened** scan over `__tests__/` runs
+      as a hiding-place check: its ONLY permitted colour literals are the **re-pointed
+      icon-provenance guard** `__tests__/iconSourceParity.test.ts`'s own provenance pin — five hex
+      literals (`#0c1117`, `#00d1d1`, `#0a373c`, `#00D1D1`, `#0A373C`; re-count the guard's current
+      text — the requirement is NON-ZERO, never a frozen number) — **permitted and expected
+      non-zero**, because it pins the ICON ARTIFACT's baked palette (R-AV-1), not an avatar colour.
+      A colour literal in any OTHER test file is a FAIL. Issue-number references in `describe()`
+      titles (`#3210`, `#2917`, …) are NOT colour literals, and an EMPTY-argument grammar mention
+      (`rgb()` / `rgba()` in a test title describing the parser's accepted forms —
+      `avatarPalette.test.ts:107,216`) is prose, not a colour call: list both as non-colour and do
+      not count them. The planted `#ff00ff` probe is reported (the scan is live);
+      `data-avatar-body-color` is runtime DATA (exempt, named); the avatar's only colour inputs are
       `--accent-primary` and `--text-primary`.
-  - **Edge:** the frozen icon provenance SVG + its baked palette are a NAMED allowlist (an artifact,
-    not avatar code); `var(--x)NN` alpha-append is a hit (#2770).
+  - **Reddens after the change:** a hex/rgb/rgba/hsl/hsla literal added to any avatar PRODUCT
+    module; a colour literal in a second test file (hex, or a real `rgb(...)`/`rgba(...)`/
+    `hsl(...)`/`hsla(...)` call with arguments); the planted probe not reported (a dead/vacuous
+    scan); the guard's provenance pin emptied to force a zero (also a FAIL of R-AV-1).
+  - **Edge:** the frozen icon provenance SVG + its baked palette are the allowlisted ARTIFACT, not
+    avatar code; `var(--x)NN` alpha-append in avatar product code is a hit (#2770).
   - This row is a supplementary gate inside the live policy — it is corroborated by F-AV-6/F-AV-8,
     never counted alone.
 
@@ -324,17 +344,40 @@
 
 ## F-AV-21 `[NEW]` (R-3a) — the tint exists on the stock theme
 
-- [ ] F-AV-21: With **no** selected preset and **no** per-token override (both storage keys
-      absent/empty) and Doom off, cold-reload. Once `data-avatar-render="live"`, read
-      `data-avatar-body-color`, the computed `--accent-primary` via
-      `getComputedStyle(document.documentElement)`, and the poster body layer's resolved
-      `background-color`.
-  **Expected:** `data-avatar-body-color` is **present** and its **channels** equal the channels of the
-      computed `--accent-primary` — compared **numerically**, never as a string (the hook is
-      `#rrggbb`, the var is `rgb(...)`) — and the poster's body layer resolves the **same** accent.
+- [ ] F-AV-21: Reach the stock theme through the SHIPPED control — theme state is not
+      localStorage-only, so an absent key is not evidence of a stock theme:
+      (1) Doom OFF;
+      (2) open **Settings → Appearance** (`SettingsSurface.tsx:170`);
+      (3) if a preset or any per-token override is applied, **"Reset to theme defaults"** is
+      rendered (`ThemingSettings.tsx:422,439` — the button mounts only while
+      `hasAnyOverride || selectedPreset !== ''`) → click it (`resetTheme` sets the preset to `''`
+      and the overrides to `{}`, `ThemeProvider.tsx:594-597`); if the button is ABSENT the keys are
+      already stock — record that observation and do NOT manufacture a preset just to enable it;
+      (4) **cold-reload** the app, then re-read `localStorage['Fredo_theme_preset']` and
+      `localStorage['Fredo_theme_overrides']` — they must be `''`/absent and `{}`/absent AFTER the
+      reload (a reload-less reset leaves the live provider's in-memory snapshot in place, which is
+      how a stock reading gets manufactured); any non-empty value is a named BLOCKED precondition,
+      never a PASS;
+      (5) once `data-avatar-render="live"`, read `data-avatar-body-color`, the computed
+      `--accent-primary` (`getComputedStyle(document.documentElement).getPropertyValue('--accent-primary')`),
+      and the poster body element `[data-avatar-poster-body]`'s resolved `background-color`
+      (`getComputedStyle(...).backgroundColor`).
+  **Expected:** `data-avatar-body-color` is **present** and its channels are **numerically equal**
+      to the computed `--accent-primary`'s channels — for the stock theme that is
+      `--accent-primary: rgb(147, 51, 234)` (`apps/ui/src/app/types/theme.ts:166`, the locked
+      `classic` base) against `data-avatar-body-color: #9333ea` (147/51/234 = 0x93/0x33/0xea),
+      compared as a channel TRIPLE, never as a string (the hook emits `#rrggbb`; the var is the
+      authored `rgb(...)` token stream); the poster body layer resolves the **same** colour
+      (`rgb(147, 51, 234)`), so the 2D fallback and the live canvas agree on the stock accent.
+      A hex-string equality check is a method FAIL, not a product finding.
+  - **Reddens after the change:** `data-avatar-body-color` absent while `render="live"`, OR any
+    channel differing from `--accent-primary`, OR `[data-avatar-poster-body]` resolving a different
+    accent — each is a FAIL of this row.
   - **Control (pre-change):** red on the pre-fix build — `data-avatar-body-color` is absent for the
     whole mount while the poster is already accent-correct. This is the row that separates "the
     accent re-tints" from "the accent re-tints, but only after the user has already touched it".
   - **Edge:** a first-frame read before `render="live"` is not a failure (the hook is only promised
-    live); re-read after the live transition.
+    live); re-read after the live transition. If a reset was performed, the cold reload is
+    mandatory before any read; if the reset control was absent, record the two storage keys as the
+    stock-precondition receipt.
 
