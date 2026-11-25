@@ -1,7 +1,7 @@
 /**
  * #3210 ST-3 — the avatar renderer lifecycle hook (the React edge of the seam).
  *
- * The hook owns exactly four things:
+ * The hook owns exactly five things:
  *   1. CREATE the renderer once per (canvas, asset) and DISPOSE it on unmount /
  *      whenever either identity changes — so a remount never leaks a WebGL context
  *      and a re-tint never recreates one.
@@ -13,6 +13,10 @@
  *   4. Keep the accent live: a module-scoped {@link MutationObserver} on the
  *      document element turns the theming application's variable writes into a
  *      STRING snapshot consumed through `useSyncExternalStore`.
+ *   5. Bridge the Doom performance store onto the renderer (Spec #3223): the
+ *      consumer's `doomEngaged` boolean plus the derived reduced-motion/teleport
+ *      suspension are IMPERATIVE store writes, and the store's pushes reach
+ *      `setDoomPerformance` with no React re-render per clip.
  *
  * ## Why a string snapshot
  * `useSyncExternalStore` compares snapshots by identity. Exposing a fresh palette
@@ -32,9 +36,19 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { useReducedMotion } from '../../hooks/useReducedMotion';
 import {
   resolveAvatarMotion,
-  type AvatarClipName,
   type AvatarMotion,
 } from './avatarClips';
+import {
+  isDoomSuppressingClip,
+  type AvatarRenderedClip,
+} from './doomClips';
+import {
+  bindDoomPerformanceRenderer,
+  completeDoomOneShot,
+  setDoomPerformanceEngaged,
+  setDoomPerformanceReducedMotion,
+  setDoomPerformanceSuspended,
+} from './doomPerformance';
 import type { FredoAvatarState } from './fredoAvatarStates';
 import { readAvatarPalette, type AvatarPalette } from './three/avatarPalette';
 import {
@@ -50,7 +64,7 @@ export interface AvatarRendererStatus {
   /** `live` once the first frame of the asset has been painted. */
   readonly render: AvatarRenderMode;
   /** The mixer's applied clip (null while the poster is the only layer). */
-  readonly clip: AvatarClipName | null;
+  readonly clip: AvatarRenderedClip | null;
   /** The motion the renderer was told to run (`play` loops, `still` draws one frame). */
   readonly motion: AvatarMotion;
   /** The applied body material colour, or null before the first palette lands. */
@@ -68,6 +82,11 @@ export interface UseAvatarRendererOptions {
   readonly streaming?: boolean;
   /** False keeps the poster path (the caller's capability/asset decision). Default true. */
   readonly enabled?: boolean;
+  /**
+   * Whether the Doom armour performance is engaged. A plain boolean: the CONSUMER
+   * owns the engagement store read, so this hook imports nothing from it.
+   */
+  readonly doomEngaged?: boolean;
 }
 
 /** Separator between the two hex values in the palette snapshot key. */
@@ -169,9 +188,12 @@ export function useAvatarRenderer({
   state,
   streaming = false,
   enabled = true,
+  doomEngaged = false,
 }: UseAvatarRendererOptions): AvatarRendererStatus {
   const reducedMotion = useReducedMotion();
   const motion = resolveAvatarMotion(state, streaming, reducedMotion);
+  // A teleport outranks the armour: the overlay is suspended for its whole pair.
+  const doomSuspended = isDoomSuppressingClip(state);
 
   const paletteKey = useSyncExternalStore(
     subscribeToPalette,
@@ -185,7 +207,7 @@ export function useAvatarRenderer({
 
   const rendererRef = useRef<AvatarRenderer | null>(null);
   const [render, setRender] = useState<AvatarRenderMode>('poster');
-  const [clip, setClip] = useState<AvatarClipName | null>(null);
+  const [clip, setClip] = useState<AvatarRenderedClip | null>(null);
   const [bodyColor, setBodyColor] = useState<string | null>(null);
 
   // The freshest inputs, readable by the async create callback without making it a
@@ -199,6 +221,7 @@ export function useAvatarRenderer({
     if (!enabled || !canvas || !asset) return undefined;
 
     let cancelled = false;
+    let unbindDoom: (() => void) | null = null;
     const factory = resolveAvatarRendererFactory();
 
     const applyCurrentInputs = (renderer: AvatarRenderer): void => {
@@ -220,6 +243,10 @@ export function useAvatarRenderer({
       onClipChange: (next) => {
         if (!cancelled) setClip(next);
       },
+      // The store owns the armour phase; the renderer only reports completions.
+      onDoomClipFinished: (finished) => {
+        if (!cancelled) completeDoomOneShot(finished);
+      },
     })
       .then((renderer) => {
         if (cancelled) {
@@ -228,6 +255,10 @@ export function useAvatarRenderer({
         }
         rendererRef.current = renderer;
         applyCurrentInputs(renderer);
+        // ONE push path: the bridge pushes the current performance now and every
+        // change after, so a freshly mounted surface reports the SAME clip with no
+        // second intro (the phase is store-owned).
+        unbindDoom = bindDoomPerformanceRenderer(renderer);
       })
       .catch(() => {
         // A constructor failure (driver refusal) degrades to the poster; the
@@ -237,6 +268,8 @@ export function useAvatarRenderer({
 
     return () => {
       cancelled = true;
+      unbindDoom?.();
+      unbindDoom = null;
       rendererRef.current?.dispose();
       rendererRef.current = null;
       setRender('poster');
@@ -244,6 +277,23 @@ export function useAvatarRenderer({
       setBodyColor(null);
     };
   }, [enabled, canvas, asset]);
+
+  // Doom inputs are IMPERATIVE store writes (no React re-render per clip). They run
+  // before the async renderer exists unless it is already bound; the bind then pushes
+  // the resulting phase, so either ordering converges on the same performance.
+  // Reduced motion is written FIRST so a mount lands on the reduced-motion phase
+  // table directly (no transient intro), then the suspension, then the edge.
+  useEffect(() => {
+    setDoomPerformanceReducedMotion(reducedMotion);
+  }, [reducedMotion]);
+
+  useEffect(() => {
+    setDoomPerformanceSuspended(doomSuspended);
+  }, [doomSuspended]);
+
+  useEffect(() => {
+    setDoomPerformanceEngaged(doomEngaged);
+  }, [doomEngaged]);
 
   useEffect(() => {
     rendererRef.current?.setState(state);

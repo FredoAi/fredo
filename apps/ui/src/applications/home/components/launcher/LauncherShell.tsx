@@ -14,6 +14,10 @@ import {
   isPerformanceGateActive,
   subscribePerformanceGate,
 } from '../../../../shared/doom-mode';
+// Spec #3223 ST-4 — the decorative seat mascot is the SECOND shipped avatar
+// consumer, so it arms from the SAME module-scoped engagement store (one store,
+// two surfaces; the seat's phase survives the seat ⇄ away-overlay swap).
+import { isDoomVisualEngaged, subscribeDoomVisual } from '../../../../shared/doom-mode';
 // Spec #3052 — the whole-system health aggregator (Agent telemetry + Llama
 // server + Companion model + Postgres, worst-wins). The chrome LED consumes its
 // `FredoHealth`; the stream connection flag is read INSIDE the hook.
@@ -471,6 +475,14 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
     isPerformanceGateActive,
   );
   const voiceAvailable = voiceEnabled && !voiceSuppressed;
+
+  // Spec #3223 ST-4 — the decorative mascot's Doom engagement read (a primitive
+  // boolean from the module-scoped store; no context, no ref, no re-render loop).
+  const doomEngaged = useSyncExternalStore(
+    subscribeDoomVisual,
+    isDoomVisualEngaged,
+    isDoomVisualEngaged,
+  );
 
   // Spec #2882 ST-4 — Ctrl+Space shows/focuses the bar (see `selectCtrlSpaceAction`);
   // the launcher-origin listening cue (DR-7) is unchanged. `start`/`stop`/`cancel`
@@ -1770,7 +1782,7 @@ export const LauncherShell: React.FC<LauncherShellProps> = ({ showableFeatures, 
                 `state`): thinking/happy/playful/idle — surface-local, never context. */}
             {!companionVisible && (
               <Box ref={avatarParallaxRef} className="fredo-avatar-idle" data-state={desktopState}>
-                <FredoAvatar size="sm" state={desktopState} />
+                <FredoAvatar size="sm" state={desktopState} doomEngaged={doomEngaged} />
               </Box>
             )}
             {/* ON + away: the static vacated-seat placeholder (no motion, inert). */}

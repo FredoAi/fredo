@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useCompanion } from '../../contexts/CompanionContext';
 import type { CompanionPosition, CompanionState } from '../../contexts/CompanionContext';
 import { SpeechBubble } from './SpeechBubble';
@@ -7,6 +7,7 @@ import type { ReplyAvatarRect, ReplySurfaceBounds } from './replySurfaceLayout';
 import { TicTacToe } from './features/tictactoe';
 import { AVATAR_SM, FredoAvatar, resolveCompanionAvatarState, useAvatarParallax } from '../fredo-avatar';
 import type { FredoAvatarState } from '../fredo-avatar';
+import { isDoomVisualEngaged, subscribeDoomVisual } from '../../doom-mode';
 import { useFredoRestingCadence } from '../../hooks/useFredoRestingCadence';
 import { useVoiceDictation } from '../../hooks/useVoiceDictation';
 import './companion.css';
@@ -522,6 +523,16 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // RTDB row — so it is the ONE additive signal the avatar selector needs for
     // `listening`. Nothing else in the voice path changes.
     const { listening: captureActive } = useVoiceDictation();
+    // Spec #3223 ST-4 — the ONE Doom engagement read. A primitive boolean from the
+    // module-scoped store, so the armour can never diverge from the palette layer
+    // and a remount (seat ⇄ away overlay) re-reads the same phase. Passed to the
+    // shared avatar as a plain boolean: the shell itself imports nothing from the
+    // Doom modules, and the armour adds no interaction and no DOM hook.
+    const doomEngaged = useSyncExternalStore(
+      subscribeDoomVisual,
+      isDoomVisualEngaged,
+      isDoomVisualEngaged,
+    );
     // Teleport ownership (declared above the resolver because the resolver reads
     // it as the always-wins signal below).
     const isTeleportingRef = useRef(false);
@@ -1880,7 +1891,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             cursor: isGeneratingRef.current ? 'default' : 'pointer',
           }}
         >
-          <FredoAvatar size="sm" state={displayAnim} streaming={isStreaming} />
+          <FredoAvatar size="sm" state={displayAnim} streaming={isStreaming} doomEngaged={doomEngaged} />
         </div>
       </>
     );

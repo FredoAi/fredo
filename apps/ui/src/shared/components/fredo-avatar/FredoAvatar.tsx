@@ -29,9 +29,11 @@
  *   motion, teleport shrink/fade and pointer parallax stay on the CONSUMER's
  *   wrapper (`fredoAvatarIdle.css`, `companion.css`, `useAvatarParallax.ts`);
  *   everything the renderer animates lives INSIDE the canvas (#2850).
- * - It does NOT read the Doom visual store. Doom is a palette re-tint in this
- *   base (the accent is a live CSS-variable read inside the renderer); the
- *   clip-driven armour is #3223's landing.
+ * - It does NOT read the engagement store. The Doom armour performance reaches the
+ *   renderer as a plain `doomEngaged` boolean the CONSUMER passes in (plus the
+ *   renderer's own palette read), so this shell imports nothing from that store and
+ *   adds no Doom-specific DOM hook — the clip name in `data-avatar-clip` is the one
+ *   observable.
  *
  * ## The poster is not a backdrop
  *
@@ -71,6 +73,11 @@ export interface FredoAvatarProps {
   state?: FredoAvatarState;
   /** Gates `talk`: held at its first frame while the assistant is not streaming. */
   streaming?: boolean;
+  /**
+   * Whether the Doom armour performance is engaged. The consumer reads the
+   * engagement store and passes a plain boolean — this shell stays store-free.
+   */
+  doomEngaged?: boolean;
   /** Passthrough class for the avatar root. */
   className?: string;
 }
@@ -79,6 +86,7 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({
   size,
   state = 'idle',
   streaming = false,
+  doomEngaged = false,
   className,
 }) => {
   const { width, height } = AVATAR_SIZE[size];
@@ -109,7 +117,7 @@ export const FredoAvatar: React.FC<FredoAvatarProps> = ({
     };
   }, [capable]);
 
-  const status = useAvatarRenderer({ canvas, asset, state, streaming, enabled: capable });
+  const status = useAvatarRenderer({ canvas, asset, state, streaming, enabled: capable, doomEngaged });
   const live = status.render === 'live';
 
   // The poster -> live handoff is an opacity-only 150 ms crossfade; under reduced

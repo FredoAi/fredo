@@ -19,6 +19,13 @@ import {
   resolveAvatarMotion,
   type AvatarClipName,
 } from '../avatarClips';
+import {
+  DOOM_CLIPS,
+  DOOM_ONE_SHOT_CLIPS,
+  DOOM_WEAPON_CLIP,
+  isDoomClipName,
+  type DoomClipName,
+} from '../doomClips';
 import { FREDO_AVATAR_STATES, type FredoAvatarState } from '../fredoAvatarStates';
 import { probeAvatar3d } from '../three/avatarCapability';
 import {
@@ -27,6 +34,7 @@ import {
   resolveAvatarRendererFactory,
   resolveFinishedClip,
   setAvatarRendererFactoryForTests,
+  shouldApplyRequestedClip,
 } from '../three/avatarRenderer';
 
 /** `ANIM_DURATION['teleport-out' | 'teleport-in']` — the shipped state window. */
@@ -142,5 +150,43 @@ describe('setAvatarRendererFactoryForTests (the injectable seam)', () => {
 
     setAvatarRendererFactoryForTests(null);
     expect(resolveAvatarRendererFactory()).toBe(createAvatarRenderer);
+  });
+});
+
+describe('#3223 the Doom performance channel as the renderer consumes it', () => {
+  const DOOM_NAMES = Object.keys(DOOM_CLIPS) as DoomClipName[];
+
+  it('declares six Doom clips, disjoint from the frozen 12', () => {
+    expect(DOOM_NAMES).toHaveLength(6);
+    for (const name of DOOM_NAMES) {
+      expect(isDoomClipName(name)).toBe(true);
+      expect(isAvatarClipName(name), `${name} must not join the 12-state union`).toBe(false);
+      expect(AVATAR_CLIPS).not.toHaveProperty(name);
+    }
+  });
+
+  it('plays `doom-shoot` as a LOOP and only the intro/outro as one-shots', () => {
+    expect(DOOM_CLIPS['doom-shoot'].loop).toBe(true);
+    expect([...DOOM_ONE_SHOT_CLIPS]).toEqual(['doom-in', 'doom-out']);
+    for (const [weapon, clip] of Object.entries(DOOM_WEAPON_CLIP)) {
+      expect(DOOM_CLIPS[clip].loop, `${weapon} holding clip must loop`).toBe(true);
+    }
+  });
+
+  it('applies a 12-state request only when no Doom performance is active', () => {
+    for (const clip of ALL_CLIPS) {
+      expect(shouldApplyRequestedClip(clip, false), `${clip} outside the overlay`).toBe(true);
+    }
+  });
+
+  it('lets a teleport WIN over the overlay and records every other state', () => {
+    // REQ-9: leave/arrive play in place of the armour...
+    expect(shouldApplyRequestedClip('teleport-out', true)).toBe(true);
+    expect(shouldApplyRequestedClip('teleport-in', true)).toBe(true);
+    // ...and every other state is only recorded for the hand-back.
+    for (const clip of ALL_CLIPS) {
+      if (clip === 'teleport-out' || clip === 'teleport-in') continue;
+      expect(shouldApplyRequestedClip(clip, true), `${clip} must not cut the armour`).toBe(false);
+    }
   });
 });

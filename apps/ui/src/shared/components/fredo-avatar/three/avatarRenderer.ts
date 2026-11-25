@@ -2,13 +2,18 @@
  * #3210 ST-3 — the imperative three.js renderer core, behind an injectable seam.
  *
  * This module is the ONE live render path. It owns the 12-state clip contract, the
- * one-shot/resting timing, the accent tint and the frame budget — and nothing
- * else. There is no React here (no reconciler, so a tint change mutates materials
- * instead of remounting a scene) and no post-processing.
+ * Doom overlay performance channel, the one-shot/resting timing, the accent tint
+ * and the frame budget — and nothing else. There is no React here (no reconciler,
+ * so a tint change mutates materials instead of remounting a scene) and no
+ * post-processing.
  *
  * ## Contract points this file implements
  *  - The resolved avatar state IS the clip name (`AvatarClipName` = `FredoAvatarState`,
  *    12 members). A clip missing from the GLB never crashes a mount; it is a no-op.
+ *  - The Doom armour is a PARALLEL channel (`DOOM_CLIPS` + `setDoomPerformance`), not a
+ *    thirteenth state: one mixer, one render path, two request channels. While a Doom
+ *    performance is applied a 12-state request is only recorded — except a teleport,
+ *    which always wins (the overlay is suspended and handed back).
  *  - One-shots (`AVATAR_ONE_SHOT_CLIPS`) run `LoopOnce` + `clampWhenFinished`, with
  *    `timeScale` from `AVATAR_CLIP_TIME_SCALE` so the authored 1.333 s action
  *    completes inside the shipped 400 ms state window.
@@ -56,6 +61,14 @@ import {
   type AvatarClipName,
   type AvatarMotion,
 } from '../avatarClips';
+import {
+  DOOM_ONE_SHOT_CLIPS,
+  isDoomClipName,
+  isDoomSuppressingClip,
+  type AvatarRenderedClip,
+  type DoomClipName,
+  type DoomPerformance,
+} from '../doomClips';
 import type { FredoAvatarState } from '../fredoAvatarStates';
 import { computeOrthoFraming, framingCenterX } from './avatarFraming';
 import { applyAvatarTint, type AvatarPalette } from './avatarPalette';
@@ -91,8 +104,14 @@ export interface AvatarRenderer {
   setStreaming(streaming: boolean): void;
   setMotion(motion: AvatarMotion): void;
   setPalette(palette: AvatarPalette): void;
+  /**
+   * The Doom OVERLAY request channel (`null` hands the mixer back to the consumer's
+   * resolved 12-state clip). Deliberately parallel to `setState`: Doom is a
+   * performance layered over the vocabulary, never a thirteenth state.
+   */
+  setDoomPerformance(performance: DoomPerformance | null): void;
   /** The clip the mixer is ACTUALLY playing (crossfade target). */
-  getAppliedClip(): AvatarClipName;
+  getAppliedClip(): AvatarRenderedClip;
   /** The body material's current colour, as a normalised hex string. */
   getAppliedBodyColor(): string;
   dispose(): void;
@@ -104,7 +123,9 @@ export interface AvatarRendererOptions {
   /** Live 3D is unavailable for the remaining mount: render the poster. */
   onUnavailable(reason: 'load' | 'lost' | 'unsupported'): void;
   /** Fired whenever the applied clip changes (mirrors `data-avatar-clip`). */
-  onClipChange(clip: AvatarClipName): void;
+  onClipChange(clip: AvatarRenderedClip): void;
+  /** Fired when a Doom ONE-SHOT completes (`doom-in`/`doom-out`). */
+  onDoomClipFinished?(clip: DoomClipName): void;
 }
 
 type AvatarRendererFactory = (
@@ -141,6 +162,25 @@ function isOneShotClip(name: AvatarClipName): name is keyof typeof AVATAR_CLIP_T
   return (AVATAR_ONE_SHOT_CLIPS as readonly AvatarClipName[]).includes(name);
 }
 
+/** True for a Doom clip this renderer owns in its parallel action map. */
+function isDoomClipForRender(name: AvatarRenderedClip): name is DoomClipName {
+  return isDoomClipName(name);
+}
+
+/**
+ * Whether a 12-state request is APPLIED immediately while a Doom performance owns
+ * the mixer.
+ *
+ * A teleport always wins over the overlay (REQ-9: leave/arrive play in place, the
+ * overlay is suspended and handed back). Every other state is only RECORDED, so
+ * releasing the overlay hands straight back to the consumer's LATEST resolved
+ * state — never a stale pre-engagement snapshot (REQ-7).
+ */
+export function shouldApplyRequestedClip(state: AvatarClipName, doomActive: boolean): boolean {
+  if (!doomActive) return true;
+  return isDoomSuppressingClip(state);
+}
+
 /**
  * Which clip a completed one-shot hands over to.
  *
@@ -163,10 +203,10 @@ function parseGltf(asset: ArrayBuffer): Promise<GLTF> {
 }
 
 /** Find a clip's action by identity (the mixer reports actions, not names). */
-function clipNameOfAction(
+function clipNameOfAction<N extends string>(
   action: AnimationAction,
-  actions: Map<AvatarClipName, AnimationAction>,
-): AvatarClipName | null {
+  actions: Map<N, AnimationAction>,
+): N | null {
   for (const [name, candidate] of actions) {
     if (candidate === action) return name;
   }
@@ -359,8 +399,24 @@ export async function createAvatarRenderer(
   camera.position.set(centerX, framing.centerY, CAMERA_DISTANCE);
   camera.lookAt(centerX, framing.centerY, 0);
 
-  let applied: AvatarClipName | null = null;
+  // The PARALLEL Doom action map (ST-3). Built after the framing measurement so
+  // the fit stays exactly the 12-state body silhouette (the Doom poses/props never
+  // size the camera). Doom one-shots clamp; every other Doom clip loops.
+  const doomActions = new Map<DoomClipName, AnimationAction>();
+  for (const clip of gltf.animations) {
+    if (!isDoomClipName(clip.name)) continue;
+    const action = mixer.clipAction(clip);
+    if ((DOOM_ONE_SHOT_CLIPS as readonly string[]).includes(clip.name)) {
+      action.setLoop(LoopOnce, 1);
+      action.clampWhenFinished = true;
+    }
+    doomActions.set(clip.name, action);
+  }
+
+  let applied: AvatarRenderedClip | null = null;
   let requested: AvatarClipName | null = null;
+  /** The Doom clip the overlay is holding (null when the overlay is not applied). */
+  let doomClip: DoomClipName | null = null;
   let motion: AvatarMotion = 'play';
   let streaming = false;
   let bodyColour: string | null = null;
@@ -387,11 +443,15 @@ export async function createAvatarRenderer(
     markReady();
   };
 
+  /** The action for ANY renderable clip, across both parallel maps. */
+  const actionFor = (clip: AvatarRenderedClip): AnimationAction | undefined =>
+    isDoomClipForRender(clip) ? doomActions.get(clip) : actions.get(clip);
+
   /** Exactly one frame of the resolved clip at t = 0 — reduced motion, never a loop. */
   const drawStillFrame = (): void => {
     if (lastStillPoseKey === poseKey()) return;
 
-    const action = applied ? actions.get(applied) : undefined;
+    const action = applied ? actionFor(applied) : undefined;
     if (action) {
       action.reset();
       action.enabled = true;
@@ -439,7 +499,7 @@ export async function createAvatarRenderer(
     if (!action) return;
     if (next === applied) return;
 
-    const previous = applied ? actions.get(applied) : undefined;
+    const previous = applied ? actionFor(applied) : undefined;
     action.reset();
     action.enabled = true;
     action.setEffectiveWeight(1);
@@ -456,7 +516,60 @@ export async function createAvatarRenderer(
     if (motion === 'still') drawStillFrame();
   };
 
+  /**
+   * Apply a Doom performance clip. Same one-mixer path and the same shipped 0.15 s
+   * crossfade — only the source map and the (unscaled) timing differ: the armour
+   * clips are authored at 1.333 s and are never normalised into the teleport window.
+   */
+  const applyDoomClip = (next: DoomClipName): void => {
+    const action = doomActions.get(next);
+    if (!action) return;
+    if (next === applied) return;
+
+    const previous = applied ? actionFor(applied) : undefined;
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.play();
+    if (previous && previous !== action) {
+      action.crossFadeFrom(previous, CROSSFADE_SECONDS, false);
+    }
+
+    applied = next;
+    opts.onClipChange(next);
+    if (motion === 'still') drawStillFrame();
+  };
+
+  /**
+   * The Doom overlay request channel. `null` hands the mixer back to the LATEST
+   * requested 12-state clip (the release path, and every suspension); a clip plays
+   * the armour performance over it. Idempotent on the applied Doom clip, so the
+   * store can publish freely.
+   */
+  function setDoomPerformance(performance: DoomPerformance | null): void {
+    const next = performance?.clip ?? null;
+    if (next === doomClip) return;
+    doomClip = next;
+    // A clip switch is never a still: invalidate the still key so reduced motion
+    // re-draws frame 0 of the newly resolved clip.
+    lastStillPoseKey = null;
+    if (next) {
+      applyDoomClip(next);
+      return;
+    }
+    applyClip(requested ?? 'idle');
+  }
+
   const onFinished = (event: { action: AnimationAction }): void => {
+    // Doom one-shots are resolved by the performance store, never by the 12-state
+    // rule: `doom-in`/`doom-out` hand over to a phase, not to a requested state.
+    const finishedDoom = clipNameOfAction(event.action, doomActions);
+    if (finishedDoom) {
+      opts.onDoomClipFinished?.(finishedDoom);
+      return;
+    }
+
     const finished = clipNameOfAction(event.action, actions);
     if (!finished) return;
     const next = resolveFinishedClip(finished, requested ?? finished);
@@ -488,6 +601,10 @@ export async function createAvatarRenderer(
     // Before the asset is parsed there is nothing to switch; the initial apply below
     // picks the remembered state up.
     if (actions.size === 0) return;
+    // While the Doom overlay owns the mixer, a request is only RECORDED (a teleport
+    // is the one thing that outranks the armour), so the release hands back to the
+    // latest resolved state instead of a stale pre-engagement snapshot.
+    if (!shouldApplyRequestedClip(state, doomClip !== null)) return;
     applyClip(state);
   }
 
@@ -517,7 +634,7 @@ export async function createAvatarRenderer(
     if (motion === 'still') drawStillFrame();
   }
 
-  function getAppliedClip(): AvatarClipName {
+  function getAppliedClip(): AvatarRenderedClip {
     return applied ?? requested ?? 'idle';
   }
 
@@ -549,6 +666,7 @@ export async function createAvatarRenderer(
     setStreaming,
     setMotion,
     setPalette,
+    setDoomPerformance,
     getAppliedClip,
     getAppliedBodyColor,
     dispose,
