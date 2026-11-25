@@ -41,7 +41,9 @@ config-only hardening: the app must behave exactly as before apart from the remo
 
 ## R-7 — Docs reflect reality
 
-- [ ] R-14: `docs/SECURITY.md:141-159,210` and `docs/ARCHITECTURE.md:950-965` no longer describe `shell:allow-open`/`spawn`/`execute` or `mcp-bridge:default` as production grants; `mcp-bridge:default` is documented as the dev-only `mcp-bridge-dev` capability with the `#[cfg(debug_assertions)]` gate; the production CSP / `withGlobalTauri:false` / `__TAURI_INTERNALS__`-only rule is recorded. EXPECT: no doc claims external links open.
+- [ ] R-14: `docs/SECURITY.md:141-159,210` and `docs/ARCHITECTURE.md:950-965` no longer describe `shell:allow-open`/`spawn`/`execute` or `mcp-bridge:default` as production grants; `mcp-bridge:default` is documented as the dev-only `mcp-bridge-dev` capability with the `#[cfg(debug_assertions)]` gate; the production CSP / `withGlobalTauri:false` / `__TAURI_INTERNALS__`-only rule is recorded.
+  - **AMENDED by Spec #3206** (which introduced the app's ONE deliberate webview-reachable OS-launch path): the pre-#3206 form of this row read "no doc claims external links open" — that clause is no longer the truth and must not be asserted. EXPECT now: (a) the docs still claim **no webview-reachable shell privilege** (`shell:allow-open` absent from every capability file, no `plugin:shell|*` command granted); (b) the ONLY documented external-open path is the application command `open_external_link`, described as `https`-only, with its refusal performed **before any I/O**, granted through `permissions/app/default.toml` + `capabilities/app-commands.json` and **no** capability edit; (c) the docs still say `window.open(url,'_blank')` opens nothing (no opener plugin, no `on_new_window` handler).
+  - **FAIL if:** a doc claims "no external link can open" (now false and self-contradicting), or claims `window.open`/`target="_blank"` opens a browser, or describes an OS-launch path other than `open_external_link`.
 
 _Evidence convention: pass keeps `- [x]` + the observed value/file:line; fail leaves `- [ ]` and marks `FAIL` with expected-vs-actual + repro._
 
