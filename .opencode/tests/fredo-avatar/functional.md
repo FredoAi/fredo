@@ -800,12 +800,37 @@
   - **Edge:** an exporter that de-duplicates identical samplers to one accessor (that IS an alias —
     FAIL); two clips differing only by a scalar keyframe.
 
-- [ ] F-AV-30 **leg D (per-state applied clip through the renderer seam, Q-5).** In a new committed
-      case in `__tests__/avatarRenderer.test.ts` (or a sibling), mount `<FredoAvatar state={S} />`
-      for all 23 with Q-5 installed; record `data-avatar-clip` per state.
-  **Expected:** for all 23 `data-avatar-clip === S`; **`idle` is the ONLY state whose applied clip is
-      `idle`**; a state whose clip is missing from the GLB reports NO change (the previous clip
-      persists) — so this leg cannot pass by falling back.
+- [ ] F-AV-30 **leg D (per-state applied clip through the renderer seam, Q-5) — committed case D-1
+      plus its failable controls.** The applied-clip mapping is owned by a **committed** case (D-1,
+      file and name fixed below); the live DOM read is leg E's corroboration, never its substitute.
+      **D-1 — the committed owner (required by this row): `__tests__/avatarRenderer.test.ts` →
+      `it('applies all 23 states as their own clip through the shipped seam')`.** For every `S` in
+      `FREDO_AVATAR_STATES`, mount `<FredoAvatar size="sm" state={S} />` on **its own mount** (23
+      mounts, `unmount()` between — never one mount re-rendered through the vocabulary) with Q-5
+      installed by the shipped component recipe already in `fredoAvatarDoom.test.tsx:92-99`:
+      `vi.stubGlobal('WebGL2RenderingContext', …)` (so `probeAvatar3d()` is true without any
+      `getContext` call), a `fetch` stub returning the 4-byte `glTF` header,
+      `resetAvatarAssetCacheForTests()`, and `setAvatarRendererFactoryForTests(...)` whose
+      `setState(next)` calls `onClipChange` **only** for a `next` that is a key of an action map built
+      from the GLB's own animation names (the `applyClip` mirror, `avatarRenderer.ts:498-499`). Read
+      the shell root (`[data-avatar-render]`) once `data-avatar-render === "live"`; report `23/23`
+      mounts and the case's path + name.
+      **Failable — D-1 reddens on any ONE of:** (i) a state whose action-map entry is missing (drop
+      one emotion, e.g. `uwu`, from Q-5's map: `onClipChange` never fires for it, so
+      `data-avatar-clip` keeps the PREVIOUS clip and the equality fails — this is why the leg cannot
+      pass by falling back); (ii) a SECOND state whose applied clip is `idle` (the silent-fallback
+      clause); (iii) a mount that never reaches `data-avatar-render === "live"` (assert the render
+      flag first — a poster mount lacks `data-avatar-clip` by contract, `FredoAvatar.tsx:161`, so an
+      unasserted flag would let the case pass vacuously).
+      **Audit record (#3224, post-audit).** At audit time this leg's applied-clip evidence was
+      **live-only**: the AC was carried by the live DOM read and **no committed case owned it**,
+      so the plan and this row disagreed. D-1 is the committed owner named above; do not open a
+      differently named "sibling" file for it. A round that cannot find that case records leg D as
+      **UNVERIFIED-by-commitment naming this clause** — never a PASS from the live read alone.
+  **Expected:** D-1 present and green with `23/23` mounts reporting `data-avatar-clip === S`;
+      **`idle` is the ONLY state whose applied clip is `idle`**; a state whose clip is missing from the
+      GLB reports NO change (the previous clip persists) — so this leg cannot pass by falling back. The
+      live tier (leg E's DOM read) must agree state-for-state; a disagreement is the FAIL, not a tie.
   - **Edge:** `talk` with `streaming` false/true; reduced motion (all 23 still resolve a clip);
     `teleport-out`/`teleport-in` (clamp, no loop).
   - **Poster clause (UX-24):** repeat one pass on the shipped poster path (the `F-AV-2` asset lever,
