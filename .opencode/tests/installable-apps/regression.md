@@ -30,48 +30,71 @@ code. "No change" without a quoted artifact is not evidence._
     and `default.json` itself still grants **no per-command entry for a built-in** (this is scoped to
     this FILE: the app-command surface legitimately lives in `capabilities/app-commands.json`, which
     R-1.3 governs — its per-command grant to the built-in class is EXPECTED, never a FAIL here).
-  - EDGE: a new entry for `installed-*` in `windows` is a FAIL of R-2.4 **and** of AC-2 — the
-    refusal depends on the non-match.
+  - EDGE: **UPDATED BY #3146 (this clause used to read "a new entry for `installed-*` in `windows` is a
+    FAIL").** `default.json` still carries NO `installed-*` entry — that remains a hard FAIL here.
+    But the *reason* has moved: the installed tier's one grant lives in its own capability file
+    (`capabilities/installed-app-commands.json`, `windows: ["installed-*"]`,
+    `permissions: ["allow-installed-app-invoke"]`), and `default.json` is where the installed
+    namespace must NEVER appear, because it carries `core:*`. An `installed-*` label appearing in
+    `default.json` (or `mcp-bridge-dev.json`) hands the **privileged** command/core surface to an
+    untrusted document — still a total FAIL of AC-2 and of R-1.1/R-1.2, and now with a sharper
+    reason: it would be the SECOND matching capability file (F-2.5 expects exactly one).
 
 - [ ] **R-1.2** — `capabilities/mcp-bridge-dev.json` still grants only `mcp-bridge:default` to
   `["main","terminal","doom","app-*"]`.
   - EXPECT: file byte-identical; the dev-only bridge capability surface unchanged.
   - EDGE: an `installed-*` entry here would hand the debug bridge to an untrusted document — the
-    worst possible regression in this spec.
+    worst possible regression in this spec, and (since #3146) also the SECOND capability matching the
+    installed namespace, which F-2.5 pins at exactly one.
 
-- [ ] **R-1.3** — the capability directory grants no reach it did not have before. Enumerate
-  `apps/tauri/src-tauri/capabilities/` with a **directory listing** (never a Glob — G-024/G-105) and
-  put in the evidence **every filename present and every file's full `windows` array**. The file
-  COUNT is **not** the assertion — it is enumerated at test time (three at the ST-1 tip, and a later
-  legitimate addition must not fail this row); the reach property is the assertion.
-  - EXPECT (reach — the binding, hard-FAIL assertion): **no** capability file has a `windows` entry
-    that matches an `installed-*` label — not `*`, not `installed-*`, not a bare `installed-` prefix,
-    not any wildcard that would match it. Apply the matcher per file and quote its result for EVERY
-    file alongside that file's `windows` array.
-  - EXPECT (no widening — a separate, still strict assertion): every `windows` array is exactly
-    `["main","terminal","doom","app-*"]` **or a strict subset of those four labels**, and the same holds
-    for any `webviews` array. No capability targets a window/webview pattern outside that pre-existing
-    set. **A capability whose whole purpose is to
-    grant the app-manifest `default` permission set (`permissions/app/default.toml`, which restates
-    the commands the built-ins already had) to exactly those four pre-existing built-in patterns is
-    EXPECTED and is NOT a violation** — ST-1's `capabilities/app-commands.json` is that file. A
-    capability that ADDS a window pattern, or that grants a permission to `installed-*`, IS a FAIL.
-  - EXPECT (pre-spec files untouched — the SEPARATE assertion, not the enumeration):
-    `default.json` and `mcp-bridge-dev.json` are each **byte-identical to their pre-spec text**. Quote
+- [ ] **R-1.3** — **the capability directory's reach is exactly one installed-tier grant and nothing
+  else** (INVERTED IN PLACE by #3146 — the row keeps its id and its *reach* property; the expected
+  value flips from "zero capability files match `installed-*`" to "exactly one matches, granting
+  exactly one permission").
+  - **INSTRUMENT — a parsed-JSON matcher over every file, never a raw token grep (G-430).** Enumerate
+    `apps/tauri/src-tauri/capabilities/` with a **directory listing** (never a Glob — G-024/G-105) and
+    put in the evidence **every filename present and every file's full `windows` array**. The file
+    COUNT is **not** the assertion — it is enumerated at test time (four at the #3146 tip; a later
+    legitimate addition must not fail this row); the reach property is the assertion. For each file,
+    PARSE the JSON and glob-match the probe label against `windows` **and** `webviews`. A raw grep for
+    `installed-` returns ≥1 hit on a correct tree by design (`installed-app-commands.json` names the
+    namespace), so a token predicate would either redden wrongly or be widened until it proved
+    nothing.
+  - EXPECT (reach — the binding, hard-FAIL assertion): **exactly ONE** capability file has a
+    `windows`/`webviews` entry that matches an `installed-<probe>` label; quote its filename and its
+    full `windows` + `permissions` arrays; its `windows` is exactly `["installed-*"]` and its
+    `permissions` is exactly `["allow-installed-app-invoke"]`. **Every other** file's entries fail to
+    match. Quote the matcher's result for EVERY file beside that file's `windows` array.
+  - EXPECT (no widening — a separate, still strict assertion): every **other** capability's `windows`
+    array is exactly `["main","terminal","doom","app-*"]` **or a strict subset of those four labels**,
+    and the same holds for any `webviews` array. No capability outside the installed tier targets a
+    window/webview pattern outside that pre-existing set. **A capability whose whole purpose is to
+    grant the app-manifest `default` permission set (`permissions/app/default.toml`) to exactly those
+    four pre-existing built-in patterns is EXPECTED and is NOT a violation** — that is
+    `capabilities/app-commands.json`. A capability that ADDS a window pattern, or that grants anything
+    beyond the one permission to `installed-*`, IS a FAIL.
+  - EXPECT (pre-spec files untouched — the SEPARATE assertion, not the enumeration): `default.json`
+    and `mcp-bridge-dev.json` are each **byte-identical to their pre-spec text**. Quote
     `git diff --stat origin/main...HEAD` scoped to those two paths as **empty output** (R-1.1 / R-1.2
     pin their content in full, so an empty diff here is the corroborating artifact, not the proof).
-  - EXPECT (every file's reach is READABLE from the file): each capability file MUST carry an explicit,
-    non-empty `windows` array (or, if it targets webviews instead, a non-empty `webviews` array) —
-    quote it. A capability whose window reach cannot be read off its own declaration cannot be shown
-    not to reach `installed-*`, so record an absent or empty `windows`/`webviews` as a **FAIL of this
-    row** and quote the whole file, rather than assuming the omitted key means "no windows".
-  - NON-VACUITY CONTROL (mandatory, same round): apply the SAME matcher to the sample label
-    `app-terminal` and confirm it MATCHES `app-*`. A matcher that reports "no match" for every label
-    is matching nothing and cannot witness an absence.
-  - EDGE: a capability that reaches an `installed-*` label through `webviews` instead of `windows`
-    is the same reach and the same FAIL (Tauri matches `webviews` labels too — record which key
-    carried it). `permissions/app/default.toml` is a permission SET (referenced from a capability),
-    not a capability — its presence is expected and does not widen any window.
+  - EXPECT (every file's reach is READABLE from the file): each capability file MUST carry an
+    explicit, non-empty `windows` array (or, if it targets webviews instead, a non-empty `webviews`
+    array) — quote it. A capability whose window reach cannot be read off its own declaration cannot
+    be shown to exclude anything, so record an absent or empty `windows`/`webviews` as a **FAIL of
+    this row** and quote the whole file, rather than assuming the omitted key means "no windows".
+  - NON-VACUITY CONTROLS (mandatory, same round — BOTH): (a) the SAME matcher applied to the sample
+    label `app-terminal` **MATCHES** `app-*` (a matcher that reports "no match" for every label is
+    matching nothing and cannot witness an absence or a cardinality); (b) `installed-app-terminal`
+    matches `installed-*` and **does NOT** match `app-*` (the tier separation — #3146's new control).
+  - EDGE: a capability that reaches an `installed-*` label through `webviews` instead of `windows` is
+    the same reach and counts as the one match (record which key carried it). `permissions/app/
+    default.toml` is a permission SET (referenced from a capability), not a capability — its presence
+    is expected and does not widen any window. A capability naming a SPECIFIC installed id
+    (`installed-qa3146-app-a`) instead of the `installed-*` family is a FAIL of "no per-application
+    capability file" (R-8.3). The committed guard
+    `.opencode/scripts/inspect-webview-config.ps1` must implement this positive form; quote its
+    `CHECK` line and `Detail` **verbatim as shipped** (G-419), and quote `ExpectedCapabilities`, which
+    must now include `installed-app-commands.json`.
 
 ## R-2 — Every built-in window keeps every command it has today (R-2.3)
 
@@ -193,15 +216,10 @@ code. "No change" without a quoted artifact is not evidence._
   - EDGE: the installed document's CSP is authored by the scheme handler — a global CSP edit is a
     FAIL of N-1 (it also belongs to `webview-security-boundary`).
 
-- [ ] **R-6.2** — no new capability grant **per installed application**, and no new command per application.
-  - EXPECT: the installed-app command set is exactly `installed_app_install`, `installed_apps_list`,
-    `installed_app_open`, `installed_app_close`, `installed_apps_push_theme`; installing an app adds
-    **no** command and no capability (grep `lib.rs` generate_handler for `installed_app` ⇒ those five
-    names only; grep `capabilities/` for an `installed-` entry ⇒ 0).
-  - EDGE: an app-specific command is a FAIL of the "no new backend code per application" constraint;
-    #3146's allowlist/facade is out of scope — its absence is **not** a FAIL here. The single
-    `capabilities/app-commands.json` ST-1 adds is the BUILT-IN class grant, not a per-application
-    grant, and granting anything per installed app is a FAIL of AC-2 (and of F-2.5's reach check).
+- [ ] **R-6.2** — no new capability grant **per installed application**, and no new command per application. (INVERTED IN PLACE by #3146: the shipped `installed-` grep of 0 is now a parsed-JSON cardinality of exactly 1, and `installed_app_invoke` is the one legitimate addition.)
+  - EXPECT: the installed-app command set is `installed_app_install`, `installed_apps_list`, `installed_app_open`, `installed_app_close`, `installed_apps_push_theme` **plus #3146's `installed_app_invoke`, `installed_app_consent_grant`, `installed_app_consent_revoke`** and nothing else — grep `lib.rs`'s `generate_handler!` for `installed_app` and quote the resulting name list. `installed_app_invoke` is the only new *app-dispatch* command; the two consent commands are **built-in-tier only** (an installed document cannot reach them — F-7.9/F-7.10).
+  - EXPECT: installing an application adds **no command and no capability**. The assertion is a **parsed-JSON matcher** (never a raw `installed-` grep — the shipped `installed-app-commands.json` names the namespace by design, G-430): exactly ONE capability file matches an `installed-<probe>` label before installing and exactly ONE after, with the same filename, the same `windows` and the same `permissions`. Quote both readings.
+  - EDGE: an app-specific command, or a capability file minted per installed id, is a FAIL of the "no new backend code per installed application" constraint. The installed-tier capability's `windows` MUST be the `installed-*` family, never a literal id. **#3146's dispatcher is IN scope now** — the old note that it was "out of scope / its absence is not a FAIL" is superseded: `installed_app_invoke` must exist, must be granted to the built-in set through `permissions/app/default.toml`, and must be the ONLY permission in `capabilities/installed-app-commands.json` (F-2.5, F-7.4).
 
 - [ ] **R-6.3 — build gate.** `pnpm --filter @fredo/ui build` ⇒ exit `0` (no TS errors);
   `cargo check --locked` in `apps/tauri/src-tauri` ⇒ exit `0`, zero `warning:` lines;
@@ -217,19 +235,23 @@ code. "No change" without a quoted artifact is not evidence._
   the MCP bridge is dev-only, `shell:allow-open` absent, CSP + `withGlobalTauri: false`, zero
   `__TAURI__` in product source (#3077/#3078 baseline). Those are the PROPERTIES that must not
   regress, and each is a hard FAIL if it moves.
-  - EXPECT: each named property reads identically to its last recorded evidence. #3147 adds **no CSP
-    change and no permissive grant**: the one capability it adds (`capabilities/app-commands.json`)
-    grants the app-manifest `default` permission set to the four pre-existing built-in window
-    patterns only, adds no privilege class (no shell, no bridge, no new command family), and does not
-    reach `installed-*` (R-1.3 / F-2.5 assert that reach property). `__TAURI_INTERNALS__` remains the
-    IPC handle (ST-1 must not add a global).
+  - **WHAT #3147 + #3146 ADD, in one sentence.** No CSP change and no permissive grant: two capability
+    files now exist beyond the original pair — `capabilities/app-commands.json` (the app-manifest
+    `default` permission set to the four pre-existing BUILT-IN window patterns only) and
+    `capabilities/installed-app-commands.json` (the INSTALLED tier: `windows: ["installed-*"]`,
+    `permissions: ["allow-installed-app-invoke"]`, no `core:*`, nothing else). Neither adds a privilege
+    class the product already lacked: no shell, no bridge, no new command family for the built-in
+    tier. Neither reaches the other tier (R-1.3 / F-2.5 / F-2.6 assert the reach property in both
+    directions). `__TAURI_INTERNALS__` remains the IPC handle — no global handle is added (the child's
+    `__FREDO_INSTALLED__.invoke` is a host-authored function on the document, not `withGlobalTauri`).
   - **KNOWN COMPANION-SUITE DRIFT (report it; do not absorb it).** `webview-security-boundary` also
     carries literal file-COUNT clauses — F-1 ("exactly `default.json` + `mcp-bridge-dev.json`"), F-3
     ("the generated manifest lists exactly `default` + `mcp-bridge-dev`") and R-11 (`gen/schemas/
     capabilities.json` "contains exactly `default` + `mcp-bridge-dev`") — which are now FALSE because
-    a third capability legitimately exists. Those clauses are in a suite this spec is not editing, so
-    when the cross-suite run shows them failing, record that as **companion-suite count drift in the
-    verdict** and keep the PROPERTY checks (`capabilities.all.no-shell-exec`,
+    **two** capabilities legitimately exist beyond that pair (`app-commands.json` from #3147 and
+    `installed-app-commands.json` from #3146). Those clauses are in a suite this spec is not editing,
+    so when the cross-suite run shows them failing, record that as **companion-suite count drift in
+    the verdict** and keep the PROPERTY checks (`capabilities.all.no-shell-exec`,
     `capabilities.bridge.identifier` / `capabilities.bridge.permissions`, the debug-assertions gate,
     CSP, `withGlobalTauri: false`, zero `__TAURI__`) as the gate. The drift is a suite-ownership item
     for the Orchestrator; the security properties are not negotiable and any of them moving IS a FAIL
@@ -246,6 +268,80 @@ code. "No change" without a quoted artifact is not evidence._
   - EXPECT: grep the new capture module for `SEMANTIC_TOKENS` ⇒ 0 matches; the host's rendered shell
     is visually unchanged after the capture call site is added.
   - EDGE: a second enumeration that drifts from the token registry is a FAIL even if it renders.
+
+## R-8 — The #3146 authority boundary must not regress the two tiers it sits between
+
+> These rows are the "must not change" counterpart of `functional.md`'s AC-6 group. #3146 turns the
+> shipped *"installed windows reach nothing"* invariant into *"installed windows reach exactly one
+> command, granted from exactly one capability"* — a **tighter** statement that is easier to widen by
+> accident. Each row below names the widening it would catch.
+
+- [ ] **R-8.1 — the built-in tier is NOT reduced.** `git diff --stat origin/main...HEAD --
+  apps/tauri/src-tauri/src/infrastructure/application_data/commands.rs` is **empty** (quoted), and the
+  built-in windows still reach every command they reach today (cross-run R-2.1…R-2.4 above).
+  - EXPECT: empty diff for `commands.rs` (the dispatcher must validate-and-REWRITE before calling these
+    bodies, never modify them); every R-2.x command still resolves from `main`; and — the discriminator
+    that this is not vacuous — a built-in `application_data_read` on an installed app's **declared**
+    table still succeeds (tier 1 takes the id from the payload and is unchanged by design).
+  - EDGE: a `commands.rs` diff is a FAIL even if the behaviour reads identical — tier 1 is the surface
+    every shipped application depends on, and the plan states it is byte-identical.
+
+- [ ] **R-8.2 — two SEPARATE refusal vocabularies; neither grows into the other.** Read
+  `src/applications/installed_apps/mod.rs` (`InstalledAppRefusalCode`) and its unit pin, plus the new
+  authority vocabulary.
+  - EXPECT: the installer vocabulary is **exactly 22** codes — quote the committed pin's assertion and
+    its count; the authority vocabulary is a **separate six** (`action_not_declared`,
+    `action_not_grantable`, `consent_required`, `scope_denied`, `caller_unknown`, `app_not_installed`);
+    the two types are distinct (no authority code is smuggled into `InstalledAppRefusalCode`, and the
+    frontend mirrors stay distinct: `INSTALL_REFUSAL_COPY` vs `CAPABILITY_REFUSAL_COPY`).
+  - EDGE: a 23rd installer code added to carry an authority refusal is a **plan defect** — report it,
+    never accept it as "the natural place". The consent commands legitimately reuse the FROZEN
+    vocabulary (`manifest_invalid_field` with `field: "capability"`, `id_not_installed`) — that is
+    reuse, not growth; F-7.21 asserts it.
+
+- [ ] **R-8.3 — the child document's transport is unchanged.** `apps/tauri/src-tauri/tauri.conf.json`
+  is unmodified (`app.security.csp`, `devCsp`, `withGlobalTauri: false`); the served child CSP string
+  in `applications/installed_apps/scheme.rs` is byte-identical to its pre-#3146 value and still
+  contains `connect-src ipc: http://ipc.localhost`.
+  - EXPECT: quote the CSP string from `scheme.rs` and the `tauri.conf.json` keys; `git diff --stat` for
+    `tauri.conf.json` empty. The shim adds ONE function to the host-authored bootstrap — it must not
+    change the CSP, must not add `withGlobalTauri`, and must not introduce `__TAURI__`.
+  - EDGE: a relaxed `connect-src` or a `withGlobalTauri: true` is a FAIL of this row AND of
+    `webview-security-boundary` — the child's refusal must stay an ACL refusal, never a CSP refusal
+    (F-2.2's EDGE depends on the transport staying reachable).
+
+- [ ] **R-8.4 — no false refusals from the new manifest validator, and the absent key stays absent.**
+  - EXPECT: all seven #3147 package fixtures from `build-package-fixtures.mjs` still produce the codes
+    their committed expected-output manifest names — in particular the **valid** package still installs
+    (a validator that now requires `capabilities`, or that rejects a package without it, is a total
+    FAIL). The five #3147 behaviour fixtures from `build-behaviour-fixtures.mjs` still install. Quote
+    each install's result.
+  - EXPECT: a package with **no** `capabilities` key produces a normalized `<FREDO_DATA_DIR>/
+    installed-apps/<id>/manifest.json` (and a `record.json`) where the key is **ABSENT** — not
+    `"capabilities": null`, not `{}`. Quote the file. This is the on-disk half of the fail-safe NFR.
+  - EDGE: `manifestVersion` is still `1`; the key is ADDITIVE and OPTIONAL. A bumped
+    `manifestVersion`, or `capabilities` made mandatory, is a FAIL of the additive-only contract
+    (a v1 package authored before #3146 must keep installing).
+
+- [ ] **R-8.5 — the built-in application-data surface behaves exactly as before.** Cross-run
+  `.opencode/tests/application-data/` (declared/canonical store rows) at the same tip.
+  - EXPECT: that suite's declared-table rows (ensure/declare/read/write/delete/validate on a BUILT-IN
+    application id) are green and **unmodified by this spec** (`git diff --stat origin/main...HEAD --
+    .opencode/tests/application-data/` empty). Quote the run and the diff.
+  - EDGE: editing that suite to accommodate the dispatcher is a **plan defect** — report it, never
+    accept "suite updated". The dispatcher is a NEW surface in front of those bodies; it must not
+    require them to change.
+
+- [ ] **R-8.6 — consent never becomes a declaration.** Read the capability store's writes and the
+  consent store.
+  - EXPECT: `installed_app_consent_grant` cannot create a declaration (a grant for an undeclared
+    capability is refused — F-7.21), the consent file lives at `<app_data_dir>/installed-apps-consent.
+    json` **outside** the integrity-pinned `installed-apps/<id>/` tree (quote both paths and confirm
+    the consent path is not inside an install directory), and it is versioned (`{"version":1,…}`) and
+    written atomically (tmp + rename visible in the source, quoted).
+  - EDGE: a consent record placed inside `<id>/` would be covered by the integrity manifest and could
+    never be updated without a mismatch — a FAIL. A consent store with no version field is a FAIL of
+    the additive-evolution contract.
 
 _Evidence convention: quote the artifact. A build/unit gate quotes `EXITCODE=`; a static case quotes
 the file:line and the assertion; a live case quotes the observed value._
