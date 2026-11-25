@@ -71,6 +71,8 @@
   PostgreSQL client surface that supplies the second (headroom) client.
 - [ ] **R-13:** inherit and run `.opencode/tests/postgres-stores/regression.md` — the shared-pool /
   store surface whose connection count is bounded by the cap.
-- [ ] **R-14:** inherit and run `.opencode/tests/headless-ingest/regression.md` — the
-  cluster-ownership / two-client (daemon + GUI) surface with the same "too many clients" read
-  caveat.
+- [ ] **R-14:** inherit and run `.opencode/tests/resident-ingest/regression.md` — the single-owner
+  cluster surface (one postmaster, one binder per OTLP port) with the same "too many clients" read
+  caveat. **Replaces the retired `headless-ingest/regression.md` (#3194)**: the daemon/GUI
+  two-process case no longer exists, so the headroom guarantee is now proven against the ONE
+  resident owner plus a genuinely external client.
