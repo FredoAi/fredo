@@ -16,6 +16,10 @@ command `stream_health` → `StreamHealthSnapshot { seq, ingestConnected, ageMs,
 `STREAM_HEALTH_CHECK_INTERVAL_MS = 5000`. REUSE (no new DOM/testid): `desktop-status-led`,
 `desktop-status-led-overall` + `data-health-state`, `health-line-telemetry` + `data-health-state`
 ∈ {`healthy`,`degraded`,`down`}.
+**Additive since #3194 (absent-key when unset, G-413):** `ingestFailure { receiver, port, code,
+message }` on both `StreamHealthHeartbeat` and `StreamHealthProbe`; `useStreamHealth()` gains
+`ingestFailure: IngestFailure | null`. It decorates the `degraded` branch ONLY (UI/UX Asset 1);
+`healthy`/`down` ignore it and the three pinned strings stay byte-identical.
 
 > **G-376 disclosure (binding).** A genuine telemetry outage is not tester-drivable, so every
 > `degraded`/`down` case drives the inert-by-default in-repo lever `FREDO_STREAM_HEALTH_FORCE`
@@ -48,11 +52,31 @@ command `stream_health` → `StreamHealthSnapshot { seq, ingestConnected, ageMs,
   - Expected: status returns to `healthy`; `useStreamHealth().isConnected===true`; all three consumers read connected (`health-line-telemetry` `healthy`, `mm-watch-disconnected` absent, Dev Mode `live`). Event-driven recovery: a fresh `streamHealth` heartbeat sets health immediately via `onHeartbeat` (before the next tick). PASS = `healthy` within one interval from BOTH `degraded` and `down`.
   - Edge: recovery from `down` needs a SUCCESSFUL probe (not just a heartbeat); rapid `degraded`→`healthy`→`degraded` flap (no stuck state).
 
-- [ ] **F-5 (REQ-5) — OTLP not-connected while heartbeats continue ⇒ `degraded`.**
-  - Data: occupy the OTLP HTTP port `127.0.0.1:4318` (dummy listener) BEFORE launch so the receiver's bind/ingest path reports not-connected; heartbeats continue.
-  - Steps: read the probe + the LED.
-  - Expected: `stream_health` returns `ok:true` but `ingestConnected:false` → `deriveStreamHealth` = `degraded`; `health-line-telemetry` `degraded` + `Telemetry stalled`; overall NOT `healthy`. PASS = `degraded` with probe Ok and `ingestConnected:false`.
-  - G-300 fallback: if the port-occupation lever cannot induce `ingestConnected:false` on the shipped path, run the static pin `deriveStreamHealth({ok:true, ageMs:0, ingestConnected:false})==='degraded'` (marked NON-AC) and record a named blocker. Control: port free → `ingestConnected:true` → `healthy`.
+- [ ] **F-5 (REQ-5) — not-connected while heartbeats continue ⇒ `degraded`. TWO levers, two details
+  (re-cut by #3194: `ingestConnected:false` now travels WITH a typed cause).**
+  - Data (a): launch with `FREDO_STREAM_HEALTH_FORCE=ingest-down` (heartbeats keep emitting; the
+    monitor reports `ingestConnected:false` **with no `ingestFailure`**).
+  - Data (b): a REAL startup bind conflict on the env's configured OTLP port —
+    `.opencode/tests/resident-ingest/otlp-conflict-probe.ps1 -Mode conflict` (the plan's primary
+    lever; `-DryRun` first). Never occupy the machine-global 4318 in env mode: `dev-env.ps1`'s
+    collision gate refuses to start when a configured OTLP port is already bound, so that recipe
+    would prove the env's gate, not the product's receiver.
+  - Steps: read the probe + the LED row in each state.
+  - Expected (a): `stream_health` → `ok:true`, `ingestConnected:false`, **no `ingestFailure` key**;
+    `health-line-telemetry` `data-health-state="degraded"` with text `Degraded` AND
+    `Telemetry stalled`, **no** `technicalDetail` node, overall NOT `healthy`. This is the
+    byte-identical pin of `stream-health/functional.md:54` (UI/UX **U-5**) — it must survive the
+    typed-cause feature untouched.
+  - Expected (b): `ok:true`, `ingestConnected:false` **and** `ingestFailure` present; the row reads
+    `Degraded` + `Port <configured port> is in use` with the `otlp:…:addrInUse · …` technicalDetail
+    (UI/UX U-1/U-2 — the copy is `## UI/UX Expert`'s, **not** "Ingest port …"). The full AC3 legs
+    are `resident-ingest/functional.md` F-6/F-7/F-8; this row asserts only that the MAPPING is
+    still `degraded` in both shapes and that the two detail strings are distinct.
+  - FAIL: (a) drifting to the typed detail; (b) `Telemetry stalled` on a real conflict, or
+    `down`/`healthy` in either.
+  - Edge: `deriveStreamHealth({ok:true, ageMs:0, ingestConnected:false})==='degraded'` stays the
+    static corroboration (NON-AC) — never the sole receipt. Control: port free → `ingestConnected:
+    true` → `healthy`.
 
 - [ ] **F-6 (REQ-6, AC5) — idle ≠ outage; liveness independent of span flow.**
   - Data: live dev app; leave it idle (no agent producing telemetry) for ≥ 3 heartbeat intervals (≥ 15 s; prefer ≥ 30 s).
@@ -100,7 +124,12 @@ command `stream_health` → `StreamHealthSnapshot { seq, ingestConnected, ageMs,
 - **`degraded` (F-2/F-9):** `FREDO_STREAM_HEALTH_FORCE=degraded` (backend env) — the publisher loop skips emission, so the REAL staleness path runs. Frontend mirror: `VITE_FREDO_STREAM_HEALTH_FORCE=degraded`, `window.__FREDO_STREAM_HEALTH_FORCE__='degraded'`, `sessionStorage['fredoStreamHealthForce']='degraded'`.
 - **`down` (F-3/F-9):** `FREDO_STREAM_HEALTH_FORCE=down` — the `stream_health` command returns `Err` (simulated IPC outage; mapping/render only — G-376).
 - **Unset control (F-2/F-3/F-5/F-9):** relaunch WITHOUT the lever (or with `""`/`unknown`/`bogus`) → heartbeats emit, status `healthy`.
-- **`ingestConnected:false` (F-5):** occupy `127.0.0.1:4318` before launch; fallback static pin if unreachable (G-300).
+- **`ingestConnected:false` (F-5):** the inert-by-default backend lever
+  `FREDO_STREAM_HEALTH_FORCE=ingest-down` gives the cause-free shape (`Telemetry stalled`, no
+  `ingestFailure`); a REAL bind conflict on the env's configured OTLP port gives the typed shape
+  (`Port <port> is in use`, `ingestFailure` present) and is driven through
+  `.opencode/tests/resident-ingest/otlp-conflict-probe.ps1 -Mode conflict`. Do NOT occupy the
+  machine-global 4318: `dev-env.ps1` refuses to start an env whose configured OTLP port is bound.
 
 ## Live evidence anchor
 
