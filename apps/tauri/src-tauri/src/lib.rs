@@ -29,14 +29,6 @@ pub use applications::terminal::persistence::ensure_table_on_pg as ensure_termin
 #[doc(hidden)]
 pub use applications::db_client;
 
-// Spec #2992 CU-1 — the headless-ingest descriptor contract
-// (`pg_supervisor::descriptor`): the cross-process JSON descriptor + the bounded
-// liveness guard. `write`/`clear` are consumed by the CU-2 `fredo ingest` daemon
-// (ST-5); the module is re-exported so the frozen CU-1 surface is reachable while
-// that consumer is still pending. `#[doc(hidden)]`: not part of the app surface.
-#[doc(hidden)]
-pub use applications::pg_supervisor::descriptor;
-
 // Spec #3023 — the Doom runtime lifecycle contract (`doom::{state, engine,
 // commands, ...}`): the shared types + the native in-process engine adapter. The
 // commands and the `doom` window consume this surface, so it is re-exported to

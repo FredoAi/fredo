@@ -2,9 +2,8 @@
 //! (Spec #3029, ST-3).
 //!
 //! The embedded cluster binds an OS-assigned **ephemeral** loopback port that is
-//! published in-memory by [`PgSupervisorState::set_ready`] /
-//! [`PgSupervisorState::set_attached`] — it is never written to disk. The
-//! db-client must learn it at **connect time**, but `ENGINEERING_RULES` forbids a
+//! published in-memory by [`PgSupervisorState::set_ready`] — it is never written
+//! to disk. The db-client must learn it at **connect time**, but `ENGINEERING_RULES` forbids a
 //! cross-application import, so this adapter implements the neutral
 //! [`EmbeddedPgEndpointProvider`] seam and the composition root (`lib.rs`) wires
 //! it onto the managed `DbClientState`.
@@ -62,12 +61,12 @@ impl EmbeddedPgEndpointProvider for PgSupervisorEndpointProvider {
     fn endpoint(&self) -> Option<EmbeddedPgEndpoint> {
         // The status view IS the live in-memory snapshot `pg_supervisor_status`
         // returns. The bound port is only meaningful while the cluster is
-        // serving: `Ready` (this GUI owns the postmaster) or `Attached` (a
-        // headless daemon owns it). Any other state (`Starting`/`Failed`/
-        // `Disabled`) ⇒ `None`, so a connect fails before the credential path.
+        // serving: `Ready` (this GUI owns the postmaster). Any other state
+        // (`Starting`/`Failed`/`Disabled`) ⇒ `None`, so a connect fails before
+        // the credential path.
         let view = self.supervisor.status.borrow().clone();
         match view.state {
-            PgState::Ready | PgState::Attached => view.port.map(|port| EmbeddedPgEndpoint {
+            PgState::Ready => view.port.map(|port| EmbeddedPgEndpoint {
                 host: DEFAULT_PG_HOST.to_string(),
                 port,
                 user: PG_SUPERUSER.to_string(),
@@ -150,15 +149,6 @@ mod tests {
         assert_eq!(first.port, 40001);
         assert_eq!(second.port, 59999);
         assert_ne!(first.port, second.port);
-    }
-
-    #[test]
-    fn attached_state_also_publishes_its_live_port() {
-        let supervisor = supervisor_state();
-        let provider = PgSupervisorEndpointProvider::new(supervisor.clone());
-
-        supervisor.set_attached(60001, 777);
-        assert_eq!(provider.endpoint().expect("attached").port, 60001);
     }
 
     #[test]

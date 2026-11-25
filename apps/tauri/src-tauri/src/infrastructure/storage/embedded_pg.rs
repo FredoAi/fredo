@@ -6,7 +6,7 @@
 //! cross-application import (`applications::db_client` must NOT `use`
 //! `applications::pg_supervisor`), and because the endpoint is only known at
 //! **connect time**: the port is OS-assigned ephemeral and published in-memory by
-//! the supervisor (`set_ready`/`set_attached`) — never written to disk.
+//! the supervisor (`set_ready`) — never written to disk.
 //!
 //! The trait is *implemented* by `applications::pg_supervisor::endpoint` over its
 //! live state and *consumed* by `applications::db_client::connect`; the

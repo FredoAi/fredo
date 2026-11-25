@@ -10,7 +10,6 @@ use crate::infrastructure::ipc::{send_cli_command, CliCommand, CliResponse};
 use commands::companion_probe::CompanionArgs;
 use commands::doom_export::{DoomArgs, DoomCommand};
 use commands::emit::EmitArgs;
-use commands::ingest::IngestArgs;
 use commands::open_app::OpenAppArgs;
 use commands::open_terminal::OpenTerminalArgs;
 use commands::setup::SetupArgs;
@@ -40,19 +39,6 @@ pub enum Commands {
     Doom(DoomArgs),
     /// Companion engine diagnostics (runs locally; no app instance required)
     Companion(CompanionArgs),
-    /// Run the headless ingest daemon (embedded PostgreSQL + OTLP receivers)
-    ///
-    /// Owns the embedded PostgreSQL cluster (shared data dir + shared
-    /// control-plane credential) and serves OTLP/gRPC 127.0.0.1:4317 and
-    /// OTLP/HTTP 127.0.0.1:4318, feeding every received span through the existing
-    /// row pipeline. Runs until SIGINT, the --shutdown-file appears, or --run-ms
-    /// elapses; every teardown is bounded.
-    ///
-    /// Exit codes:
-    ///   0  graceful shutdown
-    ///   1  fail-fast (the data-dir lock is held, or startup failed)
-    ///   2  reserved (app-not-running)
-    Ingest(IngestArgs),
 }
 
 /// Run the CLI. Connects to the running Fredo app over the local socket,
@@ -64,9 +50,8 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 async fn run_async(cli: Cli) -> Result<()> {
-    // Setup and Ingest run locally without requiring the app to be running. Both
-    // are handled BEFORE the IPC dispatch: Setup is a bounded one-shot; Ingest is
-    // a long-lived daemon that owns its own embedded cluster and receivers.
+    // Setup runs locally without requiring the app to be running. It is handled
+    // BEFORE the IPC dispatch: Setup is a bounded one-shot.
     match cli.command {
         Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
         // `companion probe` is the ONE shipped diagnostic for a RELEASE binary:
@@ -75,9 +60,6 @@ async fn run_async(cli: Cli) -> Result<()> {
         // dispatch — it needs no running app.
         Commands::Companion(ref args) => {
             return commands::companion_probe::run_companion(args).await;
-        }
-        Commands::Ingest(args) => {
-            return crate::applications::pg_supervisor::headless::run_ingest_daemon(args).await;
         }
         other => {
             let ipc_cmd = build_ipc_command(other);
@@ -174,10 +156,6 @@ fn build_ipc_command(cmd: Commands) -> CliCommand {
         Commands::Companion(_) => {
             // The companion probe is handled locally in run_async, not via IPC.
             unreachable!("Companion command should be handled before IPC dispatch")
-        }
-        Commands::Ingest(_) => {
-            // The headless daemon is handled locally in run_async, not via IPC.
-            unreachable!("Ingest command should be handled before IPC dispatch")
         }
     }
 }
@@ -345,54 +323,32 @@ mod tests {
         assert_eq!(exit_code_for_parse_error(ErrorKind::ArgumentConflict), 1);
     }
 
-    /// ST-5 / F-14 (G-254): `fredo ingest --help` names EVERY flag, its default,
-    /// and documents exit codes 0/1/2 — the declared help is the shipped surface.
+    /// ST-1 (#3194): the retired `ingest` subcommand is ABSENT — `fredo --help`
+    /// lists no `ingest`, and no surviving subcommand renders the retired
+    /// `--run-ms`/`--shutdown-file` daemon seams. The absence is asserted
+    /// structurally, not by a hidden-subcommand judgement (R-4a/R-5b).
     #[test]
-    fn cli_help_lists_ingest_and_names_every_flag_default_and_exit_code() {
+    fn cli_help_does_not_expose_the_retired_ingest_subcommand() {
         use clap::CommandFactory;
 
         let mut root = Cli::command();
         let help = root.render_long_help().to_string();
-        assert!(help.contains("ingest"), "`fredo --help` must list ingest:\n{help}");
+        assert!(
+            !help.contains("ingest"),
+            "`fredo --help` must NOT list the retired `ingest` subcommand:\n{help}"
+        );
 
-        let sub = root
-            .find_subcommand_mut("ingest")
-            .expect("ingest is a registered subcommand");
-        let sub_help = sub.render_long_help().to_string();
-        for flag in [
-            "--data-dir",
-            "--pg-data-dir",
-            "--lock-dir",
-            "--grpc-port",
-            "--http-port",
-            "--run-ms",
-            "--shutdown-file",
-        ] {
-            assert!(
-                sub_help.contains(flag),
-                "`fredo ingest --help` must name {flag}:\n{sub_help}"
-            );
+        // The retired seams must not reappear on ANY surviving subcommand.
+        for sub in root.get_subcommands_mut() {
+            let name = sub.get_name().to_string();
+            let sub_help = sub.render_long_help().to_string();
+            for seam in ["--run-ms", "--shutdown-file"] {
+                assert!(
+                    !sub_help.contains(seam),
+                    "`fredo {name} --help` must NOT render the retired {seam}:\n{sub_help}"
+                );
+            }
         }
-        for env_name in [
-            "FREDO_DATA_DIR",
-            "FREDO_PG_DATA_DIR",
-            "FREDO_PG_LOCK_DIR",
-            "FREDO_INGEST_GRPC_PORT",
-            "FREDO_INGEST_HTTP_PORT",
-            "FREDO_INGEST_RUN_MS",
-            "FREDO_INGEST_SHUTDOWN_FILE",
-        ] {
-            assert!(
-                sub_help.contains(env_name),
-                "`fredo ingest --help` must name {env_name}:\n{sub_help}"
-            );
-        }
-        assert!(sub_help.contains("4317"), "must name the gRPC default:\n{sub_help}");
-        assert!(sub_help.contains("4318"), "must name the HTTP default:\n{sub_help}");
-        assert!(sub_help.contains("Exit codes"), "must document exit codes:\n{sub_help}");
-        assert!(sub_help.contains("0  graceful shutdown"), "{sub_help}");
-        assert!(sub_help.contains("1  fail-fast"), "{sub_help}");
-        assert!(sub_help.contains("2  reserved"), "{sub_help}");
     }
 
     #[test]

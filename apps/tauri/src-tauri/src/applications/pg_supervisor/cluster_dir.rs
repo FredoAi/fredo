@@ -220,8 +220,8 @@ pub fn inspect_cluster_dir(dir: &Path) -> ClusterDirState {
 ///   [`PG_CLUSTER_QUARANTINE_FAIL_ENV`] seams) -> [`ClusterDirError`].
 ///
 /// This is the SINGLE choke point every owner path reaches through
-/// [`super::runtime::PgRuntime::setup`] (GUI boot, config-apply restart, headless
-/// `fredo ingest`), so the recovery is never path-specific.
+/// [`super::runtime::PgRuntime::setup`] (GUI boot, config-apply restart), so the
+/// recovery is never path-specific.
 pub fn ensure_initialisable(dir: &Path) -> anyhow::Result<()> {
     ensure_initialisable_with(
         dir,

@@ -47,7 +47,6 @@ use crate::infrastructure::storage::SettingsStore;
 
 use super::config::{PgLogVerbosity, PgSupervisorConfig};
 use super::credentials::PgCredential;
-use super::descriptor::{self, HeadlessDescriptor};
 use super::lock::PgDataDirLock;
 use super::runtime::{wait_until, PgRuntime, StopOutcome};
 use super::sweep::{persist_pid, sweep_orphan, sweep_postmaster_pid_file};
@@ -65,11 +64,6 @@ pub enum PgState {
     Starting,
     /// The real-client readiness probe succeeded; `port`/`pid` are populated.
     Ready,
-    /// The data dir is locked by a LIVE headless `fredo ingest` daemon and this
-    /// GUI attached to its cluster (Spec #2992 CU-1). `port` is the published
-    /// ephemeral port; the GUI owns no runtime and holds no lock, so it never
-    /// starts, stops, or sweeps that postmaster.
-    Attached,
     /// The boot failed closed (structured `error`) and was torn down.
     Failed,
 }
@@ -103,10 +97,9 @@ pub enum PgFailureKind {
 pub struct PgStatusView {
     /// Current lifecycle state.
     pub state: PgState,
-    /// The bound ephemeral loopback port, once `Ready`/`Attached`.
+    /// The bound ephemeral loopback port, once `Ready`.
     pub port: Option<u16>,
-    /// The managed postmaster PID once `Ready`; the owning headless daemon PID
-    /// once `Attached` (the postmaster belongs to that daemon).
+    /// The managed postmaster PID once `Ready`.
     pub pid: Option<u32>,
     /// Structured failure detail, once `Failed`.
     pub error: Option<String>,
@@ -122,10 +115,6 @@ pub struct PgStatusView {
     /// Additive (Spec #3022 ST-4): the failure classification, `Some` ONLY while
     /// `state == Failed` (additive — existing consumers ignore the extra field).
     pub failure_kind: Option<PgFailureKind>,
-    /// Additive (Spec #2992 CU-1): `true` only while the GUI serves a
-    /// headless-owned cluster ([`PgState::Attached`]); `false` for every other
-    /// state. Existing consumers ignore the extra field.
-    pub attached: bool,
 }
 
 /// `<log dir>/postgres.log` as a serializable string; `None` when the log dir is
@@ -164,7 +153,6 @@ impl PgStatusView {
             log_path: log_path_for(Path::new(&log_dir)),
             data_dir,
             failure_kind: Some(kind),
-            attached: false,
         }
     }
 }
@@ -298,7 +286,6 @@ impl PgSupervisorState {
             data_dir,
             log_path,
             failure_kind: None,
-            attached: false,
         });
         Self {
             runtime: Mutex::new(runtime),
@@ -333,25 +320,6 @@ impl PgSupervisorState {
             data_dir: current.data_dir,
             log_path: current.log_path,
             failure_kind: None,
-            attached: false,
-        });
-    }
-
-    /// Publish `Attached` (Spec #2992 CU-1): the GUI serves a headless-owned
-    /// cluster on `port`; `pid` is the owning headless daemon. The GUI holds no
-    /// runtime and no lock, so [`stop_on_exit`] no-ops (it never stops the
-    /// headless postmaster). The data dir and log path are carried forward.
-    pub fn set_attached(&self, port: u16, pid: u32) {
-        let current = self.status.borrow().clone();
-        self.status.send_replace(PgStatusView {
-            state: PgState::Attached,
-            port: Some(port),
-            pid: Some(pid),
-            error: None,
-            data_dir: current.data_dir,
-            log_path: current.log_path,
-            failure_kind: None,
-            attached: true,
         });
     }
 
@@ -373,7 +341,6 @@ impl PgSupervisorState {
             data_dir: current.data_dir,
             log_path: current.log_path,
             failure_kind: Some(kind),
-            attached: false,
         });
     }
 }
@@ -420,8 +387,8 @@ fn bootstrap(app_data_dir: &Path, store: &SettingsStore) -> Bootstrap {
 }
 
 /// Resolve the loopback-only cluster password from the OS keychain (Spec #3005
-/// ST-7). Shared with the headless daemon (Spec #2992 CU-2), which must use the
-/// SAME credential. The password is NEVER written to the synchronous settings
+/// ST-7). One shared credential rule (Spec #3005 ST-7). The password is NEVER
+/// written to the synchronous settings
 /// cache nor the PostgreSQL `settings` table; when the keychain is unavailable
 /// the documented [`PgCredential::resolve`] fallback applies (warned WITHOUT its
 /// value).
@@ -462,56 +429,28 @@ pub fn start_supervisor(app: &AppHandle) {
         .to_string();
     match bootstrap(&os_app_data_dir, &store) {
         Bootstrap::Failed(error) => {
-            let lock_dir = super::resolve_lock_dir(&os_app_data_dir);
             let pg_data_dir = super::resolve_data_dir(&os_app_data_dir)
                 .display()
                 .to_string();
-            // R-3 attach leg (Spec #2992 CU-1): the data dir is locked. If a LIVE
-            // headless descriptor is published, ATTACH to the headless-owned
-            // cluster instead of failing closed. `is_live` is bounded (PID image
-            // guard + a <=500 ms TCP connect), so the synchronous setup path
-            // never blocks unbounded (G-263).
-            match descriptor::read(&lock_dir).filter(descriptor::is_live) {
-                Some(headless) => {
-                    tracing::info!(
-                        target: "fredo::pg_supervisor",
-                        pid = headless.pid,
-                        port = headless.port,
-                        data_dir = %pg_data_dir,
-                        "data dir locked by a live headless daemon; attaching to its cluster"
-                    );
-                    // No runtime, no lock: this GUI never starts/stops/sweeps the
-                    // headless postmaster, and `stop_on_exit` no-ops.
-                    app.manage(Arc::new(PgSupervisorState::new(
-                        None,
-                        None,
-                        pg_data_dir,
-                        pg_log_dir,
-                    )));
-                    let handle = app.clone();
-                    // G-273: the attach leg is spawned, never awaited in setup.
-                    tauri::async_runtime::spawn(async move {
-                        run_attach(handle, headless).await;
-                    });
-                }
-                None => {
-                    // Missing/stale descriptor: keep the fail-closed `Failed` path —
-                    // record the reason, report Failed, and start nothing.
-                    if let Some(state) = app.try_state::<Arc<StorageEngineState>>() {
-                        state.set_fallback_reason(error.clone());
-                    }
-                    tracing::error!(
-                        target: "fredo::pg_supervisor",
-                        error = %error,
-                        "embedded PostgreSQL data dir is not available; supervisor reports Failed"
-                    );
-                    app.manage(Arc::new(PgSupervisorState::failed_only(
-                        error,
-                        pg_data_dir,
-                        pg_log_dir,
-                    )));
-                }
+            // R-1c: the data dir is locked by another owner ⇒ fail closed. There
+            // is exactly ONE owner of the cluster (this desktop process); a held
+            // lock means a second Fredo instance already owns it, so this instance
+            // records the reason, reports `Failed`, and starts nothing. No adopt,
+            // no attach: replayed history must never be served with live ingestion
+            // silently absent (Spec #3194).
+            if let Some(state) = app.try_state::<Arc<StorageEngineState>>() {
+                state.set_fallback_reason(error.clone());
             }
+            tracing::error!(
+                target: "fredo::pg_supervisor",
+                error = %error,
+                "embedded PostgreSQL data dir is not available; supervisor reports Failed"
+            );
+            app.manage(Arc::new(PgSupervisorState::failed_only(
+                error,
+                pg_data_dir,
+                pg_log_dir,
+            )));
         }
         Bootstrap::Locked(lock, pg_data_dir) => {
             tracing::info!(
@@ -594,8 +533,8 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
         // `ensure_verified_install` leg) before the crate's setup. The former
         // owner-path block here called `acquire_pg_archive` and DISCARDED the
         // returned archive path, so the crate self-fetched anyway. Do not
-        // reintroduce a second acquisition path: the restart and headless owner
-        // paths now get the verified install through this same `setup()`.
+        // reintroduce a second acquisition path: the restart owner path now gets
+        // the verified install through this same `setup()`.
         runtime.setup().await.map_err(|error| ("setup", error))?;
         // Spec #2975 ST-2 (REQ-5/EARS-5.1): overlay the desktop server-memory
         // knobs onto the `initdb`-created postgresql.conf AFTER setup and BEFORE
@@ -627,9 +566,8 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
 
             // Spec #2975 ST-2 pool-ready callback (REQ-1/EARS-1.2): after the
             // readiness probe resolves, build ONE bounded pool, run the shared
-            // pre-install leg (schema inits), and install the engine. The SAME
-            // helper backs the CU-1 headless attach path, so the two legs can
-            // never diverge.
+            // pre-install leg (schema inits), and install the engine. This is the
+            // ONE engine-install leg the owned cluster start uses.
             install_engine_on_pool(&engine, &runtime.connection_url()).await;
 
             // Spec #3005 ST-2: hydrate the synchronous settings cache from
@@ -695,9 +633,8 @@ async fn run_start(app: AppHandle, os_app_data_dir: PathBuf) {
     }
 }
 
-/// The pre-install engine leg shared by the GUI's OWN cluster start and the CU-1
-/// headless attach path: build ONE bounded pool, run the registered schema
-/// initializers, and install the engine.
+/// The pre-install engine leg the GUI's OWN cluster start uses: build ONE
+/// bounded pool, run the registered schema initializers, and install the engine.
 ///
 /// Spec #3005 ST-5: the legacy one-shot SQLite → PostgreSQL migration is
 /// deleted (fresh-install-only, no carry, data loss accepted). PostgreSQL is
@@ -867,22 +804,6 @@ fn restore_config(path: &Path, snapshot: &Option<Vec<u8>>) -> Result<()> {
     }
 }
 
-/// REFUSE an apply/reset while the data dir is attached (Spec #3022 ST-4): the
-/// GUI does not own the headless `fredo ingest` cluster, so it must not stop /
-/// restart / re-initialise it. Returns the refusal reason, or `None` when the
-/// GUI owns the cluster.
-fn refuse_when_attached(state: &PgSupervisorState) -> Option<String> {
-    if state.status.borrow().state == PgState::Attached {
-        Some(
-            "The embedded PostgreSQL cluster is owned by a headless `fredo ingest` daemon; \
-             this window does not own it, so its configuration cannot be changed here."
-                .to_string(),
-        )
-    } else {
-        None
-    }
-}
-
 /// Rebuild the shared pool against `url` and RE-POINT the engine via
 /// [`crate::infrastructure::storage::engine::EngineHandle::swap`] (the Spec
 /// #3022 ST-3 seam) — unlike the first-wins install on the boot path, a restart
@@ -1009,8 +930,8 @@ async fn change_password_safely(
 /// `EngineHandle::swap` → publish
 /// `Ready`. The WHOLE leg is wrapped in [`PG_APPLY_BOUND`] (over the existing inner
 /// bounds). On failure the runtime is torn down, the marker cleared, and a
-/// classified `Failed` is published. The caller refuses while the data dir is
-/// attached.
+/// classified `Failed` is published. The cluster is owned by THIS process
+/// (single owner, Spec #3194).
 async fn restart_cluster(
     app: &AppHandle,
     config: &PgSupervisorConfig,
@@ -1185,7 +1106,8 @@ async fn restart_cluster_inner(
 /// password change + keychain update → atomic config save → bounded restart with
 /// the ST-3 swap. On ANY failure the prior config bytes are restored and a bounded
 /// recovery restart runs, so a bad port never leaves the cluster down
-/// (R-1.2/R-1.3/R-3.2/R-3.3/R-4). REFUSES while the data dir is attached (R-5.2).
+/// (R-1.2/R-1.3/R-3.2/R-3.3/R-4). Serialized against a concurrent apply; the
+/// cluster is always owned by THIS process (single owner, Spec #3194).
 #[tauri::command]
 pub async fn pg_config_apply(
     app: AppHandle,
@@ -1203,14 +1125,6 @@ pub async fn pg_config_apply(
 
     // Serialize applies: ONE restart at a time (R-5.2).
     let _apply = state.apply_lock.lock().await;
-
-    if let Some(reason) = refuse_when_attached(&state) {
-        return PgConfigApplyResult {
-            ok: false,
-            error: Some(reason),
-            config: config_view(&app),
-        };
-    }
 
     match apply_config_inner(&app, &state, port, log_verbosity, new_password).await {
         Ok(()) => PgConfigApplyResult {
@@ -1297,8 +1211,8 @@ async fn apply_config_inner(
 
 /// Reset (re-initialise) the embedded cluster (Spec #3022 ST-4): stop → delete the
 /// RESOLVED data dir → restart (`setup` re-runs `initdb`) with the CURRENTLY stored
-/// keychain password. REFUSES while attached; bounded by [`PG_APPLY_BOUND`]
-/// (R-2.1/R-2.2).
+/// keychain password. Always owned by THIS process (single owner, Spec #3194);
+/// bounded by [`PG_APPLY_BOUND`] (R-2.1/R-2.2).
 #[tauri::command]
 pub async fn pg_database_reset(app: AppHandle) -> PgDatabaseResetResult {
     let Some(state) = app.try_state::<Arc<PgSupervisorState>>() else {
@@ -1309,13 +1223,6 @@ pub async fn pg_database_reset(app: AppHandle) -> PgDatabaseResetResult {
         };
     };
     let _apply = state.apply_lock.lock().await;
-    if let Some(reason) = refuse_when_attached(&state) {
-        return PgDatabaseResetResult {
-            ok: false,
-            error: Some(reason),
-            port: None,
-        };
-    }
     match reset_database_inner(&app, &state).await {
         Ok(port) => PgDatabaseResetResult {
             ok: true,
@@ -1379,69 +1286,15 @@ pub async fn pg_config_get(app: AppHandle) -> PgConfigView {
     config_view(&app)
 }
 
-/// The attach connection URL: the headless cluster's published loopback port +
-/// the SHARED control-plane credential
-/// (`postgresql://postgres:<pw>@<host>:<port>/fredo`). The user stays the
-/// unchanged bootstrap superuser `postgres`; the database is the Fredo
-/// application database `fredo` (Spec #3036). The password is a generated hex
-/// token, so no percent-encoding is required.
-fn attach_connection_url(host: &str, port: u16, password: &str) -> String {
-    format!("postgresql://postgres:{password}@{host}:{port}/fredo")
-}
-
-/// The background attach leg (Spec #2992 CU-1, R-3): with the data dir locked by
-/// a LIVE headless daemon, build the pool against the published port + the shared
-/// credential, run the SAME pre-install schema leg the GUI runs, and publish
-/// [`PgState::Attached`].
-///
-/// Non-goals (enforced structurally): this never acquires the lock, never starts/
-/// stops/sweeps the headless postmaster, and holds no runtime — `stop_on_exit`
-/// no-ops. A failed pool/schema leg records the fallback reason and leaves the
-/// engine Pending (fail-closed), mirroring the GUI's own start path; the
-/// supervisor still reports `Attached` because the headless cluster IS serving.
-/// Spawned, never awaited in setup (G-273); the pool build is bounded by
-/// `PG_POOL_BUILD_BOUND` (G-263).
-async fn run_attach(app: AppHandle, headless: HeadlessDescriptor) {
-    let state = match app.try_state::<Arc<PgSupervisorState>>() {
-        Some(state) => state,
-        None => return,
-    };
-    let store = match app.try_state::<Arc<SettingsStore>>() {
-        Some(store) => store.inner().clone(),
-        None => return,
-    };
-    let engine = app
-        .try_state::<Arc<StorageEngineState>>()
-        .map(|state| state.inner().clone());
-
-    let password = ensure_password(&PgCredential::keyring());
-    let url = attach_connection_url(DEFAULT_PG_HOST, headless.port, &password);
-    install_engine_on_pool(&engine, &url).await;
-    // Spec #3005 ST-2: hydrate the synchronous cache on the attach leg too.
-    let _ = store.hydrate().await;
-
-    state.set_attached(headless.port, headless.pid);
-    tracing::info!(
-        target: "fredo::pg_supervisor",
-        pid = headless.pid,
-        port = headless.port,
-        "attached to the headless-owned embedded PostgreSQL cluster"
-    );
-}
-
 /// Resolve a status snapshot to the readiness gate's outcome: `Some(port)` once a
-/// cluster is serving (`Ready` or `Attached`), `None` while `Starting` (keep
-/// waiting), and `Err` on `Failed`/`Disabled`. Pure so every state — including
-/// the CU-1 `Attached` — is unit-testable without a live app handle.
+/// cluster is serving (`Ready`), `None` while `Starting` (keep waiting), and `Err`
+/// on `Failed`/`Disabled`. Pure so every state is unit-testable without a live app
+/// handle.
 fn readiness_outcome(view: &PgStatusView) -> Result<Option<u16>> {
     match view.state {
         PgState::Ready => Ok(Some(
             view.port
                 .context("embedded PostgreSQL reported Ready without a bound port")?,
-        )),
-        PgState::Attached => Ok(Some(
-            view.port
-                .context("embedded PostgreSQL reported Attached without a bound port")?,
         )),
         PgState::Failed => Err(anyhow::anyhow!(
             "{}",
@@ -1456,7 +1309,7 @@ fn readiness_outcome(view: &PgStatusView) -> Result<Option<u16>> {
 
 /// The readiness gate later slices' stores block on (bounded).
 ///
-/// Returns the bound port on `Ready`/`Attached`; `Err` on `Disabled`, `Failed`,
+/// Returns the bound port on `Ready`; `Err` on `Disabled`, `Failed`,
 /// no managed supervisor, or after `bound` elapses.
 pub async fn await_ready(app: &AppHandle, bound: Duration) -> Result<u16> {
     let state = app
@@ -1567,7 +1420,6 @@ pub async fn pg_supervisor_status(app: AppHandle) -> PgStatusView {
         log_path: log_path_for(Path::new(&log_dir)),
         data_dir,
         failure_kind: None,
-        attached: false,
     }
 }
 
@@ -1784,7 +1636,6 @@ mod tests {
             data_dir: "C:/data/postgres".to_string(),
             log_path: log_path_for(Path::new("C:/data/postgres/log")),
             failure_kind: None,
-            attached: false,
         };
         let json = serde_json::to_value(&ready).expect("serialize");
         assert_eq!(json["state"], "ready");
@@ -1798,8 +1649,10 @@ mod tests {
                 .to_string()
         );
         assert!(json["error"].is_null());
-        // CU-1: the additive `attached` flag is present and false on Ready.
-        assert_eq!(json["attached"], false);
+        assert!(
+            json.get("attached").is_none(),
+            "the removed `attached` key must not appear on the wire"
+        );
 
         assert_eq!(
             serde_json::to_value(PgState::Disabled).expect("serialize"),
@@ -1810,59 +1663,16 @@ mod tests {
             "starting"
         );
         assert_eq!(
-            serde_json::to_value(PgState::Attached).expect("serialize"),
-            "attached",
-            "CU-1: the new variant serializes as \"attached\""
-        );
-        assert_eq!(
             serde_json::to_value(PgState::Failed).expect("serialize"),
             "failed"
         );
     }
 
-    // -- CU-1/ST-2: GUI attach ------------------------------------------------
-
-    /// CU-1/ST-2: `set_attached` publishes the headless cluster's port, marks
-    /// `attached: true`, and holds NO runtime/lock (the GUI never owns the
-    /// headless postmaster).
+    /// ST-1 (#3194): the readiness gate resolves every SURVIVING state — `Ready`
+    /// yields the owned cluster's port, `Starting` keeps waiting, `Failed`/`Disabled`
+    /// are errors. The removed `Attached` state no longer exists to resolve.
     #[test]
-    fn set_attached_publishes_the_headless_cluster_without_owning_it() {
-        let state = PgSupervisorState::new(
-            None,
-            None,
-            "C:/data/postgres".to_string(),
-            "C:/data/postgres/log".to_string(),
-        );
-        assert_eq!(state.status.borrow().state, PgState::Starting);
-
-        state.set_attached(54321, 4242);
-
-        let view = state.status.borrow().clone();
-        assert_eq!(view.state, PgState::Attached);
-        assert!(view.attached, "attached is true while serving a headless cluster");
-        assert_eq!(view.port, Some(54321));
-        assert_eq!(view.pid, Some(4242), "the owning headless daemon pid");
-        assert_eq!(view.error, None);
-        assert_eq!(view.data_dir, "C:/data/postgres");
-        assert!(
-            state.runtime.lock().expect("runtime mutex").is_none(),
-            "an attach owns no runtime"
-        );
-        assert!(
-            state.lock.lock().expect("lock mutex").is_none(),
-            "an attach holds no lock"
-        );
-
-        let json = serde_json::to_value(&view).expect("serialize");
-        assert_eq!(json["state"], "attached");
-        assert_eq!(json["attached"], true);
-        assert_eq!(json["port"], 54321);
-    }
-
-    /// CU-1/ST-2: the readiness gate resolves EVERY state, including the new
-    /// `Attached` (returns the published port so gated store reads proceed).
-    #[test]
-    fn readiness_outcome_resolves_every_state_including_attached() {
+    fn readiness_outcome_resolves_every_state() {
         let state = PgSupervisorState::new(
             None,
             None,
@@ -1873,13 +1683,6 @@ mod tests {
         assert_eq!(
             readiness_outcome(&state.status.borrow().clone()).expect("starting"),
             None
-        );
-
-        // Attached => the headless cluster's port.
-        state.set_attached(54321, 4242);
-        assert_eq!(
-            readiness_outcome(&state.status.borrow().clone()).expect("attached"),
-            Some(54321)
         );
 
         // Ready => the owned cluster's port.
@@ -1903,7 +1706,6 @@ mod tests {
             data_dir: String::new(),
             log_path: None,
             failure_kind: None,
-            attached: false,
         };
         assert!(readiness_outcome(&disabled).is_err());
     }
@@ -2299,10 +2101,6 @@ mod tests {
             json["failureKind"].is_null(),
             "failureKind is null while Ready (Some only while Failed)"
         );
-
-        state.set_attached(5433, 99);
-        let json = serde_json::to_value(state.status.borrow().clone()).expect("serialize");
-        assert!(json["failureKind"].is_null(), "failureKind is null while Attached");
     }
 
     // ── ST-4 (#3022): config view + failure-time restore ──────────────────────
@@ -2366,27 +2164,6 @@ mod tests {
             .filter(|name| name.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "no temp file must remain: {leftovers:?}");
-    }
-
-    /// ST-4 / R-5.2: the apply/reset refusal fires ONLY on the attached state.
-    #[test]
-    fn refuse_when_attached_blocks_apply_on_a_headless_cluster() {
-        let state = PgSupervisorState::new(
-            None,
-            None,
-            "C:/data/postgres".to_string(),
-            "C:/data/postgres/log".to_string(),
-        );
-        assert_eq!(refuse_when_attached(&state), None, "Starting is not attached");
-
-        state.set_ready(5432, 1);
-        assert_eq!(refuse_when_attached(&state), None, "Ready is not attached");
-
-        state.set_attached(5433, 99);
-        assert!(
-            refuse_when_attached(&state).is_some(),
-            "Attached must be refused (the GUI does not own the headless cluster)"
-        );
     }
 
     /// ST-4 / R-1.3: the compensating-revert URL replacement touches only the

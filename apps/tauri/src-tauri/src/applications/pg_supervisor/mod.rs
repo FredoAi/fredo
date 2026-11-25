@@ -63,17 +63,6 @@ pub const PG_CONFIG_FILENAME: &str = "postgres-supervisor.json";
 /// `<app_data_dir>`. A caller-supplied value always WINS; the default applies
 /// only when the env is unset/blank, so the default lock path is byte-identical.
 pub const PG_LOCK_DIR_ENV: &str = "FREDO_PG_LOCK_DIR";
-/// Headless-ingest descriptor filename under the lock dir (Spec #2992 CU-1).
-pub const HEADLESS_DESCRIPTOR_FILENAME: &str = "headless-ingest.json";
-/// **G-296** descriptor-path override (Spec #2992 CU-1): when set (non-blank) the
-/// `fredo ingest` descriptor lives at this exact path instead of
-/// `<lock_dir>/<HEADLESS_DESCRIPTOR_FILENAME>`. Caller value wins; the default
-/// applies only when the env is unset/blank.
-pub const FREDO_INGEST_DESCRIPTOR_ENV: &str = "FREDO_INGEST_DESCRIPTOR";
-/// Image name a live headless `fredo ingest` daemon must report for the
-/// descriptor PID-reuse guard ([`descriptor::is_live`]) to treat the published
-/// PID as OUR daemon (mirrors [`POSTGRES_IMAGE`]).
-pub const FREDO_IMAGE: &str = "fredo.exe";
 /// Log subdirectory under the supervisor home (`<app_data_dir>/postgres/log`).
 /// The postmaster's logging collector is pointed at this ABSOLUTE directory
 /// through the crate's `Settings::configuration` hook (Spec #2978 S4 / Q-17,
@@ -95,8 +84,8 @@ pub const DEFAULT_PG_HOST: &str = "127.0.0.1";
 // `settings.username` only builds `url()`). The one-time migration IS the
 // catalog-only rename `ALTER DATABASE postgres RENAME TO fredo`.
 
-/// The Fredo-named application database — the database every pool/attach/headless
-/// URL targets, and the destination of the one-time rename.
+/// The Fredo-named application database — the database every pool URL targets,
+/// and the destination of the one-time rename.
 pub const PG_DATABASE: &str = "fredo";
 /// `initdb`'s bootstrap superuser role — UNCHANGED (the role rename is declined;
 /// the URL user and `ALTER USER … PASSWORD` keep this literal).
@@ -374,10 +363,8 @@ pub const PG_APPLY_BOUND: Duration = Duration::from_secs(300);
 pub mod acquisition; // S1/S2/S3 (#2978): acquisition mode + pinned archive
 pub mod config; // ST-1 (#3022): typed port + verbosity config (pre-PostgreSQL)
 pub mod credentials; // ST-7 (#3005): OS-keychain loopback password
-pub mod descriptor; // CU-1/ST-1 (#2992): headless daemon descriptor
 pub mod endpoint; // ST-3 (#3029): the embedded-endpoint seam adapter (db_client)
 pub mod extraction; // ST-1 (#3076): Fredo-owned verified-archive extraction
-pub mod headless; // ST-5 (#2992): the `fredo ingest` daemon
 pub mod runtime; // ST-1
 pub mod sweep; // ST-2
 pub mod lock; // ST-2
