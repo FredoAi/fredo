@@ -77,9 +77,11 @@
   PostgreSQL client's live-connection surface (its default db `fredo` / user `postgres` assumptions).
 - [ ] **R-14:** inherit and run `.opencode/tests/postgres-stores/regression.md` — the shared pool /
   store-migration surface and its preservation contract.
-- [ ] **R-15:** inherit and run `.opencode/tests/headless-ingest/regression.md` — the headless
-  daemon / attach surface (the descriptor + attach URL target the renamed db `fredo`; role
-  unchanged).
+- [ ] **R-15:** inherit and run `.opencode/tests/resident-ingest/regression.md` — the single-owner
+  surface (cluster ownership + OTLP binder set + the removed `attached` shape). **Replaces the
+  retired `headless-ingest/regression.md`** (#3194 deleted the daemon and the attach URL that used
+  to target the renamed database; the identity contract itself — db `fredo`, role `postgres` — is
+  unchanged and is asserted there by `regression.md` R-1 and by this suite's F-5/F-6).
 - [ ] **R-16:** inherit and run `.opencode/tests/postgres-connection-headroom/regression.md` — the
   `max_connections` headroom invariant the migration must not regress.
 
