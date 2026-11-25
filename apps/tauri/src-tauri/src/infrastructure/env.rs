@@ -31,7 +31,7 @@ pub const ENV_ROOT_ENV: &str = "FREDO_ENV_ROOT";
 pub const DATA_DIR_ENV: &str = "FREDO_DATA_DIR";
 /// Embedded-PostgreSQL data dir.
 pub const PG_DATA_DIR_ENV: &str = "FREDO_PG_DATA_DIR";
-/// Embedded-PostgreSQL lock dir (`postgres.lock`, `headless-ingest.json`).
+/// Embedded-PostgreSQL lock dir (`postgres.lock`).
 pub const PG_LOCK_DIR_ENV: &str = "FREDO_PG_LOCK_DIR";
 /// Built-in db-client state dir.
 pub const DBCLIENT_STATE_DIR_ENV: &str = "FREDO_DBCLIENT_STATE_DIR";
@@ -45,7 +45,7 @@ pub const VITE_PORT_ENV: &str = "FREDO_VITE_PORT";
 pub const WEBVIEW_PROFILE_DIR_ENV: &str = "FREDO_WEBVIEW_PROFILE_DIR";
 /// The environment's companion artifact dir.
 pub const LLAMA_SERVER_COMPANION_DIR_ENV: &str = "FREDO_LLAMA_SERVER_COMPANION_DIR";
-/// The environment's OTLP/gRPC ingest port (GUI + headless share this name).
+/// The environment's OTLP/gRPC ingest port (the GUI's own receiver port).
 pub const INGEST_GRPC_PORT_ENV: &str = "FREDO_INGEST_GRPC_PORT";
 /// The environment's OTLP/HTTP ingest port.
 pub const INGEST_HTTP_PORT_ENV: &str = "FREDO_INGEST_HTTP_PORT";

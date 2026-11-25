@@ -29,7 +29,9 @@ before deeper testing. The feature's surface is the running desktop app plus its
 
 - [ ] **S-4: Both OTLP receivers are bound by the app.**
   `verify-env-isolation.ps1 -ManifestPath <m>` and the census binding clauses.
-  **Expected:** `otlpGrpc` and `otlpHttp` both bound and owned by `STATUS_PID`; exit 0.
+  **Expected:** `otlpGrpc` and `otlpHttp` both bound and owned by `CENSUS_APP_PID` (the app;
+  NEVER `STATUS_PID`, which is the postmaster — `binder_is_app_pid_otlp_grpc` /
+  `binder_is_app_pid_otlp_http`); exit 0.
   (Was `headless-ingest/smoke.md` S-1's listener clause — retargeted to the resident owner.)
 
 - [ ] **S-5: A live span lands.** Inject one span (injector `--count 1 --prefix e2e-3194-<guid8>`)

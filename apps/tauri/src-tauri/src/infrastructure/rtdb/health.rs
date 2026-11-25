@@ -26,13 +26,14 @@
 //! Unset / blank / unknown are INERT — byte-identical to no lever.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::Manager;
 
 use crate::infrastructure::comm::bus::EventBus;
+use crate::infrastructure::otlp::IngestStartError;
 
 /// One heartbeat every 5 s (the cadence the frontend's stale window is 3× of).
 pub const STREAM_HEARTBEAT_INTERVAL_MS: u64 = 5_000;
@@ -85,6 +86,9 @@ pub struct StreamHealthHeartbeat {
     pub age_ms: i64,
     /// Epoch-ms emission stamp.
     pub emitted_at_ms: i64,
+    /// The typed OTLP ingest start failure, ABSENT when ingest started (G-413).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingest_failure: Option<IngestStartError>,
 }
 
 /// The `stream_health` probe response (camelCase wire shape).
@@ -99,6 +103,9 @@ pub struct StreamHealthSnapshot {
     pub age_ms: i64,
     /// Whether the inert-by-default outage lever is active.
     pub forced: bool,
+    /// The typed OTLP ingest start failure, ABSENT when ingest started (G-413).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingest_failure: Option<IngestStartError>,
 }
 
 /// Wall-clock milliseconds since the Unix epoch (`0` on a clock error).
@@ -116,6 +123,8 @@ pub struct StreamHealthMonitor {
     ingest_connected: AtomicBool,
     last_heartbeat_ms: AtomicI64,
     forced: Option<StreamHealthForce>,
+    /// The typed OTLP ingest start failure, `None` when ingest started.
+    ingest_failure: Mutex<Option<IngestStartError>>,
 }
 
 impl StreamHealthMonitor {
@@ -126,6 +135,7 @@ impl StreamHealthMonitor {
             ingest_connected: AtomicBool::new(true),
             last_heartbeat_ms: AtomicI64::new(now_ms()),
             forced,
+            ingest_failure: Mutex::new(None),
         }
     }
 
@@ -148,6 +158,22 @@ impl StreamHealthMonitor {
         self.ingest_connected.store(connected, Ordering::Relaxed);
     }
 
+    /// Record the typed OTLP ingest start failure (or clear it). While `None` the
+    /// `ingestFailure` wire key is ABSENT on both carriers (G-413).
+    pub fn set_ingest_failure(&self, failure: Option<IngestStartError>) {
+        if let Ok(mut slot) = self.ingest_failure.lock() {
+            *slot = failure;
+        }
+    }
+
+    /// A clone of the currently recorded ingest start failure, if any.
+    fn ingest_failure(&self) -> Option<IngestStartError> {
+        self.ingest_failure
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
     /// Advance ONE heartbeat tick.
     ///
     /// Returns the heartbeat to emit, or `None` when the lever suppresses
@@ -166,6 +192,7 @@ impl StreamHealthMonitor {
                     ingest_connected: self.ingest_connected(),
                     age_ms: 0,
                     emitted_at_ms,
+                    ingest_failure: self.ingest_failure(),
                 })
             }
         }
@@ -178,6 +205,7 @@ impl StreamHealthMonitor {
             ingest_connected: self.ingest_connected(),
             age_ms: now_ms() - self.last_heartbeat_ms.load(Ordering::Relaxed),
             forced: self.forced.is_some(),
+            ingest_failure: self.ingest_failure(),
         }
     }
 }
@@ -371,12 +399,17 @@ mod tests {
             ingest_connected: false,
             age_ms: 1234,
             forced: true,
+            ingest_failure: None,
         };
         let json = serde_json::to_value(&snapshot).expect("snapshot serializes");
         assert_eq!(json["seq"], 7);
         assert_eq!(json["ingestConnected"], false);
         assert_eq!(json["ageMs"], 1234);
         assert_eq!(json["forced"], true);
+        assert!(
+            json.get("ingestFailure").is_none(),
+            "the unset optional is carried as an ABSENT key, never null (G-413)"
+        );
     }
 
     #[test]
@@ -386,11 +419,87 @@ mod tests {
             ingest_connected: true,
             age_ms: 0,
             emitted_at_ms: 42,
+            ingest_failure: None,
         };
         let json = serde_json::to_value(&heartbeat).expect("heartbeat serializes");
         assert_eq!(json["seq"], 3);
         assert_eq!(json["ingestConnected"], true);
         assert_eq!(json["ageMs"], 0);
         assert_eq!(json["emittedAtMs"], 42);
+        assert!(
+            json.get("ingestFailure").is_none(),
+            "the unset optional is carried as an ABSENT key, never null (G-413)"
+        );
+    }
+
+    // -- Spec #3194 ST-2: the typed ingest start failure on the wire (G-413) ----
+
+    use crate::infrastructure::otlp::{
+        IngestStartFailureCode, OtlpReceiverKind,
+    };
+
+    fn typed_failure() -> IngestStartError {
+        IngestStartError {
+            receiver: OtlpReceiverKind::Grpc,
+            port: 4317,
+            code: IngestStartFailureCode::AddrInUse,
+            message: "address already in use".to_string(),
+        }
+    }
+
+    /// G-413 producer side, ABSENT: neither carrier emits `ingestFailure` when no
+    /// failure has been recorded — the key is absent, not an explicit `null`.
+    #[test]
+    fn ingest_failure_is_an_absent_key_on_both_carriers_when_unset() {
+        let monitor = StreamHealthMonitor::new(None);
+        let snapshot_json = serde_json::to_value(monitor.snapshot()).expect("snapshot");
+        assert!(
+            snapshot_json.get("ingestFailure").is_none(),
+            "snapshot: unset optional is an ABSENT key: {snapshot_json}"
+        );
+        let heartbeat = monitor.tick().expect("tick");
+        let heartbeat_json = serde_json::to_value(&heartbeat).expect("heartbeat");
+        assert!(
+            heartbeat_json.get("ingestFailure").is_none(),
+            "heartbeat: unset optional is an ABSENT key: {heartbeat_json}"
+        );
+    }
+
+    /// G-413 producer side, PRESENT: the typed failure rides BOTH the snapshot and
+    /// the heartbeat with the frozen camelCase wire shape.
+    #[test]
+    fn ingest_failure_rides_both_carriers_when_present() {
+        let monitor = StreamHealthMonitor::new(None);
+        monitor.set_ingest_connected(false);
+        monitor.set_ingest_failure(Some(typed_failure()));
+
+        let snapshot_json = serde_json::to_value(monitor.snapshot()).expect("snapshot");
+        assert_eq!(snapshot_json["ingestConnected"], false);
+        assert_eq!(snapshot_json["ingestFailure"]["receiver"], "grpc");
+        assert_eq!(snapshot_json["ingestFailure"]["port"], 4317);
+        assert_eq!(snapshot_json["ingestFailure"]["code"], "addrInUse");
+        assert_eq!(
+            snapshot_json["ingestFailure"]["message"],
+            "address already in use"
+        );
+
+        let heartbeat = monitor.tick().expect("ingest-down still ticks");
+        assert!(!heartbeat.ingest_connected);
+        let heartbeat_json = serde_json::to_value(&heartbeat).expect("heartbeat");
+        assert_eq!(
+            heartbeat_json["ingestFailure"]["code"], "addrInUse",
+            "the heartbeat carries the same typed failure"
+        );
+    }
+
+    /// Clearing the slot returns both carriers to the ABSENT-key shape.
+    #[test]
+    fn clearing_ingest_failure_restores_the_absent_key() {
+        let monitor = StreamHealthMonitor::new(None);
+        monitor.set_ingest_failure(Some(typed_failure()));
+        assert!(monitor.snapshot().ingest_failure.is_some());
+        monitor.set_ingest_failure(None);
+        let json = serde_json::to_value(monitor.snapshot()).expect("snapshot");
+        assert!(json.get("ingestFailure").is_none());
     }
 }

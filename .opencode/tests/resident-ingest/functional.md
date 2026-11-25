@@ -45,8 +45,9 @@ row disposition). Inherits `.opencode/tests/stream-health/`, `postgres-lifecycle
   never guessed (G-307) — it is read from `pg_supervisor_status` and cross-checked against the
   postmaster pid file by `owner-census.ps1`.
 - **Instruments (committed, in this folder).**
-  - `owner-census.ps1` — read-only two-reading owner census + teardown census. Exit 0 pass /
-    1 violation / 2 REFUSED (instrument failure).
+  - `owner-census.ps1` — read-only owner census (status view + postmaster pid file as the pair;
+    the APP pid as a third reading, from the manifest's `processes[] role="app"` or `-AppPid`) +
+    teardown census. Exit 0 pass / 1 violation / 2 REFUSED (instrument failure).
   - `otlp-conflict-probe.ps1` — non-destructive OTLP port holder + the repo's one handle-whitelist
     launch; `-DryRun` first (prints the env block, spawns nothing); exit 0 pass / 1 failed drive /
     2 refused.
@@ -118,18 +119,26 @@ row disposition). Inherits `.opencode/tests/stream-health/`, `postgres-lifecycle
   not the aggregate.
   **Expected:** `CLAUSE=exactly_one_live_postmaster OK` (`LIVE_POSTMASTER_PID_FILES=1`);
   `POSTMASTER_PROCESS_COUNT_UNDER_ENV_ROOT>=1` and every listed pid belongs to that cluster;
-  `CLAUSE=one_pg_listener OK` (`PG_LISTENER_ROWS=1`) and `CLAUSE=pg_listener_owned_by_postmaster
-  OK` (owner == the pid BOTH readings named); `CLAUSE=one_bind_otlp_grpc OK` +
-  `CLAUSE=binder_is_this_process_otlp_grpc OK` (owner == `STATUS_PID`); the same two clauses for
-  `otlp_http`; `CLAUSE=mcp_listener_owned_by_status_pid OK` (the cross-check that `STATUS_PID` is
-  the process serving THIS env, not a neighbouring one).
+  `CLAUSE=one_pg_listener OK` — `PG_LISTENER_ROWS=1` or `2` (the postmaster legitimately binds
+  `127.0.0.1` **and** `[::1]`) with `PG_LISTENER_DISTINCT_OWNERS=1` — and
+  `CLAUSE=pg_listener_owned_by_postmaster OK` (owner == the pid BOTH readings named);
+  `CENSUS_APP_PID=<n>` non-zero with `CENSUS_APP_PID_SOURCE=manifest processes[] role="app"`
+  (or `parameter -AppPid`); `CLAUSE=one_bind_otlp_grpc OK` +
+  `CLAUSE=binder_is_app_pid_otlp_grpc OK` (owner == `CENSUS_APP_PID` — the APP, never
+  `STATUS_PID`, which is the postmaster); the same two clauses for `otlp_http`;
+  `CLAUSE=mcp_listener_owned_by_app_pid OK` (the cross-check that the resolved app pid is the
+  process serving THIS env, not a neighbouring one).
   **Independently:** `powershell -File .opencode/scripts/verify-env-isolation.ps1 -ManifestPath <m>`
   exits **0** and prints `OK: <n> env(s) isolated (…)` plus an `ENV spec3194 [live] … ports=
-  vite:…,mcp:…,otlpGrpc:<p>,otlpHttp:<p> pids=…` line.
+  vite:…,mcp:…,otlpGrpc:<p>,otlpHttp:<p> pids=…` line. That `pids=` line is the source of a
+  `-AppPid` if the census ever refuses one.
   **FAIL:** any `CLAUSE=… VIOLATION`, or `verify-env-isolation` exit 1 naming an endpoint bound by
   an unrecorded/foreign PID.
-  **Edge:** an empty pair (both readings 0/blank) is an instrument failure; a *second* env live on
-  the same issue is impossible by lease — if one exists, stop and report the environment defect.
+  **Edge:** an empty pair (both readings 0/blank) is an instrument failure; `CENSUS=REFUSED` with
+  `ERROR=APP_PID_REQUIRED` (no LIVE `role:"app"` pid in the manifest) or `ERROR=APP_PID_AMBIGUOUS`
+  is an INSTRUMENT failure — re-run with `-AppPid <the app pid from verify-env-isolation's
+  pids=…>`, never a product FAIL; a *second* env live on the same issue is impossible by lease —
+  if one exists, stop and report the environment defect.
 
 - [ ] **F-3 (AC1 / R-1c) — a second instance FAILS on the lock and never adopts the published one.**
   With the env's app healthy (F-1/F-2 green),
@@ -245,7 +254,10 @@ row disposition). Inherits `.opencode/tests/stream-health/`, `postgres-lifecycle
   help page, NOT exit 0; (3) exit **1** with the same class of parse error; (4) zero hits for the
   literal `fredo ingest` in `docs/CLI_GUIDE.md`, `docs/SETUP.md`, `docs/SECURITY.md`,
   `docs/ARCHITECTURE.md`, `docs/FAQ.md`, `apps/ui/src/**`, `apps/tauri/src-tauri/src/**`, outside
-  the named allowlist: `applications/settings/autostart.rs` (+ its tests),
+  the named allowlist: the two legacy-VALUE migration sentences (the `CLI_GUIDE.md` "Login
+  auto-start" note and the `SETUP.md` "Auto-start at login" paragraph — both narrate the stored
+  registry VALUE an older install left behind, kept byte-identical and owned by #3196 ST-5),
+  `applications/settings/autostart.rs` (+ its tests),
   `applications/ingest/__tests__/IngestAutostartSettings.test.tsx` (its RETIRED_COPY list),
   `.opencode/tests/**` (this suite spells the retired token deliberately — G-431), and historical
   `docs/agentic-pipeline/**`.

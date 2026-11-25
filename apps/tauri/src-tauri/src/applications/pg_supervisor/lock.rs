@@ -41,8 +41,8 @@ impl PgDataDirLock {
     }
 
     /// Acquire the exclusive lock at an explicit `lock_dir` (Spec #2992 CU-1):
-    /// the caller-controlled seam the headless daemon and QA induction use
-    /// (G-275), so the lock is drivable under a scratch dir. The lock file is
+    /// the caller-controlled seam QA induction uses (G-275), so the lock is
+    /// drivable under a scratch dir. The lock file is
     /// always `<lock_dir>/<PG_LOCK_FILENAME>`.
     pub fn acquire_in(lock_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(lock_dir)

@@ -59,7 +59,7 @@ The embedded-PostgreSQL subsystem ships the **lifecycle supervisor, the PostgreS
 
 **Protections:**
 - The managed postmaster is started on every boot (PostgreSQL is the default engine); it binds an **ephemeral loopback port on `127.0.0.1`** (never OTLP 4317/4318 or the MCP bridge 9223)
-- Spawned/stopped only through `applications/pg_supervisor` — by the GUI or by the non-GUI `fredo ingest` daemon (Spec #2992); nothing else starts it ad-hoc. The daemon holds the same exclusive data-dir lock, so a second owner cannot start a cluster; a GUI launched while a headless daemon owns the cluster **attaches** to it (published pid/port descriptor) instead of starting its own
+- Spawned/stopped only through `applications/pg_supervisor` — by the Fredo desktop process itself; nothing else starts it ad-hoc. That process holds the **exclusive data-dir lock**, so a second instance **fails** to start a cluster instead of attaching to, adopting, or sharing the running one (there is no descriptor-published cluster and no non-GUI owner)
 - Every start/readiness/stop wait carries a **finite wall-clock cap** with a hard-kill (`taskkill /T /F`) fallback and guaranteed teardown on normal, error, and panic paths — the observed ~11 h unbounded `pg.stop()` hang (#2948) is closed
 - A PID-reuse-guarded startup sweep reclaims a previous run's orphan (killed only when its image is `postgres.exe`); an exclusive data-dir lock prevents two launches from touching one cluster
 - The cluster password is a generated local-only secret stored in the **OS keychain** (service `fredo.postgres`, account `loopback:password`); it is never written to a file, a log, or telemetry. A fixed loopback-only fallback is used only when the keychain is unavailable (never logged)

@@ -24,7 +24,7 @@ import type {
   RtdbRow,
 } from '../classes/EventSubscription';
 import { rowKeyString } from '../classes/EventSubscription';
-import type { StreamHealth } from '../hooks/streamHealth';
+import type { IngestFailure, StreamHealth } from '../hooks/streamHealth';
 
 /**
  * Stream state interface
@@ -32,6 +32,12 @@ import type { StreamHealth } from '../hooks/streamHealth';
 interface StreamState {
   /** The three-valued stream/telemetry health (Spec #3064 ST-2). */
   health: StreamHealth;
+  /**
+   * The typed OTLP ingest start failure carried alongside the health (Spec
+   * #3194 ST-3). `null` when no failure has been recorded. It rides the SAME
+   * state object so there is no extra slice and no extra render path.
+   */
+  ingestFailure: IngestFailure | null;
 }
 
 /**
@@ -41,7 +47,7 @@ interface StreamContextValue extends StreamState {
   /** Derived: `health === 'healthy'`. Every binary consumer reads this. */
   isConnected: boolean;
   /** The ONLY health writer — the liveness producer (ST-3) calls this. */
-  setStreamHealth: (health: StreamHealth) => void;
+  setStreamHealth: (health: StreamHealth, failure?: IngestFailure | null) => void;
   /**
    * @deprecated Compatibility shim for the pre-#3064 mount-constant writer.
    * Maps `true` → `healthy`, `false` → `down`. Retained so the existing
@@ -63,14 +69,17 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   // Cold start is `degraded` (not `down`): no fresh heartbeat/probe has landed
   // yet, so the status must NOT read `down` spuriously — the first producer tick
   // settles it to `healthy` within one bounded interval (ST-3).
-  const [state, setState] = useState<StreamState>({ health: 'degraded' });
+  const [state, setState] = useState<StreamState>({ health: 'degraded', ingestFailure: null });
 
-  const setStreamHealth = useCallback((health: StreamHealth) => {
-    setState({ health });
-  }, []);
+  const setStreamHealth = useCallback(
+    (health: StreamHealth, failure?: IngestFailure | null) => {
+      setState({ health, ingestFailure: failure ?? null });
+    },
+    [],
+  );
 
   const setConnectionStatus = useCallback((connected: boolean) => {
-    setState({ health: connected ? 'healthy' : 'down' });
+    setState({ health: connected ? 'healthy' : 'down', ingestFailure: null });
   }, []);
 
   // Memoize context value
@@ -100,13 +109,14 @@ export function useStream() {
 
 /**
  * The three-valued stream-health accessor (Spec #3064 ST-2). Returns the raw
- * `health` plus the derived `isConnected` (`health === 'healthy'`).
+ * `health` plus the derived `isConnected` (`health === 'healthy'`) and the typed
+ * `ingestFailure` (Spec #3194 ST-3; `null` when none).
  */
 export function useStreamHealth() {
-  const { health, isConnected } = useStream();
+  const { health, isConnected, ingestFailure } = useStream();
   return useMemo(
-    () => ({ health, isConnected }),
-    [health, isConnected]
+    () => ({ health, isConnected, ingestFailure }),
+    [health, isConnected, ingestFailure]
   );
 }
 

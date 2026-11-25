@@ -4,16 +4,32 @@
 
 .DESCRIPTION
   Proves AC1/AC2/AC5 (one owner, one bind per OTLP port, bounded teardown) from
-  OUTSIDE the product, using two INDEPENDENT readings that must AGREE:
+  OUTSIDE the product, using INDEPENDENT readings that must AGREE:
 
     reading A  the product's own status view  (`pg_supervisor_status`, supplied as
                a JSON file the tester saves from the webview) -> state/pid/port
     reading B  the postmaster's own pid file, DISCOVERED under the environment
                root                                            -> pid/port
+    reading C  the APP pid, resolved from the env manifest's
+               `processes[]` entry with `role == "app"` (or an explicit
+               `-AppPid`)                                     -> app pid
 
-  Both readings must be NON-EMPTY and name the SAME subject (G-469: an equality
-  over two empty sets is not an instrument). A missing or unreadable input is an
+  A and B must be NON-EMPTY and name the SAME subject (G-469: an equality over
+  two empty sets is not an instrument). A missing or unreadable input is an
   INSTRUMENT failure - exit 2, never a confident pass.
+
+  TWO IDENTITIES, NEVER INTERCHANGED (the round-1 defect this fixes). The
+  postmaster is the `postgres` process that owns the PG port; the APP is the
+  desktop process. They are different pids:
+
+    - the PG listener is owned by the POSTMASTER (`STATUS_PID` == the pid-file
+      pid); `postmaster.pid` legitimately binds 127.0.0.1 AND [::1], so the PG
+      port shows 1..2 listener ROWS owned by ONE pid - `one_pg_listener` is an
+      OWNER-cardinality reading, not a row count;
+    - the OTLP receivers and the MCP bridge are owned by the APP, so their
+      clauses compare against `CENSUS_APP_PID` and say so in the key
+      (`binder_is_app_pid_otlp_grpc` / `..._otlp_http` /
+      `mcp_listener_owned_by_app_pid`).
 
   It derives its whole state from the environment manifest + the documented env
   layout and REFUSES when a derived path is outside the env root (G-470). It
@@ -23,10 +39,15 @@
   G-469 requirements implemented here:
     (a) hard-fail (exit 2) when an input is absent - no confident zero;
     (b) refuse a blank/empty pair; both values must be non-empty;
-    (c) print the resolved path of every input and how it was resolved;
+    (c) print the resolved path of every input and how it was resolved
+        (`MANIFEST_RESOLVED_FROM`, `STATUS_JSON_RESOLVED_FROM`,
+        `CENSUS_APP_PID_SOURCE`);
     (d) cross-check ONE independent source (the postmaster pid file + the OS
-        listener table) so a probe aimed at a neighbouring path is visible;
-    (e) the receipt line names the pair (CENSUS_PID_STATUS / CENSUS_PID_POSTMASTER).
+        listener table + the app's MCP bind) so a probe aimed at a neighbouring
+        path is visible;
+    (e) the receipt line names every pair: `CENSUS_PID_STATUS` /
+        `CENSUS_PID_POSTMASTER` (the postmaster) and `CENSUS_APP_PID` (the
+        binder of the OTLP/MCP ports).
 
 .PARAMETER Manifest
   Required. The environment process manifest, `<env-root>/manifest.json`
@@ -36,6 +57,15 @@
   Running mode only. REQUIRED. A JSON file holding the object returned by
   `invoke('pg_supervisor_status')` in the webview, saved verbatim by the tester
   (e.g. `.opencode/tmp/<issue>/pg_supervisor_status.json`).
+
+.PARAMETER AppPid
+  Running mode only, optional. The pid of the desktop app that should own the
+  OTLP receivers and the MCP bridge. Normally NOT needed: the app pid is resolved
+  from the manifest's `processes[]` entry with `role == "app"`, re-deriving
+  liveness (a recorded pid is a published field, never trusted as state). Pass
+  this when the app under test was NOT started by dev-env.ps1 - e.g. an instance
+  launched by otlp-conflict-probe.ps1 (F-6/F-7/F-8). Unresolvable -> REFUSED
+  (`ERROR=APP_PID_REQUIRED`), never a silent fallback to the postmaster.
 
 .PARAMETER ExpectStopped
   Teardown mode (AC5). Asserts: no live postmaster pid file under the env root,
@@ -54,17 +84,23 @@
   0  every clause OK
   1  at least one clause VIOLATION (named on a `CLAUSE=` line)
   2  REFUSED - instrument precondition failed (absent input, unreadable
-     manifest, derived path outside the env root). NOT a product verdict.
+     manifest, derived path outside the env root, undecidable app pid:
+     `APP_PID_REQUIRED` / `APP_PID_AMBIGUOUS` / `APP_PID_NOT_LIVE`). NOT a
+     product verdict.
 
 .EXAMPLE
   powershell -File .opencode/tests/resident-ingest/owner-census.ps1 -Manifest .opencode/tmp/envs/spec3194/manifest.json -StatusJson .opencode/tmp/3194/pg_supervisor_status.json
 
 .EXAMPLE
   powershell -File .opencode/tests/resident-ingest/owner-census.ps1 -Manifest .opencode/tmp/envs/spec3194/manifest.json -ExpectStopped -PgPort 64217
+
+.EXAMPLE
+  powershell -File .opencode/tests/resident-ingest/owner-census.ps1 -Manifest .opencode/tmp/envs/spec3194/manifest.json -StatusJson .opencode/tmp/3194/pg_supervisor_status.json -AppPid 4468
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Manifest,
   [string]$StatusJson = '',
+  [int]$AppPid = 0,
   [switch]$ExpectStopped,
   [int]$PgPort = 0,
   [int]$TimeoutSecs = 10
@@ -162,6 +198,29 @@ function Get-PortOwners {
     }
   }
   return @{ Rows = $count; Pids = @($ownerPids); Error = '' }
+}
+
+# Resolve the APP pid: the desktop process, NOT the postmaster. The manifest's
+# processes[] carries { pid, role, startedAt }; role="app" is the desktop process
+# dev-env.ps1 launched. A recorded pid is a published FIELD - liveness is
+# re-derived here, never trusted (G-470: absence is a reading, not a default).
+function Resolve-AppPid {
+  param([object]$ManifestData, [int]$ExplicitPid)
+  $live = New-Object System.Collections.ArrayList
+  if ($ExplicitPid -gt 0) {
+    if (Get-Process -Id $ExplicitPid -ErrorAction SilentlyContinue) { [void]$live.Add($ExplicitPid) }
+    return @{ Pid = $(if ($live.Count -eq 1) { [int]$live[0] } else { 0 }); Source = 'parameter -AppPid'; Candidates = @($live) }
+  }
+  foreach ($proc in @($ManifestData.processes)) {
+    if (-not $proc) { continue }
+    if ([string]$proc.role -ne 'app') { continue }
+    $candidate = 0
+    if (-not [int]::TryParse([string]$proc.pid, [ref]$candidate)) { continue }
+    if ($candidate -le 0) { continue }
+    if (-not (Get-Process -Id $candidate -ErrorAction SilentlyContinue)) { continue }
+    if (-not $live.Contains($candidate)) { [void]$live.Add($candidate) }
+  }
+  return @{ Pid = $(if ($live.Count -eq 1) { [int]$live[0] } else { 0 }); Source = 'manifest processes[] role="app"'; Candidates = @($live) }
 }
 
 function Test-PathInside {
@@ -348,6 +407,27 @@ Write-Line "CENSUS_PID_STATUS=$statusPid"
 Write-Line "CENSUS_PID_POSTMASTER=$postmasterPid"
 Write-Line "CENSUS_PG_PORT=$postmasterPort"
 
+# --- Reading C: the APP pid, the binder of the OTLP receivers + MCP bridge ----
+# NOT the postmaster. `STATUS_PID` is the cluster's postmaster (it owns the PG
+# port); the desktop APP binds the receivers. Comparing one against the other is
+# unsatisfiable by construction - the round-1 defect this reading replaces.
+$appResolution = Resolve-AppPid -ManifestData $manifestData -ExplicitPid $AppPid
+$resolvedAppPid = [int]$appResolution.Pid
+$appCandidates = @($appResolution.Candidates)
+Write-Line "CENSUS_APP_PID_SOURCE=$($appResolution.Source)"
+Write-Line "CENSUS_APP_PID_CANDIDATES=$($appCandidates -join ',')"
+if ($resolvedAppPid -le 0) {
+  if ($appCandidates.Count -eq 0) {
+    Refuse 'APP_PID_REQUIRED: no LIVE process with role="app" in the env manifest and no -AppPid given - the OTLP/MCP binder identity cannot be read (INSTRUMENT FAILURE, not a verdict)'
+  }
+  Refuse ('APP_PID_AMBIGUOUS: ' + $appCandidates.Count + ' live app candidate(s) (' + ($appCandidates -join ',') + ') - pass -AppPid <the app serving this env> (INSTRUMENT FAILURE, not a verdict)')
+}
+if (-not (Get-Process -Id $resolvedAppPid -ErrorAction SilentlyContinue)) {
+  Refuse ('APP_PID_NOT_LIVE: pid ' + $resolvedAppPid + ' (from ' + $appResolution.Source + ') is not running - a running census needs the live app; an exited app is -ExpectStopped territory (INSTRUMENT FAILURE, not a verdict)')
+}
+Write-Line "CENSUS_APP_PID=$resolvedAppPid"
+Write-Line 'CENSUS_APP_PID_LIVE=true'
+
 Clause 'status_state_ready' ($statusState -eq 'ready') "state=$statusState"
 Clause 'status_has_no_attached_key' (-not $attachedKeyPresent) 'the status view still carries an `attached` key'
 Clause 'exactly_one_live_postmaster' ($livePostmasterPidFiles -eq 1) "live pid files=$livePostmasterPidFiles"
@@ -357,8 +437,13 @@ Clause 'census_pair_agrees_on_port' ($statusPort -eq $postmasterPort) "status=$s
 
 $pgOwners = Get-PortOwners -Rows $tableRead.Rows -ErrorText '' -Port $statusPort
 Write-Line "PG_LISTENER_ROWS=$($pgOwners.Rows)"
+Write-Line "PG_LISTENER_DISTINCT_OWNERS=$($pgOwners.Pids.Count)"
 Write-Line "PG_LISTENER_OWNER_PIDS=$(($pgOwners.Pids) -join ',')"
-Clause 'one_pg_listener' ($pgOwners.Rows -eq 1) "rows=$($pgOwners.Rows)"
+# The postmaster legitimately binds BOTH 127.0.0.1 and [::1] on the one port, so
+# a correct tree shows 1..2 listener ROWS owned by exactly ONE pid. A row count of
+# 1 would FAIL a healthy tree, so this clause is an OWNER-cardinality reading and
+# prints the row count beside the owner set.
+Clause 'one_pg_listener' (($pgOwners.Rows -ge 1) -and ($pgOwners.Rows -le 2) -and ($pgOwners.Pids.Count -eq 1)) "rows=$($pgOwners.Rows) distinct_owners=$($pgOwners.Pids.Count) owners=$(($pgOwners.Pids) -join ',')"
 Clause 'pg_listener_owned_by_postmaster' (($pgOwners.Pids.Count -eq 1) -and ([int]$pgOwners.Pids[0] -eq $postmasterPid)) "owners=$(($pgOwners.Pids) -join ',') postmaster=$postmasterPid"
 
 foreach ($pair in @(@{ Name = 'otlp_grpc'; Port = $grpcPort }, @{ Name = 'otlp_http'; Port = $httpPort })) {
@@ -367,13 +452,15 @@ foreach ($pair in @(@{ Name = 'otlp_grpc'; Port = $grpcPort }, @{ Name = 'otlp_h
   Write-Line "$($upper)_LISTENER_ROWS=$($read.Rows)"
   Write-Line "$($upper)_LISTENER_OWNER_PIDS=$(($read.Pids) -join ',')"
   Clause "one_bind_$($pair.Name)" ($read.Rows -eq 1) "port $($pair.Port) rows=$($read.Rows)"
-  Clause "binder_is_this_process_$($pair.Name)" (($read.Pids.Count -eq 1) -and ([int]$read.Pids[0] -eq $statusPid)) "port $($pair.Port) owners=$(($read.Pids) -join ',') expected=$statusPid"
+  # A receiver is bound by the APP (CENSUS_APP_PID), never by the postmaster.
+  Clause "binder_is_app_pid_$($pair.Name)" (($read.Pids.Count -eq 1) -and ([int]$read.Pids[0] -eq $resolvedAppPid)) "port $($pair.Port) owners=$(($read.Pids) -join ',') expected_app_pid=$resolvedAppPid"
 }
 
 if ($mcpPort -gt 0) {
   $mcpRead = Get-PortOwners -Rows $tableRead.Rows -ErrorText '' -Port $mcpPort
+  Write-Line "MCP_LISTENER_ROWS=$($mcpRead.Rows)"
   Write-Line "MCP_LISTENER_OWNER_PIDS=$(($mcpRead.Pids) -join ',')"
-  Clause 'mcp_listener_owned_by_status_pid' (($mcpRead.Rows -ge 1) -and ($mcpRead.Pids -contains $statusPid)) "owners=$(($mcpRead.Pids) -join ',') expected=$statusPid (cross-check: the status pid really is the app serving this env)"
+  Clause 'mcp_listener_owned_by_app_pid' (($mcpRead.Rows -ge 1) -and ($mcpRead.Pids -contains $resolvedAppPid)) "owners=$(($mcpRead.Pids) -join ',') expected_app_pid=$resolvedAppPid (cross-check: the resolved app pid really is the app serving this env)"
 }
 
 Clause 'postmaster_process_present' ($postgresUnderRoot.Count -ge 1) 'no postgres.exe names the env root'

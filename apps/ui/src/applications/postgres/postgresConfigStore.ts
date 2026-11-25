@@ -79,8 +79,13 @@ export interface PgDatabaseResetResult {
   port: number | null;
 }
 
-/** The supervisor lifecycle states exposed by `pg_supervisor_status.state`. */
-export type PgSupervisorState = 'disabled' | 'starting' | 'ready' | 'failed' | 'attached';
+/**
+ * The supervisor lifecycle states exposed by `pg_supervisor_status.state`.
+ * Spec #3194 ST-3 removed the attach member: exactly one process owns the
+ * cluster, so a foreign payload that still reports it fails the narrowed
+ * `isSupervisorState` guard and is treated as an unknown/absent snapshot.
+ */
+export type PgSupervisorState = 'disabled' | 'starting' | 'ready' | 'failed';
 
 /** The subset of `PgStatusView` this pane consumes (additive `failureKind`). */
 export interface PgSupervisorStatusView {
@@ -90,7 +95,6 @@ export interface PgSupervisorStatusView {
   error?: string | null;
   dataDir?: string;
   logPath?: string | null;
-  attached?: boolean;
   failureKind?: PgFailureKind | null;
 }
 
@@ -150,8 +154,7 @@ function isSupervisorState(value: unknown): value is PgSupervisorState {
     value === 'disabled' ||
     value === 'starting' ||
     value === 'ready' ||
-    value === 'failed' ||
-    value === 'attached'
+    value === 'failed'
   );
 }
 
@@ -250,7 +253,8 @@ export async function getPgSupervisorStatus(): Promise<PgSupervisorStatusView> {
 
 /**
  * The single supervisor→kind classification (Spec #3067 ST-4), mirroring the
- * Settings pane's private `classifySupervisor` (`PostgresSettings.tsx:110-115`).
+ * Settings pane's private `classifySupervisor`
+ * (`applications/settings-app/components/PostgresSettings.tsx:110-115`).
  * `'drifted'` iff `state === 'failed' && failureKind === 'authMismatch'` — the
  * credential mismatch the recovery banner recovers from; every other non-ready
  * state is `'unavailable'` (fail-closed). Never throws on a null snapshot.

@@ -29,14 +29,6 @@ pub use applications::terminal::persistence::ensure_table_on_pg as ensure_termin
 #[doc(hidden)]
 pub use applications::db_client;
 
-// Spec #2992 CU-1 — the headless-ingest descriptor contract
-// (`pg_supervisor::descriptor`): the cross-process JSON descriptor + the bounded
-// liveness guard. `write`/`clear` are consumed by the CU-2 `fredo ingest` daemon
-// (ST-5); the module is re-exported so the frozen CU-1 surface is reachable while
-// that consumer is still pending. `#[doc(hidden)]`: not part of the app surface.
-#[doc(hidden)]
-pub use applications::pg_supervisor::descriptor;
-
 // Spec #3023 — the Doom runtime lifecycle contract (`doom::{state, engine,
 // commands, ...}`): the shared types + the native in-process engine adapter. The
 // commands and the `doom` window consume this surface, so it is re-exported to
@@ -989,22 +981,23 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
 
             // -- OTLP receiver (Spec #2944 ST-2: env-resolved loopback ports) --
             // Each environment's receivers bind its OWN loopback ports (R-1.2);
-            // unset env keeps the legacy 4317/4318. `start_with_ports` is the
-            // existing AppHandle-free seam (`otlp/mod.rs`), so the receivers
-            // stay loopback-only. The context is built here from the same
-            // managed state `otlp::start` uses.
+            // unset env keeps the legacy 4317/4318. `start_with_ports` is the ONE
+            // AppHandle-free receiver entry point (`otlp/mod.rs`), so the receivers
+            // stay loopback-only.
             let otlp_ctx = Arc::new(infrastructure::otlp::ReceiverContext {
                 classifier: app.state::<IngestClassifierState>().inner().clone(),
                 span_store: app.state::<Arc<SpanStore>>().inner().clone(),
             });
             let otlp_grpc_port = env_config.ingest_grpc_port;
             let otlp_http_port = env_config.ingest_http_port;
-            // Spec #3064 ST-1: a receiver bind/start failure marks the ingest
-            // pipeline not-connected on the health monitor, so the heartbeat and
-            // the probe report `ingestConnected: false` (the REQ-5 path).
+            // Spec #3194 ST-2: a receiver start failure marks the ingest pipeline
+            // not-connected AND carries the typed `IngestStartError` onto the health
+            // wire (heartbeat + probe), so a port conflict becomes an observable,
+            // typed failure instead of a bare boolean. The error is the typed value —
+            // no downcast — so the fail-closed branch cannot silently drop it.
             let otlp_health = Arc::clone(&stream_health_monitor);
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = infrastructure::otlp::start_with_ports(
+                if let Err(failure) = infrastructure::otlp::start_with_ports(
                     otlp_ctx,
                     otlp_grpc_port,
                     otlp_http_port,
@@ -1012,7 +1005,15 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
                 .await
                 {
                     otlp_health.set_ingest_connected(false);
-                    tracing::error!(target: "fredo::otlp", error = %e, "OTLP receiver error");
+                    otlp_health.set_ingest_failure(Some(failure.clone()));
+                    tracing::error!(
+                        target: "fredo::otlp",
+                        receiver = failure.receiver.as_str(),
+                        port = failure.port,
+                        code = failure.code.as_str(),
+                        error = %failure,
+                        "OTLP receiver failed to start"
+                    );
                 }
             });
 

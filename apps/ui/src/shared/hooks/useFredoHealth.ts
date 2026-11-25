@@ -155,7 +155,6 @@ const PG_STATES: readonly FredoPgState[] = [
   'disabled',
   'starting',
   'ready',
-  'attached',
   'failed',
 ];
 
@@ -273,7 +272,7 @@ function normalizePostgres(
 }
 
 export function useFredoHealth(): FredoHealth {
-  const { health } = useStreamHealth();
+  const { health, ingestFailure } = useStreamHealth();
   const [probeState, setProbeState] = useState<HealthProbeState>(EMPTY_PROBE_STATE);
   // Monotonic request sequence — a response whose seq is no longer current is
   // a stale/out-of-order probe and is dropped.
@@ -344,11 +343,14 @@ export function useFredoHealth(): FredoHealth {
       // FS-1: the seam forces the telemetry line `down`; otherwise the
       // event-driven three-valued stream health is used unchanged.
       telemetry: probeState.forceTelemetryDown ? 'down' : health,
+      // Spec #3194 ST-3 — the typed ingest cause rides the same event-driven
+      // stream-health state; the pure derivation ignores it unless `degraded`.
+      telemetryFailure: ingestFailure,
       companion: probeState.companion,
       llamaServer: probeState.llamaServer,
       postgres: probeState.postgres,
     }),
-    [health, probeState],
+    [health, ingestFailure, probeState],
   );
 
   return useMemo<FredoHealth>(() => {

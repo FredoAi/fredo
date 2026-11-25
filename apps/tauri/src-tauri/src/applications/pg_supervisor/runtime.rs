@@ -507,10 +507,9 @@ impl PgRuntime {
 
     /// Build a runtime rooted at EXPLICIT data/install dirs (Spec #2992 ST-5).
     ///
-    /// The headless `fredo ingest` daemon resolves the CLI-flag > env > default
-    /// precedence itself (G-296) and therefore passes the resolved PostgreSQL data
-    /// and distribution dirs explicitly instead of mutating the process
-    /// environment (the #2989 `set_var` failure). Every other setting — the
+    /// The caller resolves the data and distribution dirs itself and passes them
+    /// explicitly instead of mutating the process environment (the #2989
+    /// `set_var` failure). Every other setting — the
     /// ephemeral loopback port, the finite control timeout, the Q-17 log config,
     /// and the FS-3 stop-hang seam — is identical to [`Self::with_kill`].
     pub fn with_paths(data_dir: &Path, install_dir: &Path, password: String) -> Self {
@@ -527,7 +526,7 @@ impl PgRuntime {
     /// ST-2).
     ///
     /// `settings.port` becomes the pinned port from the config (`None` ⇒ `0`,
-    /// ephemeral OS-assigned — e.g. a headless cluster or a default install), and
+    /// ephemeral OS-assigned — e.g. a default install), and
     /// the config's log verbosity is applied as the PostgreSQL `log_min_messages`
     /// server value alongside the Q-17 log-collector configuration. Every other
     /// setting — the finite control timeout, the loopback host, the log
@@ -681,8 +680,8 @@ impl PgRuntime {
     /// then the crate's install/initdb leg.
     ///
     /// Spec #3076 ST-2: on the trusted install path THIS is the single choke
-    /// point every owner path reaches (GUI boot, config-apply restart, headless
-    /// `fredo ingest`). [`super::acquisition::ensure_verified_install`] acquires
+    /// point every owner path reaches (GUI boot, config-apply restart).
+    /// [`super::acquisition::ensure_verified_install`] acquires
     /// and extracts the archive Fredo itself SHA-256-verified — or short-circuits
     /// when the marker is current — BEFORE the crate's `setup()`, because a
     /// trusted install dir makes `installed_dir()` return `Some` unconditionally
@@ -690,7 +689,7 @@ impl PgRuntime {
     /// download on this path.
     pub async fn setup(&mut self) -> Result<()> {
         // #3180 ST-1: the SINGLE choke point every owner path reaches (GUI boot,
-        // config-apply restart, headless `fredo ingest`). Make the cluster directory
+        // config-apply restart). Make the cluster directory
         // initialisable BEFORE the crate runs: residue is quarantined by rename
         // (never deleted) so `initdb` can never refuse on "directory not empty";
         // a refused/failed quarantine surfaces the typed `ClusterDirError` so the
@@ -1933,7 +1932,7 @@ mod tests {
 
     /// ST-2 non-goal: `with_config` with the default (unset) config is ephemeral
     /// and the retained `with_dirs`/`with_paths` path injects NO verbosity
-    /// override, so the headless + test defaults stay byte-identical.
+    /// override, so the test defaults stay byte-identical.
     #[test]
     fn with_config_defaults_to_ephemeral_and_the_unset_path_stays_verbosity_free() {
         let dir = tempfile::tempdir().expect("tempdir");

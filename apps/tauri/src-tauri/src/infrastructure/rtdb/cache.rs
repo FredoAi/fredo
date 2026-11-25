@@ -462,8 +462,8 @@ impl RtdbCache {
 /// AppHandle-free core of the write-behind task: drains the bounded queue in
 /// ~30 ms batches and runs retention pruning on a 60-minute interval (knobs
 /// re-read each cycle). The GUI wrapper [`run_writer_task`] resolves the
-/// dependencies from Tauri state and delegates here; the headless ingest daemon
-/// (Spec #2992) calls this directly because it has no `AppHandle`.
+/// dependencies from Tauri state and delegates here; the core is `AppHandle`-free
+/// so it can run in any owned task.
 pub async fn run_writer_task_core(
     cache: Arc<RtdbCache>,
     app_store: Arc<SettingsStore>,
