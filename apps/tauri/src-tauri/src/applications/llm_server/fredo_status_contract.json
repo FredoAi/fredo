@@ -1,0 +1,23 @@
+{
+  "values": [
+    "happy",
+    "playful",
+    "joking",
+    "thinking",
+    "working",
+    "listening",
+    "idle",
+    "uwu",
+    "love",
+    "sad",
+    "surprised",
+    "sleepy",
+    "skeptical",
+    "confused",
+    "silly",
+    "squint",
+    "angry",
+    "funny"
+  ],
+  "default": "happy"
+}

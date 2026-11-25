@@ -5,7 +5,7 @@
  * jsdom has no GPU, so this suite never instantiates the real WebGL renderer: it
  * pins (a) the capability probe's ORDER — false on jsdom without a single
  * `getContext` call, so every existing avatar suite keeps a clean console (U-1);
- * (b) the module-level factory override the hook swaps in tests; (c) the 12-state
+ * (b) the module-level factory override the hook swaps in tests; (c) the 23-state
  * clip contract and the 400 ms one-shot window the renderer normalises into; and
  * (d) the one-shot completion rule.
  */
@@ -74,7 +74,7 @@ describe('probeAvatar3d (U-1: the probe short-circuits BEFORE getContext)', () =
   });
 });
 
-describe('the 12-state clip contract as the renderer consumes it', () => {
+describe('the 23-state clip contract as the renderer consumes it', () => {
   it('maps every state to exactly one same-named clip', () => {
     expect(ALL_CLIPS.slice().sort()).toEqual(ALL_STATES.slice().sort());
     for (const state of ALL_STATES) {
@@ -160,7 +160,7 @@ describe('#3223 the Doom performance channel as the renderer consumes it', () =>
     expect(DOOM_NAMES).toHaveLength(6);
     for (const name of DOOM_NAMES) {
       expect(isDoomClipName(name)).toBe(true);
-      expect(isAvatarClipName(name), `${name} must not join the 12-state union`).toBe(false);
+      expect(isAvatarClipName(name), `${name} must not join the state vocabulary`).toBe(false);
       expect(AVATAR_CLIPS).not.toHaveProperty(name);
     }
   });

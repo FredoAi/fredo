@@ -905,14 +905,32 @@
   - **Edge:** an emotion whose prop/POP would have entered the union if the pin were missing — that is
     exactly what this leg detects; a per-state re-fit (zoom pumping) is a FAIL.
 
-- [ ] F-AV-31 **leg (c) — the frozen framing baseline (ST-1's artifact, G-409).** Confirm the
-      committed framing baseline (the framed camera rect measured on the **pre-change tip**, stored
-      as literals with the commit they were taken on) is reproduced by the shipped measurement.
-  **Expected:** equality within the pin's stated tolerance. Report the delta between the 12-clip fit
-      and the all-23 fit: a **non-zero** delta is the proof the pin is doing work; a **zero** delta
-      must be disclosed (`pin unproven by this leg; legs (a)+(b) carry it`) — never silently PASSed.
-  - **Edge:** a baseline captured on the POST-change tip (vacuous — the receipt must name the commit);
-    a missing baseline artifact is UNVERIFIED, never a PASS.
+- [ ] F-AV-31 **leg (c) — the framing CONSTANTS and the pinned measurement input are the proof (a
+      committed camera-rect baseline is a NAMED BLOCKER, not a row).** Assert the framing constants the
+      shipped fit is derived from are **byte-identical** to the pre-change values —
+      `contentWidthFraction = 0.8284`, `contentHeightFraction = 0.9233`, the centre/offset pair
+      `0.0237` / `0.5` (`three/avatarFraming.ts`) — and that the measurement **input** is pinned: the
+      framing pass consumes exactly `AVATAR_FRAMING_CLIPS` (the 12 status states of leg (a)), never the
+      full action map or the 23.
+  **Expected:** the four constants equal the pre-change literals **exactly** (string/number equality,
+      not a tolerance), and the measurement input is the 12-element set of leg (a).
+  - **Named blocker (harness absent) — do NOT file this as a product defect and do NOT block the
+    round on it:** no **GPU-free skinned-mesh measurement harness** exists in the repo (the same
+    Toolsmith gap this spec already names for a pixel instrument), so a *committed numeric
+    camera-rect baseline* measured on the pre-change tip cannot be produced by any capsule this round.
+    The previously-planned "frozen framing baseline reproduced by the shipped measurement" leg is
+    therefore recorded as **UNVERIFIED by method, with this named blocker** — never as a FAIL and never
+    as a PASS. When the harness lands, that leg becomes executable with no change to this row's
+    expectation.
+  - **What still reddens the row (so it is not vacuous):** (i) any of the four constants moved — the
+    single most likely way a widening re-frames the figure; (ii) the framing pass taking its input
+    from the 23 (or from `actions.values()`) instead of `AVATAR_FRAMING_CLIPS`; (iii) `AVATAR_FRAMING_CLIPS`
+    no longer equalling `FREDO_AVATAR_STATUS_STATES` (leg (a)); (iv) **F-AV-19's frozen silhouette
+    fractions** (`0.8284 W × 0.9233 H` ±2 %, feet `0.9763 H`) moving on the spec tip (leg (b)) — the
+    live, seam-free half. A row whose only evidence were the unproducible baseline would be the
+    instrument defect; legs (a), (b) and this one are independently discriminating.
+  - **Edge:** constants "close enough" is a FAIL (they are authored literals, not measurements); a
+    re-derivation of `0.0237`/`0.5` from a new framing formula counts as a move.
 
 - [ ] F-AV-31 **leg (d) — no emotion pose is clipped by the frame (live).** With Q-1 set to each of
       the 11 emotions in turn on C-overlay, capture `s3224-frame-<S>.jpeg` at 4× zoom
@@ -951,13 +969,28 @@
       **`[GUARD]` (green today)** `resolveCompanionAvatarState({flow:'idle', modelStatus:'explode'})`
       → `'idle'`; `{flow:'working', modelStatus:'explode'}` → `'working'` (the **flow** holds, not
       `idle`); `'IDLE'` / `''` / `' success '` / `dancing` / `waiting` / `hyper` → dropped;
-      **`[NEW]`** `{flow:'idle', modelStatus:'uwu'}` → `'uwu'`, and every one of the 23 used as
-      `modelStatus` resolves to itself.
+      **`[NEW]`** `{flow:'idle', modelStatus:'uwu'}` → `'uwu'`, and **every one of the 20 RANKED
+      members** (`FREDO_AVATAR_STATE_PRIORITY`) used as `modelStatus` resolves to itself.
+      Separately, the **3 base states** (`talk`, `teleport-out`, `teleport-in`) are asserted as base
+      states driven by the **flow / the DEV lever** — `{flow:'talk'}` → `'talk'`,
+      `{flow:'teleport-out'}` → `'teleport-out'` — and **NOT** via `modelStatus`.
+  **Why this is 20 and not 23 (do not "restore" the impossible form):** R-2c and R-2d deliberately
+      keep `talk` and the two `teleport-*` states **outside the conflict order** (they are base states
+      passed through before the order is consulted) and **outside the model-emittable set**
+      (`talk`/`teleport-out`/`teleport-in`/`error`/`greeting` are flow/motion/error-owned, so a model
+      can never be the sole candidate for their triggers — G-220). A row demanding `modelStatus:
+      'talk'` → `'talk'` would therefore demand a behaviour the plan forbids, and would fail a correct
+      build. The invariant is **20 ranked + 3 base**, and the base states are proven reachable by
+      their own drive (the shipped recipe for the teleports, `F-AV-12`'s table; the stream for
+      `talk`).
   **Expected:** both halves green. A widening that forgets the boundary reddens the `[GUARD]` half;
-      a boundary still closed over 12 reddens the `[NEW]` half. Also assert the lever reader returns
-      `undefined` for a non-member (the lever is never a bypass).
+      a boundary still closed over 12 reddens the `[NEW]` half; a boundary that also admits a base
+      state through `modelStatus` reddens the base-state half (`{flow:'idle', modelStatus:'talk'}` →
+      `'idle'`, not `'talk'`). Also assert the lever reader returns `undefined` for a non-member (the
+      lever is never a bypass).
   - **Edge:** a value equal to a *Doom* clip name (`doom-idle`) — dropped; a Symbol/number; `'idle '`
-    (trailing space — dropped, exact match).
+    (trailing space — dropped, exact match); `modelStatus:'teleport-in'` — dropped, and the teleport
+    still outranks whatever else is signalled.
 
 ## F-AV-33 `[NEW]` (R-2c — AC2's order + teleport clauses) — the 20-ranked order, and a teleport still wins
 
@@ -1046,19 +1079,30 @@
 
 ## F-AV-35 `[NEW]` (lever safety, static-by-artifact) — the DEV lever is absent from a production build
 
-- [ ] F-AV-35 Run `pnpm --filter @fredo/ui build` (report the exit code), then grep every
-      `apps/ui/dist/assets/*.js` for `__FREDO_QA_AVATAR_FLOW__`. Print the resolved glob, the file
-      count scanned and the hit count. **Independent control (G-408):** run the same grep over the
-      same files for a production token that MUST be present (`data-avatar-clip`) and require
-      **non-zero** hits.
-  **Expected:** **zero** hits for `__FREDO_QA_AVATAR_FLOW__` in the built chunks; a **non-zero**
-      control hit count (proving the target path and the grep are live — a control of 0 is a FAILED
-      DRIVE: wrong path, or the build never ran). Unit: `readQaAvatarFlowOverride()` returns
-      `undefined` when the global is unset and when it holds a non-member; the guard is
-      `import.meta.env.DEV` (constant-folded in a build). Source: no product module other than the
-      lever module and the resolver's single read references the global; no component, test id or
-      `data-*` attribute was added for it.
+- [ ] F-AV-35 **leg A (the build pin — a REAL production build, never a conditional).** Run
+      `pnpm --filter @fredo/ui build` **in this round** (report the exit code), assert the build
+      **produced** `apps/ui/dist/assets/*.js` (print the resolved glob and the file count; a
+      non-empty set is a precondition), then grep those files for `__FREDO_QA_AVATAR_FLOW__`. Print the
+      scanned file count and the hit count. **Independent control (G-408):** the same grep over the
+      same files for a production token that MUST be present (`data-avatar-clip`) and require a
+      **non-zero** hit count (the developer's receipt records 1).
+  **Expected:** a **fresh, non-empty production `dist`** exists; **zero** hits for
+      `__FREDO_QA_AVATAR_FLOW__`; a **non-zero** control hit count.
+      **No conditional path:** the row is not satisfied by a grep against whatever `dist` happens to
+      be on disk, and not by "the token is absent because nothing was built".
+      **An absent or empty `dist` is UNVERIFIED — never a PASS on a zero of nothing** (a zero hit
+      count over zero files is the empty-pair defect: two absences are equal). If the build cannot run
+      in the round, the tester records **UNVERIFIED (build not produced)** with the build error — it
+      never reports PASS. A control count of 0 is likewise a FAILED DRIVE (wrong path, or the build
+      never ran).
+      Unit: `readQaAvatarFlowOverride()` returns `undefined` when the global is unset and when it
+      holds a non-member; the guard is `import.meta.env.DEV` (constant-folded in a build). Source: no
+      product module other than the lever module and the resolver's single read references the global;
+      no component, test id or `data-*` attribute was added for it.
   **Control (pre-change):** the token and the module do not exist on the pre-change tree → red.
+  - **Live corroboration (same row, cheap):** with the DEV app running, the global is readable (the
+    lever works) while the built chunk does not carry it — that asymmetry is the property under test;
+    record both readings.
   - **UX-22 / UX-23 static clauses (same row):** assert **zero** new authored strings naming an
     emotion (no label, tooltip, settings row, toast or onboarding sentence; `CompanionEntity.tsx:1881`'s
     shipped `title` names no state), **zero** new focusable nodes and **zero** `[data-state='<emotion>']`

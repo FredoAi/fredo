@@ -62,8 +62,33 @@ pub const FREDO_STATUS_ONLY_SCHEMA_NAME: &str = "fredo_status";
 /// The model-emittable status vocabulary — the closed set the schema's `enum`
 /// admits. Every value outside it heals to [`DEFAULT_FREDO_STATUS`] in the
 /// frontend's lenient resolver (R-8), never in the backend parse.
-pub const FREDO_STATUS_VALUES: [&str; 7] = [
-    "happy", "playful", "joking", "thinking", "working", "listening", "idle",
+///
+/// Spec #3224: the 7 shipped statuses PLUS the 11 authored emotion states, so a
+/// model-declared status can select an emotion. `talk` / `teleport-out` /
+/// `teleport-in` / `error` / `greeting` stay deliberately non-emittable — they
+/// are flow/motion/error-owned (G-220). The order is the frontend's
+/// `FREDO_REPLY_STATUSES` order and is pinned, together with
+/// [`DEFAULT_FREDO_STATUS`], against the ONE shared contract fixture
+/// (`fredo_status_contract.json`) that both sides read — one file, two readers.
+pub const FREDO_STATUS_VALUES: [&str; 18] = [
+    "happy",
+    "playful",
+    "joking",
+    "thinking",
+    "working",
+    "listening",
+    "idle",
+    "uwu",
+    "love",
+    "sad",
+    "surprised",
+    "sleepy",
+    "skeptical",
+    "confused",
+    "silly",
+    "squint",
+    "angry",
+    "funny",
 ];
 
 /// The status used when the model omits it (the shipped success settle), so an
@@ -89,15 +114,15 @@ pub const STATUS_PASS_TIMEOUT_S: u64 = 10;
 /// structured-output guidance).
 pub const STATUS_INSTRUCTION: &str =
     "Respond with a single json object and nothing else, in exactly this shape:\n\
-{\"reply\": \"<your reply to the user>\", \"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle>\"}\n\
+{\"reply\": \"<your reply to the user>\", \"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle, uwu, love, sad, surprised, sleepy, skeptical, confused, silly, squint, angry, funny>\"}\n\
 Example: {\"reply\": \"Settings is open — anything else?\", \"status\": \"happy\"}";
 
 /// The ST-6 status-only prompt fragment, sent as a user turn AFTER the
 /// just-streamed prose reply. Contains the literal word `json` and a concrete
-/// example, states the closed 7-value set, and never instructs free-text JSON.
+/// example, states the closed 18-value set, and never instructs free-text JSON.
 pub const STATUS_ONLY_INSTRUCTION: &str =
     "Given your reply above, respond with a single json object and nothing else, in exactly this shape:\n\
-{\"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle>\"}\n\
+{\"status\": \"<one of: happy, playful, joking, thinking, working, listening, idle, uwu, love, sad, surprised, sleepy, skeptical, confused, silly, squint, angry, funny>\"}\n\
 Example: {\"status\": \"happy\"}";
 
 /// The readable detail for the (unreachable with the shipped bound of 1) case
@@ -130,7 +155,7 @@ fn is_performance_suppressed(app: &AppHandle) -> bool {
 // ── The schema (pure) ─────────────────────────────────────────────────────────
 
 /// The ONE `response_format` JSON Schema for the reply contract (name
-/// [`FREDO_STATUS_SCHEMA_NAME`]). Closed over the 7-value status `enum` and
+/// [`FREDO_STATUS_SCHEMA_NAME`]). Closed over the 18-value status `enum` and
 /// `additionalProperties: false`; `reply` is required.
 pub fn fredo_status_schema() -> Value {
     serde_json::json!({
@@ -1187,7 +1212,7 @@ mod tests {
     // ── R-8: the closed schema + the prompt contract ──────────────────────────
 
     #[test]
-    fn the_status_schema_is_closed_over_the_seven_statuses() {
+    fn the_status_schema_is_closed_over_the_eighteen_statuses() {
         let schema = fredo_status_schema();
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["reply", "status"]));
@@ -1200,7 +1225,7 @@ mod tests {
             .expect("the status enum must be an array");
         let values: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
         assert_eq!(values, FREDO_STATUS_VALUES.to_vec());
-        assert_eq!(values.len(), 7);
+        assert_eq!(values.len(), 18);
         assert!(values.contains(&DEFAULT_FREDO_STATUS));
     }
 
@@ -1292,10 +1317,10 @@ mod tests {
         assert!(structured.get("response_format").is_some());
     }
 
-    /// (ii) The status-only schema is closed over the SAME 7 values with
+    /// (ii) The status-only schema is closed over the SAME 18 values with
     /// `additionalProperties: false` and carries NO `reply` property.
     #[test]
-    fn the_status_only_schema_is_closed_over_the_same_seven_statuses() {
+    fn the_status_only_schema_is_closed_over_the_same_eighteen_statuses() {
         let schema = fredo_status_only_schema();
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["required"], json!(["status"]));
@@ -1308,12 +1333,12 @@ mod tests {
             .expect("the status enum must be an array");
         let values: Vec<&str> = values.iter().filter_map(Value::as_str).collect();
         assert_eq!(values, FREDO_STATUS_VALUES.to_vec());
-        assert_eq!(values.len(), 7);
+        assert_eq!(values.len(), 18);
         assert!(values.contains(&DEFAULT_FREDO_STATUS));
     }
 
     /// (iii) `STATUS_ONLY_INSTRUCTION` contains the literal `json` word + a
-    /// concrete example + the closed 7-value set, and never instructs free-text
+    /// concrete example + the closed 18-value set, and never instructs free-text
     /// JSON.
     #[test]
     fn the_status_only_instruction_has_the_literal_json_word_and_an_example() {
@@ -1332,6 +1357,96 @@ mod tests {
         }
         // Never instruct free-text JSON.
         assert!(!STATUS_ONLY_INSTRUCTION.to_lowercase().contains("free"));
+    }
+
+    // ── Spec #3224: the 18-value emittable contract, pinned across its splices ─
+
+    /// The `<one of: …>` list a prompt fragment carries, as an ordered vec.
+    ///
+    /// Panics when the fragment carries no such list, so a fragment that stopped
+    /// stating the closed set cannot pass this pin by absence.
+    fn stated_status_list(fragment: &str) -> Vec<&str> {
+        let marker = "<one of: ";
+        let start = fragment
+            .find(marker)
+            .unwrap_or_else(|| panic!("the fragment states no closed set: {fragment}"))
+            + marker.len();
+        let rest = &fragment[start..];
+        let end = rest
+            .find('>')
+            .unwrap_or_else(|| panic!("the closed set is unterminated: {fragment}"));
+        rest[..end].split(", ").collect()
+    }
+
+    /// BOTH prompt fragments state EXACTLY the model-emittable set, in the same
+    /// order as the schema's `enum` — a schema/array/prompt mismatch is the
+    /// failure this pin exists to prevent.
+    #[test]
+    fn both_prompt_fragments_state_exactly_the_model_emittable_set() {
+        assert_eq!(
+            stated_status_list(STATUS_INSTRUCTION),
+            FREDO_STATUS_VALUES.to_vec(),
+            "STATUS_INSTRUCTION must state the closed set verbatim"
+        );
+        assert_eq!(
+            stated_status_list(STATUS_ONLY_INSTRUCTION),
+            FREDO_STATUS_VALUES.to_vec(),
+            "STATUS_ONLY_INSTRUCTION must state the closed set verbatim"
+        );
+    }
+
+    /// The ONE shared contract fixture (`fredo_status_contract.json`) is the
+    /// single source BOTH sides read: this is the Rust reader; the frontend's
+    /// `fredoReplyStatus.test.ts` is the other. A value added, removed or
+    /// reordered on either side reddens one of the two readers — the fixture is
+    /// never duplicated.
+    #[test]
+    fn the_model_emittable_set_equals_the_shared_contract_fixture() {
+        let contract: Value = serde_json::from_str(include_str!("fredo_status_contract.json"))
+            .expect("the shared status contract is valid json");
+
+        let values = contract["values"]
+            .as_array()
+            .expect("the contract carries a values array");
+        let values: Vec<&str> = values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("every contract value is a string: {value}"))
+            })
+            .collect();
+
+        assert_eq!(
+            values,
+            FREDO_STATUS_VALUES.to_vec(),
+            "the shared contract and FREDO_STATUS_VALUES must be the same ordered set"
+        );
+        assert_eq!(values.len(), 18, "the model-emittable set is 18 values");
+        assert_eq!(
+            contract["default"], DEFAULT_FREDO_STATUS,
+            "the shared contract's default is the shipped default"
+        );
+
+        // 18 DISTINCT values: a duplicated member would satisfy a length check
+        // while silently narrowing the emittable set.
+        let mut distinct = values.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            values.len(),
+            "the set carries no duplicate: {values:?}"
+        );
+
+        // R-2d: the flow/motion/error-owned states stay NON-emittable, so the
+        // model can never become the sole candidate for their triggers (G-220).
+        for flow_owned in ["talk", "teleport-out", "teleport-in", "error", "greeting"] {
+            assert!(
+                !values.contains(&flow_owned),
+                "{flow_owned} stays flow-owned and never model-emittable"
+            );
+        }
     }
 
     /// The status-only body is tools-free, constrained to the status-only
