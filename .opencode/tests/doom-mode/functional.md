@@ -298,7 +298,9 @@
 
 # doom-mode — Whole-app Doom theme + armored avatar (Spec #2971)
 
-> **Verification policy: live** — UI-rendering feature: whole-app CSS-variable restyle + an SVG armor overlay.
+> **Verification policy: live** — UI-rendering feature: whole-app CSS-variable restyle + an SVG armor
+> overlay (**#3210: the SVG armour overlay is DELETED; the clip-driven armour is #3223's landing — the
+> base's avatar leg is the palette only**).
 > Evidence MUST carry the `telemetry_spans` live-pipeline reference (non-zero count + recent `max(ingested_at)`;
 > managed `psql` on the PG default, G-284, or a disclosed app-pool `feature_data_read` fallback, G-307).
 > **Doom emits NO OTLP span — the query proves the pipeline, not the feature; disclose that.** A static-only PASS
@@ -316,9 +318,10 @@
 >
 > Binding names: `DoomPalette`/`DOOM_PALETTE` (`apps/ui/src/app/theme/doomTheme.ts`);
 > `setDoomVisualEngaged`/`isDoomVisualEngaged`/`subscribeDoomVisual` (`apps/ui/src/shared/doom-mode/doomVisual.ts`);
-> DOM hooks `<html class="doom-mode" data-doom-mode="engaged">`, `<svg data-doom-armor="true">`,
-> `<g id="fredo-armor" data-layer="armor">`; engaged = `phase !== 'inactive'` (`types.ts:63-65`); fail-enter lever
+> DOM hooks `<html class="doom-mode" data-doom-mode="engaged">`; engaged = `phase !== 'inactive'` (`types.ts:63-65`); fail-enter lever
 > `FREDO_DOOM_MODE_FAIL_ENTER=1` (`mode.rs:29,236-243`).
+> **#3210 strike:** `<svg data-doom-armor="true">` and `<g id="fredo-armor" data-layer="armor">` are
+> DELETED hooks — the armour visual (and its hooks `data-avatar-doom-phase` etc.) is **#3223's**.
 
 ## Whole-app theme apply/revert (R-1..R-4, R-6)
 
@@ -328,9 +331,17 @@
 - [x] F-52 (PASS 2026-10-05 #2971 r1 — only `ThemeProvider` imports `DOOM_PALETTE`; zero `--doom-*` vars; surfaces resolve through the existing `--*` contract; COVERAGE assertion, G-271) (R-2, AC1 token-first) **Palette reachable only through the token layer.** Static: grep `DOOM_PALETTE` importers + `--doom-`; live: sample restyled surfaces.
   - EXPECTED: only `ThemeProvider.tsx` imports `DOOM_PALETTE`; zero `--doom-*` vars; restyled surfaces resolve through the pre-existing `--*` contract (`system.ts:56-141`); no component-local hex/rgba; changing only `DOOM_PALETTE` restyles every surface. COVERAGE assertion (G-271) — not a literal var count.
   - Edge: derived `color-mix()` vars re-resolve live.
-- [x] F-53 (PASS 2026-10-05 #2971 r1 — `data-doom-armor="true"` + `#fredo-armor` (13 paths, 0 rects); base 58 rects unchanged; both absent on exit; visibly distinct) (R-3, AC2) **Armor overlay present + visibly distinct; absent when inactive.** Enter; snapshot the avatar SVG + screenshot; exit; re-snapshot.
-  - EXPECTED: `svg[data-doom-armor="true"]` + `<g id="fredo-armor" data-layer="armor">` rendered AFTER the expression overlay; dense/full-frame pixel diff shows the armored avatar distinct (G-213); base `<rect>` count unchanged and `FREDO_AVATAR_STATES.length` unchanged (frozen 12); on exit both hooks ABSENT.
-  - Edge: armor composes with a non-idle state (e.g. `error`) without mutating the vocabulary; armor is NOT a 13th state.
+- [ ] F-53 (armour clause MOVED to #3223 by #3210) (R-3, AC2) **Armor overlay present + visibly
+      distinct; absent when inactive.** Enter; snapshot the avatar + screenshot; exit; re-snapshot.
+  - **#3210:** `svg[data-doom-armor="true"]` + `<g id="fredo-armor">` are DELETED hooks. The base
+    renders NO armour (U-9 disclosure); #3223 re-authors this row against
+    `[data-avatar-doom-phase]` + the doom clip names. **Do not re-assert the deleted hooks here, and
+    do not fail the base for the interim absence** — the base's Own Doom avatar observable is the
+    palette (`fredo-avatar/functional.md` F-AV-10). The frozen vocabulary (`FREDO_AVATAR_STATES.length
+      === 12`) and the absent-on-exit halves remain valid and stay in force.
+  - EXPECTED (base scope): on enter the app restyles and `data-avatar-body-color` follows the Doom
+      accent; neither `data-doom-armor` nor `#fredo-armor` EXISTS at any point; on exit the palette
+      reverts byte-exactly; `FREDO_AVATAR_STATES.length === 12`.
 - [x] F-54 (PASS 2026-10-05 #2971 r1 — byte-equal on all vars + body + avatar outerHTML + localStorage; setters never called) (R-4, AC3) **Exit → byte-exact revert; NO persisted-setting mutation.** Snapshot all inline `--*` vars + `document.body` + avatar outerHTML + `localStorage` theme keys before enter; enter; exit; re-snapshot.
   - EXPECTED: byte-equal on every field; `Fredo_theme_overrides`/`Fredo_theme_preset`/`Fredo_user_presets` unchanged (`ThemeProvider.tsx:166,173,179`); `setOverride`/`setPreset`/`resetTheme` NEVER called (`:388-420`) — spy-verified; no flash of default.
   - Edge: exit via `doom-exit-button`, `doom` window close, app exit, spoken exit — all identical.
@@ -344,25 +355,31 @@
   - EXPECTED: `allPresets` has NO Doom entry; selector lists no "Doom" option (`ThemingSettings.tsx:82-99`); no Doom nav item (`SettingsSurface.tsx:163-173`); no `doom-mode`/`data-doom-mode`; no `--*` var carries a `DOOM_PALETTE` value; avatar unarmored.
   - Edge: launcher search "doom" → no result; scope = RENDERED surfaces only; `?view=doom` route remains (regression invariant).
 - [x] F-57 (PASS 2026-10-05 #2971 r1 — 5/5 samples across 3 forced re-renders stayed engaged; opening MM while engaged left the main window engaged; module-scoped store) (R-7, G-123 continuous) **Persistence across mount/unmount + re-renders.** While engaged, remount the avatar consumer and/or reopen a window; force ≥2 re-renders.
-  - EXPECTED: restyle + armor remain applied across every mount/unmount/re-render (module-scoped `doomVisual.ts`, never a `useRef`); removed only at `inactive`.
-  - Edge: window remount during active; re-render never flashes unarmored/unstyled.
+  - EXPECTED: restyle + the body tint remain applied across every mount/unmount/re-render
+    (module-scoped `doomVisual.ts`, never a `useRef`); removed only at `inactive`. (**#3210:** the
+    armour half is #3223's; the overlay does not exist in this base.)
+  - Edge: window remount during active; re-render never flashes unthemed. (**#3210:** a remount
+    recreates the canvas by design — the avatar subtree is the per-frame surface, so `data-avatar-
+    body-color` is the persistence observable, never a byte-equal avatar `outerHTML`.)
 - [x] F-58 (PASS 2026-10-05 #2971 r1 — `FREDO_DOOM_MODE_FAIL_ENTER=1` → `code:"spawnFailed"`, phase inactive, byte-equal pre/post, no doom window; lever unset → enters) (R-8, G-275 error path) **Failed enter → no residual Doom theme/armor.** Inject `FREDO_DOOM_MODE_FAIL_ENTER=1` via `dev-env.ps1 -EnvVar`; type `iddqd`.
   - EXPECTED: `DoomModeResult{success:false,phase:"inactive",active:false,code:…}`; no `doom-mode`/`data-doom-mode`; all `--*` vars byte-equal the pre-attempt snapshot; avatar unarmored. Unset + retry → enters.
   - Edge: lever exists (Slice 3, `mode.rs:236-243`); retry with lever still set stays `inactive`; no orphan.
 
 ## Engine-free unit pins (G-172) + live receipt + E2E
 
-- [x] F-60 (PASS 2026-10-05 #2971 r1 — `cargo` unit pins green; store idempotency; no-leak; 58-rect pin with armor OFF) (unit, engine-free) **Store + palette + armor pins.** Drive `setDoomVisualEngaged(true|false)`; render `ThemeProvider`; assert `--body-bg`/`--accent-primary`/`--accent-contrast` before→engaged→after; store idempotency; `DOOM_PALETTE` not in `allPresets`; armor presence/absence + 58-rect pin with armor OFF; the R-8 fail-enter revert.
+- [x] F-60 (PASS 2026-10-05 #2971 r1 — `cargo` unit pins green; store idempotency; no-leak; 58-rect pin with armor OFF) (unit, engine-free) **Store + palette pins.** Drive `setDoomVisualEngaged(true|false)`; render `ThemeProvider`; assert `--body-bg`/`--accent-primary`/`--accent-contrast` before→engaged→after; store idempotency; `DOOM_PALETTE` not in `allPresets`; the R-8 fail-enter revert.
   - EXPECTED: all pins pass with NO engine; store notifies only on change; no leak into `allPresets`.
+    (**#3210:** the armour presence/absence half and the 58-rect pin are RETIRED — the overlay and the
+    rect table are deleted; the clip-driven armour's pins are **#3223's**.)
   - Edge: `setDoomVisualEngaged` called twice with the same value → no notify.
 - [x] F-59 (PASS 2026-10-05 #2971 r1 — PG ready; OTLP seed HTTP 200; declared `sessions` row `e2e-copilot2933` visibleTurnCount=1; MM renders; enter themed+armored; exit exact revert) (E2E, human directive) **RUNNING app: PG-default boot + Mission Monitor + Doom theming enter/exit.** Boot end-to-end; seed one qualifying session; enter; exit.
-  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready; (b) `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row `e2e-copilot2933` qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`), then ≥1 row; (c) enter → themed + armored; exit → exact revert, rest of app unaffected.
+  - EXPECTED: (a) `storage_engine_status` = PostgreSQL / PG supervisor ready; (b) `bun .opencode/scripts/inject-otlp-fixture.ts --copilot --fixture .opencode/scripts/copilot-exchange.fixture.json` → assert the DECLARED `sessions` row `e2e-copilot2933` qualifies (`visibleTurnCount ≥ 1`) BEFORE asserting the list (`useSessionHistory.ts:46-54`; `MissionMonitorPanel.tsx:872`; drawer `:1170`), then ≥1 row; (c) enter → themed (+ `data-avatar-body-color` on the Doom accent); exit → exact revert, rest of app unaffected. (**#3210:** "armored" is #3223's.)
   - Edge: seed idempotent; PG leg needs managed `psql` (G-284) — else name a disclosed app-pool fallback (G-307); after exit the app is unaffected.
 - [x] F-61 (PASS 2026-10-05 #2971 r1 — managed `psql` "too many clients" ×2 → disclosed app-pool fallback: OTLP 200 + canonical `sessions` row + continuous ingest log; Doom emits no span) (live receipt) **Live-pipeline check.** Query `telemetry_spans` at round start AND after the drive.
   - EXPECTED: NON-ZERO count + recent `max(ingested_at)` BOTH times. **Doom emits NO span** — the query proves the pipeline, not the feature; disclose.
   - Edge: managed `psql` "too many clients" → disclosed app-pool fallback (G-307), named.
 
-**R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 · R-8→F-58.
+**R-coverage:** R-1→F-51 · R-2→F-52 · R-3→F-53 (armour half carried by **#3223**; base = palette) · R-4→F-54 · R-5→F-55 · R-6→F-56 · R-7→F-57 · R-8→F-58.
 
 ---
 
