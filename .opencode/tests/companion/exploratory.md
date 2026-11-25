@@ -64,7 +64,8 @@
 
 ## E-11 — Reduced-motion parity across both surfaces
 
-- [ ] E-11: Under `prefers-reduced-motion: reduce`, compare the launcher sm mascot and the companion sm avatar — is the idle bob/glow suppressed on BOTH (static), while both stay 80×100 and render their 58 rects? Is the companion's teleport opacity-crossfade unaffected by the launcher change? Any asymmetry (one surface still animating, a size drift) is a finding. Reference companion F-19/R-11 + launcher F-46.
+- [ ] E-11: Under `prefers-reduced-motion: reduce` (jsdom stub — G-053), compare the launcher sm mascot and the companion sm avatar — is the idle bob/glow suppressed on BOTH (static), while both stay 80×100 and paint their resolved still frame (`data-avatar-motion="still"`)? Is the companion's teleport unaffected by the launcher change? Any asymmetry (one surface still animating, a size drift) is a finding. Reference companion F-19/R-11 + launcher F-46 + `fredo-avatar/functional.md` F-AV-4.
+  - **#3210:** "render their 58 rects" is replaced by "paint the resolved clip's still frame" — the rect table is deleted.
 
 ## #2853 extension — presence-lifecycle edge probes
 
@@ -101,7 +102,7 @@
 ### Round 1 (spec/2854 @ 0e52c599) — findings
 
 - [x] **E-19 — rapid status interleaving. FINDING — regression-free.** Joke (`thinking→joking→happy`), TicTacToe (`thinking`) and the rest `playful` beat ran interleaved across the run; every status settled to `idle` with the correct overlay (probe: 6/4/8/4 rects) and the console stayed clean.
-- [ ] **E-20 — reduced-motion status legibility. UNVERIFIED — named blocker.** `window.matchMedia('(prefers-reduced-motion: reduce)').matches` is `false` and the MCP driver cannot flip it, so the reduced pass could not be driven live. The CSS is verified statically (`companion.css:112-129`, `fredoAvatarIdle.css:42-49`, `fredo-avatar.css:109-127` — motion suppressed, every shape keeps its resting frame, never `opacity:0`). Same tooling limitation as #2852 E-11.
+- [ ] **E-20 — reduced-motion status legibility.** jsdom stubbed `matchMedia` (`matches:true`) + the renderer factory seam: is `data-avatar-motion="still"` with exactly one rendered frame and zero RAF ticks, and is the resolved clip still applied in every state? **#3210:** the previous CSS-only residue (`companion.css:112-129`, `fredoAvatarIdle.css:42-49`, `fredo-avatar.css:109-127`) is superseded — `fredo-avatar.css` is DELETED, and the avatar's reduced-motion leg is now a real render assertion (`fredo-avatar/functional.md` F-AV-4), not a CSS read. Same live-flip limitation as #2852 E-11 (G-053).
 - [ ] **E-21 — both-surface status sync (not driven).** Companion ON vs auto-hidden were both exercised (single-Fredo swap intact), but a status driven deliberately on one surface while the other is mounted was not isolated; no ghost status was observed.
 - [x] **E-22 — mid-status teleport. FINDING — regression-free.** Ctrl+right-click during active play teleported cleanly (`teleport-out→teleport-in→idle`, 460/460 ms); `isTeleportingRef`/`playFlowAnim` guard documented in source.
 - [ ] **E-23 — error/empty-stream path (not driven).** The model loaded successfully throughout, so the error/empty-stream branch was not forced.
