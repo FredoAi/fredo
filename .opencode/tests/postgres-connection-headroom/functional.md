@@ -5,7 +5,9 @@ second client (the built-in PostgreSQL app, or an external `psql`) can connect t
 embedded cluster **while the desktop app is running**, because the SERVER's `max_connections` is
 strictly greater than the app pool cap (which stays 8). Seeded at issue **#3028**. Inherits
 `.opencode/tests/postgres-lifecycle/`, `postgres-config/`, `postgres-client/`, `postgres-stores/`,
-and `headless-ingest/` on the overlapping connection/lifecycle surface.
+and `resident-ingest/` on the overlapping connection/lifecycle surface. (`headless-ingest/` was
+RETIRED by #3194 — there is one resident owner now, so there is no "second client is another
+Fredo process" case.)
 
 > **Verification policy: LIVE** — connection admission is a property of the RUNNING embedded
 > cluster (a real `psql` / built-in-PG-app client admitted or refused at the shipped server
@@ -20,7 +22,8 @@ and `headless-ingest/` on the overlapping connection/lifecycle surface.
 > pool can legitimately hold every server slot** — when an external `psql` is refused
 > `too many clients`, fall back to the app-pool-backed read (`telemetry_get_stats` /
 > `feature_data_read`) for the same-instant number and DISCLOSE the substitution in the verdict
-> (`telemetry-query/SKILL.md:51`; precedent `headless-ingest/functional.md:24-30`).
+> (`telemetry-query/SKILL.md:51`; the same substitution caveat applies to the resident-ingest
+> suite's F-5 read — `.opencode/tests/resident-ingest/functional.md`.)
 
 > **G-263 SAFETY (named failure mode): the #2948 ~11 h `pg.stop()` hang.** Every external-runtime
 > start (the app dev instance AND the postmaster) MUST be bounded. The live app legs start/stop
