@@ -350,10 +350,11 @@
     (`doom-in`, then the engagement's weapon clip — `doom-idle` on the first engagement) and stays one
     of the six doom names for the whole engagement; `data-avatar-body-color` follows the Doom accent
     (= `DOOM_PALETTE.accentPrimary` `#8fbf3f`, channel triple); on exit `data-avatar-clip` returns to a
-    **12-state** name (`fredo-avatar/functional.md` F-AV-22 leg B owns the exact restore contract) and
+    **STATUS-state** name (`FREDO_AVATAR_STATUS_STATES` — one of the 12, never an emotion; #3224's
+    union is 23 but the restore target did not widen) (`fredo-avatar/functional.md` F-AV-22 leg B owns the exact restore contract) and
     the palette reverts byte-exactly; `[data-doom-armor]`, `#fredo-armor` and
     `[data-avatar-doom-phase]` are ABSENT at every point, engaged or not; `FREDO_AVATAR_STATES.length
-    === 12`. Captures `f53-engaged.jpeg` / `f53-restored.jpeg` (upload to the round's `## Tests Runs`).
+    === 23` (12 status states + 11 emotion states, #3224 — the count moved, the absence clause did not). Captures `f53-engaged.jpeg` / `f53-restored.jpeg` (upload to the round's `## Tests Runs`).
   - **Runtime (superseded advice, #3023):** this slice's header still says to re-stage the engine with
     `scripts/doom/stage-doom-fixture.ps1` — that script was retired with the native in-process engine
     and does **not** exist in the tree. F-53 needs only `get_doom_mode_status.phase === "active"` with
