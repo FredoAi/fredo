@@ -15,14 +15,21 @@ import {
 import {
   AVATAR_CLIPS,
   AVATAR_CLIP_TIME_SCALE,
+  AVATAR_FRAMING_CLIPS,
   AVATAR_ONE_SHOT_CLIPS,
+  isAvatarFramingClip,
   resolveAvatarMotion,
 } from '../avatarClips';
 import { DOOM_CLIPS, DOOM_ONE_SHOT_CLIPS, type DoomClipName } from '../doomClips';
-import { FREDO_AVATAR_STATES, type FredoAvatarState } from '../fredoAvatarStates';
+import {
+  FREDO_AVATAR_EMOTION_STATES,
+  FREDO_AVATAR_STATES,
+  FREDO_AVATAR_STATUS_STATES,
+  type FredoAvatarState,
+} from '../fredoAvatarStates';
 
 /**
- * Spec 3210 ST-1/ST-2 — the ONE asset-contract pin.
+ * Spec 3210 ST-1/ST-2 — the ONE asset-contract pin (widened by #3224 ST-1).
  *
  * Two copies of the character now exist in the tree: the authoring copy under
  * `.opencode/wireframes/blender/` and the copy the webview actually serves from
@@ -34,9 +41,14 @@ import { FREDO_AVATAR_STATES, type FredoAvatarState } from '../fredoAvatarStates
  *  - the GLB carries its full authored clip table — all 32 clips — and that set
  *    EQUALS the authoring manifest's clip list, so a re-export that drops or
  *    renames a clip fails here rather than in a later slice that names one;
- *  - every clip this BASE plays (`AVATAR_CLIPS`, the 12 state clips) exists, is
- *    1.333 s in both the GLB and the manifest, and agrees with the manifest's
+ *  - every clip this BASE plays (`AVATAR_CLIPS`, the 23 vocabulary clips) exists,
+ *    is 1.333 s in both the GLB and the manifest, and agrees with the manifest's
  *    loop flag — only the two teleport clips are one-shots;
+ *  - #3224: no two of the 23 clips share an IDENTICAL animation payload (253
+ *    pairwise comparisons over the sampler output bytes read from the GLB's own
+ *    BIN chunk) — a copied/aliased performance cannot hide behind a distinct name;
+ *  - #3224: the camera-fit baseline (`AVATAR_FRAMING_CLIPS`) is exactly the 12
+ *    status states, so the 11 emotion poses can never re-frame the shipped figure;
  *  - the two poster passes are 420x525 RGBA rasters (0.800, the aspect of every
  *    shipped avatar box) so `mask-size: 100% 100%` cannot distort them;
  *  - the model is delivered as a REAL FILE, never inlined: the asset module
@@ -47,8 +59,8 @@ import { FREDO_AVATAR_STATES, type FredoAvatarState } from '../fredoAvatarStates
  * Files are read with `readFileSync(resolve(process.cwd(), ...))` — vitest runs
  * with cwd = `apps/ui`, the established convention in this workspace.
  *
- * The 32-clip assertion is deliberately BLIND to names beyond the 12: the extra
- * clips belong to slices this one must not name (they are asserted as a SET
+ * The 32-clip assertion is deliberately BLIND to names beyond the vocabulary: the
+ * extra clips belong to slices this one must not name (they are asserted as a SET
  * against the authoring manifest, which is data, not base code).
  */
 
@@ -79,26 +91,121 @@ interface GlbClip {
   duration: number;
 }
 
-/** The GLB's own clip table, read straight out of its JSON chunk. */
-function readGlbClips(glb: Buffer): GlbClip[] {
+/** The GLB's JSON chunk, typed to the parts the pins read. */
+interface GlbJson {
+  accessors?: {
+    bufferView?: number;
+    byteOffset?: number;
+    componentType: number;
+    count: number;
+    type: string;
+    min?: number[];
+    max?: number[];
+  }[];
+  bufferViews?: { buffer: number; byteOffset?: number; byteLength: number; byteStride?: number }[];
+  animations?: {
+    name?: string;
+    samplers: { input: number; output: number; interpolation?: string }[];
+    channels: { sampler: number; target: { node?: number; path: string } }[];
+  }[];
+}
+
+interface GlbContainer {
+  json: GlbJson;
+  bin: Buffer;
+}
+
+/** The GLB container: its JSON chunk (parsed) plus its BIN chunk (raw bytes). */
+function readGlbContainer(glb: Buffer): GlbContainer {
   expect(glb.readUInt32LE(0), 'GLB magic').toBe(0x46546c67);
   expect(glb.readUInt32LE(4), 'GLB container version').toBe(2);
   expect(glb.readUInt32LE(8), 'declared container length').toBe(glb.byteLength);
 
   let offset = 12;
-  let json: Record<string, unknown> | null = null;
+  let json: GlbJson | null = null;
+  let bin: Buffer | null = null;
   while (offset < glb.byteLength) {
     const chunkLength = glb.readUInt32LE(offset);
     const chunkType = glb.readUInt32LE(offset + 4);
     if (chunkType === 0x4e4f534a) {
-      json = JSON.parse(glb.subarray(offset + 8, offset + 8 + chunkLength).toString('utf8')) as Record<string, unknown>;
+      json = JSON.parse(
+        glb.subarray(offset + 8, offset + 8 + chunkLength).toString('utf8'),
+      ) as GlbJson;
+    } else if (chunkType === 0x004e4942) {
+      bin = glb.subarray(offset + 8, offset + 8 + chunkLength);
     }
     offset += 8 + chunkLength;
   }
   expect(json, 'GLB must carry a JSON chunk').not.toBeNull();
+  expect(bin, 'GLB must carry a BIN chunk').not.toBeNull();
 
-  const accessors = (json as { accessors?: { max?: number[] }[] }).accessors ?? [];
-  const animations = (json as { animations?: { name?: string; samplers: { input: number }[] }[] }).animations ?? [];
+  return { json: json as GlbJson, bin: bin as Buffer };
+}
+
+/** GLB component types → byte size (glTF 2.0 spec, table of accessor types). */
+const COMPONENT_BYTES: Readonly<Record<number, number>> = {
+  5120: 1, // BYTE
+  5121: 1, // UNSIGNED_BYTE
+  5122: 2, // SHORT
+  5123: 2, // UNSIGNED_SHORT
+  5125: 4, // UNSIGNED_INT
+  5126: 4, // FLOAT
+};
+
+/** glTF element types → component count. */
+const TYPE_COMPONENTS: Readonly<Record<string, number>> = {
+  SCALAR: 1,
+  VEC2: 2,
+  VEC3: 3,
+  VEC4: 4,
+  MAT2: 4,
+  MAT3: 9,
+  MAT4: 16,
+};
+
+/**
+ * The raw bytes of one accessor, honouring `bufferView.byteStride` when the view
+ * packs its elements (animation output accessors are normally tightly packed, but
+ * a stride-aware read is the only correct one for the general case).
+ */
+function accessorBytes(accessorIndex: number): Buffer {
+  const accessor = GLB.json.accessors?.[accessorIndex];
+  expect(accessor, `GLB must carry accessor ${accessorIndex}`).toBeDefined();
+  expect(accessor!.bufferView, `accessor ${accessorIndex} must reference a bufferView`).toBeDefined();
+  const view = GLB.json.bufferViews![accessor!.bufferView!];
+  const elementBytes = COMPONENT_BYTES[accessor!.componentType] * TYPE_COMPONENTS[accessor!.type];
+  const start = (view.byteOffset ?? 0) + (accessor!.byteOffset ?? 0);
+  const stride = view.byteStride ?? elementBytes;
+
+  if (stride === elementBytes) {
+    return GLB.bin.subarray(start, start + elementBytes * accessor!.count);
+  }
+
+  const packed = Buffer.alloc(elementBytes * accessor!.count);
+  for (let index = 0; index < accessor!.count; index += 1) {
+    const from = start + index * stride;
+    GLB.bin.copy(packed, index * elementBytes, from, from + elementBytes);
+  }
+  return packed;
+}
+
+/**
+ * The authored animation payload of one clip: every sampler's OUTPUT accessor
+ * bytes, concatenated in sampler order. Sampler indices are deliberately NOT mixed
+ * in, so an exporter that dedupes two identical payloads to one accessor (or
+ * duplicates two identical byte runs) is caught as the alias it is.
+ */
+function animationPayload(name: string): Buffer {
+  const animation = GLB.json.animations?.find((candidate) => candidate.name === name);
+  expect(animation, `GLB must carry the "${name}" animation`).toBeDefined();
+  return Buffer.concat(animation!.samplers.map((sampler) => accessorBytes(sampler.output)));
+}
+
+/** The GLB's own clip table, read straight out of its JSON chunk. */
+function readGlbClips(glb: Buffer): GlbClip[] {
+  const { json } = readGlbContainer(glb);
+  const accessors = json.accessors ?? [];
+  const animations = json.animations ?? [];
 
   return animations.map((animation) => {
     let duration = 0;
@@ -133,9 +240,20 @@ function readPngHeader(png: Buffer): {
 const shippedGlb = readFileSync(SHIPPED_GLB);
 const authoringGlb = readFileSync(AUTHORING_GLB);
 const manifest = JSON.parse(readFileSync(AUTHORING_MANIFEST, 'utf8')) as Manifest;
+const GLB = readGlbContainer(shippedGlb);
 const glbClips = readGlbClips(shippedGlb);
 
 const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+/** How many bytes two authoring payloads differ by (length delta included). */
+function byteDistance(left: Buffer, right: Buffer): number {
+  const shared = Math.min(left.byteLength, right.byteLength);
+  let distance = Math.abs(left.byteLength - right.byteLength);
+  for (let index = 0; index < shared; index += 1) {
+    if (left[index] !== right[index]) distance += 1;
+  }
+  return distance;
+}
 
 describe('avatar asset contract — the shipped GLB (spec 3210 ST-1)', () => {
   it('ships the authored GLB byte-for-byte (digest and length)', () => {
@@ -157,11 +275,76 @@ describe('avatar asset contract — the shipped GLB (spec 3210 ST-1)', () => {
   });
 });
 
-describe('avatar asset contract — the 12 clips this base plays', () => {
-  it('plays exactly one clip per frozen state, and nothing else', () => {
+describe('#3224 ST-1 — the camera-fit baseline stays pinned to the 12 status states', () => {
+  it('frames exactly the 12 status states, in their shipped order', () => {
+    expect([...AVATAR_FRAMING_CLIPS]).toEqual([...FREDO_AVATAR_STATUS_STATES]);
+    expect(AVATAR_FRAMING_CLIPS).toHaveLength(12);
+    expect(AVATAR_FRAMING_CLIPS.length).toBeLessThan(FREDO_AVATAR_STATES.length);
+    for (const clip of AVATAR_FRAMING_CLIPS) {
+      expect(FREDO_AVATAR_STATES as readonly string[], `${clip} must be a vocabulary member`).toContain(clip);
+      expect(isAvatarFramingClip(clip)).toBe(true);
+    }
+    for (const emotion of FREDO_AVATAR_EMOTION_STATES) {
+      expect(isAvatarFramingClip(emotion), `${emotion} must never size the camera`).toBe(false);
+    }
+  });
+
+  it('feeds the body measurement from the baseline only, never from the whole action map', () => {
+    // G-468: anchor on the CALL inside the measurement and assert the property,
+    // rather than on a receiver-qualified literal that a refactor would break.
+    const rendererSource = readFileSync(resolve(repoPath(AVATAR_DIR), 'three/avatarRenderer.ts'), 'utf8');
+    const start = rendererSource.indexOf('function measureBodyBox(');
+    expect(start, 'measureBodyBox must exist').toBeGreaterThan(-1);
+    const end = rendererSource.indexOf('\n}', start);
+    expect(end, 'measureBodyBox must be a balanced function body').toBeGreaterThan(start);
+    const body = rendererSource.slice(start, end);
+
+    const framingCalls = body.match(/isAvatarFramingClip\(/g) ?? [];
+    expect(framingCalls).toHaveLength(1);
+    expect(body, 'the measurement must not sample every action').not.toContain('actions.values()');
+  });
+});
+
+describe('avatar asset contract — the 23 clips this base plays (#3224)', () => {
+  it('plays exactly one clip per vocabulary state, and nothing else', () => {
     const played = Object.keys(AVATAR_CLIPS).sort();
-    expect(played).toHaveLength(12);
+    expect(played).toHaveLength(23);
     expect(played).toEqual([...FREDO_AVATAR_STATES].sort());
+  });
+
+  it('composes the 23 from the 12 status states (order unchanged) plus the 11 emotions', () => {
+    expect([...FREDO_AVATAR_STATUS_STATES]).toEqual([
+      'idle',
+      'talk',
+      'teleport-out',
+      'teleport-in',
+      'thinking',
+      'happy',
+      'playful',
+      'joking',
+      'listening',
+      'working',
+      'error',
+      'greeting',
+    ]);
+    expect([...FREDO_AVATAR_EMOTION_STATES]).toEqual([
+      'uwu',
+      'love',
+      'sad',
+      'surprised',
+      'sleepy',
+      'skeptical',
+      'confused',
+      'silly',
+      'squint',
+      'angry',
+      'funny',
+    ]);
+    expect([...FREDO_AVATAR_STATES]).toEqual([
+      ...FREDO_AVATAR_STATUS_STATES,
+      ...FREDO_AVATAR_EMOTION_STATES,
+    ]);
+    expect(new Set(FREDO_AVATAR_STATES).size).toBe(FREDO_AVATAR_STATES.length);
   });
 
   it('resolves every played clip against the shipped GLB at the authored duration', () => {
@@ -171,6 +354,67 @@ describe('avatar asset contract — the 12 clips this base plays', () => {
       expect(clip, `GLB must carry the "${state}" clip`).toBeDefined();
       expect(Math.abs(clip!.duration - spec.durationSeconds), `"${state}" duration`).toBeLessThan(0.01);
     }
+  });
+
+  it('carries every vocabulary clip in the GLB and keeps the rest outside the union', () => {
+    const glbNames = glbClips.map((clip) => clip.name);
+    for (const state of FREDO_AVATAR_STATES) {
+      expect(glbNames, `GLB must carry "${state}"`).toContain(state);
+    }
+    const outside = glbNames
+      .filter((name) => !(FREDO_AVATAR_STATES as readonly string[]).includes(name))
+      .sort();
+    // The six Doom clips plus the three authored extras no base vocabulary owns.
+    expect(outside).toEqual(
+      ['analyzing', 'complete', 'doom-idle', 'doom-in', 'doom-mg', 'doom-out', 'doom-shoot', 'doom-sword', 'planning'].sort(),
+    );
+  });
+
+  it('gives every vocabulary clip its OWN animation payload (253 pairwise comparisons)', () => {
+    // Phase-0 diagnostic (#3224 ST-1): reads the sampler OUTPUT bytes from the GLB's
+    // own BIN chunk - never the JSON names, so a copied performance cannot hide.
+    const payloads = FREDO_AVATAR_STATES.map((state) => {
+      const bytes = animationPayload(state);
+      return { state, bytes, digest: digest(bytes) };
+    });
+
+    for (const payload of payloads) {
+      expect(payload.bytes.byteLength, `"${payload.state}" must carry animation bytes`).toBeGreaterThan(0);
+    }
+    const table = payloads
+      .map((payload) => `${payload.state.padEnd(13)} ${String(payload.bytes.byteLength).padStart(7)} B ${payload.digest}`)
+      .join('\n');
+
+    const pairs: { a: string; b: string; distance: number }[] = [];
+    for (let left = 0; left < payloads.length; left += 1) {
+      for (let right = left + 1; right < payloads.length; right += 1) {
+        const a = payloads[left];
+        const b = payloads[right];
+        expect(
+          a.digest === b.digest,
+          `"${a.state}" and "${b.state}" share an IDENTICAL animation payload (aliased performance)\n${table}`,
+        ).toBe(false);
+        pairs.push({ a: a.state, b: b.state, distance: byteDistance(a.bytes, b.bytes) });
+      }
+    }
+
+    expect(pairs).toHaveLength((23 * 22) / 2);
+    const minimum = pairs.reduce((lowest, pair) => (pair.distance < lowest.distance ? pair : lowest));
+    const sizes = payloads.map((payload) => payload.bytes.byteLength);
+    const smallest = payloads.reduce((lowest, payload) =>
+      payload.bytes.byteLength < lowest.bytes.byteLength ? payload : lowest,
+    );
+    // A degenerate read (an empty or truncated window) would make every pair
+    // "distinct" for free, so the payload sizes are part of the assertion.
+    expect(smallest.bytes.byteLength).toBeGreaterThan(1000);
+    // The diagnostic line the ST-1 verification quotes.
+    console.log(
+      `#3224 ST-1 diagnostic: ${payloads.length} clips, ${pairs.length} pairwise payload comparisons, ` +
+        `0 identical payloads, payload bytes ${Math.min(...sizes)}..${Math.max(...sizes)} ` +
+        `(smallest "${smallest.state}"), minimum byte distance ${minimum.distance} ` +
+        `("${minimum.a}" vs "${minimum.b}")`,
+    );
+    expect(minimum.distance).toBeGreaterThan(0);
   });
 
   it('agrees with the authoring manifest on duration and loop flag', () => {
@@ -203,7 +447,7 @@ describe('avatar asset contract — the 12 clips this base plays', () => {
 describe('#3223 avatar asset contract — the six Doom performance clips', () => {
   const DOOM_NAMES = Object.keys(DOOM_CLIPS) as DoomClipName[];
 
-  it('declares the six authored armour clips at 1.333 s, outside the frozen 12', () => {
+  it('declares the six authored armour clips at 1.333 s, outside the 23 vocabulary states', () => {
     expect(DOOM_NAMES).toHaveLength(6);
     expect(DOOM_NAMES.sort()).toEqual(
       ['doom-in', 'doom-idle', 'doom-mg', 'doom-out', 'doom-shoot', 'doom-sword'].sort(),
@@ -212,8 +456,8 @@ describe('#3223 avatar asset contract — the six Doom performance clips', () =>
       expect(DOOM_CLIPS[name].durationSeconds).toBeCloseTo(1.333, 3);
       expect(AVATAR_CLIPS).not.toHaveProperty(name);
     }
-    // The 12-state contract is untouched by the parallel table.
-    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(12);
+    // The 23-state contract is untouched by the parallel table.
+    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(23);
   });
 
   it('agrees with the authoring manifest on duration and loop flag', () => {

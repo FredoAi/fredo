@@ -1,7 +1,8 @@
 /**
  * #3210 ST-3 — the imperative three.js renderer core, behind an injectable seam.
  *
- * This module is the ONE live render path. It owns the 12-state clip contract, the
+ * This module is the ONE live render path. It owns the 23-state clip contract (the
+ * 12 status states size the camera fit, the 11 emotions never do), the
  * Doom overlay performance channel, the one-shot/resting timing, the accent tint
  * and the frame budget — and nothing else. There is no React here (no reconciler,
  * so a tint change mutates materials instead of remounting a scene) and no
@@ -9,10 +10,10 @@
  *
  * ## Contract points this file implements
  *  - The resolved avatar state IS the clip name (`AvatarClipName` = `FredoAvatarState`,
- *    12 members). A clip missing from the GLB never crashes a mount; it is a no-op.
+ *    23 members). A clip missing from the GLB never crashes a mount; it is a no-op.
  *  - The Doom armour is a PARALLEL channel (`DOOM_CLIPS` + `setDoomPerformance`), not a
- *    thirteenth state: one mixer, one render path, two request channels. While a Doom
- *    performance is applied a 12-state request is only recorded — except a teleport,
+ *    twenty-fourth state: one mixer, one render path, two request channels. While a
+ *    Doom performance is applied a state request is only recorded — except a teleport,
  *    which always wins (the overlay is suspended and handed back).
  *  - One-shots (`AVATAR_ONE_SHOT_CLIPS`) run `LoopOnce` + `clampWhenFinished`, with
  *    `timeScale` from `AVATAR_CLIP_TIME_SCALE` so the authored 1.333 s action
@@ -58,6 +59,7 @@ import {
   AVATAR_CLIPS,
   AVATAR_CLIP_TIME_SCALE,
   AVATAR_ONE_SHOT_CLIPS,
+  isAvatarFramingClip,
   type AvatarClipName,
   type AvatarMotion,
 } from '../avatarClips';
@@ -106,8 +108,8 @@ export interface AvatarRenderer {
   setPalette(palette: AvatarPalette): void;
   /**
    * The Doom OVERLAY request channel (`null` hands the mixer back to the consumer's
-   * resolved 12-state clip). Deliberately parallel to `setState`: Doom is a
-   * performance layered over the vocabulary, never a thirteenth state.
+   * resolved state clip). Deliberately parallel to `setState`: Doom is a
+   * performance layered over the vocabulary, never a twenty-fourth state.
    */
   setDoomPerformance(performance: DoomPerformance | null): void;
   /** The clip the mixer is ACTUALLY playing (crossfade target). */
@@ -152,7 +154,7 @@ export function resolveAvatarRendererFactory(): AvatarRendererFactory {
   return factoryOverride ?? createAvatarRenderer;
 }
 
-/** True for the 12 clip names this base renders (and only those). */
+/** True for the 23 clip names this base renders (and only those). */
 export function isAvatarClipName(name: string): name is AvatarClipName {
   return Object.prototype.hasOwnProperty.call(AVATAR_CLIPS, name);
 }
@@ -168,8 +170,8 @@ function isDoomClipForRender(name: AvatarRenderedClip): name is DoomClipName {
 }
 
 /**
- * Whether a 12-state request is APPLIED immediately while a Doom performance owns
- * the mixer.
+ * Whether a state request is APPLIED immediately while a Doom performance owns the
+ * mixer.
  *
  * A teleport always wins over the overlay (REQ-9: leave/arrive play in place, the
  * overlay is suspended and handed back). Every other state is only RECORDED, so
@@ -242,8 +244,12 @@ function posedLocalBox(object: Object3D): Box3 | null {
  * Measure the BODY's silhouette over the authored clips (U-5).
  *
  * The fit must follow the body, never props: prop/FX nodes are skipped, and every
- * other mesh is sampled across each clip so an extended pose (a raised arm, a
- * landed crouch) is inside the frame rather than clipped at 80 px.
+ * other mesh is sampled across each FRAMING clip so an extended pose (a raised arm,
+ * a landed crouch) is inside the frame rather than clipped at 80 px.
+ *
+ * The clip set is the camera-fit BASELINE (`AVATAR_FRAMING_CLIPS`, the 12 status
+ * states), never every action in the map: a widened vocabulary (#3224's 11 emotion
+ * poses) must not move the shipped framing.
  */
 function measureBodyBox(
   model: Object3D,
@@ -260,7 +266,8 @@ function measureBodyBox(
 
   if (bodies.length > 0 && actions.size > 0) {
     try {
-      for (const action of actions.values()) {
+      for (const [name, action] of actions) {
+        if (!isAvatarFramingClip(name)) continue;
         const clip = action.getClip();
         action.reset();
         action.enabled = true;
@@ -400,8 +407,9 @@ export async function createAvatarRenderer(
   camera.lookAt(centerX, framing.centerY, 0);
 
   // The PARALLEL Doom action map (ST-3). Built after the framing measurement so
-  // the fit stays exactly the 12-state body silhouette (the Doom poses/props never
-  // size the camera). Doom one-shots clamp; every other Doom clip loops.
+  // the fit stays exactly the AVATAR_FRAMING_CLIPS body silhouette (neither the Doom
+  // poses/props nor #3224's 11 emotion poses ever size the camera). Doom one-shots
+  // clamp; every other Doom clip loops.
   const doomActions = new Map<DoomClipName, AnimationAction>();
   for (const clip of gltf.animations) {
     if (!isDoomClipName(clip.name)) continue;
@@ -543,7 +551,7 @@ export async function createAvatarRenderer(
 
   /**
    * The Doom overlay request channel. `null` hands the mixer back to the LATEST
-   * requested 12-state clip (the release path, and every suspension); a clip plays
+   * requested state clip (the release path, and every suspension); a clip plays
    * the armour performance over it. Idempotent on the applied Doom clip, so the
    * store can publish freely.
    */
@@ -562,8 +570,8 @@ export async function createAvatarRenderer(
   }
 
   const onFinished = (event: { action: AnimationAction }): void => {
-    // Doom one-shots are resolved by the performance store, never by the 12-state
-    // rule: `doom-in`/`doom-out` hand over to a phase, not to a requested state.
+    // Doom one-shots are resolved by the performance store, never by the state
+    // vocabulary rule: `doom-in`/`doom-out` hand over to a phase, not to a requested state.
     const finishedDoom = clipNameOfAction(event.action, doomActions);
     if (finishedDoom) {
       opts.onDoomClipFinished?.(finishedDoom);

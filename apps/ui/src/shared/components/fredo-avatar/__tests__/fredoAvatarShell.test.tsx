@@ -11,7 +11,7 @@
  * What is pinned:
  *  - the stable shell hooks (`data-avatar-render`, `data-avatar-motion`, the
  *    poster layer, zero `<svg>`, zero canvas on a WebGL-less host) at BOTH sizes;
- *  - the 12-state vocabulary still maps 1:1 onto the same-named authored clip
+ *  - the 23-state vocabulary still maps 1:1 onto the same-named authored clip
  *    (`AVATAR_CLIPS`), and the motion rule (`resolveAvatarMotion`) — reduced
  *    motion always a still frame, `talk` held while not streaming;
  *  - the retired SVG path stays retired: no `fredo-avatar.css` import, no scene
@@ -100,13 +100,13 @@ describe('#3210 avatar shell — the production poster path (jsdom has no GPU)',
     expect(shorthandZero || longhandsZero, declared).toBe(true);
   });
 
-  it('renders the same shell for every one of the 12 resolved states', () => {
+  it('renders the same shell for every one of the 23 resolved states', () => {
     for (const state of FREDO_AVATAR_STATES) {
       const { container, unmount } = render(<FredoAvatar size="sm" state={state} />);
       const shell = root(container);
 
       expect(shell.getAttribute('data-avatar-render'), state).toBe('poster');
-      // The 12 states ARE the 12 clips — a missing clip would be a build error.
+      // Every state IS its own clip — a missing clip would be a build error.
       expect(AVATAR_CLIPS[state], `${state} must have a same-named clip`).toBeDefined();
       // Non-`talk` states play; `talk` without a stream holds its first frame.
       expect(shell.getAttribute('data-avatar-motion'), state).toBe(
@@ -167,7 +167,10 @@ describe('#3210 one render path — the SVG avatar code stays deleted', () => {
     ]) {
       expect(componentSource).not.toContain(moved);
     }
-    expect(FREDO_AVATAR_STATES).toHaveLength(12);
-    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(12);
+  });
+
+  it('#3224 — the vocabulary and its clip table are 23 members', () => {
+    expect(FREDO_AVATAR_STATES).toHaveLength(23);
+    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(23);
   });
 });

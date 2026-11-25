@@ -2,11 +2,11 @@
  * The Doom PERFORMANCE clip contract (Spec #3223 ST-1).
  *
  * The character asset ships six authored armour clips (`doom-in`, `doom-idle`,
- * `doom-mg`, `doom-sword`, `doom-shoot`, `doom-out`). They are NOT a thirteenth
- * avatar state: `AVATAR_CLIPS` / `AvatarClipName` / `resolveAvatarMotion` stay
- * exactly twelve, and Doom travels through this PARALLEL table plus its own
- * renderer request channel (`AvatarRenderer.setDoomPerformance`). Doom is an
- * overlay performance layered over the consumer's resolved 12-state clip, so a
+ * `doom-mg`, `doom-sword`, `doom-shoot`, `doom-out`). They are NOT a twenty-fourth
+ * avatar state: `AVATAR_CLIPS` / `AvatarClipName` / `resolveAvatarMotion` carry the
+ * 23 vocabulary states only, and Doom travels through this PARALLEL table plus its
+ * own renderer request channel (`AvatarRenderer.setDoomPerformance`). Doom is an
+ * overlay performance layered over the consumer's resolved state clip, so a
  * release hands straight back to whatever the live resolver says.
  *
  * The weapon identity IS the clip: `doom-idle` holds the shotgun, `doom-mg` the
@@ -35,8 +35,9 @@ export type DoomClipName =
 export type DoomWeapon = 'shotgun' | 'machine-gun' | 'energy-sword';
 
 /**
- * A clip the renderer can ACTUALLY apply — the frozen 12 states plus the six Doom
- * clips. Widened here (never in `avatarClips.ts`) so `AvatarClipName` stays 12.
+ * A clip the renderer can ACTUALLY apply — the 23 vocabulary states plus the six
+ * Doom clips. Widened here (never in `avatarClips.ts`) so `AvatarClipName` stays
+ * exactly the state vocabulary.
  */
 export type AvatarRenderedClip = AvatarClipName | DoomClipName;
 
@@ -87,7 +88,7 @@ export const DOOM_WEAPON_CLIP: Readonly<Record<DoomWeapon, DoomClipName>> = Obje
 });
 
 /**
- * The 12-state clips that OUTRANK the Doom overlay: a teleport is the consumer's
+ * The vocabulary clips that OUTRANK the Doom overlay: a teleport is the consumer's
  * own one-shot pair, so it plays in place of the armour and the overlay is
  * suspended until the pair resolves (never stuck mid-teleport).
  */

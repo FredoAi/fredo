@@ -1,10 +1,10 @@
 /**
  * #3223 ST-1 — the Doom clip contract.
  *
- * The whole point of this table is that Doom is NOT a thirteenth avatar state:
- * `AVATAR_CLIPS` / `AvatarClipName` / `resolveAvatarMotion` stay byte-identical at
- * twelve, and the six armour clips live here in a PARALLEL vocabulary with its own
- * renderer channel. These pins are the control for that separation.
+ * The whole point of this table is that Doom is NOT a twenty-fourth avatar state:
+ * `AVATAR_CLIPS` / `AvatarClipName` / `resolveAvatarMotion` carry the 23-state
+ * vocabulary (#3224), and the six armour clips live here in a PARALLEL vocabulary
+ * with its own renderer channel. These pins are the control for that separation.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -62,7 +62,7 @@ describe('#3223 Doom clip table — the six authored armour clips', () => {
     expect(isDoomOneShotClip('doom-shoot')).toBe(false);
   });
 
-  it('accepts every Doom name and rejects the 12 state names', () => {
+  it('accepts every Doom name and rejects the 23 vocabulary state names', () => {
     for (const name of DOOM_NAMES) expect(isDoomClipName(name)).toBe(true);
     for (const state of FREDO_AVATAR_STATES) {
       expect(isDoomClipName(state), `${state} must not be a Doom clip`).toBe(false);
@@ -113,16 +113,16 @@ describe('#3223 teleport suppression set — the overlay yields, never competes'
   });
 });
 
-describe('#3223 the 12-state vocabulary is untouched', () => {
-  it('keeps `AVATAR_CLIPS` at exactly 12 and shares no name with the Doom table', () => {
-    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(12);
-    expect(FREDO_AVATAR_STATES).toHaveLength(12);
+describe('#3223 the state vocabulary stays disjoint from the Doom table', () => {
+  it('keeps `AVATAR_CLIPS` and the vocabulary at exactly 23, sharing no Doom name', () => {
+    expect(Object.keys(AVATAR_CLIPS)).toHaveLength(23);
+    expect(FREDO_AVATAR_STATES).toHaveLength(23);
     for (const name of DOOM_NAMES) {
       expect(AVATAR_CLIPS).not.toHaveProperty(name);
     }
   });
 
-  it('keeps the motion rule resolving for the 12 states only', () => {
+  it('keeps the motion rule resolving for the 23 vocabulary states only', () => {
     for (const state of FREDO_AVATAR_STATES) {
       expect(['play', 'still']).toContain(resolveAvatarMotion(state, true, false));
     }

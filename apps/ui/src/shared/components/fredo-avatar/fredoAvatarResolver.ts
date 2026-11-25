@@ -1,5 +1,6 @@
 import { isFredoAvatarState } from './fredoAvatarStates';
 import type { FredoAvatarState } from './fredoAvatarStates';
+import { readQaAvatarFlowOverride } from './qaAvatarFlowLever';
 
 /**
  * #2917 ST-4 — the ONE mapping seam from product signals to the shared
@@ -61,7 +62,7 @@ export interface AvatarSignals {
    */
   captureActive?: boolean;
   /**
-   * #2918 model-driven status. Any value NOT in the frozen `FREDO_AVATAR_STATES`
+   * #2918 model-driven status. Any value NOT in the `FREDO_AVATAR_STATES`
    * vocabulary is DROPPED (boundary validation) so malformed model output can
    * never reach the DOM as a stray `data-state`.
    */
@@ -69,12 +70,17 @@ export interface AvatarSignals {
 }
 
 /**
- * #2917 ST-4 — the ordered status-conflict resolution (UI/UX §1), the single
- * source of the priority comparison. A teleport is handled separately: it always
- * wins outright (see {@link resolveCompanionAvatarState}).
+ * #2917 ST-4 / #3224 ST-2 — the ordered status-conflict resolution (UI/UX §1), the
+ * single source of the priority comparison. A teleport is handled separately: it
+ * always wins outright (see {@link resolveCompanionAvatarState}).
  *
  * `working > error > happy (holds) > joking > listening > greeting > thinking >
- * resting playful > idle`
+ * [the 11 emotion states, in authored order] > resting playful > idle`
+ *
+ * The emotion BAND is the only placement that cannot mask an existing state's sole
+ * trigger: every emotion sits BELOW every lifecycle/flow status (so it can never
+ * steal `thinking`'s or `working`'s trigger) and ABOVE the ambient floor (so the
+ * resting `playful` beat can never mask a model-declared emotion).
  *
  * `talk` and the teleport base states are deliberately NOT members: they are
  * base states (never conflict candidates) — `talk` is overridden by every status
@@ -89,6 +95,19 @@ export const FREDO_AVATAR_STATE_PRIORITY = [
   'listening',
   'greeting',
   'thinking',
+  // ── the model-expression band (#3224 R-2c): below every lifecycle/flow status,
+  //    above the ambient floor. Authored ("emotion") order, one contiguous run.
+  'uwu',
+  'love',
+  'sad',
+  'surprised',
+  'sleepy',
+  'skeptical',
+  'confused',
+  'silly',
+  'squint',
+  'angry',
+  'funny',
   'playful',
   'idle',
 ] as const satisfies readonly FredoAvatarState[];
@@ -111,12 +130,20 @@ const rankOf = (state: FredoAvatarState): number =>
  * highest-priority candidate among the flow and the derived signals is returned;
  * when NO status candidate exists the flow is passed through unchanged (so a bare
  * `talk` — which is not a conflict candidate — still renders).
+ *
+ * #3224 ST-2: the DEV-only QA lever substitutes the FLOW at NORMAL rank — its read
+ * sits HERE, on the candidate path and BELOW the teleport branch, so a levered
+ * emotion can never defeat a teleport and the conflict order is unchanged. In a
+ * production build the reader constant-folds to `undefined`, so this line is just
+ * the flow.
  */
 export function resolveCompanionAvatarState(signals: AvatarSignals): FredoAvatarState {
-  const { flow } = signals;
+  const declaredFlow = signals.flow;
 
   // A teleport always wins — pass the in-flight base state straight through.
-  if (signals.teleporting || TELEPORT_STATES.includes(flow)) return flow;
+  if (signals.teleporting || TELEPORT_STATES.includes(declaredFlow)) return declaredFlow;
+
+  const flow = readQaAvatarFlowOverride() ?? declaredFlow;
 
   const candidates: FredoAvatarState[] = [];
   // The flow itself is a candidate only when it is a ranked status state; a base
@@ -143,6 +170,7 @@ export function resolveCompanionAvatarState(signals: AvatarSignals): FredoAvatar
     }
   }
 
-  // No ranked candidate: the flow is a base state (talk) or already idle.
+  // No ranked candidate: the flow is a base state (talk, a teleport state, or the
+  // already-idle floor) — pass it through so it still renders.
   return best ?? flow;
 }
