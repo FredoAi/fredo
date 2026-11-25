@@ -115,8 +115,12 @@ capture line and the sign-in line stay separate statements).
   F-10b** (running vs not running) and **F-12c / F-12d** (retired id + copy absent from
   `apps/ui/src`).
   **Expected:** the capture line reflects `stream_health` in every state; the sign-in state is
-  stated ONLY by the switch + `timing`; `settings-ingest-autostart-status` exists only as an absence
-  pin; `Background capture: On|Off|Unavailable on this platform` has zero hits.
+  stated ONLY by the switch + `timing`; `settings-ingest-autostart-status` exists only as a negative
+  absence pin (the pin body plus its header declaration — three hits in that one test file at the
+  #3195 tree); `Background capture: On|Off|Unavailable on this platform` has **zero RENDER sites** —
+  its only surviving spellings are the pane suite's `RETIRED_COPY` pin (`:102-104`) and its header,
+  which is what F-12d's two sweeps (a non-test sweep at zero, the whole-tree sweep reconciling to the
+  pin) are for.
   **FAIL:** the two statements coupled again (the retired line re-introduced, or the capture line
   derived from the login entry); a rendered retired string.
 
