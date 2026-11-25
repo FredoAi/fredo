@@ -161,6 +161,14 @@ zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate
 # field and for the `engines.fredo` RANGE (`VersionReq`). Already in the graph
 # transitively; direct because `installed_apps::manifest` owns the rules.
 semver = "1"
+# Spec #3206 ST-4 — the ONE OS hand-off for Settings → Credits' upstream links.
+# The crate is ALREADY resolved in this workspace graph at 5.3.4
+# (`Cargo.lock`: pulled in by `tauri-plugin-shell`), so this is a direct-edge
+# promotion: no new crate, no new `[[package]]` block, and the lock's `fredo`
+# dependency list gains exactly the `"open"` line. The only call site is
+# `applications::settings::credits::default_opener` (the validator in front of it
+# admits only characters that carry no meaning to a shell).
+open = "5"
 
 [dev-dependencies]
 tempfile = "3"

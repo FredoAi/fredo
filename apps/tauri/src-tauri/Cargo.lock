@@ -1921,6 +1921,7 @@ dependencies = [
  "kube",
  "llama-cpp-4",
  "neurodoom",
+ "open",
  "opentelemetry-proto",
  "portable-pty",
  "postgresql_embedded",

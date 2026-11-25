@@ -147,4 +147,10 @@ permissions = [
   # Spec #3192 ST-2 — the tray's read-back command: the `main` window's presence
   # plus the REAL native menu items. Granted to the built-in window class only.
   "allow-app-lifecycle-status",
+  # Spec #3206 ST-4 — Settings → Credits: the ONE outbound link hand-off. The
+  # command is `https`-only and refuses before any I/O, so this grant reaches the
+  # built-in window class (Settings renders in `main`) and nothing else. No
+  # capability file changes: `capabilities/app-commands.json` already targets
+  # `main`/`terminal`/`doom`/`app-*`.
+  "allow-open-external-link",
 ]
