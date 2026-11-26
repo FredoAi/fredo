@@ -1104,7 +1104,21 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
       the `Probe` variant's args, output shape, or exit codes; `docs/CLI_GUIDE.md`'s
       `fredo companion probe` section is unchanged (the `fredo companion score` section is ADDED
       beside it).
-  - **Edge:** a bare `fredo companion` with no subcommand still prints clap usage (exit `2`).
+  - **Re-cut (#3232 round 2, G-419/G-466) — the probe IGNORES the models lever.** A `probe` with
+    `FREDO_COMPANION_MODELS_DIR=<empty dir>` does NOT take a missing-model path: the probe resolves
+    `<home>/fredo-models` and ignores the lever (`companion_probe.rs:18-23`), so the leg yields the
+    normal answered run — ONE JSON object, exit `0` — **not** exit `1`. Only `score` honours the
+    lever (`companion_score.rs:315-323`); the lever's absent-models behaviour belongs to the
+    `score` rows (F-188/S-53), never to a probe assertion.
+  - **Edge (re-cut, G-419/G-466):** a bare `fredo companion` with no subcommand prints clap usage
+    and exits `0` — the shipped mapping is `DisplayHelpOnMissingArgumentOrSubcommand => 0`
+    (`infrastructure/cli/mod.rs:120-124`), never `2` (`2` is reserved for app-not-running). The
+    probe's own exit-code contract (`0`/`1`/`2`) is unchanged; only this edge's expected code was
+    wrong.
+  - **Note (plan-completeness gap, folded per the round-2 Fix Plan):** `--fixtures` (a per-fixture
+    expectation override on the committed set — the deliberate-wrong-expectation seam) exists as the
+    **score** harness's live lever though it was absent from the plan's Binding Names; it is a plan
+    gap, not a defect, and is driven by F-183/F-184.
 
 ## R-77 — companion inference behaviour is UNCHANGED (the harness reuses the shipped seams)
 
