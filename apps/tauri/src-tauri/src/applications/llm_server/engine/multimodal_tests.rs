@@ -195,8 +195,8 @@ fn a_live_image_turn_names_image_content() {
     let question = "In one short sentence, describe what is visible in this image. \
                     If it shows a desktop or windows, say so and name any visible colours.";
 
-    // (a) The SHIPPED shaping rule: `[image_url, text]` on the last user message
-    //     (the vendor's guidance — "place Image content before the text").
+    // (a) The SHIPPED shaping rule: `[text, image_url]` on the last user message
+    //     (the text leads — the reverted order, #3234 AC-1).
     let turn = ChatTurn::text(vec![
         message("system", "You are Fredo, a desktop companion."),
         message("user", question),
@@ -778,17 +778,23 @@ fn audio_readiness_is_a_projector_fact_not_a_model_name() {
 //
 // R-3a / R-5b / R-3c / R-5c: pure pins that run everywhere (no model needed).
 
-/// R-3a / R-5b: the screen-capture budget is the vendor's ceiling (1120), and a
-/// non-screen image resolves to a deliberate, bounded budget — never 0-by-omission.
+/// R-3a / R-5b: the screen-capture budget is a positive ceiling, and a non-screen
+/// image resolves to a deliberate, bounded budget — never 0-by-omission.
+///
+/// This is a self-consistency guard against the SYMBOL, never a restated literal:
+/// the ONE vendor-ceiling value lives in `SCREEN_VISUAL_TOKEN_BUDGET`'s definition
+/// (`engine/multimodal.rs`), so moving the constant moves this guard instead of
+/// reddening it (the human's derive-don't-restate rule; #3192 / #3234).
 #[test]
 fn the_screen_budget_constant_is_the_ceiling_and_the_non_screen_budget_is_sane() {
-    assert_eq!(
-        SCREEN_VISUAL_TOKEN_BUDGET, 1120,
-        "the screen-capture budget is the vendor's highest supported value"
+    assert!(
+        SCREEN_VISUAL_TOKEN_BUDGET > 0,
+        "the screen-capture budget is a positive ceiling"
     );
     assert!(
-        NON_SCREEN_VISUAL_TOKEN_BUDGET > 0 && NON_SCREEN_VISUAL_TOKEN_BUDGET <= 1120,
-        "a non-screen image resolves to a deliberate budget in (0, 1120]: {}",
+        NON_SCREEN_VISUAL_TOKEN_BUDGET > 0
+            && NON_SCREEN_VISUAL_TOKEN_BUDGET <= SCREEN_VISUAL_TOKEN_BUDGET,
+        "a non-screen image resolves to a deliberate budget in (0, SCREEN_VISUAL_TOKEN_BUDGET]: {}",
         NON_SCREEN_VISUAL_TOKEN_BUDGET
     );
 }
@@ -801,7 +807,6 @@ fn a_screen_turn_declares_the_screen_budget_and_a_non_screen_image_resolves_sane
         .with_image("QUJD")
         .with_visual_token_budget(SCREEN_VISUAL_TOKEN_BUDGET);
     assert_eq!(visual_token_budget_for(&screen), SCREEN_VISUAL_TOKEN_BUDGET);
-    assert_eq!(visual_token_budget_for(&screen), 1120);
 
     let non_screen = ChatTurn::text(vec![message("user", "look")]).with_image("QUJD");
     assert_eq!(
@@ -810,39 +815,40 @@ fn a_screen_turn_declares_the_screen_budget_and_a_non_screen_image_resolves_sane
     );
     let resolved = visual_token_budget_for(&non_screen);
     assert!(
-        resolved > 0 && resolved <= 1120,
+        resolved > 0 && resolved <= SCREEN_VISUAL_TOKEN_BUDGET,
         "a non-screen image never gets 0-by-omission or an unbounded budget: {resolved}"
     );
 }
 
-/// R-1c: the media plan evaluates `[bitmap, text]` — the media segment sits in
-/// POSITION 0 and the user's text follows it (image-first, the vendor order).
+/// R-1c: the media plan evaluates `[text, bitmap]` — the user's text segment
+/// precedes the media segment (the reverted shipped order; image-first was
+/// falsified on the dense screen case, #3234 AC-1). Renamed from the inverted
+/// `…_bitmap_before_the_text` so the name does not lie about its assertion.
 #[test]
-fn the_media_plan_evaluates_the_bitmap_before_the_text() {
-    let segments = interleave("<__media__>look at this", "<__media__>", 1)
+fn the_media_plan_evaluates_the_text_before_the_bitmap() {
+    let segments = interleave("look at this<__media__>", "<__media__>", 1)
         .expect("one marker for one image");
     assert_eq!(
         segments,
         vec![
-            PromptSegment::Text(""),
-            PromptSegment::Media(0),
             PromptSegment::Text("look at this"),
+            PromptSegment::Media(0),
+            PromptSegment::Text(""),
         ],
-        "the image turn's parts are [bitmap, text] — media in position 0"
+        "the image turn's parts are [text, bitmap] — the text precedes the media"
     );
-    // The media segment precedes the user's text — the vendor order ("place
-    // Image content before the text"). This is the plan's `[bitmap, text]`.
-    let media_at = segments
-        .iter()
-        .position(|segment| matches!(segment, PromptSegment::Media(_)))
-        .expect("the media segment is present");
+    // The user's text precedes the media segment — the plan's `[text, bitmap]`.
     let text_at = segments
         .iter()
         .position(|segment| matches!(segment, PromptSegment::Text(t) if *t == "look at this"))
         .expect("the user's text segment is present");
+    let media_at = segments
+        .iter()
+        .position(|segment| matches!(segment, PromptSegment::Media(_)))
+        .expect("the media segment is present");
     assert!(
-        media_at < text_at,
-        "the bitmap must come BEFORE the user text: {segments:?}"
+        text_at < media_at,
+        "the user text must come BEFORE the bitmap: {segments:?}"
     );
 }
 

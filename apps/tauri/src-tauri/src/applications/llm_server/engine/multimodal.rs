@@ -20,10 +20,9 @@
 //! where the media part sits in the message, and this module never guesses at
 //! template structure:
 //!
-//! * an **image** turn renders `[image_url, text]` (the vendor's own guidance:
-//!   "place Image content before the text"), so the prompt is
-//!   `…<marker><user text>…` ⇒ parts `[text(prefix), bitmap(image), text(user)]`
-//!   — the plan's "`[bitmap, text]`" (image BEFORE text);
+//! * an **image** turn renders `[text, image_url]`, so the prompt is
+//!   `…<user text><marker>…` ⇒ parts `[text(user), bitmap(image), text(rest)]`
+//!   (the plan's "text + bitmap");
 //! * an **audio** turn renders exactly ONE `input_audio` part and NO text part
 //!   (`engine/request.rs`'s shipped rule), so the prompt is
 //!   `…<start_of_turn>user\n<marker><end_of_turn>…` ⇒ parts
