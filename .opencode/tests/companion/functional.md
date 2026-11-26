@@ -12,6 +12,11 @@
 > **Serving checkout:** `spec/2850` on a running Fredo desktop app (dev-env Up -Spec 2850,
 > MCP driver `com.fredo.app`). LLM model + mmproj present/loaded for F-7/F-8; Run CLI/terminal
 > window for F-10.
+>
+> **#3232 extension (read before executing F-179..F-191):** the appended scoring-harness block
+> carries four `static` source/pin rows (F-179/F-180/F-182/F-190) and runs against the **CLI
+> harness** serving checkout (no app, webview or MCP driver); the file-level policy above stays
+> `live` for every UI row.
 
 ## F-1 (Q-2 / AC-1) — Companion imports the shared canonical avatar
 
@@ -3241,3 +3246,220 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
   - **Edge:** re-run on the tested tip; keep the emit + query output verbatim; disclose the DB port;
     if the pool refuses `psql`, use the named telemetry fallback and DISCLOSE.
   - **Receipt:** E-SPAN + E-SHOT.
+
+---
+
+## #3232 extension — companion scoring harness
+
+> Issue #3232 adds a maintainer-facing scoring harness: `fredo companion score` runs a committed
+> `ChatTurn` fixture set through the shipped engine seam and scores each fixture by its OWN
+> structural expectation. Rows map 1:1 to `.opencode/tmp/3232/triage.md` `## QA Expert`
+> (`F-179..F-191`). **Verification policy: live** — the scoring run and the AC-4 read-back are
+> live; F-179/F-180/F-182/F-190 are the only static (source/pin) rows and are marked `(static)`. A
+> static-only PASS for the live-policy plan is a FALSE PASS.
+> **Serving checkout:** the spec branch (the `fredo` CLI binary is built from it: the
+> `[[bin]] name = "fredo"` target, `apps/tauri/src-tauri/Cargo.toml:13-14`). No app process, no
+> webview, no MCP driver, no UI — the `fredo companion probe` shape (own `CompanionEngineHandle`,
+> no `AppHandle`). **Reach lever:** `fredo companion score [--baseline <path>] [--pg-port <n> |
+> --manifest <path>] [--report <path>]`; exit `0` pass / `1` fail-or-regression / `2` usage / `3`
+> skipped.
+> **Model precondition — RESOLVED, not merely present (human filesystem check 2026-11-26):** the
+> pinned trio RESOLVES at the documented default location
+> (`<USERPROFILE|HOME>/fredo-models/gemma-4-e2b-it-qat/`) because `FREDO_COMPANION_MODELS_DIR` is
+> UNSET. The scored rows assert **resolution** (the resolved path PLUS the file sizes `docs/SETUP.md`
+> lists), never bare presence on disk. The AC-5 absent-models driver
+> (`FREDO_COMPANION_MODELS_DIR=<empty dir>`) is unchanged.
+
+## F-179 (R-1 / AC-1) — the committed fixture set is `ChatTurn`-typed, covers the required classes, and is ≤ 20 (static)
+
+- [ ] **F-179 (R-1 / AC-1) — the fixture set is `ChatTurn` data with the required coverage and ≤ 20 members.**
+  **Steps:** static-read `apps/tauri/src-tauri/src/applications/llm_server/engine/score/fixtures.rs`
+  and run the committed ST-1 pin `every_fixture_is_a_chat_turn_and_coverage_is_complete`.
+  **Expected:** the set is a fixed `Vec<ScoreFixture>` (from a `fixtures()` accessor) whose `turn`
+  field is a `ChatTurn` value (`engine/request.rs:110`); the ids include `text-chat`,
+  `skill-open-app`, `schema-doom-plan`, `vision-screen-text` and (when the clip is committed)
+  `audio-clip`; `fixtures().len() <= 20`; NO fixture is built by deserialising an OpenAI-shaped
+  request body. Quote the pin's PASS line and the `fixtures.rs` file:line of the `fixtures()` list.
+  - **Edge:** `text-chat` carries NO media (`image:None`, `audio:None`); `audio-clip` absent does not
+    fail coverage (the clip is optional); a 21st fixture reddens the cap clause.
+  - **Receipt (non-draft, G-415):** the pin output in the POSTED `## Tests Runs` comment + the
+    `fixtures.rs` file:line.
+
+## F-180 (R-1 / AC-1) — no OpenAI-shaped request fixture and no parallel request model (static)
+
+- [ ] **F-180 (R-1 / AC-1) — the harness contains no OpenAI-shaped request vocabulary.**
+  **Steps:** static absence scan scoped to
+  `apps/tauri/src-tauri/src/applications/llm_server/engine/score/**` +
+  `apps/tauri/src-tauri/src/infrastructure/cli/commands/companion_score.rs` for: `chat/completions`,
+  `"response_format"` used as a REQUEST string body, `"messages"` request fixtures, a `provider` /
+  `adapter` / `api_key` seam, and any second request type.
+  **Expected:** ZERO hits of a request-shaped vocabulary; the ONLY shaping calls are
+  `skills::skill_turn` (`skills.rs:75`) and `doom_agent::doom_turn` (`doom_agent.rs:214`); no second
+  request model exists anywhere in the harness. A single `serde_json::json!` building a JSON
+  **schema** (a `Schema` predicate's `require` list, the Doom plan schema) is ALLOWED — distinguish
+  schema-building from request-body-building.
+  - **Edge (G-431):** the scan is EXCLUDED from `.opencode/tests/companion/**` by path — this suite's
+    own prose names the banned tokens and must not redden the guard against itself.
+  - **Receipt:** the grep command + its (empty) hit list in `## Tests Runs`.
+
+## F-181 (R-2 / AC-2) — each fixture is scored by its OWN expectation; per-fixture pass/fail + a total
+
+- [ ] **F-181 (R-2 / AC-2) — the run prints per-fixture pass/fail plus a total.**
+  **Precondition (models RESOLVED — the assertion is about resolution, not presence):** record the
+  harness's resolved model paths and each file's SIZE, then assert:
+  `<models_dir>/gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, `…/mmproj-BF16.gguf`,
+  `…/MTP/mtp-gemma-4-E2B-it-Q4_0.gguf` where `<models_dir>` resolves to the documented default
+  (`~/fredo-models`) because `FREDO_COMPANION_MODELS_DIR` is UNSET, and the resolved sizes equal
+  those `docs/SETUP.md` lists (`~2.6 GB` / `~987 MB` / `~59 MB`). A resolved path or size differing
+  from SETUP.md is a precondition FAIL, not a fixture result. (Verified by a human filesystem check
+  2026-11-26.) If the trio does not resolve, take F-188's named-skip path — never a scored run.
+  **Steps:** run `fredo companion score` (models resolved) against the env store; capture stdout and
+  the `--report` JSON.
+  **Expected:** every fixture's `passed` is a BOOLEAN decided by comparing its outcome to its OWN
+  `Expectation` (`Call{name,required_args}` or `Schema{name,require}`); stdout shows each fixture's
+  pass/fail and a total line; the report carries `total`/`passed`/`failed` with `total ==
+  fixtures().len()`; no fixture is scored by another fixture's expectation.
+  - **Edge:** the skip path (F-188) prints NO total — assert the total is present ONLY here.
+  - **Receipt:** the resolved-path/size table + the stdout transcript + the report JSON, verbatim.
+
+## F-182 (R-2 / AC-2) — the expectation model is STRUCTURAL (no prose, no LLM-as-judge) (static)
+
+- [ ] **F-182 (R-2 / AC-2) — `Expectation` is only `Call | Schema`; the decision is never prose.**
+  **Steps:** static-read `score/expect.rs` + `score/fixtures.rs`; grep the score module for
+  `contains(`, `similarity`, `judge`, `semantic`, `llm`, `eval`.
+  **Expected:** `Expectation` is exactly the two pinned variants; the evaluator returns a boolean
+  from a tool-call name + required-argument comparison or a JSON-schema-validity predicate
+  (`Schema.require` = the named top-level fields present); ZERO substring/fuzzy/prose match; NO
+  second model; NO eval framework (no LangChain/LangGraph/`rig`/`swiftide`). A `detail` string is
+  diagnostic only and NEVER decides `passed`.
+  - **Edge:** a schema predicate that only checks the schema NAME is insufficient — it must assert
+    the named required fields are present (e.g. `["steps"]` for `doom_plan`, `["reply","status"]`
+    for `fredo_reply`).
+  - **Receipt:** `expect.rs:NN` file:line + the (empty) grep hit list.
+
+## F-183 (R-2 / AC-2 + INVEST "T") — the harness CAN FAIL: a wrong expectation yields `passed:false`
+
+- [ ] **F-183 (R-2 / AC-2) — the deliberately-wrong-expectation control.**
+  **Steps (unit tier — always runnable, no model):** run the ST-1 pin
+  `a_wrong_expectation_fails_and_a_matching_one_passes`: it builds a `ScoreFixture` whose
+  expectation does NOT match a synthetic outcome and asserts `passed == false`, then a matched twin
+  and asserts `passed == true`.
+  **Steps (live tier — models resolved; requires the scratch-fixture seam, QA Discussion QA-3):** run
+  `fredo companion score --fixtures <scratch path under .opencode/tmp/3232/>` carrying a
+  deliberately-wrong-expectation fixture; capture stdout + exit code.
+  **Expected:** the unit negative control FAILS the wrong expectation and PASSES the matching one
+  (both asserted in one pin); the live run reports that fixture FAIL, names it in the failure list,
+  and exits non-zero — a green run over a wrong expectation is a FAIL of this row.
+  - **Edge:** three wrong shapes must each FAIL — wrong NAME, wrong required ARGS, missing required
+    schema field — so the control cannot pass by matching a partially-correct shape.
+  - **Named blocker / fallback:** if the Architect declines the seam, the live tier is recorded
+    `cited-not-executed` with the always-runnable unit tier as the disclosed residual — NEVER a PASS
+    by substitution.
+  - **Receipt:** the pin output (unit) + the live stdout/exit code, in `## Tests Runs`.
+
+## F-184 (R-3 / AC-3) — a NEWLY-FAILING fixture is named; exit non-zero
+
+- [ ] **F-184 (R-3 / AC-3) — the regression direction.**
+  **Steps:** take a baseline that records fixture X `passed:true`; drive a tree where X evaluates
+  `false` (the F-183 live lever — `--fixtures <scratch>`); run `fredo companion score`; read the
+  report's `regressions` array and the exit code.
+  **Expected:** `regressions` contains X (every newly-failing fixture, by id); `newly_passing` is
+  empty; the process exits `1`; the stdout names X as newly-failing.
+  - **Edge:** two newly-failing fixtures ⇒ BOTH named; an unchanged pass set ⇒ `regressions` and
+    `newly_passing` both EMPTY and exit `0`.
+  - **Receipt:** the report JSON + exit code + the stdout failure nomination.
+
+## F-185 (R-3 / AC-3) — a NEWLY-PASSING fixture is named
+
+- [ ] **F-185 (R-3 / AC-3) — the newly-passing direction.**
+  **Steps:** write a scratch baseline under `.opencode/tmp/3232/` that records fixture Y
+  `passed:false` (Y is one the unchanged tree PASSES); run `fredo companion score --baseline
+  <scratch>`; read `newly_passing` and the exit code.
+  **Expected:** `newly_passing` contains Y (by id); `regressions` is empty; the exit code is recorded
+  and must match the Architect's pinned contract (D-1 / QA Discussion QA-2).
+  - **Edge:** Y absent from the baseline entirely ⇒ record the resolved rule (QA-2/QA-3); a fixture
+    in the baseline but not in the run ⇒ record the resolved rule (exploratory E-82).
+  - **Receipt:** the report JSON + the scratch baseline path + the exit code.
+
+## F-186 (R-3 / AC-3) — a rerun of an unchanged tree reproduces the same pass set (pinned seeds)
+
+- [ ] **F-186 (R-3 / AC-3) — determinism.**
+  **Steps:** on ONE unchanged tree (same commit, same models, same store) run `fredo companion
+  score` twice; extract, per run, the pass set (`{id : passed==true}`) and each fixture's recorded
+  `seed`; diff the two pass sets.
+  **Expected:** the two pass sets are IDENTICAL; each fixture's `seed` equals its committed seed (the
+  per-fixture seed is a committed property of the fixture); the two exit codes are equal.
+  - **Edge:** MTP counters are process-CUMULATIVE (`EngineStatusSnapshot.mtp_stats`, `handle.rs:69`)
+    — the harness MUST diff before/after each fixture, so a second run does not double-count; latency
+    may differ between runs while the pass set does not; the comparison is the pass SET (structured
+    booleans), never the reply text.
+  - **Receipt:** the two runs' pass sets + seeds side by side.
+
+## F-187 (R-4 / AC-4) — each fixture's record persists and is readable AFTER the process exits
+
+- [ ] **F-187 (R-4 / AC-4) — the executed store leg (G-196).**
+  **Steps:** run `fredo companion score` against the env store (`--pg-port`/`--manifest`); record the
+  process exit; THEN, in a SEPARATE process, query the store via the telemetry-query skill:
+  `SELECT span_id, span_name, session_id, status_code, attributes_json FROM telemetry_spans WHERE
+  event_type = 'companion.score' ORDER BY start_time_ns`.
+  **Expected:** one span PER FIXTURE (`span_name='companion.score.fixture'`,
+  `session_id='companion-score'`); `attributes_json` carries `fixtureId`, `passed`, `seed`,
+  `latencyMs`, `promptTokens`, `completionTokens`, `mtpDraftsProposed`, `mtpDraftsAccepted`,
+  `mtpDraftCalls`, `detail`; `status_code` is `OK` when `passed` and `ERROR` when not; the row count
+  ≥ the fixture count. The read-back is a SEPARATE process whose exit is AFTER the harness exited
+  (an in-memory-only cluster that dies with the harness FAILS this row).
+  - **Edge:** two consecutive runs ⇒ two sets distinguishable by `start_time_ns`; retention eviction
+    of spans must NOT affect the AC-3 baseline (the baseline is a committed file, not a span).
+  - **Receipt:** the exit timestamps + the query output verbatim + the resolved store port/manifest.
+
+## F-188 (R-5 / AC-5) — absent models are a NAMED skip: exit 3 + missing-file list + lever + NO total
+
+- [ ] **F-188 (R-5 / AC-5) — the exercisable absent-models leg (any host).**
+  **Steps:** create an EMPTY dir under `.opencode/tmp/3232/`; run with
+  `FREDO_COMPANION_MODELS_DIR=<that dir>`; capture stdout JSON + stderr + the exit code.
+  **Expected:** exit code `3`; `status:"skipped"`; `missing_files` = the product's OWN list from
+  `missing_files()` (`infrastructure/companion/models.rs:304`), i.e. the three pinned files
+  (`gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf`, `…/mmproj-BF16.gguf`,
+  `…/MTP/mtp-gemma-4-E2B-it-Q4_0.gguf`); `models_dir_lever:"FREDO_COMPANION_MODELS_DIR"`;
+  `total`/`passed`/`failed` are ABSENT (never `0`, never a total); nothing is scored and NO
+  `companion.score` spans are written.
+  - **Edge:** a dir holding 1 of the 3 files ⇒ `missing_files` names only the missing ones; a
+    blank/whitespace env value ⇒ treated as UNSET (resolves to the home default — then the run is
+    either the skip again or the scored path, recorded); `--pg-port` unusable does NOT change the
+    skipped status (never `2`).
+  - **Receipt:** the stdout JSON + exit code + the empty dir path.
+
+## F-189 (R-5 / AC-5) — skip (3) / usage (2) / fail (1) are DISTINCT
+
+- [ ] **F-189 (R-5 / AC-5) — the exit-code separation.**
+  **Steps:** (a) absent models ⇒ exit `3`; (b) a usage/precondition error (a malformed flag, or the
+  resolved rule for a missing `--baseline` file) ⇒ exit `2`; (c) a failing fixture or a regression
+  ⇒ exit `1`; (d) all pass ⇒ exit `0`.
+  **Expected:** four DISTINCT codes `0/1/2/3` with the pinned meanings; a run that skips (3) NEVER
+  prints a pass/fail total; a usage error (2) is never confusable with a skip (3).
+  - **Edge:** a missing `--baseline` FILE — record whether the shipped rule is `2` or `3` (QA
+    Discussion QA-2) and assert the OBSERVED code consistently.
+  - **Receipt:** the four runs' exit codes side by side.
+
+## F-190 (NFR / bounded) — the ≤ 20 fixture cap is enforced, not conventional (static)
+
+- [ ] **F-190 (NFR) — the fixture cap.**
+  **Steps:** read `fixtures.rs` + the ST-1 cap clause of the coverage pin.
+  **Expected:** `fixtures().len() <= 20` is ASSERTED (a 21st committed fixture fails the pin), over a
+  fixed committed list with no runtime growth; the wrong-expectation control (F-183) is counted or
+  explicitly excluded from the scored set and the plan says which (QA Discussion QA-3).
+  - **Edge:** the cap is over the SCORED fixture set; a scratch `--fixtures` file used by a control
+    leg is not a shipped growth of the set.
+  - **Receipt:** the pin output + the `fixtures.rs` file:line.
+
+## F-191 (LIVE) — mandatory `telemetry_spans` receipt for the scoring run
+
+- [ ] **F-191 (LIVE) — the pipeline's live-evidence token.**
+  **Steps:** same run as F-181..F-188; query `telemetry_spans` for `event_type='companion.score'` via
+  the telemetry-query skill; retain the stdout report + the query output.
+  **Expected:** `telemetry_spans` returns a NON-ZERO count with a recent `max(start_time_ns)` and one
+  row per fixture; the query output is kept VERBATIM in `## Tests Runs`. **A static-only PASS with no
+  `telemetry_spans` receipt is a FALSE PASS.**
+  - **Edge:** disclose the resolved pg port/manifest; if the pool refuses `psql`, use the named
+    telemetry fallback and DISCLOSE; never fabricate a query.
+  - **Receipt:** the query output (the live receipt).
