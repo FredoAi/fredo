@@ -5,6 +5,9 @@
  *  - TauriAdapter  (apps/tauri)         — Tauri IPC events + invoke
  *  - DevAdapter    (apps/ui dev server) — in-memory emitter
  */
+
+import type { CompanionInjectionFacts } from '../../shared/app-intelligibility/injection';
+
 export interface HostAdapter {
   /** Subscribe to incoming messages from the host. Returns an unsubscribe function. */
   onMessage(handler: (msg: any) => void): () => void;
@@ -120,10 +123,22 @@ export interface HostAdapter {
  * #2918 ST-3 — the request-shape options for the structured-status streaming path.
  * `offerSkills` selects the shipped skill/audio-skill request body; `audioBase64`
  * attaches a captured clip to the last user message (backend renderer).
+ *
+ * Spec #3244 ST-4 — two ADDITIVE fields:
+ *   - `imageBase64` — the per-turn injected pair's SCREENSHOT leg, routed through
+ *     the SAME media path the audio leg uses (`skills::skill_turn(…, image)`),
+ *     which already declares `SCREEN_VISUAL_TOKEN_BUDGET`. It is MUTUALLY
+ *     EXCLUSIVE with `audioBase64` (one attachment per turn): the backend prefers
+ *     audio when both are somehow present. ABSENT KEY when unset (G-413).
+ *   - `injection` — the turn's injection facts (the live receipt). ABSENT KEY when
+ *     the turn targets no app; present ⇒ the backend records a
+ *     `companion.injection` span in `telemetry_spans`.
  */
 export interface LlmChatWithStatusOptions {
   offerSkills: boolean;
   audioBase64?: string;
+  imageBase64?: string;
+  injection?: CompanionInjectionFacts;
 }
 
 /** A single turn in an LLM conversation. */

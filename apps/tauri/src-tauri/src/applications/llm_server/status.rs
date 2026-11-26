@@ -43,10 +43,12 @@ use crate::infrastructure::companion::skills::SkillRegistry;
 use crate::infrastructure::companion::PerformanceModeState;
 
 use super::chat::LlmMessage;
+use super::engine::multimodal::SCREEN_VISUAL_TOKEN_BUDGET;
 use super::engine::request::ChatTurn;
 use super::engine::stream::{
     AppSink, EventSink, SettledStream, StreamEvent, TurnSource,
 };
+use super::injection::{record_injection_span, CompanionInjectionSpan};
 use super::skills::{
     self, plan_stream_error_events, plan_terminal_events, TerminalEvent, ToolCallAccumulator,
 };
@@ -539,6 +541,7 @@ fn emit_status(settled: &mut SettledStream<'_>, status: &str) {
 fn structured_status_turn(
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
+    image_base64: Option<&str>,
 ) -> ChatTurn {
     let mut structured_messages = messages.to_vec();
     with_status_instruction(&mut structured_messages);
@@ -546,6 +549,13 @@ fn structured_status_turn(
         .with_json_schema(FREDO_STATUS_SCHEMA_NAME, fredo_status_schema());
     if let Some(audio) = audio_base64 {
         turn = turn.with_audio(audio);
+    } else if let Some(image) = image_base64 {
+        // Spec #3244 ST-4 — a screen capture declares the screen visual-token
+        // budget on the turn (the same one the tools path declares). Audio and
+        // image are mutually exclusive: one attachment per turn.
+        turn = turn
+            .with_image(image)
+            .with_visual_token_budget(SCREEN_VISUAL_TOKEN_BUDGET);
     }
     turn
 }
@@ -582,8 +592,9 @@ async fn run_structured_attempt(
     settled: &mut SettledStream<'_>,
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
+    image_base64: Option<&str>,
 ) -> Result<StructuredAttempt, String> {
-    let turn = structured_status_turn(messages, audio_base64);
+    let turn = structured_status_turn(messages, audio_base64, image_base64);
 
     let registry = SkillRegistry::with_app_control();
     let mut accumulator = ToolCallAccumulator::new();
@@ -737,9 +748,13 @@ async fn run_tools_attempt(
     context: &StatusTurnContext,
     messages: &[LlmMessage],
     audio_base64: Option<&str>,
+    image_base64: Option<&str>,
 ) -> Result<(), String> {
     let registry = &context.registry;
-    let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, None);
+    // Spec #3244 ST-4 — the injected pair's screenshot leg rides the SAME media
+    // path #3234 shaped; `skill_turn` declares the screen visual-token budget for
+    // it. Audio and image are mutually exclusive (one attachment).
+    let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, image_base64);
 
     let mut accumulator = ToolCallAccumulator::new();
     let mut prose = String::new();
@@ -810,10 +825,11 @@ async fn run_plain_retry(
     messages: &[LlmMessage],
     offer_skills: bool,
     audio_base64: Option<&str>,
+    image_base64: Option<&str>,
 ) -> Result<(), String> {
     if offer_skills {
         let registry = &context.registry;
-        let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, None);
+        let turn = skills::skill_turn(messages.to_vec(), registry, audio_base64, image_base64);
         skills::stream_skill_turn(source, settled, registry, turn).await?;
         settled.finish();
         Ok(())
@@ -821,6 +837,12 @@ async fn run_plain_retry(
         let mut turn = ChatTurn::text(messages.to_vec());
         if let Some(audio) = audio_base64 {
             turn = turn.with_audio(audio);
+        } else if let Some(image) = image_base64 {
+            // Spec #3244 ST-4 — the tools-free plain retry carries the injected
+            // screenshot too, so a media turn is never silently degraded to text.
+            turn = turn
+                .with_image(image)
+                .with_visual_token_budget(SCREEN_VISUAL_TOKEN_BUDGET);
         }
         skills::stream_plain_turn(source, settled, turn).await?;
         settled.finish();
@@ -842,6 +864,7 @@ async fn run_status_chat(
     messages: Vec<LlmMessage>,
     offer_skills: bool,
     audio_base64: Option<String>,
+    image_base64: Option<String>,
 ) -> Result<(), String> {
     // One guard owns the turn's SINGLE terminator across every attempt: an
     // abandoned attempt hands the turn over instead of settling it, so the
@@ -867,6 +890,7 @@ async fn run_status_chat(
             context,
             &messages,
             audio_base64.as_deref(),
+            image_base64.as_deref(),
         )
         .await;
     }
@@ -879,6 +903,7 @@ async fn run_status_chat(
                 &mut settled,
                 &messages,
                 audio_base64.as_deref(),
+                image_base64.as_deref(),
             )
             .await
             {
@@ -907,6 +932,7 @@ async fn run_status_chat(
             &messages,
             offer_skills,
             audio_base64.as_deref(),
+            image_base64.as_deref(),
         )
         .await;
     }
@@ -922,8 +948,16 @@ pub fn spawn_chat_with_status(
     messages: Vec<LlmMessage>,
     offer_skills: bool,
     audio_base64: Option<String>,
+    image_base64: Option<String>,
+    injection: Option<CompanionInjectionSpan>,
 ) {
     tauri::async_runtime::spawn(async move {
+        // Spec #3244 ST-4 — record the turn's injection facts FIRST, before the
+        // engine is even consulted: the receipt is about what the turn CARRIED,
+        // so a not-yet-loaded engine or a failed stream must not lose it.
+        if let Some(facts) = injection.as_ref() {
+            record_injection_span(&app, facts).await;
+        }
         let sink = AppSink::new(&app);
         let source = match super::engine::stream::EngineTurnSource::for_app(&app) {
             Ok(source) => source,
@@ -942,6 +976,7 @@ pub fn spawn_chat_with_status(
             messages,
             offer_skills,
             audio_base64,
+            image_base64,
         )
         .await;
     });
@@ -957,14 +992,31 @@ pub fn spawn_chat_with_status(
 /// (`offer_skills = false`) obtains `{ reply, status }` in one object. In both
 /// cases the parsed status is emitted on `llm-status` before the shipped
 /// `llm-done`, never on a skill/error turn.
+///
+/// Spec #3244 ST-4 — two ADDITIVE optional arguments:
+///   - `image_base64` — the injected pair's SCREENSHOT leg, routed through the
+///     SAME media path the audio leg uses (`skills::skill_turn(..., image)`, which
+///     declares `SCREEN_VISUAL_TOKEN_BUDGET`). Mutually exclusive with
+///     `audio_base64` (one attachment).
+///   - `injection` — the turn's injection facts, persisted as a
+///     `companion.injection` span in `telemetry_spans` (the live receipt).
 #[tauri::command]
 pub async fn llm_chat_with_status(
     messages: Vec<LlmMessage>,
     offer_skills: bool,
     audio_base64: Option<String>,
+    image_base64: Option<String>,
+    injection: Option<CompanionInjectionSpan>,
     app: AppHandle,
 ) -> Result<(), String> {
-    spawn_chat_with_status(app, messages, offer_skills, audio_base64);
+    spawn_chat_with_status(
+        app,
+        messages,
+        offer_skills,
+        audio_base64,
+        image_base64,
+        injection,
+    );
     Ok(())
 }
 
@@ -1720,6 +1772,7 @@ mod tests {
             vec![message("user", "hello")],
             offer_skills,
             audio,
+            None,
         )
         .await
         .expect("the status orchestrator settles instead of erroring");
@@ -1740,6 +1793,7 @@ mod tests {
             vec![message("user", "")],
             true,
             Some("UklGRg==".to_string()),
+            None,
         )
         .await
         .expect("the refusal settles without erroring");

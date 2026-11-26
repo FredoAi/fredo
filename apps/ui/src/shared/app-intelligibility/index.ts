@@ -19,3 +19,8 @@ export type {
   AppDescriptionSource,
   AppIntelligibilityFailure,
 } from './description';
+
+// Spec #3244 ST-4 — the screen-outline projector (the injected pair's DOM leg).
+// ONE added re-export line; the module itself is ST-1's and nothing else here
+// changes.
+export * from './screenOutline';

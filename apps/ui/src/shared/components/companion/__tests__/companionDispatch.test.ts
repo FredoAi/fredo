@@ -22,12 +22,20 @@ import {
   QUEUED_WAITING_TESTID,
   buildCompanionTurnMessages,
   companionGroundingContent,
+  companionScreenContextContent,
   createCompanionSendQueue,
+  fitScreenContextOutline,
   queuedWaitingCopy,
   resolveSendOutcome,
 } from '../companionDispatch';
 import { COMPANION_CAPABILITY_LIMITS } from '../../../companion/grounding';
 import type { CompanionGrounding } from '../../../companion/grounding';
+import {
+  SCREEN_OUTLINE_MAX_BYTES,
+  utf8ByteLength,
+} from '../../../app-intelligibility/screenOutline';
+import type { ScreenOutline } from '../../../app-intelligibility/screenOutline';
+import type { AppDescription } from '../../../app-intelligibility/description';
 
 const PERSONA = 'You are Fredo, a friendly, concise desktop assistant.';
 
@@ -322,5 +330,99 @@ describe('#3120 ST-3 — the FIFO carries the grounding context', () => {
     expect(drained).toHaveLength(2);
     expect('context' in (drained[0] as object)).toBe(false);
     expect(drained[1].context).toBe(context);
+  });
+});
+
+// ── Spec #3244 ST-4 — the injected pair's screen-context message ──────────────
+
+describe('#3244 ST-4 — the screen pair becomes ONE bounded system message', () => {
+  function outline(count: number): ScreenOutline {
+    return {
+      nodes: Array.from({ length: count }, (_unused, index) => ({
+        role: 'button',
+        name: `Control ${index}`,
+        tag: 'button',
+        bbox: [index, index * 2, 90, 24] as const,
+      })),
+      truncated: false,
+    };
+  }
+
+  const DESCRIPTION: AppDescription = {
+    appId: 'qa3244-untaught',
+    name: 'Sample Reader',
+    description: 'A sample reader app Fredo was never taught about.',
+  };
+
+  it('with no pair supplied the legacy message list stays byte-identical', () => {
+    // Even a description alone adds nothing: only a PAIR opens the screen message.
+    expect(buildCompanionTurnMessages('hello', PERSONA)).toStrictEqual([
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+    expect(
+      buildCompanionTurnMessages('hello', PERSONA, { description: DESCRIPTION }),
+    ).toStrictEqual([
+      { role: 'system', content: PERSONA },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('adds EXACTLY ONE system message for a supplied pair (the screenshot is not a message)', () => {
+    const messages = buildCompanionTurnMessages('do the thing', PERSONA, {
+      screen: { screenshotPngBase64: 'iVBORw0KGgo=', outline: outline(3) },
+      description: DESCRIPTION,
+    });
+
+    expect(messages).toHaveLength(3);
+    expect(messages.filter((m) => m.role === 'system')).toHaveLength(2);
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    // The screen context is the ONE added message (dynamic context precedes the
+    // persona, exactly as the grounding message does), and it carries the
+    // description AND the outline (R-2b).
+    const screen = messages[0];
+    expect(screen?.role).toBe('system');
+    expect(screen?.content).toContain('APP: Sample Reader (qa3244-untaught)');
+    expect(screen?.content).toContain('DESCRIPTION: A sample reader app Fredo was never taught about.');
+    expect(screen?.content).toContain('Control 0');
+    expect(messages[1]).toEqual({ role: 'system', content: PERSONA });
+    expect(messages[2]).toEqual({ role: 'user', content: 'do the thing' });
+  });
+
+  it('still adds exactly ONE message when no description is supplied', () => {
+    const messages = buildCompanionTurnMessages('hi', PERSONA, {
+      screen: { screenshotPngBase64: 'AAAA', outline: outline(1) },
+    });
+    expect(messages).toHaveLength(3);
+    expect(messages[0]?.content).not.toContain('APP:');
+    expect(messages[0]?.content).toContain('Control 0');
+  });
+
+  it('bounds the screen message by SCREEN_OUTLINE_MAX_BYTES, trimming the outline', () => {
+    const messages = buildCompanionTurnMessages('go', PERSONA, {
+      screen: { screenshotPngBase64: 'AAAA', outline: outline(400) },
+      description: DESCRIPTION,
+    });
+    const content = messages[0]?.content ?? '';
+    expect(utf8ByteLength(content)).toBeLessThanOrEqual(SCREEN_OUTLINE_MAX_BYTES);
+    // Truncation is DECLARED on the outline, never a silent drop.
+    expect(content).toContain('"truncated":true');
+  });
+
+  it('companionScreenContextContent is null without a pair and matches the built message', () => {
+    expect(companionScreenContextContent()).toBeNull();
+    expect(companionScreenContextContent({ description: DESCRIPTION })).toBeNull();
+
+    const screen = { screenshotPngBase64: 'AAAA', outline: outline(2) };
+    const content = companionScreenContextContent({ screen, description: DESCRIPTION });
+    const built = buildCompanionTurnMessages('go', PERSONA, { screen, description: DESCRIPTION });
+    expect(content).toBe(built[0]?.content);
+  });
+
+  it('fitScreenContextOutline guarantees the composed message fits the cap', () => {
+    const raw = outline(400);
+    const fitted = fitScreenContextOutline(raw, DESCRIPTION);
+    expect(fitted.truncated).toBe(true);
+    expect(fitted.nodes.length).toBeLessThan(raw.nodes.length);
   });
 });

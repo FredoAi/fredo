@@ -666,6 +666,54 @@ The payload is `CompanionGrounding`: `version` (`COMPANION_GROUNDING_VERSION = 1
 the serialized payload by `COMPANION_CAPABILITY_LIMITS.maxContextBytes` (16384 UTF-8 bytes). There is no
 place path, no verb list and no journal in the payload.
 
+### App intelligibility — the description contract and the per-turn injected pair (Spec #3244)
+
+An application declares what it is for, and the companion reads its current screen — with **no per-app
+enablement work in Fredo**.
+
+- **The description contract** lives in `shared/app-intelligibility/` (`description.ts`). A built-in
+  declares `FredoApplicationClass.description` (a REQUIRED abstract member, so `tsc` refuses a subclass
+  without one); an installed package declares `description` in its `fredo-app.json` manifest (structurally
+  optional — the `manifestVersion: 1` schema stays closed and the absent-key rule G-413 holds). The ONE
+  resolver `resolveAppDescription(appId)` collapses both declaration sites into a single `AppDescription`
+  (`{appId, name, description}`) or the typed `noDescription` failure. A blank description counts as
+  missing; the failure is the `noDescription` companion reply kind (never the app-open copy, G-505) and
+  emits NO turn.
+- **The per-turn injected pair** is host-driven and origin-agnostic. Its DOM leg is the ONE pure
+  projector `simplifyDom(root, maxNodes)` (`screenOutline.ts`): a bounded, text-only `ScreenOutline`
+  (`ScreenOutlineNode {role, name, tag, testid?, bbox}`) capped by `SCREEN_OUTLINE_MAX_NODES` (120) and
+  `SCREEN_OUTLINE_MAX_BYTES` (8192, enforced by `fitOutlineToBytes`, which trims and declares
+  `truncated`). Only elements with a non-empty accessible name are projected. Its SCREENSHOT leg is
+  ST-3's `captureTargetRegion(appId)` (`captureTarget.ts`), which resolves the target's physical-pixel
+  rectangle (the DOM recipe for an in-window built-in; the host `installed_app_screen_rect` read for a
+  separate installed window — branching on the app's ORIGIN, never its id) and captures it FRESH through
+  `capture_target_region` (which delegates to the shipped `capture_screen_region`). `screenContext.ts`
+  composes the two into a `ScreenPair` and derives the turn's injection facts.
+- **How the pair reaches the turn.** `CompanionAskOptions` carries `screen` (the pair) and `description`
+  (the resolved view). `buildCompanionTurnMessages` emits **exactly ONE** additional `system` message —
+  the app description plus the bounded outline — and the SCREENSHOT rides as the turn's single image
+  attachment (`LlmChatWithStatusOptions.imageBase64`, mutually exclusive with `audioBase64`; absent key
+  when unset). With no pair and no grounding the message list is the byte-identical legacy
+  `[persona, user]` pair. The Rust `llm_chat_with_status` routes the image through the SAME media path
+  the audio leg uses (`skills::skill_turn(…, image)`, which declares
+  `SCREEN_VISUAL_TOKEN_BUDGET`, 1120 — the #3234 budget).
+- **The live receipt.** Every app-targeted turn reports its injection facts (the `taught` /
+  `perAppEntries` witness, `descriptionBytes`, `screenshotBytes`, `simplifiedHtmlBytes`, and a
+  screenshot + outline digest) as the optional `injection` argument of `llm_chat_with_status`;
+  `applications/llm_server/injection.rs` persists them into `telemetry_spans` as
+  `span_name = "companion.injection"` (a FRESH `span_id` per turn), which is how AC-2/AC-3/AC-4 are read
+  back. `telemetry_logs` is not an accepted receipt (gate gap M9).
+- **Typed failure, never a blind turn (R-2c).** When a target's pair cannot be produced (the app is not
+  mounted in the dispatching webview, or the host capture yields nothing), the composer surfaces a typed
+  sentence on the shipped reply surface and does **not** dispatch. **Known limitation, disclosed:** the
+  DOM-outline leg is readable only for a built-in app mounted in the dispatching webview. A SEPARATE
+  webview (an installed app) has no host-readable DOM, and its outline cannot be relayed by a new command
+  because the installed tier is pinned to EXACTLY ONE command
+  (`capabilities/installed-app-commands.json`: `allow-installed-app-invoke` only, pinned by
+  `runtime::capability_guard`). Such a target therefore takes the typed-signal path until that boundary
+  is revisited by a human decision.
+
+
 **Wireframe's pointer surface.** Wireframe is driven by **23 pointer-reachable controls** — 12 arrange +
 4 file + 5 view in their menu groups, plus the separately-testid'd `wireframe-undo` / `wireframe-redo`
 history controls. Its undo/redo is an app-local bounded history (`WIREFRAME_HISTORY_LIMIT = 100`,

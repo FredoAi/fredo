@@ -16,6 +16,7 @@ import type { LlmChatWithStatusOptions, LlmMessage, LlmSkillCall } from '../../.
 import { resolveReplyStatus } from './fredoReplyStatus';
 import { registerAppOpenReplyPusher } from './skillBridge';
 import type { AppOpenReply } from './appOpenReply';
+import { appNoDescriptionReply } from './appOpenReply';
 import { companionReplyErrorCopy } from './companionReadiness';
 import {
   REPLY_PROTECTION_ANNOUNCEMENT,
@@ -42,9 +43,14 @@ import type {
   CompanionTurnTarget,
   FredoAppRef,
 } from '../../companion/composerTarget';
-import { getApplications } from '../../../applications/applicationRegistry';
+import { readCompanionAppRefs } from '../../installed-apps/companionTargetRefs';
 import { getWindowSnapshot } from '../../window-system/windowStore';
 import { readCompanionGrounding } from '../../companion/grounding';
+import { buildTurnScreenContext } from '../../app-intelligibility/screenContext';
+import {
+  buildCompanionInjectionFacts,
+} from '../../app-intelligibility/injection';
+import type { CompanionInjectionFacts } from '../../app-intelligibility/injection';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -56,6 +62,16 @@ type ReplySurfaceProtectionProps = {
   onSurfaceLeave?: () => void;
   onSurfaceFocus?: () => void;
   onSurfaceBlur?: () => void;
+};
+
+/**
+ * Spec #3244 ST-4 — the per-turn screen inputs of ONE companion turn: the
+ * injected pair's screenshot leg (the turn's single image attachment) and its
+ * live injection receipt.
+ */
+type ScreenTurnExtras = {
+  readonly imageBase64: string;
+  readonly injection: CompanionInjectionFacts;
 };
 
 // ── Animation timing (preserved from the sprite era — do NOT change) ────────
@@ -247,13 +263,40 @@ function readWindowAppId(): string | null {
   return id ? id : null;
 }
 
-/** The registered applications as the pure matcher's narrow view. */
+/**
+ * The companion's app targets as the pure matcher's narrow view.
+ *
+ * Spec #3244 ST-5 — the list spans BOTH registries (built-in features + the
+ * separate installed registry), so an installed application is a valid target
+ * with no per-app enablement work. The projection lives in ONE place
+ * (`readCompanionAppRefs`) so the composer chip and the submit path can never
+ * drift apart.
+ */
 function readAppRefs(): FredoAppRef[] {
-  return getApplications().map((application) => ({
-    id: application.id,
-    name: application.name,
-    showable: application.showable,
-  }));
+  return readCompanionAppRefs();
+}
+
+/**
+ * Spec #3244 ST-4 — the turn's screen inputs, derived from the ask options.
+ *
+ * `undefined` for a turn with no pair (the legacy / ungrounded turn), so nothing
+ * is attached and the message list stays byte-identical. When a pair IS supplied,
+ * the injection facts are derived from exactly the values that crossed
+ * (R-4b: from the run, never a constant).
+ */
+function screenTurnExtras(options?: CompanionAskOptions): ScreenTurnExtras | undefined {
+  const screen = options?.screen;
+  if (screen === undefined) return undefined;
+  const description = options?.description;
+  return {
+    imageBase64: screen.screenshotPngBase64,
+    injection: buildCompanionInjectionFacts({
+      appId: description?.appId ?? options?.context?.appId ?? '',
+      ...(description !== undefined ? { description: description.description } : {}),
+      outline: screen.outline,
+      screenshotPngBase64: screen.screenshotPngBase64,
+    }),
+  };
 }
 
 function toTargetRect(rect: DOMRect): ReplyRect {
@@ -1075,7 +1118,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // single-in-flight guard, the stale-token counter, the thinking→joking
     // expression flow, the 15 s watchdog, and the happy-hold settle. Extracted
     // from the former `askForJoke` so the joke path is behavior-identical.
-    const runGeneration = useCallback((messages: LlmMessage[], withSkills = false, audioBase64?: string) => {
+    const runGeneration = useCallback((messages: LlmMessage[], withSkills = false, audioBase64?: string, screenTurn?: ScreenTurnExtras) => {
       console.log('[companion] runGeneration called — isTeleporting:', isTeleportingRef.current, 'isGenerating:', isGeneratingRef.current, 'withSkills:', withSkills, 'withAudio:', audioBase64 !== undefined);
       if (isTeleportingRef.current || isGeneratingRef.current) return;
       // #2892 ST-4 — a NEW generation owns the bubble: release any pending hold
@@ -1320,9 +1363,19 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // The backend emits `llm-status` only on the structured path; on the skill and
       // plain-capability-fallback paths `onStatus` is never called, so the captured
       // status stays `undefined` (the default `happy`).
+      // #3244 ST-4 — the injected pair rides the SAME structured transport: the
+      // screenshot as the turn's single image attachment (mutually exclusive with
+      // audio) and the injection facts as the turn's live receipt. The audio leg
+      // wins when both are somehow present (one attachment per turn).
       const options: LlmChatWithStatusOptions = audioBase64 !== undefined
         ? { offerSkills: true, audioBase64 }
-        : { offerSkills: withSkills };
+        : screenTurn !== undefined
+          ? {
+              offerSkills: withSkills,
+              imageBase64: screenTurn.imageBase64,
+              injection: screenTurn.injection,
+            }
+          : { offerSkills: withSkills };
       console.log('[companion] calling adapterBridge.llmChatWithStatus');
       adapterBridge.llmChatWithStatus(messages, options, onToken, onDone, onStatus, onSkillCall, onError);
     }, [playFlowAnim, playAnim, setState, hideMessage, clearWatchdog, startWatchdog, resetReplyProtection, clearTimer]);
@@ -1492,7 +1545,15 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
 
       // #3120 ST-3 — the ONE message builder: a bounded context prepends exactly
       // one grounding `system` message; without one this is the legacy pair.
-      runGeneration(buildCompanionTurnMessages(text, FREDO_CHAT_PERSONA, options), true);
+      // #3244 ST-4 — a supplied pair adds ONE screen-context `system` message and
+      // its screenshot becomes the turn's image attachment; the facts are derived
+      // from the SAME inputs (R-4b) and ride the turn as its live receipt.
+      runGeneration(
+        buildCompanionTurnMessages(text, FREDO_CHAT_PERSONA, options),
+        true,
+        undefined,
+        screenTurnExtras(options),
+      );
       return { outcome: 'dispatched' };
     }, [runGeneration, sendDuringReply, clearTimer, setQueuedSendCount]);
 
@@ -1579,13 +1640,74 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       ? buildTurnTarget(resolveBaseTargetApp(), '')
       : { appId: null, appName: null, grounding: null, explicit: false };
 
+    // ── #3244 ST-4 — the typed screen-unavailable signal (R-2c) ───────────────
+    // A pair that cannot be produced must NOT become a blind turn. The signal
+    // renders on the SAME reply surface a streamed reply uses (the shipped error
+    // hold, never a celebration), stamped with its own generation so a later turn
+    // supersedes it.
+    const surfaceScreenUnavailable = useCallback((copy: string) => {
+      const gen = ++generationRef.current;
+      isGeneratingRef.current = false;
+      generationSettledRef.current = true;
+      skillPendingRef.current = false;
+      modelStatusRef.current = undefined;
+      setSettledModelStatus(undefined);
+      clearTimer();
+      clearWatchdog();
+      setIsStreaming(false);
+      streamingTextRef.current = copy;
+      generationTextRef.current = copy;
+      setStreamingMessage(copy);
+      if (announceGenerationRef.current) setA11yAnnouncement(copy);
+      flowOwnsExpressionRef.current = true;
+      playFlowAnim('error');
+      setState('idle');
+      timerRef.current = setTimeout(() => {
+        if (gen !== generationRef.current) return;
+        flowOwnsExpressionRef.current = false;
+        if (!isTeleportingRef.current) playAnim('idle');
+        clearReplyOrDefer(() => {
+          setStreamingMessage(null);
+          hideMessage();
+        });
+      }, ERROR_HOLD_MS);
+    }, [clearTimer, clearWatchdog, setState, playFlowAnim, playAnim, hideMessage, clearReplyOrDefer]);
+
     const handleComposerSubmit = useCallback((text: string) => {
       const resolved = buildTurnTarget(resolveBaseTargetApp(), text);
-      // The ONE dispatch funnel: the existing `ask` (skill-aware, same persona),
-      // grounded with the target app's current grounding when it registered one.
-      // An ungrounded turn omits the option key entirely (never `undefined`).
-      ask(text, resolved.grounding ? { context: resolved.grounding } : undefined);
-    }, [ask, buildTurnTarget, resolveBaseTargetApp]);
+      const context = resolved.grounding ? { context: resolved.grounding } : undefined;
+      // No target app: there is nothing to screen-read — the legacy/grounded turn.
+      if (resolved.appId === null) {
+        ask(text, context);
+        return;
+      }
+      // A target app: compose its FRESH per-turn pair (R-3a) and carry it into the
+      // ONE dispatch funnel. The pair, its description, and the injection facts are
+      // produced by the run itself; an unavailable pair is a TYPED signal (R-2c),
+      // never a blind turn.
+      const appId = resolved.appId;
+      const appName = resolved.appName;
+      void (async () => {
+        const screenContext = await buildTurnScreenContext(appId);
+        if (screenContext.kind === 'unavailable') {
+          const who = appName ?? appId;
+          // R-1b: an app with no resolvable description gets the description
+          // sentence (ST-1's ONE copy source), NOT the screen sentence — the two
+          // faults are different and must never share copy (G-505).
+          surfaceScreenUnavailable(
+            screenContext.reason === 'unknownApp'
+              ? appNoDescriptionReply(who)
+              : `I can't read ${who}'s screen right now, so I won't guess. Open it and ask me again.`,
+          );
+          return;
+        }
+        ask(text, {
+          ...(context ?? {}),
+          screen: screenContext.pair,
+          description: screenContext.description,
+        });
+      })();
+    }, [ask, buildTurnTarget, resolveBaseTargetApp, surfaceScreenUnavailable]);
 
     // #2883 ST-6 (R-4.1/R-4.2/R-4.3) — the surface protection handlers. The
     // pointer and the keyboard are tracked as SEPARATE sources, so focus inside the

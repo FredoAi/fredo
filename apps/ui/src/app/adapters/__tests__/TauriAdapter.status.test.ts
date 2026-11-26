@@ -77,10 +77,11 @@ describe('#2918 ST-3 — TauriAdapter.llmChatWithStatus', () => {
     );
 
     // The command + the request-shape options reach the backend verbatim.
+    // Spec #3244 ST-4 — unset optional legs (`audioBase64`/`imageBase64`/
+    // `injection`) are ABSENT KEYS, never explicit `undefined` values (G-413).
     expect(h.invokeMock).toHaveBeenCalledWith('llm_chat_with_status', {
       messages,
       offerSkills: true,
-      audioBase64: undefined,
     });
 
     // Backend stream: decoded reply tokens, the parsed status, then done.
