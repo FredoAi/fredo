@@ -151,3 +151,56 @@
       is emitted from Rust (`EventBus::emit_global`) on start completion/failure and the existing
       listener applies it with ZERO extra IPC; no new poll is introduced (cross-ref
       `fredo-health-led` F-19).
+
+---
+
+# Spec #3233 — per-turn thinking policy + the empty-turn guarantee
+
+> "Must not change" baseline for **#3233** (per-turn thinking policy + the empty-turn guarantee).
+> **Verification policy: live** (except the static pins), same receipt channels as the functional
+> section. Rows merged from the QA draft fragment (`.opencode/tmp/3233/suite/`).
+
+- [ ] **R-16 (#3233 AC-3 / R-3 — Doom keeps thinking ON, parses, and stamps the SERVED mode).**
+      Drive a **real** Doom decision on the embedded engine (a scripted Doom source does NOT exercise
+      the engine — see R-2's edge) and read the decision record.
+  - **Expected:** `classify_doom_reply` parses to a **valid `DoomPlan`** (a legal plan/decision), no
+    crash/hang; the Doom dataset decision record's **`server_flags == "reasoning=on"`**
+    (`applications/doom/dataset.rs:228` ← `applications/doom/agent.rs:1282` ←
+    `DoomDecisionTrace.server_flags` `infrastructure/companion/doom_decision.rs:179`) — the stamp
+    describes what was **served**. `doom_turn` (`doom_agent.rs:214-218`) opts in
+    `.with_reasoning(ReasoningMode::Enabled)` and `server_flags_from` (`:248-256`) renders the
+    TURN's mode.
+  - **Failability (G-476):** revert ST-4 → the Doom turn inherits `ChatTurn::text`'s new `Disabled`
+    default → it stamps **`reasoning=off`** and the constrained parse degrades ⇒ this row reddens. A
+    `server_flags` reading `reasoning=on` from the *retired persisted arg* while the turn ran OFF is
+    the exact FAIL (the stamp must describe the served mode).
+  - **Edge:** Doom schema / `max_tokens` / persona unchanged; a malformed reply still falls back to
+    a legal move (never a crash). Cross-ref `R-2` (retained byte-identical) and
+    `.opencode/tests/doom-companion-planning/`.
+
+- [ ] **R-17 (#3233 — the wire vocabulary is byte-compatible).** Retained as `R-1`; re-asserted here
+      because #3233 touches the terminal-emit path (`plan_terminal_events`).
+  - **Expected:** `llm-token` (string), `llm-done` (empty), `llm-error` (string), `llm-status`
+    (string), `llm-skill-call` (`{skill, arguments}`) keep their names and payload shapes; every
+    path ends with exactly **one** `llm-done` and it is **last**; `llm-status` stays **before**
+    `llm-done` and **never** appears on a skill/error turn; **no new `llm-*` channel** appears.
+  - **Divisor:** `apps/ui/src/app/adapters/TauriAdapter.ts`; `adapterBridge.ts:193-194`.
+  - **Edge:** a new sixth channel ⇒ FAIL (byte-compatibility).
+
+- [ ] **R-18 (#3233 — the hidden-reasoning containment stays; the gate's reasoning classification
+      is NOT removed).** The issue's non-goal: no removal of reasoning support.
+  - **Expected:** `F-26` stays green — a reasoning-first generation never leaks `<|channel>thought
+    …` into `llm-token`; the gate still classifies the template's declared reasoning opener
+    (`stream.rs:856-912`) and `skipped_reasoning()` still exists. #3233 adds **no second shaping
+    rule**: the thinking lever enters ONLY via `params_for` (`chat_format.rs`), shared by render,
+    reverse-parse and `stream_markers`.
+  - **Edge:** removing the gate's `Skipping`/reasoning classification ⇒ FAIL (that would be the
+    reasoning-support removal the issue forbids).
+
+- [ ] **R-19 (#3233 — no orphan reader of the retired reasoning default; sampling values unchanged).**
+  - **Expected:** `DEFAULT_REASONING_MODE` (`sampling.rs:102`) is retired by ST-2; **no surviving
+    reader** (`server_flags_from`, or any match arm) dereferences it, and its pin
+    `the_reasoning_default_matches_the_retired_launch_config` (`:322-324`) is re-pointed — a stale
+    pin asserting the removed string, or an orphan reader, ⇒ **FAIL**. The five sampling values
+    (1.0 / 0.95 / 64 / 131 072 / 1024) stay byte-pinned (cross-ref functional `FR-39`).
+  - **Edge:** a compile error from a surviving reference is the loudest form of this defect (G-444).
