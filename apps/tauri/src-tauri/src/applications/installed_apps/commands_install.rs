@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 use super::consent;
+use super::lifecycle;
 use super::store::{self, InstalledAppEntry};
 use super::{InstalledAppError, InstalledAppRefusalCode, InstalledAppResult};
 
@@ -139,19 +140,33 @@ pub async fn installed_app_install(
 /// record (Spec #3146) — one read of `<app_data_dir>/installed-apps-consent.json`
 /// for the whole listing, never one per row — and a grant is applied to the ONE
 /// application it names.
+///
+/// The lifecycle state (Spec #3144) is composed the same way: the state file is
+/// read ONCE for the whole listing, and `disabled > failing > working` is resolved
+/// per entry. A damaged install is already a `Failing` row from the resilient
+/// reader, so it is never hidden and never aborts the listing.
 #[tauri::command]
 pub async fn installed_apps_list(app: tauri::AppHandle) -> InstalledAppResult<Vec<InstalledAppEntry>> {
     let data_dir = app_data_dir(&app)?;
     let root = store::install_root(&data_dir);
 
     tauri::async_runtime::spawn_blocking(move || -> InstalledAppResult<Vec<InstalledAppEntry>> {
-        let entries = store::list_installed(&root)?;
-        let document = consent::read_document(&data_dir);
+        let entries = store::list_installed_resilient(&root)?;
+        let consent_document = consent::read_document(&data_dir);
+        let state_document = lifecycle::read_state(&data_dir);
         Ok(entries
             .into_iter()
             .map(|entry| {
-                let granted = document.grants.get(&entry.id).cloned().unwrap_or_default();
-                entry.with_consented(&granted)
+                let granted = consent_document
+                    .grants
+                    .get(&entry.id)
+                    .cloned()
+                    .unwrap_or_default();
+                let (state, failure_code) =
+                    state_document.state_for(&entry.id, entry.state, entry.failure_code);
+                entry
+                    .with_consented(&granted)
+                    .with_lifecycle(state, failure_code)
             })
             .collect())
     })

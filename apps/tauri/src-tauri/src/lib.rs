@@ -1267,6 +1267,18 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // authority the surface renders instead of an optimistic guess.
             applications::installed_apps::commands_consent::installed_app_consent_grant,
             applications::installed_apps::commands_consent::installed_app_consent_revoke,
+            // Spec #3144 — the installed-application MANAGEMENT commands
+            // (`applications::installed_apps::commands_manage`): turn an
+            // application off/on (recording the host-owned lifecycle state and
+            // closing its window when turning it off) and remove it (closing its
+            // window, removing its install directory, dropping its grants and
+            // lifecycle record — KEEPING its stored data). Built-in tier only: the
+            // `installed-<id>` capability grants exactly `allow-installed-app-invoke`,
+            // so an installed document can never manage itself. Nothing here runs
+            // at startup.
+            applications::installed_apps::commands_manage::installed_app_disable,
+            applications::installed_apps::commands_manage::installed_app_enable,
+            applications::installed_apps::commands_manage::installed_app_remove,
             // Spec #3192 ST-1 — the resident shell (`infrastructure::app_lifecycle`):
             // `open_main_window` focuses the `main` window or rebuilds it when it was
             // destroyed (the SAME `ensure_main_window` the tray Open item and the

@@ -14,6 +14,8 @@
 //! | [`archive`] | ZIP reading, entry-name safety (zip-slip, reserved paths, non-regular entries) and the three archive budgets |
 //! | [`store`] | the on-disk install root, `manifest.json`/`record.json`/`files/`, SHA-256 pinning, the atomic install transaction, and the registry listing |
 //! | [`commands_install`] | exactly `installed_app_install` and `installed_apps_list` |
+//! | [`commands_manage`] | exactly `installed_app_disable`, `installed_app_enable` and `installed_app_remove` (Spec #3144) |
+//! | [`lifecycle`] | the host-owned lifecycle state file (`installed-apps-state.json`): `disabled` + the last recorded open failure, and the `disabled > failing > working` precedence (Spec #3144) |
 //! | [`consent`] | the host-owned per-application consent store (`installed-apps-consent.json`) |
 //! | [`commands_consent`] | exactly `installed_app_consent_grant` and `installed_app_consent_revoke` |
 //! | [`scheme`] | the `fredoapp` URI-scheme handler: routing, path-escape refusal, verify-at-serve, MIME, the child document's CSP and the served document |
@@ -49,9 +51,11 @@ pub mod archive;
 pub mod authority;
 pub mod commands_consent;
 pub mod commands_install;
+pub mod commands_manage;
 pub mod commands_window;
 pub mod consent;
 pub mod dispatch;
+pub mod lifecycle;
 pub mod manifest;
 pub mod scheme;
 pub mod scope;
@@ -119,6 +123,22 @@ pub const CONSENT_STORE_VERSION: u32 = 1;
 /// the integrity-pinned `<app_data_dir>/installed-apps/<id>/` tree, because a
 /// user grant must be writable without ever touching a package's pinned bytes.
 pub const CONSENT_STORE_FILENAME: &str = "installed-apps-consent.json";
+
+/// The host-owned lifecycle state file's name
+/// (`<app_data_dir>/installed-apps-state.json`).
+///
+/// A SIBLING of `<app_data_dir>/installed-apps/` and of the consent file — never
+/// inside the registry (a registry directory name would become an "application")
+/// and never inside an integrity-pinned `<id>/` tree (a lifecycle write must not
+/// touch a package's pinned bytes).
+pub const INSTALLED_APPS_STATE_FILENAME: &str = "installed-apps-state.json";
+
+/// The one version of the host-owned lifecycle state file
+/// (`<app_data_dir>/installed-apps-state.json`).
+///
+/// A state file that declares another version is read FAIL-CLOSED (nothing
+/// disabled, nothing failed) — it can only ever REMOVE a refusal, never create one.
+pub const INSTALLED_APPS_STATE_VERSION: u32 = 1;
 
 
 /// The running Fredo version, used for the `engines.fredo` range check.

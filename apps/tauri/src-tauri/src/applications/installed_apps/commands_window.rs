@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 use tauri::AppHandle;
 
+use super::lifecycle;
 use super::store;
 use super::window;
 use super::{InstalledAppError, InstalledAppRefusalCode, InstalledAppResult};
@@ -72,10 +73,24 @@ pub async fn installed_app_open(app: AppHandle, app_id: String) -> InstalledAppR
     let id = window::normalize_app_id(&app_id)?;
     let data_dir = app_data_dir(&app)?;
 
+    // Spec #3144 — a turned-off application is refused BEFORE the open check, so
+    // it can never be opened or run. The refusal reuses the frozen
+    // `id_not_installed` (no 23rd code); NO outcome is recorded, because the
+    // disabled gate returns before the host ever tried to resolve a target.
+    if lifecycle::is_disabled(&data_dir, &id) {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::IdNotInstalled,
+            "appId",
+            format!("\"{id}\" is turned off, so it cannot be opened"),
+        ));
+    }
+
     // Verification + record reading is synchronous filesystem work; keep it off
     // the IPC thread.
-    let target = tauri::async_runtime::spawn_blocking(move || {
-        window::resolve_open_target(&data_dir, &id)
+    let resolve_dir = data_dir.clone();
+    let resolve_id = id.clone();
+    let target = match tauri::async_runtime::spawn_blocking(move || {
+        window::resolve_open_target(&resolve_dir, &resolve_id)
     })
     .await
     .map_err(|error| {
@@ -83,7 +98,16 @@ pub async fn installed_app_open(app: AppHandle, app_id: String) -> InstalledAppR
             InstalledAppRefusalCode::IoError,
             format!("the open check could not be run: {error}"),
         )
-    })??;
+    })? {
+        Ok(target) => target,
+        Err(error) => {
+            // R-5.4 — a host refusal is recorded so the NEXT inventory read shows
+            // the application as `Failing`. Best-effort: the refusal the user sees
+            // is the one returned here, never a write failure.
+            let _ = lifecycle::record_open_failure(&data_dir, &id, error.code);
+            return Err(error);
+        }
+    };
 
     // Materialise the package's declared data tables BEFORE the window exists
     // (Spec #3146 W-1): an installed application's first call must already find
@@ -103,7 +127,13 @@ pub async fn installed_app_open(app: AppHandle, app_id: String) -> InstalledAppR
         materialize_open_declaration(&app, &declaration)?;
     }
 
-    window::open_installed_app_window(&app, &target)
+    let result = window::open_installed_app_window(&app, &target);
+    if result.is_ok() {
+        // A successful open clears any recorded failure (R-5.4). Best-effort: the
+        // window is open either way.
+        let _ = lifecycle::record_open_success(&data_dir, &id);
+    }
+    result
 }
 
 /// Compose the declaration an installed package's own declared tables make.
