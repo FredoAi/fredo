@@ -1,5 +1,10 @@
 {
-  "version": 1,
+  "version": 2,
+  "provenance": {
+    "measured": true,
+    "tool": "fredo companion score",
+    "commit": "e5e2bedae8738f5136f545188f7429973a3430e3"
+  },
   "fixtures": [
     { "id": "text-chat", "passed": true, "seed": 101 },
     { "id": "skill-open-app", "passed": true, "seed": 202 },
