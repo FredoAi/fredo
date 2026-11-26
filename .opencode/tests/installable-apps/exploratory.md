@@ -175,5 +175,59 @@ fixture — see the note below — do not hand-roll a bespoke one for a single p
     \"grants everything\" and never to a panic. **Restore the file afterwards — F-7.22 and F-7.27 depend
     on it.**
 
+## #3145 probes (the authoring kit)
+
+> **Why these four.** The kit's whole risk is *drift*: a second description of a contract the parser
+> owns. Each probe below asks one question the plan cannot answer by construction — **does the kit
+> and the product disagree about the same bytes?** — and each names the in-repo lever, so none
+> needs a bespoke artefact. A confirmed divergence **promotes** to `functional.md` as a new `F-8.x`
+> row. **Transport note:** every probe here runs in a shell or on `main`'s `execute_js`; none drives
+> the child, so the `installed-*` `tauri_webview_*` timeout is never in play.
+
+- [ ] **E-17 — an optional manifest field that is `null` rather than absent.** Author two packages
+  identical except one carries `"description": null` (and, in a second leg, `"capabilities": null`).
+  Run `fredo-app check --json` on each, then install each through Settings.
+  - EXPECT: `check` and the parser **agree** — the product treats both as absent
+    (`manifest.rs:402-403` for `description`, `:621-626` for `capabilities`) and normalizes the key
+    **out** of `<id>/manifest.json`; quote the normalized file. So the published schema must encode
+    *absent*, and the kit must either accept `null` with the same normalizing advice or reject it
+    with the same code the parser would — **not** a third middle position ("accepted here, refused
+    there").
+  - WHY: NFR-6 says the schema is generated from the parser and the corpus is its conformance
+    corpus. A `null`-vs-absent rule is the one place a JSON-Schema copy almost always diverges, and
+    the divergence is invisible until an author ships it.
+
+- [ ] **E-18 — the exam's own REDDEN control.** Copy the kit as usual, then append one deliberately
+  stale step to the **copied** document only (`pnpm --filter @fredo/ui build`), and re-dispatch the
+  exam agent against that copy.
+  - EXPECT: the exam **FAILS**, and it fails on **F1a** with `EXAM DOCUMENTED-PATH FAIL` naming the
+    quoted stale step — because an agent that follows the document now reaches for the checkout.
+    The **committed** document is restored immediately afterwards (never commit the mutation).
+  - WHY: an exam that has only ever passed is an untested instrument. This is the one cheap way to
+    show the harness discriminates, and it doubles as the proof that F1a is scored rather than
+    narrated. **A run where the mutated doc still passes is a total FAIL of the exam instrument** —
+    report it; do not soften the step to make it fail "more gently".
+
+- [ ] **E-19 — an unknown capability-contract major, from both sides.** Author a package whose
+  `capabilities` object is otherwise valid but carries `"version": 2`.
+  - EXPECT: the product refuses **loudly** at install (a major it does not implement must never read
+    as accepted — `read_capability_version`, `mod.rs:99-108`) with `manifest_invalid_field` and
+    `field: "capabilities.version"`; quote the code and the detail. Then `fredo-app check --json`
+    on the same dir: record whether it produces the **same** code+field or passes. Record.
+  - WHY: this is the exact failure the additive rule exists to prevent, and it is the case a
+    generated schema is most likely to leave out (a JSON Schema `const: 1` would catch it; a missing
+    `enum` would not). Divergence here is a **finding to promote**, not a row failure.
+
+- [ ] **E-20 — the reserved `__fredo/` segment, from the author's side.** Put a file at
+  `work/my-app/__fredo/bootstrap.js` and run `fredo-app pack work/my-app --out …`.
+  - EXPECT: `pack` **refuses** (it validates first — a package that would be refused is never
+    emitted), naming the reserved path `__fredo`; exit non-zero; **no** zip is written at the output
+    path. Then hand-zip the same directory and install it: the product refuses `reserved_path`.
+    Quote both messages side by side.
+  - WHY: the kit's `pack` is the author's last chance to catch it, and the two layers must agree on
+    the **same** path token. A `pack` that silently *drops* the file (instead of refusing) produces
+    a package the author believes contains their file — a worse outcome than a refusal, and worth
+    promoting if observed.
+
 _Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooling limit is recorded
 `UNVERIFIED` with a named blocker — never a PASS._
