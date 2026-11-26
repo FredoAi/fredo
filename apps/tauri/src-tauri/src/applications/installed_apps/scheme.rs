@@ -1224,6 +1224,100 @@ mod tests {
     }
 
     #[test]
+    fn the_child_client_is_the_dispatchers_single_door() {
+        let source = BOOTSTRAP_SCRIPT;
+
+        // 1. The member exists on the app-facing global. It is the deliverable the
+        //    QA rows drive (`window.__FREDO_INSTALLED__.invoke(action, args)`), and
+        //    its absence is the `no-invoke-shim` redden signature.
+        assert!(
+            source.contains("invoke:"),
+            "the app-facing global must carry the `invoke` child client"
+        );
+        assert!(
+            source.contains("invoke: invokeAction"),
+            "the `invoke` member must be the client function itself"
+        );
+
+        // 2. It reaches EXACTLY the dispatcher command — a second command name in
+        //    this file would be a widening of the tier's single door.
+        assert_eq!(
+            source.matches("\"installed_app_invoke\"").count(),
+            1,
+            "the bootstrap must name exactly one transport command"
+        );
+
+        // 3. It uses the injected handle, resolved at call time.
+        assert!(
+            source.contains("__TAURI_INTERNALS__"),
+            "the client must call the injected `__TAURI_INTERNALS__` handle"
+        );
+
+        // 4. The wire shape is the `request` wrapper — `dispatch.rs`'s command
+        //    parameter is named `request`, so a bare `{action, args}` object is a
+        //    malformed payload, not a call. Asserted as the exact argument object
+        //    of that call, not as the bare token: this file's prose already
+        //    contains `request:`, and a presence check on that would stay green
+        //    on the failing shape.
+        let call_at = source
+            .find("internals.invoke(\"installed_app_invoke\",")
+            .expect("the client must call the dispatcher through the injected handle");
+        assert_eq!(
+            source
+                .matches("request: { action: action, args: payload }")
+                .count(),
+            1,
+            "the client must send the `request` wrapper, not a flat payload"
+        );
+        let wrapper_at = source
+            .find("request: { action: action, args: payload }")
+            .expect("the client must send the `request` wrapper");
+        assert!(
+            call_at < wrapper_at,
+            "the `request` wrapper must be the dispatcher call's own argument"
+        );
+
+        // 5. Ordering: the client exists BEFORE the module is imported, so an
+        //    application's own module can call it during evaluation.
+        let client_at = source
+            .find("invoke: invokeAction")
+            .expect("the child client must be assigned");
+        let mount_at = source
+            .find("beginMount();")
+            .expect("the bootstrap must mount the application");
+        assert!(
+            client_at < mount_at,
+            "the child client must be observable before the application is mounted"
+        );
+
+        // 6. No fabricated taxonomy, and no client-side vocabulary: the shim
+        //    authors none of the six wire codes the dispatcher owns.
+        for code in [
+            "action_not_declared",
+            "action_not_grantable",
+            "consent_required",
+            "scope_denied",
+            "caller_unknown",
+            "app_not_installed",
+        ] {
+            assert!(
+                !source.contains(code),
+                "the bootstrap must not author the host's refusal code {code}"
+            );
+        }
+
+        // 7. No escape hatch: no evaluated source, no constructed function.
+        assert!(
+            !source.contains("eval("),
+            "the child client must not evaluate source"
+        );
+        assert!(
+            !source.contains("new Function"),
+            "the child client must not construct a function from text"
+        );
+    }
+
+    #[test]
     fn the_panel_stylesheet_stays_on_theme_vars_and_system_colours() {
         for banned in ["rgba(", "rgb(", "hsl(", "#"] {
             if banned == "#" {

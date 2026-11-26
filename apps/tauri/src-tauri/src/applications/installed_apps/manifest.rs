@@ -18,8 +18,12 @@
 //! 5. `manifestVersion` missing ⇒ [`ManifestInvalidField`]
 //! 6. `manifestVersion` not `1` ⇒ [`UnsupportedManifestVersion`]
 //! 7. `id` / `displayName` / `version` / `entry` failures ⇒ their own codes
-//! 8. `engines.fredo` `*`/empty/unparseable ⇒ [`EnginesRangeInvalid`]
-//! 9. a well-formed range excluding the host ⇒ [`HostIncompatible`]
+//! 8. `capabilities` defects ⇒ [`ManifestUnknownField`] (an unknown key inside
+//!    the object) or [`ManifestInvalidField`] (a wrong major, an unknown
+//!    high-risk id, a needless `source`, an unusable table), always naming the
+//!    exact path (`capabilities.version`, `capabilities.highRisk[1]`, …)
+//! 9. `engines.fredo` `*`/empty/unparseable ⇒ [`EnginesRangeInvalid`]
+//! 10. a well-formed range excluding the host ⇒ [`HostIncompatible`]
 //!
 //! [`ManifestMalformed`]: super::InstalledAppRefusalCode::ManifestMalformed
 //! [`ManifestUnknownField`]: super::InstalledAppRefusalCode::ManifestUnknownField
@@ -31,19 +35,24 @@
 //! # Why unknown keys are refused
 //!
 //! `manifestVersion: 1` is a closed schema. Accepting an unknown key would let a
-//! package declare something (`capabilities`, say) that this build silently
-//! ignores, which reads to the author as accepted consent. `#3146` will add
-//! `capabilities` as an additive optional field and relax this rule in the SAME
-//! landing — never before.
+//! package declare something this build silently ignores, which reads to the
+//! author as accepted consent. `capabilities` is the ONE additive answer to that
+//! (Spec #3146): it is a **declaration of reach**, it is versioned on its own,
+//! and its absence means NO access — never "everything except a deny list".
 
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::infrastructure::application_data::declaration::{
+    ApplicationDataDeclaration, ApplicationDataTableDeclaration,
+};
+
+use super::authority::CapabilityId;
 use super::{
-    InstalledAppError, InstalledAppRefusalCode, InstalledAppResult, HOST_FREDO_VERSION,
-    SUPPORTED_MANIFEST_VERSION,
+    InstalledAppError, InstalledAppRefusalCode, InstalledAppResult, CAPABILITY_MANIFEST_VERSION,
+    HOST_FREDO_VERSION, SUPPORTED_MANIFEST_VERSION,
 };
 
 /// The built-in applications a package may never claim (R-3.2 / `id_reserved`).
@@ -76,7 +85,10 @@ pub const ENTRY_MODULE_EXTENSION: &str = ".js";
 
 /// Every top-level key `manifestVersion: 1` defines. Any other key is
 /// [`InstalledAppRefusalCode::ManifestUnknownField`].
-pub const MANIFEST_TOP_LEVEL_KEYS: [&str; 7] = [
+///
+/// `capabilities` is the 8th key (Spec #3146): optional, additive, and the only
+/// declaration of an installed application's backend reach.
+pub const MANIFEST_TOP_LEVEL_KEYS: [&str; 8] = [
     "manifestVersion",
     "id",
     "displayName",
@@ -84,6 +96,7 @@ pub const MANIFEST_TOP_LEVEL_KEYS: [&str; 7] = [
     "engines",
     "entry",
     "description",
+    "capabilities",
 ];
 
 /// `entry` object keys.
@@ -91,13 +104,136 @@ pub const MANIFEST_ENTRY_KEYS: [&str; 2] = ["document", "module"];
 /// `engines` object keys.
 pub const MANIFEST_ENGINES_KEYS: [&str; 1] = ["fredo"];
 
+/// `capabilities` object keys. Closed: an unknown key is refused with the exact
+/// path (`capabilities.<key>`), because a declaration this build does not read
+/// must never look accepted.
+pub const MANIFEST_CAPABILITIES_KEYS: [&str; 3] = ["version", "data", "highRisk"];
+/// `capabilities.data` object keys.
+pub const MANIFEST_CAPABILITY_DATA_KEYS: [&str; 1] = ["tables"];
+/// One `capabilities.data.tables[i]` object's keys.
+///
+/// `source` is deliberately ABSENT: a declared `source` reads a CANONICAL table
+/// (the user's own chats/tool calls/agent sessions), so an installed package may
+/// never declare one. The refusal is a named rule below, not a generic
+/// unknown-key hit, so the author sees WHY.
+pub const MANIFEST_CAPABILITY_TABLE_KEYS: [&str; 4] = ["name", "primaryKey", "columns", "retention"];
+
+/// The `capabilities` object: what an installed application asks to reach.
+///
+/// Absent ⇒ zero declared capabilities (fail-safe). Every field is validated at
+/// install; the normalized form is what `<id>/manifest.json` records and what
+/// the runtime re-reads on every call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstalledAppCapabilities {
+    /// The capability-contract major (`CAPABILITY_MANIFEST_VERSION`).
+    pub version: u32,
+    /// Presence declares the `data.tables` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<CapabilityDataDeclaration>,
+    /// The declared `high-risk.*` ids, sorted by wire spelling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub high_risk: Vec<CapabilityId>,
+}
+
+/// The `capabilities.data` object: the declared tables.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CapabilityDataDeclaration {
+    pub tables: Vec<ApplicationDataTableDeclaration>,
+}
+
+impl InstalledAppCapabilities {
+    /// The declared ids as typed vocabulary values, ordered by wire spelling.
+    ///
+    /// This is what the runtime gate reads (`authority::read_authority_grants`),
+    /// so the authority path never re-derives a capability from a string.
+    pub fn declared_ids(&self) -> Vec<CapabilityId> {
+        let mut declared: Vec<CapabilityId> = Vec::new();
+        if self.data.is_some() {
+            declared.push(CapabilityId::DataTables);
+        }
+        declared.extend(self.high_risk.iter().copied());
+        declared.sort_by_key(|id| id.as_str());
+        declared.dedup();
+        declared
+    }
+
+    /// Every declared capability id in its WIRE spelling, sorted — the
+    /// projection's `declared` array.
+    pub fn declared(&self) -> Vec<String> {
+        self.declared_ids()
+            .into_iter()
+            .map(|id| id.as_str().to_string())
+            .collect()
+    }
+
+    /// The declared HIGH-RISK ids in wire spelling, sorted — the projection's
+    /// `highRisk` array, and exactly the set that needs a consent grant.
+    pub fn high_risk(&self) -> Vec<String> {
+        let mut high_risk: Vec<&str> = self.high_risk.iter().map(|id| id.as_str()).collect();
+        high_risk.sort_unstable();
+        high_risk.into_iter().map(str::to_string).collect()
+    }
+
+    /// The declared data tables (empty when `capabilities.data` is absent).
+    pub fn data_tables(&self) -> &[ApplicationDataTableDeclaration] {
+        match &self.data {
+            Some(data) => &data.tables,
+            None => &[],
+        }
+    }
+
+    /// The tables in the ONE declaration model the application-data registry
+    /// materialises, or `None` when the package declares no table at all.
+    ///
+    /// This is the shape the window-open path hands to
+    /// `DeclarationRegistry::declare` (Spec #3146, W-1): the package's declared
+    /// tables, in manifest order, under `app_id`'s namespace and at the SAME
+    /// `declaration_revision` the install validator records
+    /// ([`data_declaration_revision`]) — so the open path and the install
+    /// validator can never disagree about the revision.
+    ///
+    /// `None` — not an empty declaration — for a package with no declared table:
+    /// the open path then does no database work at all.
+    pub fn data_declaration(
+        &self,
+        app_id: &str,
+        app_version: &str,
+    ) -> Option<ApplicationDataDeclaration> {
+        let data = self.data.as_ref()?;
+        if data.tables.is_empty() {
+            return None;
+        }
+        Some(ApplicationDataDeclaration {
+            feature_id: app_id.to_string(),
+            declaration_revision: data_declaration_revision(app_version),
+            tables: data.tables.clone(),
+        })
+    }
+}
+
+/// The declaration revision every declared table of a package carries.
+///
+/// ONE helper: the install validator ([`read_capability_data`]) and the
+/// window-open composer ([`InstalledAppCapabilities::data_declaration`]) both
+/// read it here, because a revision that disagreed would make the same package
+/// look changed on every open (G-494).
+pub fn data_declaration_revision(app_version: &str) -> String {
+    format!("manifest:{app_version}")
+}
+
 /// A validated `fredo-app.json`.
 ///
 /// Produced only by [`parse_manifest`], so holding one means every rule below
 /// has already passed. Field names are the manifest's own (`camelCase` on the
 /// wire) because this type is ALSO written verbatim as
 /// `<id>/manifest.json` — the canonical normalized copy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` only (no `Eq`): the declared tables carry a JSON `source` model
+/// whose `Value` members are not `Eq`; the table model itself refuses `source`
+/// for installed packages, but the shared declaration type keeps its full shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppManifest {
     pub manifest_version: u32,
@@ -108,6 +244,10 @@ pub struct AppManifest {
     pub entry: EntryDeclaration,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The declared backend reach. An ABSENT key on the wire when the package
+    /// declared none — never `null`, never `{}` (R-8.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<InstalledAppCapabilities>,
 }
 
 /// The `engines` object (`{ fredo: string }`).
@@ -213,7 +353,7 @@ pub fn parse_manifest(bytes: &[u8]) -> InstalledAppResult<AppManifest> {
         ));
     };
 
-    reject_unknown_keys(&object, &MANIFEST_TOP_LEVEL_KEYS, "fredo-app.json")?;
+    reject_unknown_keys(&object, &MANIFEST_TOP_LEVEL_KEYS, "fredo-app.json", "")?;
 
     let manifest_version = read_manifest_version(&object)?;
 
@@ -257,6 +397,7 @@ pub fn parse_manifest(bytes: &[u8]) -> InstalledAppResult<AppManifest> {
 
     let engines = read_engines(&object)?;
     let entry = read_entry(&object)?;
+    let capabilities = read_capabilities(&object, &id, &version)?;
 
     let description = match object.get("description") {
         None | Some(Value::Null) => None,
@@ -292,21 +433,27 @@ pub fn parse_manifest(bytes: &[u8]) -> InstalledAppResult<AppManifest> {
         engines,
         entry,
         description,
+        capabilities,
     })
 }
 
 /// Reject any key in `object` that is not in `allowed`.
+///
+/// `field_prefix` is the dotted path of the object being scanned (`""` at the
+/// top level, `"capabilities."` for the capability object), so a refusal names
+/// the exact manifest path rather than a bare key.
 fn reject_unknown_keys(
     object: &Map<String, Value>,
     allowed: &[&str],
     where_: &str,
+    field_prefix: &str,
 ) -> InstalledAppResult<()> {
     let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
     for key in object.keys() {
         if !allowed.contains(key.as_str()) {
             return Err(InstalledAppError::field(
                 InstalledAppRefusalCode::ManifestUnknownField,
-                key,
+                format!("{field_prefix}{key}"),
                 format!(
                     "{where_} carries the unknown field \"{key}\"; manifestVersion \
                      {SUPPORTED_MANIFEST_VERSION} defines exactly {:?}",
@@ -401,7 +548,7 @@ fn read_engines(object: &Map<String, Value>) -> InstalledAppResult<EnginesDeclar
         });
     };
 
-    reject_unknown_keys(engines, &MANIFEST_ENGINES_KEYS, "engines")?;
+    reject_unknown_keys(engines, &MANIFEST_ENGINES_KEYS, "engines", "")?;
 
     let fredo = read_string_field(engines, "fredo").map_err(|error| InstalledAppError {
         code: error.code,
@@ -429,7 +576,7 @@ fn read_entry(object: &Map<String, Value>) -> InstalledAppResult<EntryDeclaratio
         });
     };
 
-    reject_unknown_keys(entry, &MANIFEST_ENTRY_KEYS, "entry")?;
+    reject_unknown_keys(entry, &MANIFEST_ENTRY_KEYS, "entry", "")?;
 
     let document = read_string_field(entry, "document").map_err(|error| InstalledAppError {
         code: error.code,
@@ -458,6 +605,285 @@ fn read_entry(object: &Map<String, Value>) -> InstalledAppResult<EntryDeclaratio
     })?;
 
     Ok(EntryDeclaration { document, module })
+}
+
+/// `capabilities`: the declared backend reach (Spec #3146).
+///
+/// Absent — or an explicit `null`, treated as absent like `description` — is
+/// [`None`], which means **zero declared capabilities**. There is no
+/// "everything except a deny list" default: a package that declares nothing can
+/// reach nothing.
+fn read_capabilities(
+    object: &Map<String, Value>,
+    app_id: &str,
+    app_version: &str,
+) -> InstalledAppResult<Option<InstalledAppCapabilities>> {
+    let Some(value) = object.get("capabilities") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let Value::Object(capabilities) = value else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities",
+            "capabilities must be an object",
+        ));
+    };
+
+    reject_unknown_keys(
+        capabilities,
+        &MANIFEST_CAPABILITIES_KEYS,
+        "capabilities",
+        "capabilities.",
+    )?;
+
+    let version = read_capability_version(capabilities)?;
+    let data = read_capability_data(capabilities, app_id, app_version)?;
+    let high_risk = read_high_risk(capabilities)?;
+
+    Ok(Some(InstalledAppCapabilities {
+        version,
+        data,
+        high_risk,
+    }))
+}
+
+/// `capabilities.version`: present, numeric, and exactly
+/// [`CAPABILITY_MANIFEST_VERSION`].
+///
+/// A major this build does not implement is refused **loudly** — silently
+/// ignoring an unknown contract major would let an author believe their
+/// declaration was understood.
+fn read_capability_version(capabilities: &Map<String, Value>) -> InstalledAppResult<u32> {
+    const FIELD: &str = "capabilities.version";
+    let Some(value) = capabilities.get("version") else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            FIELD,
+            "capabilities.version is required",
+        ));
+    };
+
+    let number = match value {
+        Value::Number(number) => number,
+        other => {
+            return Err(InstalledAppError::field(
+                InstalledAppRefusalCode::ManifestInvalidField,
+                FIELD,
+                format!("capabilities.version must be a number (found {other})"),
+            ))
+        }
+    };
+
+    let Some(raw) = number.as_u64() else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            FIELD,
+            format!("capabilities.version must be a non-negative integer (found {number})"),
+        ));
+    };
+
+    let version = u32::try_from(raw).map_err(|_| {
+        InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            FIELD,
+            format!("capabilities.version {raw} does not fit in 32 bits"),
+        )
+    })?;
+
+    if version != CAPABILITY_MANIFEST_VERSION {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            FIELD,
+            format!(
+                "capabilities.version {version} is not supported; this Fredo implements \
+                 capabilities.version {CAPABILITY_MANIFEST_VERSION}. The capability contract is \
+                 additive within a major, so a different major cannot be read safely"
+            ),
+        ));
+    }
+
+    Ok(version)
+}
+
+/// `capabilities.data`: presence declares the `data.tables` capability.
+fn read_capability_data(
+    capabilities: &Map<String, Value>,
+    app_id: &str,
+    app_version: &str,
+) -> InstalledAppResult<Option<CapabilityDataDeclaration>> {
+    let Some(value) = capabilities.get("data") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    let Value::Object(data) = value else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities.data",
+            "capabilities.data must be an object with a \"tables\" array",
+        ));
+    };
+
+    reject_unknown_keys(
+        data,
+        &MANIFEST_CAPABILITY_DATA_KEYS,
+        "capabilities.data",
+        "capabilities.data.",
+    )?;
+
+    let Some(tables_value) = data.get("tables") else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities.data.tables",
+            "capabilities.data.tables is required when capabilities.data is present; declare an \
+             empty list when the application writes to no tables",
+        ));
+    };
+
+    let Value::Array(entries) = tables_value else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities.data.tables",
+            "capabilities.data.tables must be an array of table declarations",
+        ));
+    };
+
+    let mut tables: Vec<ApplicationDataTableDeclaration> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        tables.push(read_capability_table(entry, index)?);
+    }
+
+    // The shared declaration model is the ONE table validator (NFR-6): the
+    // manifest does not re-implement name/charset/primary-key/column rules.
+    // `declaration_revision` is inert here — the validator only checks that it
+    // is non-empty — so the package version is recorded rather than invented.
+    let declaration = ApplicationDataDeclaration {
+        feature_id: app_id.to_string(),
+        declaration_revision: data_declaration_revision(app_version),
+        tables: tables.clone(),
+    };
+    if let Some(error) = declaration.validate().into_iter().next() {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities.data.tables",
+            format!("capabilities.data.tables is not a usable declaration: {error}"),
+        ));
+    }
+
+    Ok(Some(CapabilityDataDeclaration { tables }))
+}
+
+/// One `capabilities.data.tables[i]` declaration.
+fn read_capability_table(
+    value: &Value,
+    index: usize,
+) -> InstalledAppResult<ApplicationDataTableDeclaration> {
+    let path = format!("capabilities.data.tables[{index}]");
+
+    let Value::Object(table) = value else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            path.clone(),
+            format!("{path} must be an object"),
+        ));
+    };
+
+    // `source` is checked FIRST so the refusal names the rule, not a generic
+    // unknown key. A declared projection reads a CANONICAL table — the user's own
+    // chat/tool/agent-session rows — which no installed package may reach.
+    if table.contains_key("source") {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            format!("{path}.source"),
+            format!(
+                "{path}.source is refused: a declared source projection reads Fredo's canonical \
+                 tables (your own sessions and tool activity), which an installed application may \
+                 never declare"
+            ),
+        ));
+    }
+
+    let prefix = format!("{path}.");
+    reject_unknown_keys(table, &MANIFEST_CAPABILITY_TABLE_KEYS, path.as_str(), &prefix)?;
+
+    serde_json::from_value::<ApplicationDataTableDeclaration>(value.clone()).map_err(|error| {
+        InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            path.clone(),
+            format!("{path} is not a valid table declaration: {error}"),
+        )
+    })
+}
+
+/// `capabilities.highRisk`: the declared consent-gated capability ids.
+///
+/// Each id is parsed through [`CapabilityId::parse`] and must be
+/// [`CapabilityId::is_high_risk`] — so `data.tables` can never be smuggled into
+/// the consent machinery, and a future id cannot become consentable by accident —
+/// and may appear once. The result is sorted by wire spelling, so the projection's
+/// arrays are deterministic.
+fn read_high_risk(capabilities: &Map<String, Value>) -> InstalledAppResult<Vec<CapabilityId>> {
+    let Some(value) = capabilities.get("highRisk") else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let Value::Array(entries) = value else {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "capabilities.highRisk",
+            "capabilities.highRisk must be an array of capability ids",
+        ));
+    };
+
+    let allowed: Vec<&str> = CapabilityId::ALL
+        .iter()
+        .filter(|id| id.is_high_risk())
+        .map(|id| id.as_str())
+        .collect();
+
+    let mut seen: Vec<CapabilityId> = Vec::new();
+    let mut high_risk: Vec<CapabilityId> = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let path = format!("capabilities.highRisk[{index}]");
+        let Some(id) = entry.as_str() else {
+            return Err(InstalledAppError::field(
+                InstalledAppRefusalCode::ManifestInvalidField,
+                path.clone(),
+                format!("{path} must be a capability id string (found {entry})"),
+            ));
+        };
+        let Some(capability) = CapabilityId::parse(id).filter(|id| id.is_high_risk()) else {
+            return Err(InstalledAppError::field(
+                InstalledAppRefusalCode::ManifestInvalidField,
+                path,
+                format!(
+                    "\"{id}\" is not a high-risk capability this Fredo can ask you to consent to; \
+                     the declared ids are {allowed:?}"
+                ),
+            ));
+        };
+        if seen.contains(&capability) {
+            return Err(InstalledAppError::field(
+                InstalledAppRefusalCode::ManifestInvalidField,
+                path,
+                format!("\"{id}\" is declared more than once"),
+            ));
+        }
+        seen.push(capability);
+        high_risk.push(capability);
+    }
+
+    high_risk.sort_by_key(|id| id.as_str());
+    Ok(high_risk)
 }
 
 /// Is `range` a semver RANGE that admits the running Fredo version?
@@ -611,16 +1037,35 @@ mod tests {
 
     // ── Rule 3: unknown top-level key ──────────────────────────────────────
 
+    /// INVERTED IN PLACE (Spec #3146): `capabilities` used to be the canonical
+    /// unknown key. It is now the 8th allowed top-level key, so this test asserts
+    /// the SAME property (an unknown top-level key is refused, naming the key
+    /// exactly) against a key that is still unknown — and the next test proves
+    /// `capabilities` itself is accepted.
     #[test]
     fn an_unknown_top_level_key_is_manifest_unknown_field() {
         let mut value = valid_manifest_json();
         value
             .as_object_mut()
             .expect("object")
-            .insert("capabilities".into(), serde_json::json!([]));
+            .insert("sandbox".into(), serde_json::json!(true));
         let error = parse_value(&value).expect_err("unknown key");
         assert_eq!(error.code, InstalledAppRefusalCode::ManifestUnknownField);
-        assert_eq!(error.field.as_deref(), Some("capabilities"));
+        assert_eq!(error.field.as_deref(), Some("sandbox"));
+    }
+
+    #[test]
+    fn capabilities_is_the_eighth_allowed_top_level_key() {
+        assert_eq!(MANIFEST_TOP_LEVEL_KEYS.len(), 8);
+        assert_eq!(MANIFEST_TOP_LEVEL_KEYS[7], "capabilities");
+
+        let mut value = valid_manifest_json();
+        value["capabilities"] = serde_json::json!({ "version": 1 });
+        let manifest = parse_value(&value).expect("capabilities is accepted");
+        let capabilities = manifest.capabilities.expect("declared");
+        assert_eq!(capabilities.version, 1);
+        assert!(capabilities.declared().is_empty(), "no capability ids declared");
+        assert!(capabilities.data_tables().is_empty());
     }
 
     #[test]
@@ -645,6 +1090,305 @@ mod tests {
             code_of(&value),
             InstalledAppRefusalCode::ManifestUnknownField
         );
+    }
+
+    // ── capabilities (Spec #3146) ──────────────────────────────────────────
+
+    /// A manifest declaring every capability family, with one declared table.
+    fn declared_manifest_json() -> Value {
+        let mut value = valid_manifest_json();
+        value["id"] = serde_json::json!("qa3146-app-a");
+        value["capabilities"] = serde_json::json!({
+            "version": 1,
+            "data": {
+                "tables": [{
+                    "name": "records",
+                    "primaryKey": ["id"],
+                    "columns": [
+                        { "name": "id", "type": "TEXT", "nullable": false, "owner": "application" },
+                        { "name": "value", "type": "TEXT", "nullable": true, "owner": "application" }
+                    ]
+                }]
+            },
+            "highRisk": ["high-risk.process-spawn", "high-risk.database-query"]
+        });
+        value
+    }
+
+    #[test]
+    fn an_absent_capabilities_key_declares_nothing() {
+        let manifest = parse_value(&valid_manifest_json()).expect("valid manifest");
+        assert_eq!(manifest.capabilities, None, "absent ⇒ no access");
+
+        let encoded = serde_json::to_value(&manifest).expect("encode");
+        assert!(
+            !encoded
+                .as_object()
+                .expect("object")
+                .contains_key("capabilities"),
+            "an undeclared capability set must be an ABSENT key, never null or {{}}: {encoded}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_null_capabilities_key_reads_as_absent() {
+        let mut value = valid_manifest_json();
+        value
+            .as_object_mut()
+            .expect("object")
+            .insert("capabilities".into(), Value::Null);
+        let manifest = parse_value(&value).expect("null is inert (fail-safe)");
+        assert_eq!(manifest.capabilities, None);
+    }
+
+    /// W-1 — the composer the window-open path hands to the registry: the
+    /// manifest's tables verbatim and IN ORDER, under the derived application id,
+    /// at the install validator's own revision, and with no `source` projection
+    /// (an installed package can never declare one).
+    #[test]
+    fn the_open_declaration_carries_the_manifests_tables() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["data"]["tables"] = serde_json::json!([
+            {
+                "name": "notes",
+                "primaryKey": ["id"],
+                "columns": [
+                    { "name": "id", "type": "TEXT", "nullable": false, "owner": "application" },
+                    { "name": "body", "type": "TEXT", "nullable": true, "owner": "application" }
+                ]
+            },
+            {
+                "name": "shared_log",
+                "primaryKey": ["id"],
+                "columns": [
+                    { "name": "id", "type": "TEXT", "nullable": false, "owner": "application" }
+                ]
+            }
+        ]);
+        let manifest = parse_value(&value).expect("a two-table declaration is valid");
+        let capabilities = manifest.capabilities.as_ref().expect("declared");
+
+        let declaration = capabilities
+            .data_declaration(&manifest.id, &manifest.version)
+            .expect("a package that declares tables composes a declaration");
+
+        assert_eq!(declaration.feature_id, "qa3146-app-a");
+        assert_eq!(
+            declaration.declaration_revision,
+            data_declaration_revision(&manifest.version),
+            "one helper: the open path and the install validator share the revision"
+        );
+        assert_eq!(declaration.declaration_revision, "manifest:1.0.0");
+        assert_eq!(
+            declaration
+                .tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            ["notes", "shared_log"],
+            "manifest order is preserved verbatim"
+        );
+        for table in &declaration.tables {
+            assert!(
+                table.source.is_none(),
+                "an installed package's declared table never carries a source projection: {table:?}"
+            );
+        }
+        // The composed declaration is one the registry accepts as-is.
+        assert_eq!(declaration.validate(), Vec::<String>::new());
+    }
+
+    /// W-1 — a package with no declared table composes NOTHING (so the open path
+    /// does no database work), and that includes the present-but-empty list.
+    #[test]
+    fn a_package_without_data_tables_composes_no_declaration() {
+        assert!(
+            parse_value(&valid_manifest_json())
+                .expect("valid")
+                .capabilities
+                .is_none(),
+            "control: this package declares no capabilities at all"
+        );
+
+        let mut empty = declared_manifest_json();
+        empty["capabilities"]["data"]["tables"] = serde_json::json!([]);
+        let manifest = parse_value(&empty).expect("an empty table list is valid");
+        let capabilities = manifest.capabilities.as_ref().expect("declared");
+        assert_eq!(capabilities.data_tables().len(), 0);
+        assert_eq!(
+            capabilities.data_declaration(&manifest.id, &manifest.version),
+            None,
+            "no declared table ⇒ no composition ⇒ no database work on open"
+        );
+
+        // ... and a package with no capabilities key at all is the same answer.
+        let mut absent = valid_manifest_json();
+        absent.as_object_mut().expect("object").remove("capabilities");
+        let manifest = parse_value(&absent).expect("valid without capabilities");
+        assert_eq!(manifest.capabilities, None);
+    }
+
+    #[test]
+    fn a_declaration_round_trips_through_the_canonical_manifest() {
+        let manifest = parse_value(&declared_manifest_json()).expect("declared manifest");
+        let capabilities = manifest.capabilities.as_ref().expect("declared");
+        assert_eq!(
+            capabilities.declared(),
+            [
+                "data.tables",
+                "high-risk.database-query",
+                "high-risk.process-spawn"
+            ],
+            "declared ids are sorted and include data.tables for the data half"
+        );
+        assert_eq!(
+            capabilities.high_risk(),
+            ["high-risk.database-query", "high-risk.process-spawn"],
+            "the high-risk subset is sorted (declaration order is not preserved)"
+        );
+        assert_eq!(capabilities.data_tables().len(), 1);
+        assert_eq!(capabilities.data_tables()[0].name, "records");
+
+        // The canonical copy re-parses to the same value (it is WHAT the runtime
+        // re-reads on every call).
+        let encoded = serde_json::to_value(&manifest).expect("encode");
+        let reparsed = parse_value(&encoded).expect("canonical manifest reparses");
+        assert_eq!(reparsed.capabilities, manifest.capabilities);
+    }
+
+    #[test]
+    fn capabilities_must_be_an_object() {
+        let mut value = valid_manifest_json();
+        value["capabilities"] = serde_json::json!([1, 2, 3]);
+        let error = parse_value(&value).expect_err("array");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities"));
+    }
+
+    #[test]
+    fn an_unknown_key_inside_capabilities_is_refused_with_its_path() {
+        let mut value = valid_manifest_json();
+        value["capabilities"] = serde_json::json!({ "version": 1, "dataWatch": true });
+        let error = parse_value(&value).expect_err("unknown capability key");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestUnknownField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.dataWatch"));
+    }
+
+    #[test]
+    fn capabilities_version_is_required_numeric_and_exactly_one() {
+        // Missing.
+        let mut value = valid_manifest_json();
+        value["capabilities"] = serde_json::json!({ "highRisk": [] });
+        let error = parse_value(&value).expect_err("missing version");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.version"));
+
+        // Not a number.
+        value["capabilities"] = serde_json::json!({ "version": "1" });
+        let error = parse_value(&value).expect_err("string version");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.version"));
+
+        // An unknown contract major is refused LOUDLY, never ignored.
+        for major in [0, 2, 99] {
+            value["capabilities"] = serde_json::json!({ "version": major });
+            let error = parse_value(&value).expect_err("unknown major");
+            assert_eq!(
+                error.code,
+                InstalledAppRefusalCode::ManifestInvalidField,
+                "capabilities.version {major} must be refused"
+            );
+            assert_eq!(error.field.as_deref(), Some("capabilities.version"));
+            assert!(error.detail.contains("capabilities.version"));
+        }
+    }
+
+    #[test]
+    fn an_unknown_high_risk_id_is_refused_with_its_index() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["highRisk"] =
+            serde_json::json!(["high-risk.database-query", "high-risk.everything"]);
+        let error = parse_value(&value).expect_err("unknown capability id");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.highRisk[1]"));
+        assert!(error.detail.contains("high-risk.everything"));
+    }
+
+    #[test]
+    fn data_tables_is_not_a_high_risk_id() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["highRisk"] = serde_json::json!(["data.tables"]);
+        let error = parse_value(&value).expect_err("data.tables is never consentable");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.highRisk[0]"));
+    }
+
+    #[test]
+    fn a_duplicate_high_risk_id_is_refused() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["highRisk"] =
+            serde_json::json!(["high-risk.database-reset", "high-risk.database-reset"]);
+        let error = parse_value(&value).expect_err("duplicate");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.highRisk[1]"));
+    }
+
+    #[test]
+    fn a_non_string_high_risk_entry_is_refused() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["highRisk"] = serde_json::json!([42]);
+        let error = parse_value(&value).expect_err("number");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.highRisk[0]"));
+    }
+
+    #[test]
+    fn a_declared_source_projection_is_refused_at_its_exact_path() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["data"]["tables"][0]["source"] =
+            serde_json::json!({ "kind": "row", "from": "chat", "select": [] });
+        let error = parse_value(&value).expect_err("source projection");
+        assert_eq!(
+            error.code,
+            InstalledAppRefusalCode::ManifestInvalidField,
+            "the source rule is an invalid-field refusal, not a generic unknown key"
+        );
+        assert_eq!(
+            error.field.as_deref(),
+            Some("capabilities.data.tables[0].source")
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_inside_a_declared_table_is_refused_with_its_path() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["data"]["tables"][0]["engine"] = serde_json::json!("sqlite");
+        let error = parse_value(&value).expect_err("unknown table key");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestUnknownField);
+        assert_eq!(
+            error.field.as_deref(),
+            Some("capabilities.data.tables[0].engine")
+        );
+    }
+
+    #[test]
+    fn an_unusable_declared_table_is_refused_by_the_shared_validator() {
+        // A missing primary key: the shared declaration model owns this rule, and
+        // the manifest reports it under the declaration path.
+        let mut value = declared_manifest_json();
+        value["capabilities"]["data"]["tables"][0]["primaryKey"] = serde_json::json!([]);
+        let error = parse_value(&value).expect_err("unusable table");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.data.tables"));
+    }
+
+    #[test]
+    fn capabilities_data_requires_a_tables_array() {
+        let mut value = valid_manifest_json();
+        value["capabilities"] = serde_json::json!({ "version": 1, "data": {} });
+        let error = parse_value(&value).expect_err("no tables");
+        assert_eq!(error.code, InstalledAppRefusalCode::ManifestInvalidField);
+        assert_eq!(error.field.as_deref(), Some("capabilities.data.tables"));
     }
 
     // ── Rule 4-6: manifestVersion ──────────────────────────────────────────

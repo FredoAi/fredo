@@ -32,15 +32,54 @@
  *   qa3146-consent-b        highRisk{database-query}                  (AC4 B; same
  *                           capability as A, so "grant to A never enables B" is real)
  *   qa3146-no-capabilities  NO `capabilities` key at all              (fail-safe default)
+ *   qa3146-mirror-control   declares data.tables{control_probe}       (NEGATIVE CONTROL:
+ *                           its single probe carries a KNOWINGLY FALSE expectation, so a
+ *                           working mirror MUST print a FAIL line -- see below)
  *   qa3146-source-projection declares a table carrying `source`       (install refusal:
  *                           manifest_invalid_field at
  *                           capabilities.data.tables[0].source -- the SECOND door)
  *   qa3146-unknown-capability highRisk{high-risk.root-shell}          (install refusal:
  *                           unknown capability id)
  *
- * The three refusal fixtures are DELIBERATELY invalid manifests: they exist to be
+ * The two refusal fixtures are DELIBERATELY invalid manifests: they exist to be
  * refused. They carry `expectedInstallRefusal` so the suite (and this script's own
  * self-check) assert the exact code + field path instead of "some error".
+ *
+ * SELF-DRIVING (the #3147 precedent, applied in #3146 round 2)
+ * -----------------------------------------------------------
+ * The installed `installed-*` window is unreachable by EVERY `tauri_webview_*` tool:
+ * `execute_js`, `dom_snapshot`, `find_element`, `screenshot` and `console` all return
+ * `Request timeout after 2000ms`, because the bridge's result channel is ACL-denied
+ * inside the child (`withGlobalTauri:false` and no grant for the bridge command). A
+ * fixture that waits to be driven through `execute_js` therefore cannot be driven at
+ * all. So every openable package is SELF-DRIVING: on `mount` it runs its own probe
+ * plan and mirrors EVERY outcome as VISIBLE TEXT, and the tester reads that text with
+ * a capability-independent instrument -- a native accessibility (UIA) read of the
+ * installed window's own a11y tree, corroborated by a native window capture.
+ *
+ * The mirror is a fixed, host-readable grammar:
+ *   [data-qa3146-header]      ONE deterministic line, identical on every run --
+ *                             "QA3146-FIXTURE app=<id> version=<v> capabilities=<set> tables=<csv> probes=<ids>"
+ *   [data-qa3146-document]    ONE per-document line --
+ *                             "QA3146-DOCUMENT app= version= ready=true mount=<id> loaded=<iso> origin=<origin>"
+ *   [data-qa3146-assertions]  one line per probe, rendered as its own <p> --
+ *                             "PASS <id> codes=<c1>,<c2> ..."  /  "FAIL <id> codes=... <reason>"
+ *                             (every line carries the refusal codes it observed, so a
+ *                             reader scores AC2/AC3/AC4 without touching the child)
+ *   [data-qa3146-consent]     the live consent state line (consent fixtures only)
+ *   [data-refusal-code] / [data-refusal-json] / [data-call-log] / [data-qa3146-summary]
+ *                             the last refusal and the full ordered call record, as text
+ *
+ * NEGATIVE CONTROL. `qa3146-mirror-control` declares a table and then asserts the
+ * OPPOSITE of the true outcome (that a read of its own declared table is refused).
+ * A working mirror always prints `FAIL MIRROR-CONTROL ...`; if that line is missing
+ * the mirror never ran, and if it ever reads PASS either the declared read really was
+ * refused (a product defect) or the mirror is lying. That is how a reader tells
+ * "every probe said PASS" from "nothing executed".
+ *
+ * No build-time input comes from the clock or randomness: the probe plan is a pure
+ * function of the catalog, and every per-run value (mount id, child key, timestamps)
+ * is produced inside the child document at mount time.
  *
  * DETERMINISM CONTRACT (same as the sibling generator)
  *   - Node built-ins only. No network, no npm package, no shell-out.
@@ -124,17 +163,20 @@ const FIXTURES = [
       'payload). Its own reads back what it wrote, so "everything refused" cannot pass.',
     ],
     dom: [
-      '[data-qa3146-panel] -- probe panel',
-      '[data-call-log] -- JSON array of { action, ok, value | refusal } per call (the record)',
-      '[data-qa3146-summary] -- calls=<n> rejected=<n>',
-      '[data-refusal-code] / [data-refusal-json] -- the LAST refusal, verbatim',
-      '[data-last-outcome] -- ready | running | done',
-      '[data-qa3146-ready] -- set on ctx.root after the API is installed',
+      '[data-qa3146-panel] -- the probe panel (rendered, self-driving)',
+      '[data-qa3146-header] -- ONE deterministic line: app= version= capabilities= tables= probes=',
+      '[data-qa3146-document] -- ONE per-document line: app= version= ready= mount= loaded= origin=',
+      '  (read mount= / loaded= from this TEXT; the [data-mounted-at] / [data-mount-id] attributes',
+      '  exist on ctx.root but a native a11y read exposes text, not attributes)',
+      '[data-qa3146-assertions] -- one <p data-assertion="<id>" data-status="PASS|FAIL"> line per probe:',
+      '  "PASS <id> codes=<c1>,<c2> ..." or "FAIL <id> codes=... <reason>"',
+      '[data-refusal-code] / [data-refusal-json] -- the LAST refusal, verbatim text',
+      '[data-call-log] -- JSON array of { action, raw, ok, value | refusal } per call (the record)',
+      '[data-qa3146-summary] -- QA3146-SUMMARY calls=<n> rejected=<n> probes=<n> done=<state>',
       '[data-mounted-at] / [data-mount-id] -- per-document stamps (prove no reload happened',
       '  across a grant/revoke: the SAME values must survive the consent change)',
-      'window.__QA3146.run(calls) -- drives actions through window.__FREDO_INSTALLED__.invoke',
-      'window.__QA3146.runRaw(calls) -- drives RAW command names through',
-      '  window.__TAURI_INTERNALS__.invoke (the ACL row only; never a capability row)',
+      'Read the whole mirror with a native UIA text read / native window capture -- never',
+      'with tauri_webview_* (unreachable on installed-<id>, #3147).',
     ],
   },
   {
@@ -153,7 +195,7 @@ const FIXTURES = [
       'which A is refused; after A attempts B, B reads back the ORIGINAL value (nothing of',
       "B's changed). Run in both install orders (A first, then B first).",
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'mission',
@@ -177,7 +219,7 @@ const FIXTURES = [
       'feature_mission_monitor_sessions exists in the env database, so "the collision target',
       'is real" is a reading rather than an assumption.',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'orbit',
@@ -205,7 +247,7 @@ const FIXTURES = [
       'fails the orbit_own leg, and an implementation that only checks identity-equality',
       'passes lab_notes.',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'orbit-lab',
@@ -226,7 +268,7 @@ const FIXTURES = [
       'fail-safe direction (the Architect: a stale id index can only produce a FALSE REFUSAL,',
       'never a false permit) -- the row records the observation, it does not fail it.',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'qa3146-consent-a',
@@ -243,7 +285,7 @@ const FIXTURES = [
       'pg_database_reset destroys the environment database. It is exercised only as a',
       'declared capability (projection + per-capability specificity).',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'qa3146-consent-b',
@@ -259,7 +301,7 @@ const FIXTURES = [
       'declaration; and a grant request for high-risk.database-reset on B (which B did NOT',
       'declare) is refused and records nothing.',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
   },
   {
     id: 'qa3146-no-capabilities',
@@ -274,7 +316,33 @@ const FIXTURES = [
       '"everything except a deny list"). Every action is refused action_not_declared and the',
       'projection carries a capabilities block with three EMPTY arrays.',
     ],
-    dom: ['[data-call-log] and the refusal hooks, identical to qa3146-app-a'],
+    dom: ['the full rendered mirror (header / document / assertions / refusal / call log), identical in shape to qa3146-app-a'],
+  },
+  {
+    id: 'qa3146-mirror-control',
+    displayName: 'QA3146 Mirror Control',
+    version: '1.0.0',
+    description:
+      'NEGATIVE CONTROL for the rendered mirror: its probe asserts a KNOWINGLY FALSE expectation, so a working mirror MUST print a FAIL line.',
+    capabilities: {
+      version: 1,
+      data: {
+        tables: [table('control_probe', [col('id', 'TEXT', 'application'), col('body', 'TEXT', 'application', true)])],
+      },
+    },
+    openable: true,
+    declares: ['data.tables'],
+    mustPrintFail: true,
+    asserts: [
+      'INSTRUMENT CONTROL (never graded as a product row): this package declares its own',
+      'table and then expects a read of that table to be refused action_not_declared. The',
+      'true outcome is a resolve, so a working mirror prints',
+      '"FAIL MIRROR-CONTROL codes=ok step 1 expected refusal action_not_declared, resolved".',
+      'A MISSING line means the mirror never ran; a PASS line means either the declared read',
+      'was wrongly refused (a real product defect) or the mirror fabricates results. In every',
+      'one of those three cases the round has no usable child evidence.',
+    ],
+    dom: ['the full rendered mirror, identical to qa3146-app-a, with one MIRROR-CONTROL line'],
   },
   {
     id: 'qa3146-source-projection',
@@ -331,6 +399,471 @@ const FIXTURES = [
 ];
 
 /* ==========================================================================
+ * Probe plans -- what each self-driving fixture drives on mount.
+ *
+ * A plan is DATA, interpreted by one generic runner in the child module, so the
+ * generator can assert (in its own self-check) that every probe id it promises is
+ * actually embedded in the shipped module. Step shapes:
+ *   pstep(action, args, expect, raw)
+ *     expect: 'ok' | 'refuse' | 'refuse:<code>' | 'any'
+ *   checks (evaluated on the recorded outcomes, 1-based `on`):
+ *     { kind:'pathEq',          on, path, eq, name }
+ *     { kind:'present',         on, path, name }
+ *     { kind:'containsRow',     on, path, field, value, name }
+ *     { kind:'textExcludes',    on, tokens, name, onlyCodes? }
+ *     { kind:'textIncludesAny', on, tokens, name, onlyCodes? }
+ *     { kind:'notCode',         on, codes, name }
+ *     { kind:'sameExcept',      a, b, strip, name }
+ *   facts:   { name, on, path } rendered as "name=value" on the PASS line
+ *   extraFacts: { name, value } with the runtime token $CHILD_KEY resolved at mount
+ *
+ * Determinism: a plan is derived from the catalog only (no clock, no randomness).
+ * `$CHILD_KEY` is the ONE runtime token, resolved inside the child at mount time.
+ * ========================================================================== */
+
+/** The authority vocabulary (six codes) -- never the installer's frozen 22. */
+const AUTHORITY_CODES = [
+  'action_not_declared',
+  'action_not_grantable',
+  'consent_required',
+  'scope_denied',
+  'caller_unknown',
+  'app_not_installed',
+];
+
+function pcall(action, args, raw) {
+  return { action: action, args: args === undefined ? {} : args, raw: Boolean(raw) };
+}
+
+function pstep(action, args, expect, raw) {
+  return { call: pcall(action, args, raw), expect: expect || 'ok' };
+}
+
+function appRef(applicationId, table) {
+  return { source: 'application', applicationId: applicationId, table: table };
+}
+
+function capabilityIdsOf(capabilities) {
+  if (!capabilities) return [];
+  const ids = [];
+  if (capabilities.data && Array.isArray(capabilities.data.tables) && capabilities.data.tables.length > 0) {
+    ids.push('data.tables');
+  }
+  if (Array.isArray(capabilities.highRisk)) {
+    for (const id of capabilities.highRisk) ids.push(id);
+  }
+  return ids;
+}
+
+function tableNamesOf(capabilities) {
+  if (!capabilities || !capabilities.data || !Array.isArray(capabilities.data.tables)) return [];
+  return capabilities.data.tables.map((t) => t.name);
+}
+
+/** The query leg F-7.17 / F-7.18 / F-7.19 / F-7.20 / F-7.27 all drive. It names a
+ *  connection that cannot exist so a GRANTED call stops at the connection lookup --
+ *  the row only ever asserts the consent gate, never a successful query. */
+const CONSENT_QUERY = {
+  connectionId: 'qa3146-no-such-connection',
+  sql: 'SELECT 1',
+  mode: 'Single',
+  selection: null,
+  confirmedStatementHashes: [],
+};
+
+function probePlanFor(fixture) {
+  const id = fixture.id;
+  const capabilities = fixture.capabilities;
+  const declaredTables =
+    capabilities && capabilities.data && Array.isArray(capabilities.data.tables) ? capabilities.data.tables : [];
+  const firstTable = declaredTables.length > 0 ? declaredTables[0] : null;
+
+  if (id === 'qa3146-app-a') {
+    const notes = appRef('qa3146-app-a', 'notes');
+    const notesKey = { applicationId: 'qa3146-app-a', table: 'notes' };
+    const otherRecords = appRef('qa3146-app-b', 'records');
+    return {
+      probes: [
+        {
+          id: 'F-7.5',
+          steps: [
+            /* Pre-clean both keys this fixture itself uses, so a re-open of the
+               document re-runs the same assertions instead of inheriting rows from
+               the previous load (the row binds rows.length === 0 after the delete). */
+            pstep('application_data_delete', { ref: notesKey, key: ['n2'] }, 'any'),
+            pstep('application_data_delete', { ref: notesKey, key: ['n1'] }, 'any'),
+            pstep('application_data_write', { ref: notes, key: ['n1'], set: { body: 'hello-a' } }),
+            pstep('application_data_read', { ref: notes, where: [], limit: 10 }),
+            pstep('application_data_delete', { ref: notesKey, key: ['n1'] }),
+            pstep('application_data_read', { ref: notes, where: [], limit: 10 }),
+            pstep(
+              'application_data_declare',
+              {
+                declarations: [
+                  {
+                    applicationId: 'qa3146-app-a',
+                    declarationRevision: 'qa3146-probe-r1',
+                    tables: firstTable ? [firstTable] : [],
+                  },
+                ],
+              },
+              'any'
+            ),
+          ],
+          checks: [
+            { kind: 'pathEq', on: 4, path: 'rows.length', eq: 1, name: 'rowsAfterWrite' },
+            { kind: 'pathEq', on: 4, path: 'rows.0.body', eq: 'hello-a', name: 'wroteBody' },
+            { kind: 'pathEq', on: 6, path: 'rows.length', eq: 0, name: 'rowsAfterDelete' },
+            { kind: 'notCode', on: 7, codes: AUTHORITY_CODES, name: 'declareNotCapabilityRefused' },
+          ],
+          facts: [
+            { name: 'rowsAfterWrite', on: 4, path: 'rows.length' },
+            { name: 'rowsAfterDelete', on: 6, path: 'rows.length' },
+          ],
+        },
+        {
+          id: 'F-7.6',
+          steps: [
+            pstep('application_data_write', { ref: notes, key: ['n2'], set: { body: 'no-identity' } }),
+            pstep('application_data_read', { ref: { source: 'application', table: 'notes' }, where: [], limit: 10 }),
+            /* Self-cleaning: leaves the table as it found it, so F-7.5 stays re-runnable. */
+            pstep('application_data_delete', { ref: notesKey, key: ['n2'] }, 'any'),
+          ],
+          checks: [{ kind: 'containsRow', on: 2, path: 'rows', field: 'body', value: 'no-identity', name: 'derivedId' }],
+        },
+        {
+          id: 'F-7.7',
+          steps: [pstep('application_data_read', { ref: notes, where: [], limit: 10 })],
+          facts: [{ name: 'rowsAfterReopen', on: 1, path: 'rows.length' }],
+        },
+        {
+          id: 'F-7.8',
+          steps: [pstep('pg_database_reset', {}, 'refuse:action_not_declared')],
+          checks: [
+            { kind: 'pathEq', on: 1, path: 'appId', eq: 'qa3146-app-a', name: 'derivedAppId' },
+            { kind: 'pathEq', on: 1, path: 'action', eq: 'pg_database_reset', name: 'action' },
+            { kind: 'present', on: 1, path: 'detail', name: 'detail' },
+          ],
+          facts: [{ name: 'appId', on: 1, path: 'appId' }],
+        },
+        {
+          id: 'F-7.9',
+          steps: [
+            pstep('save_control_setting', { key: '$CHILD_KEY', value: 'probe-sentinel' }, 'refuse:action_not_grantable'),
+            pstep('installed_apps_list', {}, 'refuse:action_not_grantable'),
+            pstep(
+              'installed_app_consent_grant',
+              { appId: 'qa3146-app-a', capability: 'high-risk.database-reset' },
+              'refuse:action_not_grantable'
+            ),
+          ],
+          extraFacts: [{ name: 'childKey', value: '$CHILD_KEY' }],
+        },
+        {
+          id: 'F-7.10',
+          steps: [
+            pstep('get_control_setting', { key: 'app_window_presentation' }, 'refuse', true),
+            pstep(
+              'installed_app_consent_grant',
+              { appId: 'qa3146-app-a', capability: 'high-risk.database-query' },
+              'refuse',
+              true
+            ),
+            pstep('installed_app_install', { archivePath: 'C:/nonexistent.zip' }, 'refuse', true),
+            pstep(
+              'installed_app_invoke',
+              {
+                request: {
+                  action: 'application_data_read',
+                  args: { ref: appRef('qa3146-app-a', 'notes'), where: [], limit: 5 },
+                },
+              },
+              'any',
+              true
+            ),
+          ],
+          checks: [
+            { kind: 'textIncludesAny', on: 1, tokens: ['not allowed', 'permission', 'capability'], name: 's1Acl' },
+            { kind: 'textExcludes', on: 1, tokens: ['net::ERR', 'content security policy', 'timed out'], name: 's1Transport' },
+            { kind: 'textIncludesAny', on: 2, tokens: ['not allowed', 'permission', 'capability'], name: 's2Acl' },
+            { kind: 'textExcludes', on: 2, tokens: ['net::ERR', 'content security policy', 'timed out'], name: 's2Transport' },
+            { kind: 'textIncludesAny', on: 3, tokens: ['not allowed', 'permission', 'capability'], name: 's3Acl' },
+            { kind: 'textExcludes', on: 3, tokens: ['net::ERR', 'content security policy', 'timed out'], name: 's3Transport' },
+            { kind: 'textExcludes', on: 4, tokens: ['not allowed', 'permission:'], name: 's4NotAcl' },
+          ],
+        },
+        {
+          id: 'F-7.13',
+          steps: [
+            pstep('application_data_read', { ref: otherRecords, where: [], limit: 10 }, 'refuse:scope_denied'),
+            pstep('application_data_write', { ref: { applicationId: 'qa3146-app-b', table: 'records' }, key: ['r1'], set: { value: 'pwned' } }, 'refuse:scope_denied'),
+            pstep('application_data_delete', { ref: { applicationId: 'qa3146-app-b', table: 'records' }, key: ['r1'] }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: notes, where: [], limit: 10 }),
+          ],
+          checks: [
+            { kind: 'pathEq', on: 1, path: 'appId', eq: 'qa3146-app-a', name: 'readAppId' },
+            { kind: 'pathEq', on: 2, path: 'appId', eq: 'qa3146-app-a', name: 'writeAppId' },
+            { kind: 'pathEq', on: 3, path: 'appId', eq: 'qa3146-app-a', name: 'deleteAppId' },
+          ],
+        },
+        {
+          id: 'F-7.14',
+          steps: [
+            pstep('application_data_read', { ref: { source: 'canonical', table: 'chat' }, where: [], limit: 10 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: { source: 'canonical', table: 'agentSession' }, where: [], limit: 10 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: { source: 'canonical', table: 'toolUse' }, where: [], limit: 10 }, 'refuse:scope_denied'),
+          ],
+        },
+        {
+          id: 'F-7.24',
+          steps: [
+            pstep('application_data_read', { ref: { source: 'application', table: 'notes' }, where: [], limit: 5 }),
+            pstep('application_data_read', { ref: otherRecords, where: [], limit: 5 }, 'refuse:scope_denied'),
+            /* A NON-EXISTENT id: the row binds only "refused" + the DERIVED appId, never a
+               code -- the taxonomy for an unknown target is the product's, not this row's. */
+            pstep('application_data_read', { ref: appRef('qa3146-ghost', 'records'), where: [], limit: 5 }, 'refuse'),
+          ],
+          checks: [
+            { kind: 'pathEq', on: 2, path: 'appId', eq: 'qa3146-app-a', name: 'otherAppId' },
+            { kind: 'pathEq', on: 3, path: 'appId', eq: 'qa3146-app-a', name: 'ghostAppId' },
+          ],
+        },
+        {
+          id: 'F-7.31',
+          steps: [
+            pstep('application_data_read', { ref: otherRecords, where: [], limit: 5 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: appRef('qa3146-app-a', 'records'), where: [], limit: 5 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: appRef('mission', 'monitor_sessions'), where: [], limit: 5 }, 'refuse:scope_denied'),
+          ],
+          checks: [
+            { kind: 'textExcludes', on: 1, tokens: ['mission-monitor', 'feature_mission_monitor_sessions'], name: 's1Leak' },
+            { kind: 'textExcludes', on: 2, tokens: ['mission-monitor', 'feature_mission_monitor_sessions'], name: 's2Leak' },
+            { kind: 'textExcludes', on: 3, tokens: ['mission-monitor', 'feature_mission_monitor_sessions'], name: 's3Leak' },
+            {
+              kind: 'sameExcept',
+              a: 1,
+              b: 2,
+              strip: ['qa3146-app-a', 'qa3146-app-b', 'records'],
+              name: 'notOracular',
+            },
+          ],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'qa3146-app-b') {
+    const records = appRef('qa3146-app-b', 'records');
+    return {
+      probes: [
+        {
+          id: 'F-7.11',
+          steps: [
+            pstep('application_data_write', { ref: records, key: ['r1'], set: { value: 'b-original' } }),
+            pstep('application_data_read', { ref: records, where: [], limit: 10 }),
+          ],
+          checks: [{ kind: 'containsRow', on: 2, path: 'rows', field: 'value', value: 'b-original', name: 'ownRecords' }],
+        },
+        {
+          id: 'F-7.13',
+          steps: [pstep('application_data_read', { ref: records, where: [], limit: 10 })],
+          checks: [{ kind: 'containsRow', on: 1, path: 'rows', field: 'value', value: 'b-original', name: 'unchanged' }],
+        },
+      ],
+      consent: null,
+      /* A landed write from A must be OBSERVED, not masked: this watch re-reads the
+         row and announces the transition. Re-opening B re-seeds r1, so the live watch
+         -- not a later load -- is the leg that survives A's attempt. */
+      watch: {
+        id: 'F-7.13',
+        action: 'application_data_read',
+        args: { ref: records, where: [], limit: 10 },
+        path: 'rows',
+        field: 'value',
+        value: 'b-original',
+        intervalMs: 2000,
+      },
+    };
+  }
+
+  if (id === 'mission') {
+    return {
+      probes: [
+        {
+          id: 'F-7.11',
+          steps: [
+            pstep('application_data_read', { ref: appRef('mission', 'monitor_sessions'), where: [], limit: 10 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: appRef('mission', 'monitor_secrets'), where: [], limit: 10 }, 'refuse:scope_denied'),
+          ],
+          checks: [{ kind: 'pathEq', on: 1, path: 'appId', eq: 'mission', name: 'appId' }],
+          facts: [{ name: 'appId', on: 1, path: 'appId' }],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'orbit') {
+    return {
+      probes: [
+        {
+          id: 'F-7.12',
+          steps: [
+            pstep('application_data_write', { ref: { applicationId: 'orbit', table: 'orbit_own' }, key: ['o1'], set: { body: 'orbit-own-value' } }),
+            pstep('application_data_read', { ref: appRef('orbit', 'lab_notes'), where: [], limit: 10 }, 'refuse:scope_denied'),
+            pstep('application_data_read', { ref: appRef('orbit', 'orbit_own'), where: [], limit: 10 }),
+          ],
+          checks: [{ kind: 'containsRow', on: 3, path: 'rows', field: 'body', value: 'orbit-own-value', name: 'orbitOwn' }],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'orbit-lab') {
+    return {
+      probes: [
+        {
+          id: 'F-7.12',
+          steps: [pstep('application_data_read', { ref: appRef('orbit-lab', 'notes'), where: [], limit: 10 }, 'refuse:scope_denied')],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'qa3146-consent-a') {
+    return {
+      probes: [
+        {
+          id: 'F-7.17',
+          steps: [
+            pstep('db_query_execute', CONSENT_QUERY, 'any'),
+            pstep('pg_database_reset', {}, 'refuse:consent_required'),
+          ],
+          checks: [
+            { kind: 'pathEq', on: 2, path: 'capability', eq: 'high-risk.database-reset', name: 'resetCapability' },
+            {
+              kind: 'textExcludes',
+              on: 1,
+              tokens: ['qa3146-no-such-connection'],
+              onlyCodes: ['consent_required'],
+              name: 'consentBeforeHandler',
+            },
+            {
+              kind: 'pathEq',
+              on: 1,
+              path: 'capability',
+              eq: 'high-risk.database-query',
+              onlyCodes: ['consent_required'],
+              name: 'queryCapability',
+            },
+          ],
+          facts: [
+            { name: 'queryCapability', on: 1, path: 'capability' },
+            { name: 'resetCapability', on: 2, path: 'capability' },
+          ],
+        },
+      ],
+      consent: {
+        queryAction: 'db_query_execute',
+        queryArgs: CONSENT_QUERY,
+        transitionIds: ['F-7.18', 'F-7.27'],
+        resetId: 'F-7.20',
+        intervalMs: 2000,
+      },
+    };
+  }
+
+  if (id === 'qa3146-consent-b') {
+    return {
+      probes: [
+        {
+          id: 'F-7.19',
+          steps: [pstep('db_query_execute', CONSENT_QUERY, 'refuse:consent_required')],
+          checks: [{ kind: 'pathEq', on: 1, path: 'appId', eq: 'qa3146-consent-b', name: 'derivedAppId' }],
+          facts: [{ name: 'appId', on: 1, path: 'appId' }],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'qa3146-no-capabilities') {
+    return {
+      probes: [
+        {
+          id: 'F-7.26',
+          steps: [
+            pstep(
+              'application_data_read',
+              { ref: appRef('qa3146-no-capabilities', 'notes'), where: [], limit: 5 },
+              'refuse:action_not_declared'
+            ),
+            pstep('application_data_declare', { declarations: [] }, 'refuse:action_not_declared'),
+            pstep('pg_database_reset', {}, 'refuse:action_not_declared'),
+          ],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  if (id === 'qa3146-mirror-control') {
+    /* KNOWINGLY FALSE expectation -- see the fixture's `asserts`. A working mirror
+       prints FAIL here; that line is the control itself. */
+    return {
+      probes: [
+        {
+          id: 'MIRROR-CONTROL',
+          steps: [
+            pstep(
+              'application_data_read',
+              { ref: appRef('qa3146-mirror-control', 'control_probe'), where: [], limit: 5 },
+              'refuse:action_not_declared'
+            ),
+          ],
+        },
+      ],
+      consent: null,
+    };
+  }
+
+  return { probes: [], consent: null };
+}
+
+function buildProbePlan(fixture) {
+  const plan = probePlanFor(fixture);
+  const probes = plan.probes || [];
+  /* Every assertion id this DOCUMENT can emit -- the load-time probes plus the ids the
+     consent/data watchers publish later. The header advertises the full set so a reader
+     knows which lines to look for, and which are missing. */
+  const advertised = probes.map((probe) => probe.id);
+  if (plan.consent) {
+    for (const id of plan.consent.transitionIds || []) advertised.push(id);
+    if (plan.consent.resetId) advertised.push(plan.consent.resetId);
+  }
+  if (plan.watch && plan.watch.id) advertised.push(plan.watch.id);
+  const unique = [];
+  for (const id of advertised) {
+    if (!unique.includes(id)) unique.push(id);
+  }
+  return {
+    fixtureId: fixture.id,
+    appId: fixture.id,
+    version: fixture.version,
+    capabilitiesText: capabilityIdsOf(fixture.capabilities).join('+') || '(none)',
+    tablesText: tableNamesOf(fixture.capabilities).join(',') || '(none)',
+    probeIds: unique,
+    probeCount: probes.length,
+    probes: probes,
+    consent: plan.consent || null,
+    watch: plan.watch || null,
+  };
+}
+
+/* ==========================================================================
  * The document. The host scheme handler owns the real shell; this file carries
  * no script at all, so a fixture can never double-mount.
  * ========================================================================== */
@@ -359,6 +892,12 @@ function documentHtml(displayName, fixtureId) {
               background: var(--card-bg); border: 1px solid var(--accent-primary); }
     h1 { font-size: 16px; margin: 0 0 8px; }
     p { font-size: 13px; line-height: 1.5; margin: 0 0 8px; }
+    /* One VISIBLE line per assertion. The word PASS / FAIL is in the text, so the
+       status is never carried by colour alone; FAIL is additionally bold. */
+    p[data-assertion] { font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+                        line-height: 1.55; margin: 0 0 4px; white-space: pre-wrap;
+                        overflow-wrap: anywhere; }
+    p[data-assertion][data-status="FAIL"] { font-weight: 700; }
     pre { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
           white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
   </style>
@@ -371,25 +910,68 @@ function documentHtml(displayName, fixtureId) {
 }
 
 /* ==========================================================================
- * The one child module. Every openable fixture shares it: the capability
- * behaviour under test lives in the HOST, so the fixture only needs a
- * programmable, DOM-readable call surface.
+ * The one child module TEMPLATE. Every openable fixture ships this module with
+ * its OWN probe plan substituted for __PLAN_JSON__, so each document drives
+ * exactly the assertions its package exists to prove. The capability behaviour
+ * under test lives in the HOST; the fixture supplies the self-driving probes and
+ * the rendered-text mirror a host-side read scores.
  * ========================================================================== */
 
 const CAPABILITY_PROBE_MODULE = `// Generated by .opencode/tests/installable-apps/fixtures/build-capability-fixtures.mjs
 // (Spec #3146). Plain ESM: the host bootstrap imports this file and calls the
 // exported mount(ctx).
 //
+// SELF-DRIVING (Spec #3146 round 2, the #3147 precedent). The installed window is
+// deliberately unreachable by EVERY tauri_webview_* tool -- execute_js, dom_snapshot,
+// find_element, screenshot and console all return "Request timeout after 2000ms"
+// against an installed-* windowId, because the bridge's result channel is ACL-denied
+// inside the child. So this fixture does NOT wait to be driven: on mount it runs its
+// own probe plan and mirrors EVERY outcome as VISIBLE TEXT. The tester reads that text
+// with a capability-independent instrument: a native accessibility (UIA) read of the
+// installed window's own a11y tree, corroborated by a native window capture. No
+// execute_js call is part of this contract.
+//
 // The fixture NEVER bundles a Tauri API. It calls exactly one thing --
 // window.__FREDO_INSTALLED__.invoke(action, args), the host-authored child
 // client -- and writes every outcome (the resolved value, or the refusal object
-// verbatim) to [data-call-log] so the tester reads the result from the DOM
-// instead of depending on whether this driver awaits a promise returned by
-// execute_js.
+// verbatim) to the rendered record.
 //
 // If the shim is absent the fixture records the refusal code "no-invoke-shim",
 // which is exactly what the PRE-CHANGE tree produces: that is the redden
 // control for every [NEW] row bound to this fixture.
+//
+// RENDERED MIRROR (what a host-side read asserts):
+//   [data-qa3146-header]      ONE deterministic line, identical on every run:
+//                             QA3146-FIXTURE app=<id> version=<v> capabilities=<set> tables=<csv> probes=<ids>
+//   [data-qa3146-document]    ONE per-document line:
+//                             QA3146-DOCUMENT app= version= ready=true mount=<id> loaded=<iso> origin=<origin>
+//   [data-qa3146-theme]       the LIVE theme readout (re-published every second):
+//                             QA3146-THEME theme.body-bg=.. theme.card-bg=.. theme.text-primary=..
+//                             theme.accent-primary=.. colorScheme=<light|dark> mount=<id>
+//   [data-qa3146-assertions]  one <p data-assertion="<id>" data-status="PASS|FAIL"> per probe:
+//                             "PASS <id> codes=<c1>,<c2> ..."  |  "FAIL <id> codes=... <reason>"
+//   [data-qa3146-consent]     the live consent state line (consent fixtures only)
+//   [data-refusal-code]       the LAST refusal code, as text
+//   [data-refusal-json]       the LAST refusal, verbatim JSON text
+//   [data-call-log]           every call in drive order, JSON
+//   [data-qa3146-summary]     QA3146-SUMMARY calls=<n> rejected=<n> probes=<n> done=<state>
+//
+// The NEGATIVE CONTROL package (qa3146-mirror-control) carries a probe whose
+// expectation is knowingly false, so a working mirror MUST print a FAIL line. That is
+// how a reader tells "every probe said PASS" from "the mirror never ran".
+
+var PLAN = __PLAN_JSON__;
+
+function makeEl(doc, tag, attrs, text) {
+  var node = doc.createElement(tag);
+  if (attrs) {
+    for (var name in attrs) {
+      if (Object.prototype.hasOwnProperty.call(attrs, name)) node.setAttribute(name, attrs[name]);
+    }
+  }
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
 
 function safeString(value) {
   try {
@@ -401,20 +983,117 @@ function safeString(value) {
   }
 }
 
+function lower(text) {
+  return String(text).toLowerCase();
+}
+
+function textOf(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    if (typeof value.detail === "string") return value.detail;
+    if (typeof value.message === "string") return value.message;
+    return safeString(value);
+  }
+  return String(value);
+}
+
+function codeOf(value) {
+  if (value && typeof value === "object" && typeof value.code === "string") return value.code;
+  if (typeof value === "string") {
+    /* A raw-handle rejection is a free-text authority message. Keep a short token for
+       the positional codes= clause; the verbatim text stays in the call record, which
+       the text checks and the reader both use. */
+    if (value.length <= 32 && value.indexOf(" ") === -1 && value.indexOf(",") === -1) return value;
+    return "refused";
+  }
+  return "";
+}
+
+function isIndex(key) {
+  if (key.length === 0) return false;
+  for (var i = 0; i < key.length; i++) {
+    var c = key.charAt(i);
+    if (c < "0" || c > "9") return false;
+  }
+  return true;
+}
+
+function readPath(subject, dotted) {
+  if (!dotted) return subject;
+  var parts = String(dotted).split(".");
+  var cursor = subject;
+  for (var i = 0; i < parts.length; i++) {
+    if (cursor === null || cursor === undefined) return undefined;
+    var key = parts[i];
+    if (Array.isArray(cursor) && isIndex(key)) cursor = cursor[Number(key)];
+    else if (typeof cursor === "object") cursor = cursor[key];
+    else return undefined;
+  }
+  return cursor;
+}
+
+function renderValue(value) {
+  if (value === undefined) return "<missing>";
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return safeString(value);
+}
+
+function containsToken(text, tokens) {
+  var haystack = lower(text);
+  for (var i = 0; i < tokens.length; i++) {
+    if (haystack.indexOf(lower(tokens[i])) !== -1) return "contains the token " + tokens[i];
+  }
+  return "";
+}
+
+function stripTokens(text, tokens) {
+  var out = String(text);
+  for (var i = 0; i < tokens.length; i++) {
+    var token = tokens[i];
+    var at = lower(out).indexOf(lower(token));
+    while (at !== -1) {
+      out = out.slice(0, at) + out.slice(at + token.length);
+      at = lower(out).indexOf(lower(token));
+    }
+  }
+  var parts = out.split(" ");
+  var kept = [];
+  for (var p = 0; p < parts.length; p++) {
+    if (parts[p] !== "") kept.push(parts[p]);
+  }
+  return kept.join(" ");
+}
+
 function mountPanel(root, doc) {
   var existing = root.querySelector("[data-qa3146-panel]");
   if (existing) return existing;
-  var panel = doc.createElement("section");
-  panel.setAttribute("data-qa3146-panel", "");
-  panel.innerHTML =
-    "<h1>Spec #3146 capability probe</h1>" +
-    "<p>This fixture drives <code>window.__FREDO_INSTALLED__.invoke(action, args)</code> and " +
-    "publishes every outcome below. The host -- not this document -- decides what the call reaches.</p>" +
-    "<p>calls/refusals: <span data-qa3146-summary>(idle)</span></p>" +
-    "<p>last outcome: <span data-last-outcome>idle</span></p>" +
-    "<p>last refusal code: <span data-refusal-code></span></p>" +
-    "<pre data-refusal-json>(no refusal yet)</pre>" +
-    "<pre data-call-log>(no calls yet)</pre>";
+  var panel = makeEl(doc, "section", { "data-qa3146-panel": "" });
+  panel.appendChild(makeEl(doc, "h1", null, "Spec #3146 capability probe (self-driving)"));
+  panel.appendChild(
+    makeEl(
+      doc,
+      "p",
+      null,
+      "Every probe below runs on document load and publishes its outcome as VISIBLE TEXT. " +
+        "Read the PASS / FAIL lines with a native accessibility (UIA) read of this window or a " +
+        "native window capture: the tauri_webview_* tools cannot reach an installed-* window."
+    )
+  );
+  panel.appendChild(makeEl(doc, "pre", { "data-qa3146-header": "" }));
+  panel.appendChild(makeEl(doc, "pre", { "data-qa3146-document": "" }));
+  panel.appendChild(makeEl(doc, "pre", { "data-qa3146-theme": "" }));
+  panel.appendChild(makeEl(doc, "div", { "data-qa3146-assertions": "" }));
+  panel.appendChild(makeEl(doc, "pre", { "data-qa3146-consent": "" }));
+  panel.appendChild(makeEl(doc, "p", null, "last refusal code:"));
+  panel.appendChild(makeEl(doc, "pre", { "data-refusal-code": "" }));
+  panel.appendChild(makeEl(doc, "p", null, "last refusal (verbatim):"));
+  panel.appendChild(makeEl(doc, "pre", { "data-refusal-json": "" }));
+  panel.appendChild(makeEl(doc, "p", null, "call record (JSON, drive order):"));
+  panel.appendChild(makeEl(doc, "pre", { "data-call-log": "" }));
+  panel.appendChild(makeEl(doc, "pre", { "data-qa3146-summary": "" }));
   root.appendChild(panel);
   return panel;
 }
@@ -424,48 +1103,153 @@ export function mount(ctx) {
   if (!root || root.nodeType !== 1) {
     throw new TypeError("capability-probe: ctx.root is missing from InstalledAppContext");
   }
-  root.setAttribute("data-fixture", "capability-probe");
+  root.setAttribute("data-fixture", PLAN.fixtureId);
 
   var doc = root.ownerDocument || document;
   var panel = mountPanel(root, doc);
 
+  var headerEl = panel.querySelector("[data-qa3146-header]");
+  var documentEl = panel.querySelector("[data-qa3146-document]");
+  var themeEl = panel.querySelector("[data-qa3146-theme]");
+  var assertionsEl = panel.querySelector("[data-qa3146-assertions]");
+  var consentEl = panel.querySelector("[data-qa3146-consent]");
   var logEl = panel.querySelector("[data-call-log]");
   var summaryEl = panel.querySelector("[data-qa3146-summary]");
   var codeEl = panel.querySelector("[data-refusal-code]");
   var refusalEl = panel.querySelector("[data-refusal-json]");
-  var outcomeEl = panel.querySelector("[data-last-outcome]");
 
-  var results = [];
+  var records = [];
+  var halted = false;
 
-  function publish() {
-    logEl.textContent = JSON.stringify(results, null, 2);
-    var rejected = 0;
-    for (var i = 0; i < results.length; i++) {
-      if (!results[i].ok) rejected++;
+  function randomToken() {
+    var text = "";
+    var alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (var i = 0; i < 12; i++) {
+      text = text + alphabet.charAt(Math.floor(Math.random() * alphabet.length));
     }
-    summaryEl.textContent = "calls=" + results.length + " rejected=" + rejected;
+    return text;
+  }
+
+  var loadedAt = new Date().toISOString();
+  var mountId = String(new Date().getTime()) + "-" + randomToken();
+  var childKey = "qa3146-child-" + randomToken();
+
+  /* ---- the header (deterministic) and the per-document line (runtime) ---- */
+  headerEl.textContent =
+    "QA3146-FIXTURE app=" + PLAN.appId +
+    " version=" + PLAN.version +
+    " capabilities=" + PLAN.capabilitiesText +
+    " tables=" + PLAN.tablesText +
+    " probes=" + PLAN.probeIds.join(",");
+
+  var origin = "unreadable";
+  try {
+    origin = String(window.location.origin);
+  } catch (error) {
+    origin = "unreadable";
+  }
+
+  documentEl.textContent =
+    "QA3146-DOCUMENT app=" + String(ctx.appId) +
+    " version=" + String(ctx.version) +
+    " ready=true mount=" + mountId +
+    " loaded=" + loadedAt +
+    " origin=" + origin;
+
+  root.setAttribute("data-mounted-at", loadedAt);
+  root.setAttribute("data-mount-id", mountId);
+  root.setAttribute("data-qa3146-ready", "true");
+
+  if (!PLAN.consent) consentEl.textContent = "QA3146-CONSENT app=" + PLAN.appId + " state=none";
+
+  /* The host writes the theme tokens as CSS custom properties on documentElement, so
+     this document can read them back and PUBLISH them. Re-published every second so a
+     live theme push (F-1.8) is observable without a reload -- together with the mount
+     id, which is the reload discriminator. */
+  var THEME_TOKENS = ["--body-bg", "--card-bg", "--text-primary", "--accent-primary", "--accent-secondary"];
+  var THEME_NAMES = ["body-bg", "card-bg", "text-primary", "accent-primary", "accent-secondary"];
+
+  function publishTheme() {
+    var computed = null;
+    try {
+      computed = window.getComputedStyle(document.documentElement);
+    } catch (error) {
+      computed = null;
+    }
+    var parts = [];
+    for (var i = 0; i < THEME_TOKENS.length; i++) {
+      var value = "unreadable";
+      if (computed && typeof computed.getPropertyValue === "function") {
+        value = String(computed.getPropertyValue(THEME_TOKENS[i])).replace(/^\\s+|\\s+$/g, "");
+      }
+      parts.push("theme." + THEME_NAMES[i] + "=" + (value === "" ? "<empty>" : value));
+    }
+    var scheme = "unknown";
+    try {
+      if (ctx.theme && ctx.theme.colorScheme) scheme = String(ctx.theme.colorScheme);
+    } catch (error) {
+      scheme = "unknown";
+    }
+    themeEl.textContent = "QA3146-THEME " + parts.join(" ") + " colorScheme=" + scheme + " mount=" + mountId;
+  }
+
+  /* ---- the mirror writers ---- */
+  function publishAssertion(id, ok, detail) {
+    var text = (ok ? "PASS " : "FAIL ") + id + (detail ? " " + detail : "");
+    var line = makeEl(doc, "p", { "data-assertion": id, "data-status": ok ? "PASS" : "FAIL" }, text);
+    assertionsEl.appendChild(line);
+    return text;
+  }
+
+  function publishLog() {
+    logEl.textContent = JSON.stringify(records, null, 2);
+    var rejected = 0;
+    for (var i = 0; i < records.length; i++) {
+      if (!records[i].ok) rejected = rejected + 1;
+    }
+    summaryEl.textContent =
+      "QA3146-SUMMARY calls=" + records.length +
+      " rejected=" + rejected +
+      " probes=" + PLAN.probeCount +
+      " done=" + (halted ? "halted" : "running");
   }
 
   function showRefusal(refusal) {
-    var code = "";
-    if (refusal && typeof refusal === "object" && typeof refusal.code === "string") {
-      code = refusal.code;
-    } else if (typeof refusal === "string") {
-      code = refusal;
-    }
-    /* The refusal must be DISPLAYABLE, so both the code and the whole object are
+    var code = codeOf(refusal);
+    /* The refusal must be DISPLAYABLE: both the code and the whole object are
        rendered as text -- never colour-only, never swallowed. */
     codeEl.textContent = code || "(no code on the caught value)";
     codeEl.setAttribute("data-refusal-code", code || "none");
     refusalEl.textContent = safeString(refusal);
   }
 
-  function clearRefusal() {
-    codeEl.textContent = "";
-    codeEl.setAttribute("data-refusal-code", "");
-    refusalEl.textContent = "(no refusal yet)";
+  function identityAssertion() {
+    if (String(ctx.appId) !== PLAN.appId) {
+      publishAssertion("HDR", false, "app-id-mismatch expected=" + PLAN.appId + " actual=" + String(ctx.appId));
+    } else if (String(ctx.version) !== PLAN.version) {
+      publishAssertion("HDR", false, "version-mismatch expected=" + PLAN.version + " actual=" + String(ctx.version));
+    } else {
+      publishAssertion("HDR", true, "app=" + PLAN.appId + " version=" + PLAN.version);
+    }
   }
 
+  /* A reload inside one window reuses sessionStorage, so a stale stored mount id
+     proves the document was reloaded instead of re-opened. Close + re-open destroys
+     the browsing context, so it is allowed (a fresh document). */
+  function reloadAssertion() {
+    try {
+      var key = "qa3146-mount-" + PLAN.fixtureId;
+      var previous = window.sessionStorage.getItem(key);
+      window.sessionStorage.setItem(key, mountId);
+      if (previous && previous !== mountId) {
+        publishAssertion("RELOAD", false, "document-reloaded previous=" + previous + " current=" + mountId);
+      }
+    } catch (error) {
+      publishAssertion("RELOAD", false, "storage-unavailable: the reload control cannot run");
+    }
+  }
+
+  /* ---- the ONE call route (never a raw command, except the ACL probe) ---- */
   function invoke(action, args) {
     var api = typeof window !== "undefined" ? window.__FREDO_INSTALLED__ : null;
     if (!api || typeof api.invoke !== "function") {
@@ -481,10 +1265,9 @@ export function mount(ctx) {
     });
   }
 
-  /* The RAW handle, deliberately. One row (the least-privilege / ACL row) must
-     call registered commands DIRECTLY to prove the ACL is the second lock: a row
-     that only ever uses the shim cannot see it. Kept separate from run() so no
-     capability row can drift onto the raw path by accident. */
+  /* The RAW handle, deliberately. One probe (F-7.10, the ACL row) must call
+     registered commands DIRECTLY to prove the ACL is the second lock; a probe that
+     only ever uses the shim cannot see it. */
   function invokeRaw(command, args) {
     var internals = typeof window !== "undefined" ? window.__TAURI_INTERNALS__ : null;
     if (!internals || typeof internals.invoke !== "function") {
@@ -500,78 +1283,401 @@ export function mount(ctx) {
     });
   }
 
-  function runOne(call, resolver) {
-    var action = call && call.action;
-    return resolver(action, call && call.args).then(
+  function substitute(value) {
+    if (typeof value === "string") return value === "$CHILD_KEY" ? childKey : value;
+    if (Array.isArray(value)) {
+      var list = [];
+      for (var i = 0; i < value.length; i++) list.push(substitute(value[i]));
+      return list;
+    }
+    if (value && typeof value === "object") {
+      var out = {};
+      for (var key in value) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) out[key] = substitute(value[key]);
+      }
+      return out;
+    }
+    return value;
+  }
+
+  function settle(spec, raw) {
+    var args = substitute(spec.args);
+    var resolver = raw ? invokeRaw : invoke;
+    return resolver(spec.action, args).then(
       function (value) {
-        results.push({ action: action, ok: true, value: value });
-        publish();
-        return { action: action, ok: true };
+        records.push({ action: spec.action, raw: Boolean(raw), ok: true, value: value });
+        return { ok: true, value: value, refusal: null, action: spec.action };
       },
       function (refusal) {
-        results.push({ action: action, ok: false, refusal: refusal });
+        records.push({ action: spec.action, raw: Boolean(raw), ok: false, refusal: refusal });
         showRefusal(refusal);
-        publish();
-        return { action: action, ok: false, code: refusal && refusal.code };
+        return { ok: false, value: null, refusal: refusal, action: spec.action };
       }
     );
   }
 
-  function runSequence(calls, resolver) {
-    results = [];
-    publish();
-    clearRefusal();
-    outcomeEl.textContent = "running";
+  /* ---- assertion evaluation ---- */
+  function subjectOf(outcome) {
+    if (!outcome) return undefined;
+    return outcome.ok ? outcome.value : outcome.refusal;
+  }
+
+  function codesClause(outcomes) {
+    var parts = [];
+    for (var i = 0; i < outcomes.length; i++) {
+      var outcome = outcomes[i];
+      if (!outcome) {
+        parts.push("aborted");
+        continue;
+      }
+      parts.push(outcome.ok ? "ok" : codeOf(outcome.refusal) || "refused");
+    }
+    return "codes=" + parts.join(",");
+  }
+
+  function expectationFailure(expect, outcome) {
+    if (!expect || expect === "any") return "";
+    if (expect === "ok") {
+      return outcome.ok ? "" : "expected to resolve, refused with " + (codeOf(outcome.refusal) || "no code");
+    }
+    if (expect === "refuse") return outcome.ok ? "expected a refusal, resolved" : "";
+    if (expect.indexOf("refuse:") === 0) {
+      var wanted = expect.slice(7);
+      if (outcome.ok) return "expected refusal " + wanted + ", resolved";
+      var code = codeOf(outcome.refusal);
+      if (code !== wanted) return "expected refusal " + wanted + ", got " + (code || "no code");
+      return "";
+    }
+    return "";
+  }
+
+  function onlyCodesAllow(check, target) {
+    if (!check.onlyCodes || check.onlyCodes.length === 0) return true;
+    var code = target && !target.ok ? codeOf(target.refusal) : "ok";
+    for (var i = 0; i < check.onlyCodes.length; i++) {
+      if (check.onlyCodes[i] === code) return true;
+    }
+    return false;
+  }
+
+  function checkFailure(check, outcomes) {
+    var target = outcomes[check.on - 1];
+    if (!onlyCodesAllow(check, target)) return "";
+    var subject = subjectOf(target);
+
+    if (check.kind === "pathEq") {
+      var actual = readPath(subject, check.path);
+      if (String(renderValue(actual)) !== String(check.eq)) {
+        return (check.name || check.path) + " expected " + String(check.eq) + " got " + renderValue(actual);
+      }
+      return "";
+    }
+    if (check.kind === "present") {
+      var value = readPath(subject, check.path);
+      var absent = value === undefined || value === null || String(value) === "";
+      return absent ? (check.name || check.path) + " is absent" : "";
+    }
+    if (check.kind === "containsRow") {
+      var rows = readPath(subject, check.path || "rows");
+      if (!Array.isArray(rows)) return (check.name || "rows") + " is not an array";
+      for (var r = 0; r < rows.length; r++) {
+        var row = rows[r];
+        if (row && typeof row === "object" && String(renderValue(readPath(row, check.field))) === String(check.value)) {
+          return "";
+        }
+      }
+      return (check.name || "rows") + " has no row with " + check.field + "=" + String(check.value);
+    }
+    if (check.kind === "textExcludes") {
+      var hit = containsToken(textOf(subject), check.tokens);
+      return hit ? (check.name || "text") + " " + hit : "";
+    }
+    if (check.kind === "textIncludesAny") {
+      var text = lower(textOf(subject));
+      for (var t = 0; t < check.tokens.length; t++) {
+        if (text.indexOf(lower(check.tokens[t])) !== -1) return "";
+      }
+      return (check.name || "text") + " names none of " + check.tokens.join(",");
+    }
+    if (check.kind === "notCode") {
+      if (!target || target.ok) return "";
+      var got = codeOf(target.refusal);
+      for (var n = 0; n < check.codes.length; n++) {
+        if (got === check.codes[n]) return (check.name || "code") + " must not be " + got;
+      }
+      return "";
+    }
+    if (check.kind === "sameExcept") {
+      var first = textOf(subjectOf(outcomes[check.a - 1]));
+      var second = textOf(subjectOf(outcomes[check.b - 1]));
+      return stripTokens(first, check.strip) === stripTokens(second, check.strip)
+        ? ""
+        : (check.name || "details") + " differ";
+    }
+    return "unknown check kind " + check.kind;
+  }
+
+  function publishProbeLine(ids, ok, detail) {
+    for (var i = 0; i < ids.length; i++) publishAssertion(ids[i], ok, detail);
+  }
+
+  function runProbe(probe) {
+    var outcomes = [];
     var chain = Promise.resolve();
-    var list = calls || [];
-    for (var i = 0; i < list.length; i++) {
-      (function (call) {
+    for (var i = 0; i < probe.steps.length; i++) {
+      (function (stepSpec) {
         chain = chain.then(function () {
-          return runOne(call, resolver);
+          if (halted) return null;
+          return settle(stepSpec.call, Boolean(stepSpec.call.raw)).then(function (outcome) {
+            outcomes.push(outcome);
+            publishLog();
+            return outcome;
+          });
         });
-      })(list[i]);
+      })(probe.steps[i]);
+    }
+    var ids = probe.ids || [probe.id];
+    return chain.then(function () {
+      if (halted) return "";
+      var clauses = codesClause(outcomes);
+      for (var s = 0; s < probe.steps.length; s++) {
+        if (!outcomes[s]) {
+          publishProbeLine(ids, false, clauses + " aborted before step " + (s + 1));
+          return "";
+        }
+        var failure = expectationFailure(probe.steps[s].expect, outcomes[s]);
+        if (failure) {
+          publishProbeLine(ids, false, clauses + " step " + (s + 1) + " " + failure);
+          return "";
+        }
+      }
+      var checks = probe.checks || [];
+      for (var c = 0; c < checks.length; c++) {
+        var failed = checkFailure(checks[c], outcomes);
+        if (failed) {
+          publishProbeLine(ids, false, clauses + " " + failed);
+          return "";
+        }
+      }
+      var facts = [clauses];
+      var factSpecs = probe.facts || [];
+      for (var f = 0; f < factSpecs.length; f++) {
+        var fact = factSpecs[f];
+        facts.push(fact.name + "=" + renderValue(readPath(subjectOf(outcomes[fact.on - 1]), fact.path)));
+      }
+      var extras = probe.extraFacts || [];
+      for (var e = 0; e < extras.length; e++) {
+        var extra = extras[e];
+        facts.push(extra.name + "=" + (extra.value === "$CHILD_KEY" ? childKey : String(extra.value)));
+      }
+      var detail = facts.join(" ");
+      publishProbeLine(ids, true, detail);
+      return detail;
+    });
+  }
+
+  function runAllProbes() {
+    var chain = Promise.resolve();
+    for (var i = 0; i < PLAN.probes.length; i++) {
+      (function (probe) {
+        chain = chain.then(function () {
+          return runProbe(probe);
+        });
+      })(PLAN.probes[i]);
     }
     return chain.then(
       function () {
-        outcomeEl.textContent = "done";
-        return results;
+        publishLog();
+        summaryEl.textContent =
+          "QA3146-SUMMARY calls=" + records.length +
+          " probes=" + PLAN.probeCount +
+          " done=" + (halted ? "halted" : "true");
       },
       function (error) {
-        outcomeEl.textContent = "error: " + String(error);
-        return results;
+        publishAssertion("RUNNER", false, "the probe runner threw: " + textOf(error));
       }
     );
   }
 
-  /* The tester drives these with one execute_js call each:
-       window.__QA3146.run([{action:"application_data_read", args:{...}}, ...])
-       window.__QA3146.runRaw([{action:"get_control_setting", args:{...}}, ...])
-     Calls are awaited SEQUENTIALLY, so the log order is the drive order. The
-     DOM is the record; the tester polls [data-last-outcome] and then reads
-     [data-call-log] rather than relying on the driver awaiting a promise. */
+  /* ---- the consent watcher (consent fixtures only) -------------------------
+     The grant/revoke controls live in the HOST settings pane, so this document
+     cannot press them. It polls the consent-gated call instead and publishes each
+     STATE TRANSITION as a line, with the mount id: a decision that follows the
+     host without a reload is exactly what F-7.18 / F-7.27 assert. */
+  function startConsentWatch() {
+    var spec = PLAN.consent;
+    if (!spec) return;
+    var state = "";
+    var busy = false;
+    var resetProbed = false;
+
+    function publishConsent(next, extra) {
+      consentEl.textContent =
+        "QA3146-CONSENT app=" + PLAN.appId + " mount=" + mountId + " state=" + next + " " + extra;
+    }
+
+    function queryOnce() {
+      return invoke(spec.queryAction, substitute(spec.queryArgs)).then(
+        function (value) {
+          return { ok: true, code: "", refusal: null, value: value };
+        },
+        function (refusal) {
+          return { ok: false, code: codeOf(refusal), refusal: refusal, value: null };
+        }
+      );
+    }
+
+    function probeResetOnce() {
+      if (resetProbed) return Promise.resolve();
+      resetProbed = true;
+      return settle({ action: "pg_database_reset", args: {} }, false).then(function (outcome) {
+        publishLog();
+        var clauses = codesClause([outcome]);
+        if (outcome.ok) {
+          halted = true;
+          publishAssertion(spec.resetId, false, clauses + " FATAL: pg_database_reset was ALLOWED past the consent gate");
+          return;
+        }
+        var code = codeOf(outcome.refusal);
+        var capability = renderValue(readPath(outcome.refusal, "capability"));
+        if (code !== "consent_required" || capability !== "high-risk.database-reset") {
+          publishAssertion(
+            spec.resetId,
+            false,
+            clauses + " capability=" + capability + " expected consent_required on high-risk.database-reset"
+          );
+          return;
+        }
+        publishAssertion(spec.resetId, true, clauses + " capability=" + capability + " queryGrant=held");
+      });
+    }
+
+    function tick() {
+      if (halted || busy) return;
+      busy = true;
+      queryOnce().then(
+        function (outcome) {
+          var next = outcome.ok || outcome.code !== "consent_required" ? "granted" : "consent";
+          var extra = "query=" + (outcome.ok ? "resolved" : outcome.code || "unknown");
+          if (!outcome.ok) {
+            var capability = readPath(outcome.refusal, "capability");
+            if (capability) extra = extra + " capability=" + renderValue(capability);
+          }
+          publishConsent(next, extra);
+          if (state === "") {
+            state = next;
+            /* A document that loads with the grant ALREADY held (the post-restart
+               case, F-7.22) sees no transition -- so the once-only reset probe must
+               fire on the first observation too, not only on consent-to-granted. */
+            if (next === "granted") return probeResetOnce();
+            return null;
+          }
+          if (next === state) return null;
+          var fromTo = state + "-to-" + next;
+          state = next;
+          var ids = spec.transitionIds || [];
+          for (var i = 0; i < ids.length; i++) {
+            publishAssertion(ids[i], true, "transition " + fromTo + " " + extra + " mount=" + mountId + " reload=no");
+          }
+          if (next === "granted") return probeResetOnce();
+          return null;
+        },
+        function (error) {
+          publishAssertion(spec.resetId, false, "the consent watcher threw: " + textOf(error));
+        }
+      ).then(function () {
+        busy = false;
+      });
+    }
+
+    tick();
+    window.setInterval(tick, spec.intervalMs || 2000);
+  }
+
+  /* ---- the data watch (a dropped write must be OBSERVED, never masked) -----
+     Re-reading a row in a still-open document is the only way to see another
+     application's write land without an inject path. One line per observed STATE
+     CHANGE, so a stable row stays quiet (a PASS at the first observation states
+     the baseline it is guarding). */
+  function startDataWatch() {
+    var spec = PLAN.watch;
+    if (!spec) return;
+    var last = "";
+
+    function observe(rows) {
+      if (!Array.isArray(rows)) return "not-an-array";
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (row && typeof row === "object" && String(renderValue(readPath(row, spec.field))) === String(spec.value)) {
+          return "expected";
+        }
+      }
+      for (var j = 0; j < rows.length; j++) {
+        var other = rows[j];
+        if (other && typeof other === "object") {
+          return "changed:" + renderValue(readPath(other, spec.field));
+        }
+      }
+      return "missing";
+    }
+
+    function tick() {
+      if (halted) return;
+      invoke(spec.action, substitute(spec.args)).then(
+        function (value) {
+          var state = observe(readPath(value, spec.path || "rows"));
+          if (state === last) return;
+          last = state;
+          if (state === "expected") {
+            publishAssertion(spec.id, true, "watch value=" + String(spec.value) + " rows-observed");
+          } else {
+            publishAssertion(spec.id, false, "watch state=" + state + " expected value=" + String(spec.value));
+          }
+        },
+        function (refusal) {
+          publishAssertion(spec.id, false, "watch read refused with " + (codeOf(refusal) || "no code"));
+        }
+      );
+    }
+
+    tick();
+    window.setInterval(tick, spec.intervalMs || 2000);
+  }
+
+  /* The programmable surface is kept for a future HOST-SIDE inject path (a
+     Toolsmith item); no row in this suite depends on it. */
   window.__QA3146 = {
-    run: function (calls) {
-      return runSequence(calls, invoke);
-    },
-    runRaw: function (calls) {
-      return runSequence(calls, invokeRaw);
-    },
     results: function () {
-      return results;
+      return records;
+    },
+    probes: function () {
+      return PLAN.probeIds;
     }
   };
 
-  var now = new Date();
-  root.setAttribute("data-mounted-at", now.toISOString());
-  root.setAttribute(
-    "data-mount-id",
-    String(now.getTime()) + "-" + Math.random().toString(36).slice(2, 10)
-  );
-  root.setAttribute("data-qa3146-ready", "true");
-  outcomeEl.textContent = "ready";
-  publish();
+  /* mount() returns synchronously: the probe plan runs on a floating continuation so
+     a slow step can never be mistaken for a mount-timeout (R-4.2's signal stays clean). */
+  identityAssertion();
+  reloadAssertion();
+  publishLog();
+  publishTheme();
+  window.setInterval(publishTheme, 1000);
+  runAllProbes().then(function () {
+    startConsentWatch();
+    startDataWatch();
+  });
 }
 `;
+
+/**
+ * The shipped `main.js` for one fixture: the shared self-driving module with THAT
+ * fixture's probe plan embedded as data. The plan is a pure function of the catalog,
+ * so two runs emit byte-identical modules (no clock, no randomness at build time).
+ */
+function capabilityProbeModule(fixture) {
+  const planJson = JSON.stringify(buildProbePlan(fixture), null, 2);
+  return CAPABILITY_PROBE_MODULE.replace('__PLAN_JSON__', () => planJson);
+}
 
 /* ==========================================================================
  * Deterministic zip writer (stored entries, fixed 1980-01-01 timestamp).
@@ -872,8 +1978,78 @@ function selfCheck(item) {
   const moduleBytes = readZipEntry(item.archive, 'main.js');
   if (!moduleBytes || moduleBytes.length === 0) {
     problems.push('main.js is missing or empty');
-  } else if (fixture.openable && !/export function mount\s*\(/.test(moduleBytes.toString('utf8'))) {
-    problems.push('main.js does not export the mount function the host calls');
+  } else if (fixture.openable) {
+    const moduleText = moduleBytes.toString('utf8');
+    if (!/export function mount\s*\(/.test(moduleText)) {
+      problems.push('main.js does not export the mount function the host calls');
+    }
+    /* --- the rendered mirror is the TEST TRANSPORT: assert it is really there --- */
+    if (!moduleText.includes('data-qa3146-header')) {
+      problems.push('main.js does not render the deterministic header block [data-qa3146-header]');
+    }
+    if (!moduleText.includes('data-qa3146-document')) {
+      problems.push('main.js does not render the per-document line [data-qa3146-document]');
+    }
+    if (!moduleText.includes('data-qa3146-theme')) {
+      problems.push('main.js does not render the live theme line [data-qa3146-theme]');
+    }
+    if (!moduleText.includes('data-assertion')) {
+      problems.push('main.js does not render per-assertion lines [data-assertion]');
+    }
+    if (!moduleText.includes('"QA3146-FIXTURE app="') || !moduleText.includes('" capabilities="')) {
+      problems.push('the header line does not carry app/version/capabilities in the fixed grammar');
+    }
+    if (moduleText.includes('__PLAN_JSON__')) {
+      problems.push('the probe plan placeholder was never substituted');
+    }
+    const plan = buildProbePlan(fixture);
+    if (plan.probes.length === 0) {
+      problems.push('fixture has no probe plan: nothing would ever be rendered');
+    }
+    if (plan.probeCount !== plan.probes.length) {
+      problems.push('probeCount and probes disagree');
+    }
+    for (const probe of plan.probes) {
+      if (!plan.probeIds.includes(probe.id)) {
+        problems.push('probe ' + probe.id + ' is not advertised in the header probe list');
+      }
+      if (!moduleText.includes('"' + probe.id + '"')) {
+        problems.push('probe ' + probe.id + ' is not embedded in main.js');
+      }
+      if (!Array.isArray(probe.steps) || probe.steps.length === 0) {
+        problems.push('probe ' + probe.id + ' has no steps');
+      }
+      for (const stepSpec of probe.steps || []) {
+        if (!stepSpec.call || typeof stepSpec.call.action !== 'string') {
+          problems.push('probe ' + probe.id + ' has a step with no action');
+        }
+      }
+    }
+    /* A probe that cannot fail is not a proof: every non-control probe must carry at
+       least one expectation or check beyond "any". */
+    if (!fixture.mustPrintFail) {
+      for (const probe of plan.probes) {
+        const hasExpectation = probe.steps.some((s) => s.expect && s.expect !== 'any');
+        const hasChecks = Array.isArray(probe.checks) && probe.checks.length > 0;
+        if (!hasExpectation && !hasChecks) {
+          problems.push('probe ' + probe.id + ' asserts nothing (no expectation, no check)');
+        }
+      }
+    }
+    /* --- the NEGATIVE CONTROL must be a control: knowingly false, and reachable --- */
+    if (fixture.mustPrintFail) {
+      if (!moduleText.includes('MIRROR-CONTROL')) {
+        problems.push('the mirror control lost its MIRROR-CONTROL probe');
+      }
+      const controlProbe = plan.probes[0];
+      const firstStep = controlProbe && controlProbe.steps ? controlProbe.steps[0] : null;
+      if (!firstStep || String(firstStep.expect).indexOf('refuse:') !== 0) {
+        problems.push('the mirror control\'s probe must EXPECT a refusal (a knowingly false expectation)');
+      }
+      if (!firstStep || String(firstStep.call.action).indexOf('application_data_read') !== 0) {
+        problems.push('the mirror control must drive a read of its own declared table');
+      }
+    }
   }
 
   return problems;
@@ -883,7 +2059,7 @@ function packageEntries(fixture) {
   return [
     { name: 'fredo-app.json', data: Buffer.from(JSON.stringify(manifestFor(fixture), null, 2) + '\n', 'utf8') },
     { name: 'index.html', data: Buffer.from(documentHtml(fixture.displayName, fixture.id), 'utf8') },
-    { name: 'main.js', data: Buffer.from(CAPABILITY_PROBE_MODULE, 'utf8') },
+    { name: 'main.js', data: Buffer.from(capabilityProbeModule(fixture), 'utf8') },
   ];
 }
 
@@ -906,8 +2082,16 @@ Options:
   --help        this text
 
 Every archive is self-checked before it is written (re-parse, CRC, manifest and
-capabilities round-trip, mount export, and the EXACT capability defect for a
-refusal fixture). Exit code is non-zero if any self-check fails.
+capabilities round-trip, mount export, the EXACT capability defect for a refusal
+fixture, and -- for a self-driving fixture -- that every probe id it promises is
+embedded in main.js and that the rendered mirror hooks exist). Exit code is
+non-zero if any self-check fails.
+
+Every openable package is SELF-DRIVING: on mount it runs its own probe plan and
+mirrors every outcome as visible text, so the tester reads it with a native
+accessibility (UIA) read / native window capture instead of tauri_webview_* (which
+cannot reach an installed-* window). qa3146-mirror-control is the NEGATIVE CONTROL:
+it must print a FAIL line, which is how a reader knows the mirror really ran.
 
 Output is deterministic: run it twice and compare the sha256 column. That
 comparison is the determinism receipt -- this generator commits no hash manifest,
@@ -982,6 +2166,9 @@ function summary(built) {
       bytes: item.bytes,
       sha256: item.sha256,
       openable: item.fixture.openable,
+      selfDriving: Boolean(item.fixture.openable),
+      mustPrintFail: Boolean(item.fixture.mustPrintFail),
+      probeIds: buildProbePlan(item.fixture).probeIds,
       declares: item.fixture.declares,
       capabilities: item.fixture.capabilities,
       expectedInstallRefusal: item.fixture.expectedInstallRefusal || null,
@@ -989,6 +2176,26 @@ function summary(built) {
       asserts: item.fixture.asserts,
       dom: item.fixture.dom,
     })),
+    mirror: {
+      why:
+        'Every installed-* window is unreachable by tauri_webview_execute_js / dom_snapshot / ' +
+        'find_element / screenshot / console ("Request timeout after 2000ms", #3147). So each ' +
+        'openable package drives itself on mount and renders its results as text.',
+      readWith:
+        'A native accessibility (UIA) text read of the installed-<id> window, corroborated by a ' +
+        'native window capture. Never a tauri_webview_* call.',
+      header: '[data-qa3146-header] one deterministic line: app= version= capabilities= tables= probes=',
+      document: '[data-qa3146-document] one per-document line: app= version= ready= mount= loaded= origin=',
+      theme:
+        '[data-qa3146-theme] the live theme readout, re-published every second: ' +
+        'QA3146-THEME theme.body-bg= theme.card-bg= theme.text-primary= theme.accent-primary= colorScheme= mount=',
+      assertions:
+        '[data-qa3146-assertions] one <p data-assertion="<id>" data-status="PASS|FAIL"> per probe: ' +
+        '"PASS <id> codes=<c1>,<c2> ..." or "FAIL <id> codes=... <reason>"',
+      consent: '[data-qa3146-consent] the live consent state line (consent fixtures only)',
+      record: '[data-refusal-code] / [data-refusal-json] / [data-call-log] / [data-qa3146-summary]',
+      negativeControl: 'qa3146-mirror-control MUST print a FAIL line; a missing line means the mirror never ran',
+    },
   };
 }
 
@@ -1024,18 +2231,20 @@ function main() {
     '',
     'output directory: ' + options.out,
     '',
-    pad('id', 24) + pad('zip', 32) + pad('bytes', 8) + pad('openable', 10) + pad('refusal', 24) + 'sha256',
-    pad('--', 24) + pad('---', 32) + pad('-----', 8) + pad('--------', 10) + pad('-------', 24) + '------',
+    pad('id', 24) + pad('zip', 32) + pad('bytes', 8) + pad('openable', 10) + pad('lines', 8) + pad('refusal', 24) + 'sha256',
+    pad('--', 24) + pad('---', 32) + pad('-----', 8) + pad('--------', 10) + pad('-----', 8) + pad('-------', 24) + '------',
   ];
   for (const item of built) {
     const refusal = item.fixture.expectedInstallRefusal
       ? item.fixture.expectedInstallRefusal.code
       : '-';
+    const probeCount = item.fixture.openable ? buildProbePlan(item.fixture).probeIds.length : 0;
     lines.push(
       pad(item.fixture.id, 24) +
         pad(item.fileName, 32) +
         pad(item.bytes, 8) +
         pad(item.fixture.openable ? 'yes' : 'no', 10) +
+        pad(probeCount, 8) +
         pad(refusal, 24) +
         item.sha256
     );
@@ -1046,6 +2255,13 @@ function main() {
       built
         .filter((item) => item.fixture.expectedInstallRefusal)
         .map((item) => item.fixture.id + ' -> ' + item.fixture.expectedInstallRefusal.fieldPath)
+        .join('; ')
+  );
+  lines.push(
+    'negative control: ' +
+      built
+        .filter((item) => item.fixture.mustPrintFail)
+        .map((item) => item.fixture.id + ' -> MUST print a FAIL line')
         .join('; ')
   );
   const text = lines.join('\n') + '\n';
@@ -1063,8 +2279,9 @@ function main() {
   console.log(
     'SELF-CHECK OK: ' +
       built.length +
-      ' archives re-parsed, CRC-verified, manifest + capabilities round-tripped, ' +
-      'and every expected install refusal asserted at its exact field path.'
+      ' archives re-parsed, CRC-verified, manifest + capabilities round-tripped, every expected ' +
+      'install refusal asserted at its exact field path, and every self-driving fixture carrying ' +
+      'its probe plan + rendered mirror hooks (the mirror-control probe is knowingly false on purpose).'
   );
   console.log('DETERMINISM: run again and compare the sha256 column (must be identical).');
 }

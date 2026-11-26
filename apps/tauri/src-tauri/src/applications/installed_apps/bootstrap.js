@@ -28,6 +28,11 @@
  *     reloads the SAME document.
  *  8. `installed-app-root` is the region the app mounts into; both panels are
  *     fixed-position SIBLINGS of it, so a half-painted app can never hide them.
+ *  9. `window.__FREDO_INSTALLED__.invoke(action, args)` is the ONE call route an
+ *     application has: it forwards `{request: {action, args}}` to the dispatcher
+ *     command this tier's capability grants. `action` is an ACTION the host's
+ *     own table validates — never a command name — and the transport's promise
+ *     (including a structured refusal) is returned unwrapped.
  *
  * Colour rules: only `var(--...)` reads with CSS system-colour fallbacks. No
  * hex, no rgb/hsl literals, and never an alpha suffix appended to a `var()`
@@ -182,6 +187,32 @@
     }
     dispatchThemeChange(theme);
   };
+
+  // ---------------------------------------------------------------------------
+  // 3b. The child client — the ONE call route an application has
+  // ---------------------------------------------------------------------------
+
+  // `action` is an ACTION, not a command: the host validates it against its own
+  // ordered action table and decides on the caller's capability, scope and
+  // consent. Deliberately NO vocabulary here — no allowlist, no rename, no
+  // refusal code — so this can never become a second, drifting authority, and a
+  // refusal the host decided reaches the caller exactly as the transport
+  // serialised it (the promise is returned unwrapped).
+  function invokeAction(action, args) {
+    var payload = args === undefined || args === null ? {} : args;
+    // Resolved at call time, and called with the handle as its receiver.
+    var internals = window.__TAURI_INTERNALS__;
+    if (!internals || typeof internals.invoke !== "function") {
+      // The transport is the host's; its absence is a load condition, not an
+      // authority decision, so it carries no refusal code.
+      return Promise.reject(
+        new Error("Fredo's transport is not available in this document, so the call was not made.")
+      );
+    }
+    return internals.invoke("installed_app_invoke", {
+      request: { action: action, args: payload }
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Panels
@@ -486,7 +517,10 @@
     window.__FREDO_INSTALLED__ = {
       appId: state.config.appId,
       version: state.config.version,
-      theme: state.config.theme
+      theme: state.config.theme,
+      // The single call route — present on the ONE assignment, so the global is
+      // never observable in a partially-built state.
+      invoke: invokeAction
     };
 
     if (state.config.startupFailure) {

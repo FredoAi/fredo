@@ -7119,8 +7119,106 @@ Test-Script "inspect-webview-config.ps1: current config is hardened" {
   if ($LASTEXITCODE -ne 0) { throw "expected exit 0, got $LASTEXITCODE`n$outStr" }
   if ($outStr -notmatch "RESULT=PASS") { throw "missing RESULT=PASS`n$outStr" }
   if ($outStr -notmatch "SUMMARY checks=\d+ passed=\d+ failed=0") { throw "unexpected summary`n$outStr" }
+  # Spec #3146: the installed tier is the SHIPPED truth. Pin the positive form —
+  # the exact-set check names it and the reach check names it as the one match.
+  # A regression that "restores" the #3147 zero-reach rule fails here.
+  if ($outStr -notmatch "CHECK capabilities\.expected-files PASS .*installedTier=True") {
+    throw "expected-files does not report the installed tier as part of the release set`n$outStr"
+  }
+  if ($outStr -notmatch "CHECK capabilities\.installed-tier\.exact PASS .*matching=\[installed-app-commands\.json\]") {
+    throw "installed-tier check did not PASS naming installed-app-commands.json`n$outStr"
+  }
+  foreach ($line in @($outStr -split "`r?`n" | Where-Object {
+    $_ -match '^CHECK capabilities\.(expected-files|installed-tier\.exact) ' -or
+    $_ -match '^SUMMARY checks=' -or
+    $_ -eq 'RESULT=PASS'
+  })) {
+    Write-Host "    $line"
+  }
   $global:LASTEXITCODE = 0
   return "inspector: RESULT=PASS"
+}
+
+# Discriminating controls for the installed-tier check: it must have teeth. Each
+# leg builds a THROWAWAY capability fixture (the shipped tree is never touched),
+# widens exactly one property, and asserts exit 1 plus the FAIL line and detail.
+# This is the committed form of "temporarily break the tree, watch it redden,
+# restore": a regression in either arm fails the harness rather than a later
+# round's verdict.
+$capSourceDir = "apps\tauri\src-tauri\capabilities"
+function New-CapabilityFixture {
+  $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("fredo-cap-fixture-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $dir -Force | Out-Null
+  Copy-Item -Path (Join-Path $capSourceDir "*.json") -Destination $dir -Force
+  return $dir
+}
+
+Test-Script "inspect-webview-config.ps1: a SECOND installed-* capability FAILs the guard" -ExpectedExitCode 1 {
+  $fixture = New-CapabilityFixture
+  try {
+    $rogue = [ordered]@{
+      '$schema'   = 'https://schema.tauri.app/config/2/capability.json'
+      identifier  = 'rogue-installed'
+      description = 'harness negative control: a second capability reaching installed-*'
+      platforms   = @('linux', 'macOS', 'windows')
+      windows     = @('installed-*')
+      permissions = @('allow-installed-app-invoke')
+    } | ConvertTo-Json
+    Set-Content -LiteralPath (Join-Path $fixture 'rogue-installed.json') -Value $rogue -Encoding ASCII
+    $out = & powershell -NoProfile -File ".opencode/scripts/inspect-webview-config.ps1" -CapabilitiesDir $fixture 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 1) { throw "expected exit 1, got $LASTEXITCODE`n$outStr" }
+    if ($outStr -notmatch "CHECK capabilities\.expected-files FAIL .*unexpected=\[rogue-installed\.json\]") {
+      throw "the unaccounted capability file did not FAIL expected-files by name`n$outStr"
+    }
+    if ($outStr -notmatch "CHECK capabilities\.installed-tier\.exact FAIL") {
+      throw "a second installed-* capability did not FAIL the installed-tier check`n$outStr"
+    }
+    if ($outStr -notmatch "otherReach=\[rogue-installed\.json") {
+      throw "the detail did not name the rogue installed-* capability`n$outStr"
+    }
+    if ($outStr -notmatch "RESULT=FAIL") { throw "expected RESULT=FAIL`n$outStr" }
+    foreach ($line in @($outStr -split "`r?`n" | Where-Object {
+      $_ -match '^CHECK capabilities\.(expected-files|installed-tier\.exact) ' -or $_ -eq 'RESULT=FAIL'
+    })) {
+      Write-Host "    $line"
+    }
+    $global:LASTEXITCODE = 1
+    return "second installed-* capability: guard FAILed as required"
+  } finally {
+    Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+Test-Script "inspect-webview-config.ps1: a core:* grant on the installed tier FAILs the guard" -ExpectedExitCode 1 {
+  $fixture = New-CapabilityFixture
+  try {
+    $path = Join-Path $fixture 'installed-app-commands.json'
+    $doc = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    $doc.permissions = @('allow-installed-app-invoke', 'core:default')
+    $doc | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding ASCII
+    $out = & powershell -NoProfile -File ".opencode/scripts/inspect-webview-config.ps1" -CapabilitiesDir $fixture 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 1) { throw "expected exit 1, got $LASTEXITCODE`n$outStr" }
+    # The FILE SET is still exactly the shipped four: this FAIL must come from the
+    # permission teeth alone, never from the count check.
+    if ($outStr -notmatch "CHECK capabilities\.expected-files PASS") {
+      throw "the file-count check should still PASS on this fixture`n$outStr"
+    }
+    if ($outStr -notmatch "CHECK capabilities\.installed-tier\.exact FAIL .*core=\[core:default\]") {
+      throw "the core:* grant did not FAIL the installed-tier check by name`n$outStr"
+    }
+    if ($outStr -notmatch "RESULT=FAIL") { throw "expected RESULT=FAIL`n$outStr" }
+    foreach ($line in @($outStr -split "`r?`n" | Where-Object {
+      $_ -match '^CHECK capabilities\.(expected-files|installed-tier\.exact) ' -or $_ -eq 'RESULT=FAIL'
+    })) {
+      Write-Host "    $line"
+    }
+    $global:LASTEXITCODE = 1
+    return "core:* on the installed tier: guard FAILed as required"
+  } finally {
+    Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 # The live probe cannot run in the offline harness (it needs a built release

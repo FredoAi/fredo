@@ -19,6 +19,13 @@ pub use applications::pg_supervisor::runtime::PgRuntime;
 #[doc(hidden)]
 pub use applications::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
 
+// Spec #3146 W-3t — test seam. The gated PostgreSQL suite pins the declared-table
+// acceptance rule (`installed_apps::scope::resolve_data_scope`, a `mod
+// applications` item otherwise unreachable from an integration test) against the
+// REAL application-data stores. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::installed_apps::scope as installed_app_scope;
+
 // Spec #2950 ST-1 — the built-in PostgreSQL client's frozen producer contract
 // (`db_client::{types, seam, state}`): wire types, the persistence/credential
 // key contract, the G-275 seams and the managed `DbClientState`. The command
@@ -1243,6 +1250,23 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // without reloading (R-1.5). No database, no file, and nothing at
             // startup — the host's theme effect is the only caller.
             applications::installed_apps::theme_push::installed_apps_push_theme,
+            // Spec #3146 — the installed tier's ONE command
+            // (`applications::installed_apps::dispatch`): `installed_app_invoke`
+            // is the ONLY command an `installed-<id>` window can reach
+            // (`capabilities/installed-app-commands.json` grants exactly
+            // `allow-installed-app-invoke`). It derives the caller from the IPC
+            // webview's own window label — never from the payload — then decides
+            // declared capability, consent and data ownership on EVERY call.
+            applications::installed_apps::dispatch::installed_app_invoke,
+            // Spec #3146 — the per-application consent commands
+            // (`applications::installed_apps::commands_consent`): the settings
+            // pane's Allow/Revoke controls. Built-in tier only — the installed
+            // capability grants exactly one command, so an installed document
+            // cannot consent for itself (the ACL refuses before this code runs).
+            // Both return the application's full capability status, which is the
+            // authority the surface renders instead of an optimistic guess.
+            applications::installed_apps::commands_consent::installed_app_consent_grant,
+            applications::installed_apps::commands_consent::installed_app_consent_revoke,
             // Spec #3192 ST-1 — the resident shell (`infrastructure::app_lifecycle`):
             // `open_main_window` focuses the `main` window or rebuilds it when it was
             // destroyed (the SAME `ensure_main_window` the tray Open item and the

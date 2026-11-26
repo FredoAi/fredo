@@ -182,10 +182,11 @@ pub struct ApplicationDataWriteArgs {
 
 /// `application_data_write` result.
 ///
-/// `updated` is the number of rows whose values actually changed: `1` for a
-/// real value delta, `0` when the record existed but every set value already
-/// equalled the stored value (an identical write is a silent no-op — no
-/// UPDATE, no version bump, no notification).
+/// `updated` is the number of rows the write touched: `1` when the record was
+/// CREATED on the insert path or a real value delta was applied, `0` when the
+/// record existed but every set value already equalled the stored value (an
+/// identical write is a silent no-op — no UPDATE, no version bump, no
+/// notification).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationDataWriteResult {
@@ -695,6 +696,14 @@ pub fn unwatch(
 }
 
 /// `application_data_write` — application-owned columns only.
+///
+/// An existing record is UPDATED (an identical write is a silent no-op); an
+/// ABSENT record is CREATED on the insert path (Spec #3146 W-3). A declared
+/// table of an installed package can never be projection-fed — an installed
+/// package may not declare a `source` — so without a create path such a table
+/// could never hold a row, and every write-first leg of the declared-reach
+/// contract would be refused. The row's identity comes from `key` (its address),
+/// never from `set`.
 pub fn write(
     state: &ApplicationDataState,
     args: ApplicationDataWriteArgs,
@@ -724,7 +733,47 @@ pub fn write(
         .into_iter()
         .next();
     let Some(existing) = existing else {
-        return Err(record_missing_error(&args));
+        // The INSERT path: the row is built from the declared primary-key values
+        // in `key` (the row's address) plus the caller's `set`, with the same
+        // backend-managed bookkeeping the projection path writes for a new row.
+        let now = crate::infrastructure::rtdb::project::rfc3339_now();
+        let mut row = args.set.clone();
+        for (column, value) in &where_cols {
+            row.insert(column.clone(), value.clone());
+        }
+        row.insert("_row_version".to_string(), json!(1));
+        row.insert("_updated_at".to_string(), json!(now));
+        let mut changed: Vec<String> = row
+            .keys()
+            .filter(|name| !is_reserved_column(name))
+            .cloned()
+            .collect();
+        changed.sort();
+
+        let inserted = state
+            .tables
+            .upsert(
+                &args.r#ref.feature_id,
+                &args.r#ref.table,
+                &declaration.primary_key,
+                std::slice::from_ref(&row),
+            )
+            .map_err(to_errors)?;
+        if inserted == 0 {
+            // Defensive: the sink reported no write at all. Never report a
+            // created row that is not there.
+            return Err(record_missing_error(&args));
+        }
+        bump_and_notify(
+            state,
+            &args.r#ref.feature_id,
+            &args.r#ref.table,
+            DeclaredChangeKind::Insert,
+            args.key,
+            changed,
+            Some(row),
+        )?;
+        return Ok(ApplicationDataWriteResult { updated: inserted });
     };
 
     // The ONE diff rule, shared with the projection path — a set key whose

@@ -1,6 +1,6 @@
 ---
 name: webview-security-evidence
-description: Collects evidence that Fredo's Tauri webview security boundary is intact — a release artifact whose MCP bridge port stays closed, and a production CSP/capability set with no shell-exec, dev bridge, or inline-script escape. Use when a test asserts the release bridge is closed, withGlobalTauri is false, the CSP/capabilities are hardened, shell-exec is unavailable, or the webview-security-boundary rows F-1/F-3/F-5/F-6/F-9/F-10 need evidence.
+description: Collects evidence that Fredo's Tauri webview security boundary is intact — a release artifact whose MCP bridge port stays closed, a production CSP/capability set with no shell-exec, dev bridge, or inline-script escape, and an installed tier that reaches exactly one command through exactly one capability (no core:*). Use when a test asserts the release bridge is closed, withGlobalTauri is false, the CSP/capabilities are hardened, shell-exec is unavailable, the installed-app capability cardinality/grants are pinned, or the webview-security-boundary rows F-1/F-3/F-5/F-6/F-9/F-10 (and installable-apps F-2.5/F-2.6) need evidence.
 ---
 
 # Webview Security Evidence
@@ -13,7 +13,11 @@ Documents the two committed probes that replaced the recurring ad-hoc scripts un
 - **`inspect-webview-config.ps1`** — a read-only **static** inspector. Parses
   `tauri.conf.json`, the capability set, and the MCP-bridge plugin registration; prints one
   `CHECK <name> PASS|FAIL <detail>` line per assertion and `RESULT=PASS|FAIL`. It launches
-  nothing.
+  nothing. It asserts the **exact four-file capability set** (including the installed tier)
+  and the **positive installed-tier property**: exactly one capability matches
+  `installed-*`, it grants exactly one permission (`allow-installed-app-invoke`, for the
+  `installed_app_invoke` command), carries no `core:*`, and no other capability matches an
+  installed label.
 - **`launch-artifact-probe.ps1`** — a **live release** probe. Launches a built exe, waits a
   bounded window, probes each port with a fast TCP connect, scans the logs for the bridge
   line, then tears the app + its embedded PostgreSQL down (no orphans).
@@ -40,9 +44,17 @@ probe or a CSP parser — use these.
    powershell -File .opencode/scripts/inspect-webview-config.ps1
    ```
    It covers F-1 (capability set / no shell), F-3 (bridge dev-only + plugin gate), F-6
-   (no `shell:allow-open`), F-9 (CSP + `withGlobalTauri`), and F-10 (no `__TAURI__`). Exit
-   `0` = all checks pass, `1` = a FAIL, `2` = the config could not be read. Quote the failing
-   `CHECK` line in the verdict; do not launch to "prove" a config value.
+   (no `shell:allow-open`), F-9 (CSP + `withGlobalTauri`), F-10 (no `__TAURI__`), and the
+   installed-tier rows `installable-apps` F-2.5/F-2.6 (`capabilities.installed-tier.exact`).
+   Exit `0` = all checks pass, `1` = a FAIL, `2` = the config could not be read. Quote the
+   failing `CHECK` line in the verdict; do not launch to "prove" a config value.
+   The two capability-count/installed checks are **positive assertions of the shipped
+   tree**, not a "no installed capability exists" rule: `capabilities.expected-files` fails
+   on any unaccounted file or a missing one (the installed tier included), and
+   `capabilities.installed-tier.exact` fails on a second installed-matching capability, a
+   second permission, a `core:*`, a per-application label instead of `installed-*`, or an
+   unreadable window reach. Spec #3146 superseded the #3147 "zero capabilities reach
+   `installed-*`" invariant — do not restore that rule.
 2. **Live release probe** (only for a live release row). Build the release artifact first
    (`pnpm --filter @fredo/tauri build`), then run exactly this:
    ```
@@ -145,13 +157,22 @@ assert `-WaitSecs` accepts `900` and rejects `901`.
 
 ## Examples
 
-Static receipt:
+Static receipt (the two capability checks; every other `CHECK` line also `PASS`):
 ```
 powershell -File .opencode/scripts/inspect-webview-config.ps1
-CHECK csp.script-src.no-unsafe-inline PASS script-src='self' blob: 'wasm-unsafe-eval'
-CHECK capabilities.release-set.excludes-bridge PASS auto-includes the capabilities dir; ...
+CHECK capabilities.expected-files PASS actual=[app-commands.json,default.json,installed-app-commands.json,mcp-bridge-dev.json] expected=[app-commands.json,default.json,installed-app-commands.json,mcp-bridge-dev.json] installedTier=True missing=[] unexpected=[]
+CHECK capabilities.installed-tier.exact PASS matching=[installed-app-commands.json] identifier=installed-app-commands windows=[installed-*] webviews=[] permissions=[allow-installed-app-invoke] core=[] expectedPermission=allow-installed-app-invoke matchControl=True probe=installed-fixture otherReach=[] undeclared=[]
 SUMMARY checks=25 passed=25 failed=0
 RESULT=PASS
+```
+
+Discriminating control, committed in the harness (`test-scripts.ps1` runs it against a
+throwaway capability fixture — the shipped tree is never touched): a second capability
+matching `installed-*` and a `core:*` on the tier both redden, and both FAIL lines are
+printed by the harness on every run:
+```
+CHECK capabilities.installed-tier.exact FAIL matching=[installed-app-commands.json,rogue-installed.json] ... otherReach=[rogue-installed.json:installed-*]
+CHECK capabilities.installed-tier.exact FAIL ... permissions=[allow-installed-app-invoke,core:default] core=[core:default]
 ```
 
 Live release receipt:
@@ -214,12 +235,24 @@ SELFTEST: PASS
 - **Inspector FAIL** — quote the `CHECK` line. Fix the config, or update the inspector's
   expected values in the same change (a legitimate new capability file must be added to
   `-ExpectedCapabilities`). Never launch to "prove" a static value.
-- `capabilities.no-installed-window-reach` FAIL — a capability's `windows`/`webviews`
-  entry glob-matches an `installed-*` window label (or names the installed namespace at
-  all, or the file declares no window reach so it cannot be shown to exclude it). This is
-  the installed-app isolation boundary (Spec #3147 AC-2): an installed application must
-  match NO capability. Fix: narrow that capability's `windows` array. Never read a FAIL
-  here as "the directory gained a file" — the file count is `capabilities.expected-files`.
+- `capabilities.installed-tier.exact` FAIL — the positive installed-tier property is
+  broken. Read the detail: `matching=[...]` lists every capability whose
+  `windows`/`webviews` reaches the `installed-*` family — there must be exactly one
+  (`installed-app-commands.json`); `permissions=[...]`/`core=[...]` must be exactly
+  `[allow-installed-app-invoke]` / `[]`; `windows=[...]` must be exactly `[installed-*]`
+  with `webviews=[]`; `otherReach=[]` and `undeclared=[]`. A `core:*`, a second
+  permission, a second matching capability, a per-application label (`installed-<id>`),
+  or an unreadable/absent window declaration is a FAIL. Spec #3146 **superseded** the
+  #3147 "no capability reaches `installed-*`" rule: isolation is now cardinality plus
+  exact-set. Fix a widening by narrowing the offending capability — never rename this
+  check back or restore the old rule.
+- `capabilities.expected-files` FAIL — the `capabilities/` directory is not exactly the
+  four-file release set in `expected=[...]`. `unexpected=[...]` names an unaccounted
+  capability file (a deliberate edit must add it to `-ExpectedCapabilities` in the same
+  change); `missing=[...]` names one that disappeared (most importantly
+  `installed-app-commands.json` — losing it silently drops the installed application
+  command surface). `installedTier=False` makes the installed-tier loss explicit. Never
+  read this FAIL as "the installed tier is illegal" — the installed tier is required.
 - **Never** use `Test-NetConnection` (stalls on CLOSED ports), `Add-Type` C# Win32, window
   enumeration, or `CopyFromScreen` for this job — that combination hung in #3077.
 

@@ -131,14 +131,31 @@ permissions = [
   "allow-installed-app-install",
   "allow-installed-apps-list",
   # Spec #3147 ST-4 — the installed-application window lifecycle. Granted to the
-  # BUILT-IN window class only: the `installed-<id>` window matches no capability,
-  # which is what makes its command access refuse (AC-2).
+  # BUILT-IN window class only: the `installed-<id>` window matches exactly ONE
+  # capability (`installed-app-commands.json`), which grants only
+  # `allow-installed-app-invoke`, so these lifecycle commands stay ACL-refused to
+  # an installed document (Spec #3146).
   "allow-installed-app-open",
   "allow-installed-app-close",
   # Spec #3147 ST-5 — the theme transport's live leg. The producer is the MAIN
   # window's theme effect (a built-in window), so it needs this grant; the
-  # `installed-<id>` window never calls it and still matches no capability.
+  # `installed-<id>` window never calls it and its one capability does not grant
+  # it (Spec #3146).
   "allow-installed-apps-push-theme",
+  # Spec #3146 — the installed tier's ONE command. It must ALSO be granted here
+  # because `every_registered_command_is_granted_to_the_built_in_windows` requires
+  # every registered command to have an allow-<command> grant in this set; the
+  # installed tier reaches it through `capabilities/installed-app-commands.json`
+  # (windows `installed-*`), never through this set's capability.
+  "allow-installed-app-invoke",
+  # Spec #3146 — the per-application consent commands, called by the settings
+  # pane's Allow/Revoke controls (a BUILT-IN window). Like the install pipeline's
+  # commands they must be granted here because every registered command needs an
+  # allow-<command> entry in this set; the `installed-<id>` window does NOT match
+  # this capability, and its own one grants only `allow-installed-app-invoke`, so
+  # an installed document can never consent for itself.
+  "allow-installed-app-consent-grant",
+  "allow-installed-app-consent-revoke",
   # Spec #3192 ST-1 — the resident shell. Granted to the built-in window class
   # only (`open_main_window` is also the tray/second-launch seam; `quit_app` is
   # the IPC seam and is never rendered in any UI).

@@ -110,6 +110,14 @@ export interface InstalledAppRefusalProps {
   code: InstalledAppRefusalCode;
   detail?: string;
   field?: string;
+  /**
+   * The surface's `data-testid`. Defaults to the pane's install-verdict hook; the
+   * settings consent section passes its own hook (Spec #3146) so the two verdict
+   * slots stay distinguishable without a second block body.
+   */
+  testId?: string;
+  /** The reason sentence's `data-testid`, when the host exposes one. */
+  reasonTestId?: string;
 }
 
 /**
@@ -117,14 +125,20 @@ export interface InstalledAppRefusalProps {
  * `list-load-failed` verdict (`io_error`, F6) — one block, one sentence, one
  * severity, whichever install-time failure produced it.
  */
-export function InstalledAppRefusal({ code, detail, field }: InstalledAppRefusalProps) {
+export function InstalledAppRefusal({
+  code,
+  detail,
+  field,
+  testId = 'installed-apps-refusal',
+  reasonTestId = 'installed-apps-refusal-reason',
+}: InstalledAppRefusalProps) {
   return (
     <RefusalBlock
       code={code}
       detail={detail}
       field={field}
-      testId="installed-apps-refusal"
-      reasonTestId="installed-apps-refusal-reason"
+      testId={testId}
+      reasonTestId={reasonTestId}
     />
   );
 }

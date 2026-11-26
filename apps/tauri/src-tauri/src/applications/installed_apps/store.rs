@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
-use super::archive;use super::manifest::{self, AppManifest};
+use super::archive;use super::manifest::{self, AppManifest, InstalledAppCapabilities};
 use super::{
     InstalledAppError, InstalledAppRefusalCode, InstalledAppResult, INSTALLED_APP_WINDOW_LABEL_PREFIX,
     INSTALLED_APPS_ROOT_SUBDIR, INSTALLED_FILES_SUBDIR, INSTALLED_MANIFEST_FILENAME,
@@ -79,6 +79,79 @@ pub struct InstalledAppRecord {
     pub display_name: Option<String>,
 }
 
+/// What an installed application may reach, as the host currently understands it
+/// (Spec #3146).
+///
+/// ALWAYS present in the list projection — never omitted, never `null`. Empty
+/// arrays are a FACT ("this package declared no reach"), not an absence the
+/// renderer has to guess about, which is what lets the settings surface read
+/// `entry.capabilities.highRisk` directly with no fallback chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledAppCapabilityStatus {
+    /// The installed application this status is about (the DERIVED id).
+    pub app_id: String,
+    /// Every declared capability id, sorted. Empty when the package declared none.
+    pub declared: Vec<String>,
+    /// The declared ids that require a per-application consent grant, sorted.
+    /// This is the ONLY axis the settings surface offers a control over.
+    pub high_risk: Vec<String>,
+    /// The granted subset of `high_risk` for THIS application, sorted. A grant
+    /// recorded for another application never appears here (R-4.2).
+    pub consented: Vec<String>,
+}
+
+impl InstalledAppCapabilityStatus {
+    /// Nothing declared — the fail-safe default (`capabilities` absent).
+    pub fn undeclared(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            declared: Vec::new(),
+            high_risk: Vec::new(),
+            consented: Vec::new(),
+        }
+    }
+
+    /// Build the projection from a package's declaration. Nothing is consented
+    /// at install time: a freshly installed application may reach no high-risk
+    /// action until the user grants it.
+    pub fn declared_by(app_id: &str, capabilities: Option<&InstalledAppCapabilities>) -> Self {
+        match capabilities {
+            None => Self::undeclared(app_id),
+            Some(capabilities) => Self {
+                app_id: app_id.to_string(),
+                declared: capabilities.declared(),
+                high_risk: capabilities.high_risk(),
+                consented: Vec::new(),
+            },
+        }
+    }
+
+    /// Apply the host-owned consent record for this ONE application.
+    ///
+    /// Only ids that are BOTH declared and high-risk survive, so a stale or
+    /// hand-edited consent file can never widen a package's declaration — the
+    /// consent file records a decision about a declaration, it never creates one.
+    pub fn with_consented(&self, granted: &[String]) -> Self {
+        let mut consented: Vec<String> = granted
+            .iter()
+            .filter(|id| self.high_risk.contains(id))
+            .cloned()
+            .collect();
+        consented.sort();
+        consented.dedup();
+        Self {
+            consented,
+            ..self.clone()
+        }
+    }
+
+    /// Is `capability` consented for this application?
+    pub fn is_consented(&self, capability: &str) -> bool {
+        self.consented.iter().any(|id| id == capability)
+    }
+}
+
 /// The list projection (plan §API Contracts) — what the launcher/settings show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +166,8 @@ pub struct InstalledAppEntry {
     pub window_label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The declared/granted reach. Always present (Spec #3146).
+    pub capabilities: InstalledAppCapabilityStatus,
 }
 
 impl InstalledAppEntry {
@@ -107,11 +182,19 @@ impl InstalledAppEntry {
             installed_at,
             window_label: window_label_for(&manifest.id),
             description: manifest.description.clone(),
+            capabilities: InstalledAppCapabilityStatus::declared_by(
+                &manifest.id,
+                manifest.capabilities.as_ref(),
+            ),
         }
     }
 
-    /// Project a persisted [`InstalledAppRecord`].
-    pub fn from_record(record: &InstalledAppRecord) -> Self {
+    /// Project a persisted install (its record plus its canonical manifest).
+    ///
+    /// The declaration is read from `<id>/manifest.json` — the canonical copy the
+    /// installer wrote — rather than denormalised into `record.json`, so there is
+    /// exactly ONE host-side copy of what a package declared.
+    pub fn from_installed(record: &InstalledAppRecord, manifest: &AppManifest) -> Self {
         Self {
             id: record.id.clone(),
             display_name: record
@@ -123,6 +206,18 @@ impl InstalledAppEntry {
             installed_at: record.installed_at.clone(),
             window_label: window_label_for(&record.id),
             description: record.description.clone(),
+            capabilities: InstalledAppCapabilityStatus::declared_by(
+                &record.id,
+                manifest.capabilities.as_ref(),
+            ),
+        }
+    }
+
+    /// Apply this application's consent record to the projection.
+    pub fn with_consented(&self, granted: &[String]) -> Self {
+        Self {
+            capabilities: self.capabilities.with_consented(granted),
+            ..self.clone()
         }
     }
 }
@@ -295,7 +390,10 @@ pub fn list_installed(root: &Path) -> InstalledAppResult<Vec<InstalledAppEntry>>
         // An install directory without a record is a damaged install, not an
         // empty one: surface it so the pane can say so.
         let record = read_record(&entry.path())?;
-        entries_found.push(InstalledAppEntry::from_record(&record));
+        // The declaration lives in the canonical manifest, which is the ONE
+        // host-side copy of what the package declared (Spec #3146).
+        let manifest = read_manifest_file(&entry.path())?;
+        entries_found.push(InstalledAppEntry::from_installed(&record, &manifest));
     }
 
     entries_found.sort_by(|left, right| left.id.cmp(&right.id));
@@ -800,6 +898,9 @@ mod tests {
         assert_eq!(entry.installed_at, "2026-01-01T00:00:00Z");
         assert_eq!(entry.window_label, "installed-qa3147-sample");
         assert_eq!(entry.description.as_deref(), Some("A sample package."));
+        // Spec #3146: the capability status is always carried, empty when undeclared.
+        assert_eq!(entry.capabilities.app_id, "qa3147-sample");
+        assert!(entry.capabilities.declared.is_empty());
     }
 
     #[test]
@@ -836,9 +937,128 @@ mod tests {
             description: None,
             display_name: None,
         };
-        let entry = InstalledAppEntry::from_record(&record);
+        let manifest = manifest::parse_manifest(manifest_json("qa3147-fallback").as_bytes())
+            .expect("manifest");
+        let entry = InstalledAppEntry::from_installed(&record, &manifest);
         assert_eq!(entry.display_name, "qa3147-fallback");
         assert_eq!(entry.window_label, "installed-qa3147-fallback");
+    }
+
+    // ── The capability projection (Spec #3146) ─────────────────────────────
+
+    fn declared_manifest(id: &str) -> AppManifest {
+        let json = format!(
+            r#"{{
+                "manifestVersion": 1,
+                "id": "{id}",
+                "displayName": "Declared {id}",
+                "version": "1.0.0",
+                "engines": {{ "fredo": ">=0.0.0" }},
+                "entry": {{ "document": "index.html", "module": "main.js" }},
+                "capabilities": {{
+                    "version": 1,
+                    "highRisk": ["high-risk.database-query", "high-risk.database-reset"]
+                }}
+            }}"#
+        );
+        manifest::parse_manifest(json.as_bytes()).expect("manifest")
+    }
+
+    #[test]
+    fn an_undeclared_package_projects_three_empty_arrays_that_are_always_present() {
+        let manifest =
+            manifest::parse_manifest(manifest_json("qa3146-none").as_bytes()).expect("manifest");
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+
+        assert_eq!(entry.capabilities.app_id, "qa3146-none");
+        assert!(entry.capabilities.declared.is_empty());
+        assert!(entry.capabilities.high_risk.is_empty());
+        assert!(entry.capabilities.consented.is_empty());
+
+        let value = serde_json::to_value(&entry).expect("serialize");
+        let capabilities = value
+            .get("capabilities")
+            .expect("`capabilities` is the wire key and is ALWAYS present")
+            .as_object()
+            .expect("object");
+        assert!(
+            !value
+                .as_object()
+                .expect("entry")
+                .contains_key("installedAppCapabilities"),
+            "the stale projection spelling must never appear on the wire"
+        );
+        assert_eq!(capabilities.len(), 4, "appId + three arrays: {value}");
+        for key in ["appId", "declared", "highRisk", "consented"] {
+            assert!(capabilities.contains_key(key), "{key} must be present: {value}");
+        }
+    }
+
+    #[test]
+    fn a_declared_package_projects_sorted_declared_and_high_risk_arrays() {
+        let manifest = declared_manifest("qa3146-app-a");
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+
+        assert_eq!(
+            entry.capabilities.declared,
+            ["high-risk.database-query", "high-risk.database-reset"],
+            "sorted; no data.tables because `capabilities.data` is absent"
+        );
+        assert_eq!(entry.capabilities.high_risk, entry.capabilities.declared);
+        assert!(
+            entry.capabilities.consented.is_empty(),
+            "installing never consents"
+        );
+    }
+
+    #[test]
+    fn consent_never_leaks_from_one_application_to_another() {
+        let app_a = InstalledAppEntry::from_manifest(
+            &declared_manifest("qa3146-consent-a"),
+            "2026-01-01T00:00:00Z".into(),
+        );
+        let app_b = InstalledAppEntry::from_manifest(
+            &declared_manifest("qa3146-consent-b"),
+            "2026-01-01T00:00:01Z".into(),
+        );
+
+        // The user grants ONE capability to A.
+        let granted = vec!["high-risk.database-query".to_string()];
+        let a = app_a.with_consented(&granted);
+        let b = app_b.with_consented(&[]);
+
+        assert_eq!(a.capabilities.consented, ["high-risk.database-query"]);
+        assert!(a.capabilities.is_consented("high-risk.database-query"));
+        assert!(!a.capabilities.is_consented("high-risk.database-reset"));
+
+        // B declares the same capability and stays refused.
+        assert!(
+            b.capabilities.consented.is_empty(),
+            "a grant to A must never enable B"
+        );
+        assert!(!b.capabilities.is_consented("high-risk.database-query"));
+    }
+
+    #[test]
+    fn a_consent_record_cannot_widen_a_declaration() {
+        let entry = InstalledAppEntry::from_manifest(
+            &declared_manifest("qa3146-narrow"),
+            "2026-01-01T00:00:00Z".into(),
+        );
+        // A hand-edited consent file naming an undeclared id, a non-high-risk id
+        // and a duplicate: only the declared high-risk id survives, once.
+        let granted = vec![
+            "high-risk.process-spawn".to_string(),
+            "data.tables".to_string(),
+            "high-risk.database-reset".to_string(),
+            "high-risk.database-reset".to_string(),
+        ];
+        let projected = entry.with_consented(&granted);
+        assert_eq!(
+            projected.capabilities.consented,
+            ["high-risk.database-reset"],
+            "consent records a decision about a declaration; it never creates one"
+        );
     }
 
     // ── Hashing + aggregate ────────────────────────────────────────────────
@@ -1082,6 +1302,11 @@ mod tests {
         assert_nothing_installed(data.path(), "qa3147-sample");
     }
 
+    /// INVERTED IN PLACE (Spec #3146): `capabilities` used to be the canonical
+    /// unknown key. It is now a defined top-level key, so the SAME property — an
+    /// unknown manifest key refuses the install with `manifest_unknown_field`
+    /// naming the key, and nothing is installed — is asserted against a key that
+    /// is still unknown.
     #[test]
     fn an_unknown_manifest_key_is_manifest_unknown_field() {
         let data = data_dir();
@@ -1092,7 +1317,7 @@ mod tests {
             "version": "1.0.0",
             "engines": { "fredo": ">=0.0.0" },
             "entry": { "document": "index.html", "module": "main.js" },
-            "capabilities": ["read"]
+            "sandbox": ["read"]
         }"#;
         let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
             (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
@@ -1102,7 +1327,7 @@ mod tests {
 
         let error = install_archive(data.path(), &zip_path).expect_err("unknown key");
         assert_eq!(error.code, InstalledAppRefusalCode::ManifestUnknownField);
-        assert_eq!(error.field.as_deref(), Some("capabilities"));
+        assert_eq!(error.field.as_deref(), Some("sandbox"));
         assert_nothing_installed(data.path(), "qa3147-unknown");
     }
 
@@ -1305,6 +1530,55 @@ mod tests {
 
         let error = list_installed(&install_root(data.path())).expect_err("damaged record");
         assert_eq!(error.code, InstalledAppRefusalCode::IntegrityRecordCorrupt);
+    }
+
+    #[test]
+    fn a_declared_install_keeps_its_declaration_and_lists_it() {
+        let data = data_dir();
+        let manifest = r#"{
+            "manifestVersion": 1,
+            "id": "qa3146-declared",
+            "displayName": "Declared",
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" },
+            "capabilities": {
+                "version": 1,
+                "highRisk": ["high-risk.database-reset", "high-risk.database-query"]
+            }
+        }"#;
+        let (_zip_dir, zip_path) = staged_zip(&build_zip(&[
+            (PACKAGE_MANIFEST_FILENAME, manifest.as_bytes()),
+            ("index.html", b"<html></html>"),
+            ("main.js", b"//"),
+        ]));
+
+        let installed = install_archive(data.path(), &zip_path).expect("install");
+        assert_eq!(
+            installed.capabilities.high_risk,
+            ["high-risk.database-query", "high-risk.database-reset"],
+            "the install result carries the sorted declaration"
+        );
+
+        // The canonical manifest is the declaration's ONE host-side copy.
+        let dir = app_dir(&install_root(data.path()), "qa3146-declared");
+        let canonical = std::fs::read_to_string(dir.join(INSTALLED_MANIFEST_FILENAME))
+            .expect("read canonical manifest");
+        assert!(
+            canonical.contains("\"capabilities\""),
+            "the canonical copy records the declaration: {canonical}"
+        );
+
+        let listed = list_installed(&install_root(data.path())).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].capabilities.declared,
+            ["high-risk.database-query", "high-risk.database-reset"]
+        );
+        assert!(
+            listed[0].capabilities.consented.is_empty(),
+            "listing alone never consents"
+        );
     }
 
     // ── Test-sea helpers stay honest ───────────────────────────────────────
