@@ -1138,6 +1138,10 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // `llm_chat_with_skills` unchanged.
             applications::llm_server::status::llm_chat_with_status,
             applications::screenshot::commands::capture_screen_region,
+            // Spec #3244 ST-3 — the reusable target-capture seam: capture a
+            // physical-pixel target rectangle FRESH via the shipped monitor
+            // capture (`capture_screen_region` itself is unchanged).
+            applications::screenshot::target::capture_target_region,
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
             applications::pg_supervisor::state::pg_supervisor_status,
@@ -1252,6 +1256,10 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // opens one, so this registration is inert at startup (R-5.1/R-5.5).
             applications::installed_apps::commands_window::installed_app_open,
             applications::installed_apps::commands_window::installed_app_close,
+            // Spec #3244 ST-3 — the host window-geometry read for the companion's
+            // screen-read seam: a live installed application's physical
+            // client-area rectangle (read-only; `null` when the app is not open).
+            applications::installed_apps::window::installed_app_screen_rect,
             // Spec #3147 ST-5 — the theme transport's live leg
             // (`applications::installed_apps::theme_push`):
             // `installed_apps_push_theme` validates the host's resolved token

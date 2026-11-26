@@ -107,6 +107,9 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     "llm_chat_with_skills",
     "llm_chat_with_status",
     "capture_screen_region",
+    // Spec #3244 ST-3 — the reusable target-capture seam (a physical-pixel rect)
+    // and the host window-geometry read (an installed app's client-area rect).
+    "capture_target_region",
     "pg_supervisor_status",
     "pg_server_log_tail",
     "pg_config_get",
@@ -164,6 +167,9 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // (or focuses) the singleton `installed-<id>` window, close destroys it.
     "installed_app_open",
     "installed_app_close",
+    // Spec #3244 ST-3 — the host window-geometry read (an installed app's
+    // client-area rectangle for the companion's screen-read seam).
+    "installed_app_screen_rect",
     // Spec #3147 ST-5 — the theme transport's live leg: write the in-memory
     // mirror (serve-time injection reads it) and eval the theme into every open
     // `installed-*` window.
