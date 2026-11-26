@@ -3014,7 +3014,10 @@ Run `rust-script .opencode/scripts/pipeline-state.rs --issue {} --agent orchestr
 /// executable form, and it works in the run that found the problem.
 ///
 /// **Contract:**
-/// - orchestrator-gated by `actor_allowed`; legal only in `implementation`/`testing`;
+/// - orchestrator-gated by `actor_allowed`; legal only in `implementation`/`testing`
+///   and in the gate phases `post-audit`/`cleanup` — the descent guard (G-421) now
+///   also refuses at the `post-audit → cleanup` gate (M5), so the remedy must be
+///   callable there;
 /// - `spec/<N>` must exist on `origin` (a merged+deleted branch is the post-merge
 ///   recreate path, not a sync);
 /// - the merge is a MERGE (`--no-ff -m …`, published history preserved — never a
@@ -3029,9 +3032,14 @@ Run `rust-script .opencode/scripts/pipeline-state.rs --issue {} --agent orchestr
 fn sync_spec_branch(issue: u32) -> anyhow::Result<()> {
     let branch = format!("spec/{}", issue);
     let phase = current_phase(issue)?;
-    if !matches!(phase, Phase::Implementation | Phase::Testing) {
+    // M5: the branch-motion remedy must be reachable in EXACTLY the phases where
+    // the descent guard can refuse. The G-421 guard now also fires at the
+    // `post-audit → cleanup` gate (a PASS round skips the `→ testing` leg the
+    // deferral assumed), so a refusal there must name a remedy the addressed actor
+    // can actually run — i.e. this action must not be phase-gated out of the gate.
+    if !matches!(phase, Phase::Implementation | Phase::Testing | Phase::PostAudit | Phase::Cleanup) {
         anyhow::bail!(
-            "sync-spec-branch is only valid while the issue is in implementation or testing (it is in {})",
+            "sync-spec-branch is only valid while the issue is in implementation, testing, post-audit or cleanup (it is in {})",
             phase.as_str()
         );
     }
@@ -3302,6 +3310,102 @@ fn diff_numstat(dir: &std::path::Path, rev: &str, path: &str) -> String {
         .unwrap_or_else(|| "<no diff>".to_string())
 }
 
+// ── Root lease (M1) — the sequential handoff of THE repo root ────────────────
+//
+// The repo root is ONE resource: `align-root` puts it on `spec/<N>` so the
+// `implementation → testing` serving-currency guard (G-052) passes. Nothing
+// recorded that a SECOND spec must not move it, so an overlap coexisted only
+// because the second spec *chose* not to touch the root — an unenforced
+// invariant. The lease makes it enforced: ONE persisted record names the spec
+// that holds the checkout, a second holder is REFUSED (never last-writer-wins),
+// and the refusal NAMES the holder.
+//
+// Acquire/release is EXPLICIT, never implied by branch state:
+//   - ACQUIRED by `align-root` — the action that takes the root; the holder is
+//     the acquiring issue (a re-align by the holder is idempotent).
+//   - RELEASED at the point the round ends: a verdict posted (any transition
+//     leaving `testing`), or a gate closed (`maint-pr` merged / `close-issue`).
+// A lease whose holder has left `implementation`/`testing` (its round ended, or
+// the spec closed) is EXPIRED and reclaimable, so a stale lease can never
+// deadlock the next spec.
+//
+// The record lives in the machine's own state dir — `.opencode/state/root-lease.json`
+// (gitignored; a NEW mutable machine record beside `env-leases/`, NOT the
+// append-only event log under `.opencode/state/issues/`). Offline it lives in the
+// mock store so the harness stays deterministic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RootLease {
+    holder: u32,
+    #[serde(rename = "acquiredAt", default)]
+    acquired_at: String,
+    #[serde(default)]
+    phase: String,
+}
+
+const ROOT_LEASE_REL: &str = ".opencode/state/root-lease.json";
+
+/// Absolute path of the root-lease record (mock store offline, real state dir live).
+fn root_lease_path() -> anyhow::Result<PathBuf> {
+    if mock_mode() {
+        return Ok(mock_file(&["root-lease.json"]));
+    }
+    Ok(project_root()?.join(ROOT_LEASE_REL))
+}
+
+/// Human-facing (repo-relative) label of the root-lease record.
+fn root_lease_display() -> &'static str {
+    ROOT_LEASE_REL
+}
+
+/// Read the root lease (`None` when absent or unparseable — a forged/corrupt
+/// record is never trusted; the next acquire simply re-writes it).
+fn read_root_lease() -> Option<RootLease> {
+    let raw = std::fs::read_to_string(root_lease_path().ok()?).ok()?;
+    serde_json::from_str::<RootLease>(&raw).ok()
+}
+
+/// Persist the root lease under `issue` (the acquirer). Overwrites any lease — the
+/// caller has already refused a LIVE foreign holder, so any lease reaching here is
+/// absent or expired/held-by-us.
+fn write_root_lease(issue: u32, phase: &str) -> anyhow::Result<()> {
+    let lease = RootLease {
+        holder: issue,
+        acquired_at: chrono::Utc::now().to_rfc3339(),
+        phase: phase.to_string(),
+    };
+    let path = root_lease_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&lease)?)?;
+    Ok(())
+}
+
+/// Release the lease — but ONLY when it is held by `issue` (a spec never releases
+/// another spec's lease). Returns true when a lease was actually removed.
+fn release_root_lease(issue: u32) -> bool {
+    if let Some(l) = read_root_lease() {
+        if l.holder == issue {
+            if let Ok(p) = root_lease_path() {
+                let _ = std::fs::remove_file(p);
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// True when the lease is still held by a spec that may legitimately hold the
+/// root: the lease is ACQUIRED in `implementation`/`testing` and RELEASED when the
+/// round ends, so only a holder still in one of those phases is live. A holder in
+/// any other phase — the round ended, or the spec reached `done`/`canceled` — has
+/// an EXPIRED lease the next spec may reclaim. An unresolvable holder resolves to
+/// `backlog` (a missing issue), i.e. not live: a lease can never deadlock the next
+/// spec on a vanished holder.
+fn root_lease_is_live(lease: &RootLease) -> bool {
+    matches!(current_phase(lease.holder), Ok(Phase::Implementation) | Ok(Phase::Testing))
+}
+
 /// **`align-root`** — put the repo root ON the spec tip, safely, so the
 /// `implementation → testing` serving-currency guard (G-052) is satisfied without a
 /// hand-run preserve/align/restore dance.
@@ -3336,6 +3440,22 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
             "align-root is only valid while the issue is in implementation or testing (it is in {})",
             phase.as_str()
         );
+    }
+    // M1 ROOT LEASE — refuse to move the checkout while ANOTHER spec holds it. An
+    // overlap is safe only because the second spec chose not to touch the root; the
+    // lease makes that an enforced invariant, and the refusal NAMES the holder (an
+    // unnamed refusal is the failure mode this pipeline keeps paying for). A lease
+    // whose holder has left implementation/testing is expired and reclaimed here.
+    if let Some(lease) = read_root_lease() {
+        if lease.holder != issue && root_lease_is_live(&lease) {
+            anyhow::bail!(
+                "REFUSED: the repo root is held by spec #{} (root lease acquired {}; record {}). \
+                 The checkout is ONE resource — a second holder is refused, never last-writer-wins. \
+                 Wait for #{} to end its round (its verdict posted) or close its gate, then re-run align-root; \
+                 a lease whose holder has left implementation/testing is expired and reclaimable.",
+                lease.holder, lease.acquired_at, root_lease_display(), lease.holder
+            );
+        }
     }
     let root = project_root()?;
     // Refresh the remote-tracking refs first; the checkout below must be from the
@@ -3423,6 +3543,18 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
         branch,
         if matches { "yes" } else { "no" }
     );
+    if !matches {
+        anyhow::bail!(
+            "ROOT ALIGNMENT INCOMPLETE: HEAD {} does not match the `{}` tip {}",
+            head_after,
+            branch,
+            target
+        );
+    }
+    // M1 ROOT LEASE: the successful align IS the acquire — one persisted record
+    // names the holder, so a second spec's align-root is refused (naming it). The
+    // lease is released when the round ends (verdict posted) or the gate closes.
+    write_root_lease(issue, phase.as_str())?;
     append_event_attrs(
         issue,
         "root.aligned",
@@ -3438,16 +3570,13 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
             ("discarded_redundant", discarded.as_str()),
             ("restored_from_head", restored.as_str()),
             ("tree_matches_tip", if matches { "true" } else { "false" }),
+            ("root_lease", "acquired"),
         ],
     )?;
-    if !matches {
-        anyhow::bail!(
-            "ROOT ALIGNMENT INCOMPLETE: HEAD {} does not match the `{}` tip {}",
-            head_after,
-            branch,
-            target
-        );
-    }
+    println!(
+        "ROOT LEASE ACQUIRED: #{} holds the repo root (record {}); released when the round ends (its verdict is posted) or its gate closes",
+        issue, root_lease_display()
+    );
     Ok(())
 }
 
@@ -3556,6 +3685,10 @@ fn post_audit_maint_pr(
                     ("reconciled", "true"),
                 ],
             )?;
+            // M1 ROOT LEASE: the gate closed — release the lease (never inferred).
+            if release_root_lease(issue) {
+                println!("ROOT LEASE RELEASED: #{} no longer holds the repo root (gate closed)", issue);
+            }
             return Ok(());
         }
         println!(
@@ -3827,6 +3960,10 @@ fn post_audit_maint_pr(
         &attrs,
     )?;
     println!("SPEC MAINT PR MERGED: {} ({})", url, branch);
+    // M1 ROOT LEASE: the gate closed — release the lease (never inferred).
+    if release_root_lease(issue) {
+        println!("ROOT LEASE RELEASED: #{} no longer holds the repo root (gate closed)", issue);
+    }
     Ok(())
 }
 
@@ -6757,6 +6894,17 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // merged. Enforced here (not in `exit_guard_passes`) because only this
             // leg is the success path.
             if phase == Phase::PostAudit && to == Phase::Cleanup {
+                // G-421 descent at the GATE (M5): the SAME "a branch behind
+                // origin/main is refused" rule that guards `implementation → testing`
+                // applies to the success exit too — same predicate, same hard
+                // refusal, same remedy. A PASS round never re-enters `testing`, so a
+                // branch that fell behind mid-round reached the gate unchecked
+                // (#3145: round 3 passed, main advanced, and the stale branch was
+                // only discovered inside the gate). A PASS is the COMMON case — the
+                // leg the deferral assumed must not be the only one that checks
+                // descent. `sync-spec-branch` (the remedy the refusal names) is now
+                // callable in the gate phases.
+                spec_branch_descends_from_main(issue)?;
                 // B4: the SUCCESS exit is the only one that still requires the
                 // Curator's recorded lesson. A restart exit does not (curation may run
                 // concurrently with the rework).
@@ -6896,6 +7044,14 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 _ => {}
             }
             swap_phase_label(issue, phase, to)?;
+            // M1 ROOT LEASE: the round's end RELEASES the root lease — a verdict is
+            // now posted. Explicit by construction, never inferred from branch state.
+            if phase == Phase::Testing && release_root_lease(issue) {
+                println!(
+                    "ROOT LEASE RELEASED: #{} no longer holds the repo root (round ended: {} -> {})",
+                    issue, phase.as_str(), to.as_str()
+                );
+            }
             println!("TRANSITIONED: {} -> {} (label: {})", phase.as_str(), to.as_str(), to_label);
             // Mirror the new phase onto the GitHub project Status field (best-effort).
             let _ = sync_project_status(issue, to.as_str());
@@ -7009,6 +7165,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
                 // closed by the machine — the human closes it manually after human
                 // review (done = pipeline-complete + awaiting human close).
                 swap_phase_label(issue, Phase::Cleanup, Phase::Done)?;
+                // M1 ROOT LEASE: the spec closed — release (never inferred).
+                if release_root_lease(issue) {
+                    println!("ROOT LEASE RELEASED: #{} no longer holds the repo root (closed as done)", issue);
+                }
                 append_event_attrs(issue, "phase.completed", &a.actor, "cleanup", "success", "completed cleanup", &[("phase", "cleanup"), ("to", "done")])?;
                 append_event_attrs(issue, "phase.started", &a.actor, "done", "success", "started done", &[("phase", "done"), ("from", "cleanup")])?;
                 // Deterministic ad-hoc-script surfacing (#3077): re-run at the close
@@ -7034,6 +7194,10 @@ fn run_action(a: &ActionArgs) -> anyhow::Result<()> {
             // canceled: the machine closes the issue (a canceled feature is not
             // awaiting human review — it is abandoned).
             let _ = sync_project_status(issue, "canceled");
+            // M1 ROOT LEASE: the spec closed — release (never inferred).
+            if release_root_lease(issue) {
+                println!("ROOT LEASE RELEASED: #{} no longer holds the repo root (closed as canceled)", issue);
+            }
             run_gh(&["issue", "close", &issue.to_string(), "--reason", reason])?;
             println!("CLOSED: #{} as {}", issue, to_str);
             // Log the event under the issue's actual phase (canceled is an outcome,

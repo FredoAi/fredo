@@ -269,6 +269,13 @@ function Mock-Cleanup([int]$IssueNum) {
   Mock-IssueClose $IssueNum 2>$null | Out-Null
   Remove-Item (Mock-StorePath "issues\$IssueNum.json") -Force -ErrorAction SilentlyContinue
   Remove-Item ".opencode/state/issues/$IssueNum.jsonl" -Force -ErrorAction SilentlyContinue
+  # M1 root lease: drop the mock lease when it is held by this scratch issue (the
+  # align-root tests acquire one; a leftover would refuse the NEXT test's align-root).
+  $lease = Mock-StorePath "root-lease.json"
+  if (Test-Path $lease) {
+    $l = Get-Content $lease -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+    if ($l -and ([int]$l.holder -eq $IssueNum)) { Remove-Item $lease -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 $ErrorActionPreference = "Continue"
@@ -6829,7 +6836,7 @@ Test-Script "sync-spec-branch: a wrong-phase call is refused" {
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action sync-spec-branch 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
     if ($LASTEXITCODE -eq 0) { throw "a sync in the audit phase must be refused, got exit 0: $outStr" }
-    if ($outStr -notmatch "only valid while the issue is in implementation or testing") { throw "expected the phase refusal, got: $outStr" }
+    if ($outStr -notmatch "only valid while the issue is in implementation, testing, post-audit or cleanup") { throw "expected the phase refusal, got: $outStr" }
     return "wrong-phase sync refused (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
@@ -7014,6 +7021,120 @@ Test-Script "align-root: wrong actor and wrong phase are refused" {
   }
 }
 
+# M1 ROOT LEASE — the sequential handoff. `align-root` puts THE repo root on
+# `spec/<N>` and RECORDS it; a second spec's align-root is refused, NAMING the
+# holder. An overlap was safe only because the second spec *chose* not to touch the
+# root — an unenforced invariant. Acquire/release is EXPLICIT (acquired by
+# align-root; released when the round ends or the gate closes); an expired lease
+# (holder left implementation/testing) is reclaimable, so it never deadlocks.
+Write-Host "Root lease (M1):" -ForegroundColor Cyan
+
+Test-Script "root lease: align-root acquires; a second spec's align-root is refused and names the holder" {
+  $urlA = Mock-IssueCreate "temp: lease holder" "lease holder scratch" "ready-for-dev"
+  $urlB = Mock-IssueCreate "temp: lease second" "lease second scratch" "ready-for-dev"
+  $urlAStr = if ($urlA -is [array]) { $urlA -join "" } else { "$urlA" }
+  $urlBStr = if ($urlB -is [array]) { $urlB -join "" } else { "$urlB" }
+  $a = [int][regex]::Match($urlAStr, "issues/(\d+)").Groups[1].Value
+  $b = [int][regex]::Match($urlBStr, "issues/(\d+)").Groups[1].Value
+  try {
+    # A takes the root — the successful align IS the acquire.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$a" 2>&1 | Out-Null
+    $outA = & rust-script $ps --issue $a --agent orchestrator --action align-root 2>&1
+    $outAStr = if ($outA -is [array]) { $outA -join "`n" } else { "$outA" }
+    if ($LASTEXITCODE -ne 0) { throw "holder align-root failed: $outAStr" }
+    if ($outAStr -notmatch "ROOT LEASE ACQUIRED") { throw "expected the lease-acquired line, got: $outAStr" }
+    $leaseFile = Mock-StorePath "root-lease.json"
+    if (-not (Test-Path $leaseFile)) { throw "align-root did not persist a root-lease record" }
+    $lease = Get-Content $leaseFile -Raw | ConvertFrom-Json
+    if ([int]$lease.holder -ne $a) { throw "lease holder must be $a, got $($lease.holder)" }
+    # B (a LIVE second spec) is REFUSED — and the refusal NAMES the holder.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$b" 2>&1 | Out-Null
+    $outB = & rust-script $ps --issue $b --agent orchestrator --action align-root 2>&1
+    $outBStr = if ($outB -is [array]) { $outB -join "`n" } else { "$outB" }
+    if ($LASTEXITCODE -eq 0) { throw "a second holder must be refused, got exit 0: $outBStr" }
+    if ($outBStr -notmatch "REFUSED") { throw "expected REFUSED, got: $outBStr" }
+    if ($outBStr -notmatch "held by spec #$a") { throw "the refusal must NAME the holder (#$a), got: $outBStr" }
+    $lease2 = Get-Content $leaseFile -Raw | ConvertFrom-Json
+    if ([int]$lease2.holder -ne $a) { throw "the refused align must not steal the lease (still $a), got $($lease2.holder)" }
+    return "root lease: align-root acquired for #$a, second holder #$b refused by name"
+  } finally {
+    Remove-Item (Mock-StorePath "root-lease.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$a" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$b" -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($i in @($a, $b)) {
+      Remove-Item (Mock-StorePath "refs\spec\$i") -Force -ErrorAction SilentlyContinue
+      Remove-Item (Mock-StorePath "local-refs\spec\$i") -Force -ErrorAction SilentlyContinue
+      Mock-Cleanup $i
+    }
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "root lease: a lease whose holder has left implementation/testing is expired and reclaimable" {
+  # The holder closed (or its round ended) but never released — a crash-shaped stale
+  # lease must not deadlock the NEXT spec. The holder here sits in `cleanup`.
+  $stale = Mock-IssueCreate "temp: lease stale" "lease stale scratch" "cleanup"
+  $next = Mock-IssueCreate "temp: lease next" "lease next scratch" "ready-for-dev"
+  $staleStr = if ($stale -is [array]) { $stale -join "" } else { "$stale" }
+  $nextStr = if ($next -is [array]) { $next -join "" } else { "$next" }
+  $s = [int][regex]::Match($staleStr, "issues/(\d+)").Groups[1].Value
+  $n = [int][regex]::Match($nextStr, "issues/(\d+)").Groups[1].Value
+  try {
+    $leaseFile = Mock-StorePath "root-lease.json"
+    [System.IO.File]::WriteAllText($leaseFile, "{`"holder`":$s,`"acquiredAt`":`"2026-01-01T00:00:00Z`",`"phase`":`"testing`"}", [System.Text.UTF8Encoding]::new($false))
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$n" 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $n --agent orchestrator --action align-root 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "a lease with an expired holder must be reclaimable, got: $outStr" }
+    if ($outStr -notmatch "ROOT LEASE ACQUIRED") { throw "expected the reclaim to acquire for #$n, got: $outStr" }
+    $lease = Get-Content $leaseFile -Raw | ConvertFrom-Json
+    if ([int]$lease.holder -ne $n) { throw "the expired lease must be reclaimed by $n, got $($lease.holder)" }
+    return "stale lease (holder #$s in cleanup) expired and reclaimed by #$n"
+  } finally {
+    Remove-Item (Mock-StorePath "root-lease.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$s" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$n" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$n") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$n") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $s
+    Mock-Cleanup $n
+    $global:LASTEXITCODE = 0
+  }
+}
+
+Test-Script "root lease: a transition leaving testing releases the lease (verdict posted)" {
+  # The round-end RELEASE is explicit (never inferred from branch state): any leg
+  # leaving `testing` posts the round's verdict and releases the root.
+  $url = Mock-IssueCreate "temp: lease release" "lease release scratch" "testing"
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    $leaseFile = Mock-StorePath "root-lease.json"
+    [System.IO.File]::WriteAllText($leaseFile, "{`"holder`":$issueNum,`"acquiredAt`":`"2026-01-01T00:00:00Z`",`"phase`":`"testing`"}", [System.Text.UTF8Encoding]::new($false))
+    # The implementation-entry side-effect reads the A2A file.
+    $a2aDir = ".opencode/tmp/$issueNum"
+    New-Item -ItemType Directory -Path $a2aDir -Force | Out-Null
+    [System.IO.File]::WriteAllText("$a2aDir/triage.md", "# scratch A2A`n", [System.Text.UTF8Encoding]::new($false))
+    $authRef = "https://github.com/FredoAi/fredo/issues/$issueNum#issuecomment-1"
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase implementation --human-authorized --reason "round end" --authorization-ref $authRef 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "transition failed: $outStr" }
+    if ($outStr -notmatch "ROOT LEASE RELEASED") { throw "a round-end transition must release the lease, got: $outStr" }
+    if (Test-Path $leaseFile) { throw "the lease record must be gone after the round ended" }
+    return "transition leaving testing released the root lease (#$issueNum)"
+  } finally {
+    Remove-Item (Mock-StorePath "root-lease.json") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- `Tested commit:` stamp parsing ---
 # A verdict line `Tested commit: 34567eb5 (spec/3198 tip; served tree …; env …)` was
 # compared WHOLE against the served sha; the trailing context made it fail with a
@@ -7128,6 +7249,54 @@ Test-Script "implementation->testing refuses a non-descendant spec branch (point
     if ($st.Labels -notcontains "ready-for-dev") { throw "the issue must stay in implementation (label ready-for-dev), got: $($st.Labels)" }
     if ($st.Labels -contains "testing") { throw "the testing label must not be applied, got: $($st.Labels)" }
     return "stale spec branch refused at implementation->testing with a sync-spec-branch pointer (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# M5 — the SAME descent guard, at the GATE. A PASS round skips the `→ testing` leg
+# the sync obligation was deferred to, so a branch that fell behind reached the gate
+# unchecked. A branch behind origin/main is now refused at `post-audit → cleanup`
+# (same predicate, same hard refusal), with the SAME remedy (`sync-spec-branch`),
+# which must be callable in the gate phases.
+Test-Script "post-audit->cleanup refuses a non-descendant spec branch (points at sync-spec-branch)" {
+  $url = Mock-IssueCreate "temp: gate descent" "gate descent scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  try {
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force | Out-Null
+    $blocked = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $blockedStr = if ($blocked -is [array]) { $blocked -join "`n" } else { "$blocked" }
+    if ($LASTEXITCODE -eq 0) { throw "a non-descendant branch must not reach cleanup, got exit 0: $blockedStr" }
+    if ($blockedStr -notmatch "does not descend from") { throw "expected the descent refusal, got: $blockedStr" }
+    if ($blockedStr -notmatch "sync-spec-branch") { throw "the refusal must point at sync-spec-branch, got: $blockedStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -notcontains "post-audit") { throw "the issue must stay post-audit, got: $($st.Labels)" }
+    # CONTROL 1 — the refusal is CONDITIONAL: with the branch descending again the
+    # descent check passes, and the leg is blocked by a DIFFERENT gate (the Curator's
+    # lesson) — never by the descent message.
+    Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
+    $after = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase cleanup 2>&1
+    $afterStr = if ($after -is [array]) { $after -join "`n" } else { "$after" }
+    if ($afterStr -match "does not descend from") { throw "a descendant branch must NOT hit the descent refusal, got: $afterStr" }
+    if ($afterStr -notmatch "record-improvement") { throw "expected the lesson gate to be the next block, got: $afterStr" }
+    # CONTROL 2 — the remedy is CALLABLE in the gate phase (it used to be phase-gated
+    # out of exactly the phase where the gate runs).
+    New-Item -ItemType File -Path (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force | Out-Null
+    $sync = & rust-script $ps --issue $issueNum --agent orchestrator --action sync-spec-branch 2>&1
+    $syncStr = if ($sync -is [array]) { $sync -join "`n" } else { "$sync" }
+    if ($LASTEXITCODE -ne 0) { throw "sync-spec-branch must be callable in post-audit, got: $syncStr" }
+    if ($syncStr -notmatch "SPEC BRANCH SYNCED") { throw "expected the sync to run at the gate, got: $syncStr" }
+    return "gate descent refusal at post-audit->cleanup + conditional control + sync-spec-branch callable at the gate (#$issueNum)"
   } finally {
     Remove-Item -LiteralPath (Join-Path $env:FREDO_MOCK_STORE "spec-behind-main") -Force -ErrorAction SilentlyContinue
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
