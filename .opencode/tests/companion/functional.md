@@ -483,7 +483,7 @@ Verdict: **PASS (9/9)**. The round-1 FAIL (F-24 "in use" suppression) is **FIXED
 
 - [ ] F-31: Start `tauri_ipc_monitor`; single-click the companion. Interval/rAF-sample the
       wrapper `data-state` + the bubble text from the click through the pending phase.
-  **Expected:** during the pending phase (bubble `💭 Thinking...`, before the first real token)
+  **Expected:** during the pending phase (bubble `💭 Working...`, before the first real token)
       `data-state="thinking"` and `data-avatar-clip="thinking"` (the applied clip) — NOT `talk`/`idle`.
       The state is observable from the click until the first streamed token. (**#3210:** the
       `#fredo-expression[data-state=thinking]` overlay no longer exists — read the clip hook.)
@@ -2035,7 +2035,7 @@ product defect (see `exploratory.md` round 2, observation O-1).
   by `llm-done` (`payload:null`, t=1789755174513). Offered request carries `open_app` first with the
   declared `{app:string}` contract; execution proven by the opened window + exact reply (F-100).
 - **F-100 PASS (re-confirmed).** Exact-copy matrix live: success `Opening Mission Monitor` (typed +
-  dictated frames), unknown `I couldn't find "NotARealApp"` (trace: `💭 Thinking...` t=26 ms →
+  dictated frames), unknown `I couldn't find "NotARealApp"` (trace: `💭 Working...` t=26 ms →
   exact copy t=1340 ms), non-app-open → normal chat replies (`Hello! How can I help you today?`,
   `Why did the programmer quit his job? Because he didn't get arrays!`, `I'm here to help. …`,
   `What can I help you with? …`). Success `happy`; unknown/non-app-open `idle` with **no** `happy`.
