@@ -45,6 +45,16 @@ use fredo_lib::infrastructure::application_data::declaration::{
     ColumnOwner, DataSource, DeclaredColumn, DeclaredColumnType, ApplicationDataDeclaration,
     ApplicationDataTableDeclaration, Retention, SessionRollupKind, SessionRollupProjection,
 };
+use fredo_lib::infrastructure::application_data::commands::{
+    declare as application_data_declare, read as application_data_read,
+    write as application_data_write, ApplicationDataDeclareArgs, ApplicationDataReadArgs,
+    ApplicationDataState, ApplicationDataWriteArgs, ApplicationTableRef, DataTableRef,
+};
+use fredo_lib::infrastructure::application_data::envelope::ApplicationRowNotification;
+use fredo_lib::infrastructure::application_data::projection::ProjectionEngine;
+use fredo_lib::infrastructure::application_data::watch::{NotificationSink, WatchRegistry};
+use fredo_lib::infrastructure::rtdb::store::RtdbStore;
+use fredo_lib::installed_app_scope::{resolve_data_scope, ScopeDecision, SCOPE_DENIED_DETAIL};
 use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
 use fredo_lib::infrastructure::application_data::lifecycle::prune_declared_tables_at;
 use fredo_lib::infrastructure::application_data::projection::DeclaredChangeKind;
@@ -174,6 +184,11 @@ async fn postgres_storage_suite() {
     // `last_active_at DESC`) ordered correctly through the quoted sink, the
     // `None` legs unaffected, and `where_cols` values still parameterized.
     order_by_validation_scenario(&url, &unique_schema("order_by")).await;
+    // Phase 8 (Spec #3146 W-3t): an installed package's DECLARED tables — the
+    // declaration materialises, the scope rule admits its own table and refuses an
+    // undeclared one, and `application_data_write` CREATES the missing row (W-3)
+    // without losing it across a re-declare or the restart path.
+    installed_app_declared_tables_scenario(&url, &unique_schema("installed_app")).await;
 
     // ── G-263 teardown: finite bound + guaranteed hard-kill + no orphan ──────
     let started = Instant::now();
@@ -1382,6 +1397,294 @@ fn bytes_of(value: &JsonValue) -> Vec<u8> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ── Phase 8 (Spec #3146 W-3t): an installed package's declared tables ────────
+
+/// The notification sink the watch registry needs; this scenario drives the
+/// store bodies directly and asserts through reads, so it records nothing.
+struct SilentSink;
+
+impl NotificationSink for SilentSink {
+    fn emit(&self, _notifications: &[ApplicationRowNotification]) {}
+}
+
+/// The fixture-shaped declaration a `qa3146-app-a`-style package installs with:
+/// a purely application-written `notes` table (no `source`, which an installed
+/// package may never declare).
+fn installed_app_notes_declaration() -> ApplicationDataTableDeclaration {
+    ApplicationDataTableDeclaration {
+        name: "notes".to_string(),
+        primary_key: vec!["id".to_string()],
+        columns: vec![
+            DeclaredColumn {
+                name: "id".to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: false,
+                owner: ColumnOwner::Application,
+            },
+            DeclaredColumn {
+                name: "body".to_string(),
+                col_type: DeclaredColumnType::Text,
+                nullable: true,
+                owner: ColumnOwner::Application,
+            },
+        ],
+        source: None,
+        retention: None,
+    }
+}
+
+fn installed_app_declaration() -> ApplicationDataDeclaration {
+    ApplicationDataDeclaration {
+        feature_id: "qa3146-app-a".to_string(),
+        declaration_revision: "manifest:1.0.0".to_string(),
+        tables: vec![installed_app_notes_declaration()],
+    }
+}
+
+fn write_body(body: &str) -> ApplicationDataWriteArgs {
+    let mut set = Map::new();
+    set.insert("body".to_string(), json!(body));
+    ApplicationDataWriteArgs {
+        r#ref: ApplicationTableRef {
+            feature_id: "qa3146-app-a".to_string(),
+            table: "notes".to_string(),
+        },
+        key: vec![json!("n1")],
+        set,
+    }
+}
+
+fn notes_read() -> ApplicationDataReadArgs {
+    ApplicationDataReadArgs {
+        r#ref: DataTableRef::Application {
+            feature_id: "qa3146-app-a".to_string(),
+            table: "notes".to_string(),
+        },
+        r#where: Vec::new(),
+        order_by: None,
+        limit: None,
+    }
+}
+
+/// W-3t — the offline proof of W-2 + W-3 against the REAL PostgreSQL stores:
+/// declaring an installed package's table materialises it, the scope rule admits
+/// the package's OWN declared table and still refuses an undeclared one, and a
+/// write to a key that does not exist CREATES the row (the insert path), with the
+/// no-op rule and the restart path unchanged.
+///
+/// This is the only offline proof of the server-written path: the dispatcher's
+/// live rows (F-7.5/F-7.11/F-7.12) are the primary proof, this is supplementary.
+async fn installed_app_declared_tables_scenario(url: &str, schema: &str) {
+    const APP: &str = "qa3146-app-a";
+    const TABLE: &str = "notes";
+    const PHYSICAL: &str = "feature_qa3146_app_a_notes";
+
+    eprintln!("storage_engine_pg: phase installed_app_declared_tables_scenario (schema {schema}) starting");
+    let handle = EngineHandle::new_pending();
+    let settings_scratch = tempfile::tempdir().expect("tempdir");
+    let app = SettingsStore::open(handle.clone(), settings_scratch.path()).expect("app store");
+    let applications = DynamicTableStore::open(handle.clone()).expect("application store");
+    let data = ApplicationDataStore::open(handle.clone()).expect("data store");
+
+    let pool = build_pool(url, schema).await;
+    handle.install(StoreEngine::Postgres(Arc::new(PgEngine {
+        pool: pool.clone(),
+        url: url.to_string(),
+    })));
+    data.ensure_schema().expect("create the application-data schema");
+
+    let data_dir = tempfile::tempdir().expect("app-data dir");
+    let meta = Arc::new(data);
+    let tables = Arc::new(applications);
+    let registry = Arc::new(DeclarationRegistry::new(meta.clone(), tables.clone()));
+    let engine = Arc::new(
+        ProjectionEngine::new(handle.clone(), meta.clone(), tables.clone())
+            .expect("projection engine"),
+    );
+    let watches = Arc::new(WatchRegistry::new(Arc::new(SilentSink)));
+    let rtdb_store = Arc::new(RtdbStore::open(handle.clone()).expect("rtdb store"));
+    let state = ApplicationDataState {
+        data_dir: data_dir.path().to_path_buf(),
+        meta: meta.clone(),
+        tables: tables.clone(),
+        app_store: Arc::new(app),
+        registry: registry.clone(),
+        engine,
+        watches,
+        rtdb_store,
+    };
+
+    // (1) The window-open path's act: declare the package's own table.
+    let declaration = installed_app_declaration();
+    application_data_declare(
+        &state,
+        ApplicationDataDeclareArgs {
+            declarations: vec![
+                serde_json::to_value(&declaration).expect("serialize the declaration"),
+            ],
+        },
+    )
+    .expect("declaring an installed package's own table must succeed");
+
+    let persisted = registry.persisted_tables().expect("persisted tables");
+    assert_eq!(
+        persisted
+            .iter()
+            .map(|table| (table.feature_id.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(APP, TABLE)],
+        "the declaration is persisted under the package's own id"
+    );
+    let physical: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+        .bind(PHYSICAL)
+        .fetch_one(&pool)
+        .await
+        .expect("to_regclass probe");
+    assert_eq!(
+        physical.as_deref(),
+        Some(PHYSICAL),
+        "the declared table is materialised at its canonical composed name"
+    );
+
+    // (2) The scope decision the dispatcher now builds from the DECLARATION.
+    let declared = vec![TABLE.to_string()];
+    let known = vec![APP.to_string()];
+    let owned: Vec<(String, String)> = persisted
+        .iter()
+        .map(|table| (table.feature_id.clone(), table.table_name.clone()))
+        .collect();
+    assert_eq!(
+        resolve_data_scope(APP, APP, TABLE, &declared, &known, &owned),
+        ScopeDecision::Allow,
+        "the package's own declared table must be admitted"
+    );
+    assert_eq!(
+        resolve_data_scope(APP, APP, "secrets", &declared, &known, &owned),
+        ScopeDecision::Deny(SCOPE_DENIED_DETAIL),
+        "an undeclared table is still refused"
+    );
+
+    // (3) W-3: a write to an ABSENT record CREATES it (the insert path).
+    let created = application_data_write(&state, write_body("hello"))
+        .expect("a write to a fresh key must create the row");
+    assert_eq!(created.updated, 1, "the insert path reports one row written");
+    let read = application_data_read(&state, notes_read())
+        .await
+        .expect("read the created row back");
+    assert_eq!(read.rows.len(), 1, "exactly the created row exists");
+    assert_eq!(read.rows[0]["body"], json!("hello"));
+    assert_eq!(read.rows[0]["id"], json!("n1"), "the key is the row's address");
+    assert_eq!(
+        read.rows[0]["_rowVersion"],
+        json!(1),
+        "a created row starts at row version 1"
+    );
+    assert!(
+        read.rows[0]["_updatedAt"].is_string(),
+        "a created row is stamped: {:?}",
+        read.rows[0]
+    );
+    let version_after_create = meta
+        .get_table(APP, TABLE)
+        .expect("metadata read")
+        .expect("the declared table has metadata")
+        .last_version;
+    assert_eq!(
+        version_after_create, 1,
+        "the insert bumps the scope version once"
+    );
+
+    // (4) An identical write is still a silent no-op: no UPDATE, no bump.
+    let unchanged = application_data_write(&state, write_body("hello"))
+        .expect("an identical write is accepted");
+    assert_eq!(unchanged.updated, 0, "an identical write changes nothing");
+    assert_eq!(
+        meta.get_table(APP, TABLE)
+            .expect("metadata read")
+            .expect("metadata")
+            .last_version,
+        version_after_create,
+        "a no-op write must not advance the scope version"
+    );
+
+    // (5) A real change updates in place and advances the version.
+    let changed = application_data_write(&state, write_body("goodbye"))
+        .expect("a real change must update the created row");
+    assert_eq!(changed.updated, 1);
+    let version_after_update = meta
+        .get_table(APP, TABLE)
+        .expect("metadata read")
+        .expect("metadata")
+        .last_version;
+    assert!(
+        version_after_update > version_after_create,
+        "a real change advances the scope version ({version_after_create} -> {version_after_update})"
+    );
+
+    // (6) A re-declare (the re-open path) and `materialize_persisted` (the restart
+    // path) both leave the written row intact — AC-5's own-table clause.
+    application_data_declare(
+        &state,
+        ApplicationDataDeclareArgs {
+            declarations: vec![
+                serde_json::to_value(&declaration).expect("serialize the declaration"),
+            ],
+        },
+    )
+    .expect("a re-declare of unchanged content is idempotent");
+    registry
+        .materialize_persisted()
+        .expect("the restart path re-materializes every persisted declaration");
+
+    let after = application_data_read(&state, notes_read())
+        .await
+        .expect("read the row after the re-declare and restart path");
+    assert_eq!(after.rows.len(), 1, "the written row survives both paths");
+    assert_eq!(after.rows[0]["body"], json!("goodbye"));
+    assert_eq!(
+        after.rows[0]["_rowVersion"],
+        json!(2),
+        "the row version is preserved (not reset by a re-materialisation)"
+    );
+    let item_count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {PHYSICAL}"))
+        .fetch_one(&pool)
+        .await
+        .expect("count the declared rows on PostgreSQL");
+    assert_eq!(item_count, 1, "exactly one declared row persists");
+
+    eprintln!(
+        "storage_engine_pg: phase installed_app_declared_tables_scenario PASSED - declare -> persisted=[({APP},{TABLE})] \
+         physical={PHYSICAL}; scope own={:?} undeclared={:?}; write(absent) updated={} rowVersion=1 \
+         version={version_after_create}; write(identical) updated={} version={version_after_create}; \
+         write(change) updated={} version={version_after_update}; re-declare+materialize_persisted kept \
+         body={:?} rowVersion={:?} rows={item_count}",
+        ScopeDecision::Allow,
+        ScopeDecision::Deny(SCOPE_DENIED_DETAIL),
+        created.updated,
+        unchanged.updated,
+        changed.updated,
+        after.rows[0]["body"],
+        after.rows[0]["_rowVersion"],
+    );
+
+    // (7) The physical layer is really writable by the application's own write
+    // path only for its OWN namespace: the delete leg still tombstones.
+    let deleted = fredo_lib::infrastructure::application_data::commands::delete(
+        &state,
+        fredo_lib::infrastructure::application_data::commands::ApplicationDataDeleteArgs {
+            r#ref: ApplicationTableRef {
+                feature_id: APP.to_string(),
+                table: TABLE.to_string(),
+            },
+            key: vec![json!("n1")],
+        },
+    )
+    .expect("delete the created row");
+    assert!(deleted.deleted, "the created row is deletable");
+
+    pool.close().await;
 }
 
 // ── Pool / catalog helpers ───────────────────────────────────────────────────

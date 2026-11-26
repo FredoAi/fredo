@@ -17,7 +17,11 @@
 //!    bytes on disk (`integrity_mismatch` / `integrity_record_corrupt`) and the
 //!    directory's existence (`id_not_installed`) — **before any window exists**,
 //!    so the refusal is reported by the launcher the user clicked from (AC-4.4).
-//! 3. Only then is the window built (or an existing one focused).
+//! 3. The package's declared data tables (`capabilities.data.tables`) are
+//!    MATERIALISED through the one declaration registry (Spec #3146 W-1), so the
+//!    declared set exists before the document's first call. A package that
+//!    declares no table does no database work at all here.
+//! 4. Only then is the window built (or an existing one focused).
 //!
 //! # Nothing at startup
 //!
@@ -31,10 +35,15 @@
 //! blocking pool. The window itself is built on the async runtime's main thread
 //! — a `WebviewWindowBuilder` cannot be constructed from a blocking worker.
 
+use std::sync::Arc;
+
 use tauri::AppHandle;
 
+use super::store;
 use super::window;
 use super::{InstalledAppError, InstalledAppRefusalCode, InstalledAppResult};
+use crate::infrastructure::application_data::commands::ApplicationDataState;
+use crate::infrastructure::application_data::declaration::ApplicationDataDeclaration;
 
 /// Resolve the app-data dir through the ONE shipped resolver.
 ///
@@ -76,7 +85,80 @@ pub async fn installed_app_open(app: AppHandle, app_id: String) -> InstalledAppR
         )
     })??;
 
+    // Materialise the package's declared data tables BEFORE the window exists
+    // (Spec #3146 W-1): an installed application's first call must already find
+    // the declaration it was installed with. Reading the canonical manifest is
+    // filesystem work, so it stays off the IPC thread; a package that declares
+    // no table returns `None` and never reaches the store.
+    let manifest_dir = target.app_dir.clone();
+    let declaration = tauri::async_runtime::spawn_blocking(move || open_declaration(&manifest_dir))
+        .await
+        .map_err(|error| {
+            InstalledAppError::new(
+                InstalledAppRefusalCode::IoError,
+                format!("the declaration check for {} could not be run: {error}", target.id),
+            )
+        })??;
+    if let Some(declaration) = declaration {
+        materialize_open_declaration(&app, &declaration)?;
+    }
+
     window::open_installed_app_window(&app, &target)
+}
+
+/// Compose the declaration an installed package's own declared tables make.
+///
+/// `None` when the package declares no table — the zero-cost path: the caller
+/// then performs no store lookup and no database work. Anything the canonical
+/// manifest cannot be read or parsed as is the caller's [`InstalledAppError`]
+/// (`integrity_record_corrupt`), exactly as the open check treats it.
+fn open_declaration(
+    app_dir: &std::path::Path,
+) -> InstalledAppResult<Option<ApplicationDataDeclaration>> {
+    let manifest = store::read_manifest_file(app_dir)?;
+    Ok(manifest
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.data_declaration(&manifest.id, &manifest.version)))
+}
+
+/// Hand one package's declaration to the ONE registry, before the window exists.
+///
+/// Refusal: the existing `io_error` (no new code — the installer vocabulary is
+/// frozen at 22), naming the application and the tables, because the alternative
+/// is opening a document into a fence it cannot pass. The declaration is
+/// idempotent (`EnsureOnly` for unchanged content, `CREATE TABLE IF NOT EXISTS`
+/// otherwise), so a re-open and a restart leave every written row intact.
+fn materialize_open_declaration(
+    app: &AppHandle,
+    declaration: &ApplicationDataDeclaration,
+) -> InstalledAppResult<()> {
+    use tauri::Manager;
+
+    let Some(state) = app.try_state::<Arc<ApplicationDataState>>() else {
+        return Err(InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!(
+                "the declared tables of application '{}' could not be materialized: the \
+                 application-data store is not running",
+                declaration.feature_id
+            ),
+        ));
+    };
+    state
+        .registry
+        .declare(declaration)
+        .map_err(|errors| {
+            InstalledAppError::new(
+                InstalledAppRefusalCode::IoError,
+                format!(
+                    "the declared tables of application '{}' could not be materialized: {}",
+                    declaration.feature_id,
+                    errors.join("; ")
+                ),
+            )
+        })?;
+    Ok(())
 }
 
 /// Close an installed application's window (R-5.3).
@@ -92,6 +174,8 @@ pub async fn installed_app_close(app: AppHandle, app_id: String) -> InstalledApp
 
 #[cfg(test)]
 mod tests {
+    use super::open_declaration;
+
     /// The command surface this module owns is exactly two functions — a guard
     /// so a later sub-task's command cannot be added here by accident (the plan
     /// assigns `install`/`list` to ST-2 and `push_theme` to ST-5).
@@ -267,6 +351,156 @@ mod tests {
         assert!(
             unbalanced.contains("not brace-balanced"),
             "the refusal must say why: {unbalanced}"
+        );
+    }
+
+    // ── W-1: the declared tables are materialised on open ───────────────────
+
+    /// Write a canonical `<dir>/manifest.json` with the given `capabilities`
+    /// fragment (or none at all).
+    fn write_manifest(dir: &std::path::Path, capabilities: Option<&str>) {
+        let capabilities = capabilities
+            .map(|fragment| format!(",\n  \"capabilities\": {fragment}"))
+            .unwrap_or_default();
+        let manifest = format!(
+            r#"{{
+  "manifestVersion": 1,
+  "id": "qa3146-app-a",
+  "displayName": "QA3146 App A",
+  "version": "1.0.0",
+  "engines": {{ "fredo": ">=0.0.0" }},
+  "entry": {{ "document": "index.html", "module": "main.js" }}{capabilities}
+}}"#
+        );
+        std::fs::write(
+            dir.join(super::super::INSTALLED_MANIFEST_FILENAME),
+            manifest,
+        )
+        .expect("write the canonical manifest");
+    }
+
+    /// W-1 — the composer the open path hands to the registry: the package's
+    /// tables verbatim and in order, at the install validator's revision, and
+    /// with no `source` projection.
+    #[test]
+    fn the_declaration_composed_for_open_carries_the_manifests_tables() {
+        let data = tempfile::tempdir().expect("tempdir");
+        write_manifest(
+            data.path(),
+            Some(
+                r#"{
+    "version": 1,
+    "data": { "tables": [
+      {"name": "notes", "primaryKey": ["id"], "columns": [
+        {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"},
+        {"name": "body", "type": "TEXT", "nullable": true, "owner": "application"}
+      ]},
+      {"name": "shared_log", "primaryKey": ["id"], "columns": [
+        {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"}
+      ]}
+    ] }
+  }"#,
+            ),
+        );
+
+        let declaration = open_declaration(data.path())
+            .expect("a readable canonical manifest")
+            .expect("a declaring package composes a declaration");
+        assert_eq!(declaration.feature_id, "qa3146-app-a");
+        assert_eq!(
+            declaration
+                .tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            ["notes", "shared_log"],
+            "the manifest's tables, verbatim and in order"
+        );
+        assert_eq!(declaration.declaration_revision, "manifest:1.0.0");
+        for table in &declaration.tables {
+            assert!(table.source.is_none(), "{table:?} must carry no source");
+        }
+
+        // A manifest that cannot be read is the open path's own refusal, not a
+        // silent skip: an unreadable canonical manifest refuses the open.
+        assert!(
+            open_declaration(&data.path().join("not-installed")).is_err(),
+            "a missing canonical manifest must be refused"
+        );
+    }
+
+    /// W-1 — a package that declares no data table composes NOTHING, so the open
+    /// path performs no store lookup and no database work for it.
+    ///
+    /// Non-vacuity: the SAME directory, with a declared table, does compose one
+    /// (the composer is not simply always `None`).
+    #[test]
+    fn a_package_without_data_tables_does_no_database_work() {
+        let data = tempfile::tempdir().expect("tempdir");
+        write_manifest(data.path(), None);
+        assert_eq!(
+            open_declaration(data.path()).expect("readable manifest"),
+            None,
+            "no capabilities ⇒ nothing to materialise ⇒ no database work"
+        );
+
+        // Non-vacuity: the same manifest shape WITH a table does compose.
+        write_manifest(
+            data.path(),
+            Some(
+                r#"{"version": 1, "data": { "tables": [
+      {"name": "notes", "primaryKey": ["id"], "columns": [
+        {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"}
+      ]}
+    ] }}"#,
+            ),
+        );
+        assert!(
+            open_declaration(data.path())
+                .expect("readable manifest")
+                .is_some(),
+            "the same tree with a declared table must compose one"
+        );
+
+        // ... and a present-but-empty table list is the zero-cost path too.
+        write_manifest(data.path(), Some(r#"{"version": 1, "data": { "tables": [] }}"#));
+        assert_eq!(open_declaration(data.path()).expect("readable manifest"), None);
+    }
+
+    /// W-1 — the open command materialises BEFORE it builds (or focuses) the
+    /// window, so a document never starts against an empty declaration set.
+    ///
+    /// Anchored on the CALLS, asserting the ORDER property (G-468): the read,
+    /// the guarded materialisation, then the window.
+    #[test]
+    fn the_open_path_materializes_before_the_window_is_built() {
+        let source = include_str!("commands_window.rs");
+        let start = source
+            .find("pub async fn installed_app_open(")
+            .expect("the open command exists");
+        let body = &source[start..];
+        let body = body
+            .find("pub async fn installed_app_close(")
+            .map(|end| &body[..end])
+            .expect("the close command follows the open command");
+
+        let read = body
+            .find("open_declaration(&manifest_dir)")
+            .expect("the open command reads the package's declaration");
+        let guarded = body
+            .find("if let Some(declaration) = declaration {")
+            .expect("the materialisation is guarded by the composed declaration");
+        let materialize = body
+            .find("materialize_open_declaration(&app, &declaration)")
+            .expect("the open command materialises the declaration");
+        let build = body
+            .find("window::open_installed_app_window(&app, &target)")
+            .expect("the open command builds the window");
+
+        assert!(
+            read < guarded && guarded < materialize && materialize < build,
+            "order must be read (at {read}) → guard (at {guarded}) → \
+             materialize (at {materialize}) → build (at {build})"
         );
     }
 }

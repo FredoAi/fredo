@@ -19,6 +19,13 @@ pub use applications::pg_supervisor::runtime::PgRuntime;
 #[doc(hidden)]
 pub use applications::terminal::persistence::ensure_table_on_pg as ensure_terminal_table_on_pg;
 
+// Spec #3146 W-3t — test seam. The gated PostgreSQL suite pins the declared-table
+// acceptance rule (`installed_apps::scope::resolve_data_scope`, a `mod
+// applications` item otherwise unreachable from an integration test) against the
+// REAL application-data stores. `#[doc(hidden)]`: not part of the app surface.
+#[doc(hidden)]
+pub use applications::installed_apps::scope as installed_app_scope;
+
 // Spec #2950 ST-1 — the built-in PostgreSQL client's frozen producer contract
 // (`db_client::{types, seam, state}`): wire types, the persistence/credential
 // key contract, the G-275 seams and the managed `DbClientState`. The command

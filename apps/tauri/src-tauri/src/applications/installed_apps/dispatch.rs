@@ -58,6 +58,7 @@ use crate::infrastructure::application_data::commands::{
     self as application_data, ApplicationDataDeclareArgs, ApplicationDataDeleteArgs,
     ApplicationDataReadArgs, ApplicationDataState, ApplicationDataWriteArgs,
 };
+use crate::infrastructure::application_data::registry::PersistedTable;
 
 /// The wire request: the action name and exactly the payload the corresponding
 /// command accepts today.
@@ -99,7 +100,9 @@ pub const DISPATCH_TABLE: &[(&str, CapabilityId)] = &[
 #[derive(Debug, Default, Clone)]
 pub struct AuthorityInputs {
     pub grants: AuthorityGrants,
-    /// The tables the caller's package declared (from `feature_data_tables`).
+    /// The tables the caller's package declared, from its canonical manifest
+    /// (`capabilities.data.tables`, carried on [`AuthorityGrants::data_tables`]) —
+    /// never from the persisted `feature_data_tables` projection.
     pub declared_tables: Vec<String>,
     /// `RESERVED_APP_IDS` ∪ installed ids ∪ ids present in `feature_data_tables`.
     pub known_app_ids: Vec<String>,
@@ -470,26 +473,50 @@ fn to_wire<T: Serialize>(
 
 /// Read the tables + ids + grants one call is decided from.
 ///
-/// Every source is re-read HERE, per call: the declaration metadata table, the
-/// install root's directory listing, and (via
-/// [`super::authority::read_authority_grants`]) the package's declarations and
-/// the user's consent. A metadata read failure empties the declaration set, which
-/// can only produce a FALSE REFUSAL — never a false permit.
+/// Every source is re-read HERE, per call: the canonical manifest (and this
+/// application's consent) via [`super::authority::read_authority_grants`], the
+/// declaration metadata table, and the install root's directory listing. A
+/// metadata read failure empties the projection inputs, which can only produce a
+/// FALSE REFUSAL — never a false permit, because the declared set it cannot touch
+/// comes from the package itself.
 fn load_authority_inputs(state: &ApplicationDataState, app_id: &str) -> AuthorityInputs {
-    let mut declared_tables = Vec::new();
-    let mut owned_tables = Vec::new();
-    let mut registry_ids = Vec::new();
+    let persisted = state.registry.persisted_tables().unwrap_or_default();
+    compose_authority_inputs(
+        read_authority_grants(&state.data_dir, app_id),
+        persisted,
+        installed_app_ids(&store::install_root(&state.data_dir)),
+    )
+}
 
-    if let Ok(persisted) = state.registry.persisted_tables() {
-        for table in persisted {
-            if !registry_ids.iter().any(|id| id == &table.feature_id) {
-                registry_ids.push(table.feature_id.clone());
-            }
-            if table.feature_id == app_id {
-                declared_tables.push(table.table_name.clone());
-            }
-            owned_tables.push((table.feature_id, table.table_name));
+/// Assemble one call's [`AuthorityInputs`] from the per-call reads.
+///
+/// Pure, so the assembly rule itself is unit-testable.
+///
+/// The DECLARED set comes from the package's canonical manifest
+/// ([`AuthorityGrants::data_tables`]) and never from the persisted projection:
+/// `feature_data_tables` records what has been materialised, and deciding reach
+/// from it made an installed application's own declared tables unreachable —
+/// because the only path that writes such a row (`application_data_declare`)
+/// validated reach against that same missing row (Spec #3146 D-A). The
+/// projection still feeds the two inputs that must see EVERY application's
+/// claim: `known_app_ids` (clause 3's namespace-prefix half) and `owned_tables`
+/// (clause 3's composed-name half).
+///
+/// A persisted row for a table the package did not declare therefore grants
+/// nothing: it can only ever appear in `owned_tables`, which is consulted for
+/// OTHER applications' claims.
+fn compose_authority_inputs(
+    grants: AuthorityGrants,
+    persisted: Vec<PersistedTable>,
+    installed_ids: Vec<String>,
+) -> AuthorityInputs {
+    let mut owned_tables = Vec::with_capacity(persisted.len());
+    let mut registry_ids = Vec::new();
+    for table in persisted {
+        if !registry_ids.iter().any(|id| id == &table.feature_id) {
+            registry_ids.push(table.feature_id.clone());
         }
+        owned_tables.push((table.feature_id, table.table_name));
     }
 
     let mut known_app_ids: Vec<String> = RESERVED_APP_IDS
@@ -501,15 +528,15 @@ fn load_authority_inputs(state: &ApplicationDataState, app_id: &str) -> Authorit
             known_app_ids.push(id);
         }
     }
-    for id in installed_app_ids(&store::install_root(&state.data_dir)) {
+    for id in installed_ids {
         if !known_app_ids.contains(&id) {
             known_app_ids.push(id);
         }
     }
 
     AuthorityInputs {
-        grants: read_authority_grants(&state.data_dir, app_id),
-        declared_tables,
+        declared_tables: grants.data_tables.clone(),
+        grants,
         known_app_ids,
         owned_tables,
     }
@@ -708,6 +735,7 @@ async fn forward_high_risk(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::scope::SCOPE_DENIED_DETAIL;
     use serde_json::json;
 
     fn installed_caller(id: &str) -> CallerScope {
@@ -730,6 +758,8 @@ mod tests {
             grants: AuthorityGrants {
                 declared: vec![CapabilityId::DataTables],
                 consented: vec![],
+                // The declaration comes from the manifest, as it does at runtime.
+                data_tables: tables.iter().map(|t| (*t).to_string()).collect(),
             },
             declared_tables: tables.iter().map(|t| (*t).to_string()).collect(),
             known_app_ids: {
@@ -1070,6 +1100,7 @@ mod tests {
                     CapabilityId::HighRiskDatabaseReset,
                 ],
                 consented: vec![CapabilityId::HighRiskDatabaseQuery],
+                data_tables: vec![],
             },
             ..AuthorityInputs::default()
         };
@@ -1112,8 +1143,7 @@ mod tests {
     /// A built-in window has no installed identity: the command refuses it rather
     /// than inventing a scope (fail closed).
     #[test]
-    fn a_built_in_caller_is_caller_unknown() {
-        let caller = CallerScope {
+    fn a_built_in_caller_is_caller_unknown() {        let caller = CallerScope {
             tier: CallerTier::BuiltIn,
             window_label: "main".to_string(),
             app_id: None,
@@ -1126,5 +1156,237 @@ mod tests {
         .expect_err("a built-in caller has no installed identity");
         assert_eq!(refusal.code, CapabilityRefusalCode::CallerUnknown);
         assert_eq!(refusal.app_id, "main");
+    }
+
+    // ── W-2: the declared set comes from the package, not the projection ────
+
+    /// A declaration value for `name` — the shape a manifest declares.
+    fn table_declaration(name: &str) -> crate::infrastructure::application_data::declaration::ApplicationDataTableDeclaration {
+        serde_json::from_value(json!({
+            "name": name,
+            "primaryKey": ["id"],
+            "columns": [
+                {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"},
+                {"name": "body", "type": "TEXT", "nullable": true, "owner": "application"}
+            ]
+        }))
+        .expect("a valid table declaration")
+    }
+
+    /// Write the canonical `<root>/<id>/manifest.json` a package installs with.
+    fn write_canonical_manifest(data_dir: &Path, id: &str, tables: serde_json::Value) {
+        let dir = store::app_dir(&store::install_root(data_dir), id);
+        std::fs::create_dir_all(&dir).expect("app dir");
+        let manifest = json!({
+            "manifestVersion": 1,
+            "id": id,
+            "displayName": format!("QA3146 {id}"),
+            "version": "1.0.0",
+            "engines": { "fredo": ">=0.0.0" },
+            "entry": { "document": "index.html", "module": "main.js" },
+            "capabilities": { "version": 1, "data": { "tables": tables } }
+        });
+        std::fs::write(
+            dir.join(super::super::INSTALLED_MANIFEST_FILENAME),
+            serde_json::to_vec(&manifest).expect("serialize manifest"),
+        )
+        .expect("write canonical manifest");
+    }
+
+    /// A pending-engine [`ApplicationDataState`] over `data_dir`.
+    ///
+    /// The stores are open but the engine holds no pool, so `persisted_tables()`
+    /// reports its "metadata unreadable" error and the projection inputs are
+    /// empty — the fresh-install tree D-A was diagnosed on (#3146 round 2).
+    fn pending_state(data_dir: &Path) -> ApplicationDataState {
+        struct NoopSink;
+        impl crate::infrastructure::application_data::watch::NotificationSink for NoopSink {
+            fn emit(
+                &self,
+                _notifications: &[crate::infrastructure::application_data::envelope::ApplicationRowNotification],
+            ) {
+            }
+        }
+
+        let handle = crate::infrastructure::storage::EngineHandle::new_pending();
+        let meta = Arc::new(
+            crate::infrastructure::application_data::store::ApplicationDataStore::open(handle.clone())
+                .expect("data store"),
+        );
+        let tables = Arc::new(
+            crate::infrastructure::storage::application_store::DynamicTableStore::open(handle.clone())
+                .expect("application store"),
+        );
+        let app_store = Arc::new(
+            crate::infrastructure::storage::SettingsStore::open(handle.clone(), data_dir)
+                .expect("settings store"),
+        );
+        let registry = Arc::new(
+            crate::infrastructure::application_data::registry::DeclarationRegistry::new(
+                meta.clone(),
+                tables.clone(),
+            ),
+        );
+        let engine = Arc::new(
+            crate::infrastructure::application_data::projection::ProjectionEngine::new(
+                handle.clone(),
+                meta.clone(),
+                tables.clone(),
+            )
+            .expect("projection engine"),
+        );
+        let watches = Arc::new(
+            crate::infrastructure::application_data::watch::WatchRegistry::new(Arc::new(NoopSink)),
+        );
+        let rtdb_store = Arc::new(
+            crate::infrastructure::rtdb::store::RtdbStore::open(handle).expect("rtdb store"),
+        );
+        ApplicationDataState {
+            data_dir: data_dir.to_path_buf(),
+            meta,
+            tables,
+            app_store,
+            registry,
+            engine,
+            watches,
+            rtdb_store,
+        }
+    }
+
+    /// W-2 / D-A — a table the PACKAGE declares is admissible with NO persisted
+    /// `feature_data_tables` row at all, and an UNDECLARED table is still refused.
+    ///
+    /// On the pre-fix tree this test reddens: `declared_tables` came from
+    /// `persisted_tables()`, which is empty here, so `notes` was `scope_denied` —
+    /// the exact live failure of F-7.5/F-7.11/F-7.12/F-7.13/F-7.26 in round 2.
+    #[test]
+    fn a_declared_table_is_admissible_without_a_persisted_row() {
+        let data = tempfile::tempdir().expect("tempdir");
+        write_canonical_manifest(
+            data.path(),
+            "qa3146-app-a",
+            json!([table_declaration("notes")]),
+        );
+        let state = pending_state(data.path());
+        assert!(
+            state.registry.persisted_tables().is_err(),
+            "control: this tree has no readable declaration projection, so the \
+             pre-fix declared set is empty"
+        );
+
+        let inputs = load_authority_inputs(&state, "qa3146-app-a");
+        assert!(
+            inputs.owned_tables.is_empty(),
+            "control: no persisted declaration exists: {:?}",
+            inputs.owned_tables
+        );
+        assert_eq!(
+            inputs.declared_tables,
+            ["notes"],
+            "the declared set is the package's manifest, not the projection"
+        );
+        assert_eq!(inputs.grants.data_tables, ["notes"]);
+
+        let caller = installed_caller("qa3146-app-a");
+        let key = json!(["n1"]);
+        let set = json!({"body": "hello-a"});
+        let declarations = json!([{
+            "applicationId": "qa3146-app-a",
+            "declarationRevision": "manifest:1.0.0",
+            "tables": [table_declaration("notes")]
+        }]);
+        for (action, args) in [
+            (
+                "application_data_read",
+                json!({"ref": {"source": "application", "table": "notes"}}),
+            ),
+            (
+                "application_data_write",
+                json!({"ref": {"source": "application", "table": "notes"}, "key": key, "set": set}),
+            ),
+            (
+                "application_data_delete",
+                json!({"ref": {"table": "notes"}, "key": key}),
+            ),
+            (
+                "application_data_declare",
+                json!({"declarations": declarations}),
+            ),
+        ] {
+            plan_call(&caller, &request(action, args), &inputs)
+                .unwrap_or_else(|refusal| panic!("{action} on a declared table must resolve, got {refusal:?}"));
+        }
+
+        // The fence: a table the package did NOT declare is still refused, with
+        // the one non-oracular sentence.
+        for action in ["application_data_read", "application_data_write"] {
+            let refusal = plan_call(
+                &caller,
+                &request(
+                    action,
+                    json!({"ref": {"source": "application", "table": "secrets"}, "key": key, "set": set}),
+                ),
+                &inputs,
+            )
+            .expect_err("an undeclared table is refused");
+            assert_eq!(refusal.code, CapabilityRefusalCode::ScopeDenied);
+            assert_eq!(refusal.detail, SCOPE_DENIED_DETAIL);
+            assert_eq!(refusal.app_id, "qa3146-app-a");
+        }
+    }
+
+    /// W-2 direction control — a PERSISTED row for a table the package did not
+    /// declare grants no reach, while the declared table in the SAME input set
+    /// resolves (non-vacuity: the caller is not simply refused everything).
+    #[test]
+    fn a_persisted_row_alone_does_not_grant_reach() {
+        let grants = AuthorityGrants {
+            declared: vec![CapabilityId::DataTables],
+            consented: vec![],
+            data_tables: vec!["notes".to_string()],
+        };
+        let persisted = vec![PersistedTable {
+            feature_id: "qa3146-app-a".to_string(),
+            table_name: "legacy_table".to_string(),
+            revision: "legacy.r1".to_string(),
+            declaration: table_declaration("legacy_table"),
+        }];
+        let inputs = compose_authority_inputs(grants, persisted, vec!["qa3146-app-a".to_string()]);
+
+        assert_eq!(
+            inputs.declared_tables,
+            ["notes"],
+            "only the manifest's tables are declared"
+        );
+        assert!(
+            inputs
+                .owned_tables
+                .iter()
+                .any(|(id, table)| id == "qa3146-app-a" && table == "legacy_table"),
+            "control: the persisted projection really carries the undeclared row"
+        );
+
+        let caller = installed_caller("qa3146-app-a");
+        let refusal = plan_call(
+            &caller,
+            &request(
+                "application_data_read",
+                json!({"ref": {"source": "application", "table": "legacy_table"}}),
+            ),
+            &inputs,
+        )
+        .expect_err("a persisted row alone must not grant reach");
+        assert_eq!(refusal.code, CapabilityRefusalCode::ScopeDenied);
+        assert_eq!(refusal.detail, SCOPE_DENIED_DETAIL);
+
+        plan_call(
+            &caller,
+            &request(
+                "application_data_read",
+                json!({"ref": {"source": "application", "table": "notes"}}),
+            ),
+            &inputs,
+        )
+        .expect("the declared table resolves in the same input set");
     }
 }

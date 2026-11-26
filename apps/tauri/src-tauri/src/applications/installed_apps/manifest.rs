@@ -183,6 +183,44 @@ impl InstalledAppCapabilities {
             None => &[],
         }
     }
+
+    /// The tables in the ONE declaration model the application-data registry
+    /// materialises, or `None` when the package declares no table at all.
+    ///
+    /// This is the shape the window-open path hands to
+    /// `DeclarationRegistry::declare` (Spec #3146, W-1): the package's declared
+    /// tables, in manifest order, under `app_id`'s namespace and at the SAME
+    /// `declaration_revision` the install validator records
+    /// ([`data_declaration_revision`]) — so the open path and the install
+    /// validator can never disagree about the revision.
+    ///
+    /// `None` — not an empty declaration — for a package with no declared table:
+    /// the open path then does no database work at all.
+    pub fn data_declaration(
+        &self,
+        app_id: &str,
+        app_version: &str,
+    ) -> Option<ApplicationDataDeclaration> {
+        let data = self.data.as_ref()?;
+        if data.tables.is_empty() {
+            return None;
+        }
+        Some(ApplicationDataDeclaration {
+            feature_id: app_id.to_string(),
+            declaration_revision: data_declaration_revision(app_version),
+            tables: data.tables.clone(),
+        })
+    }
+}
+
+/// The declaration revision every declared table of a package carries.
+///
+/// ONE helper: the install validator ([`read_capability_data`]) and the
+/// window-open composer ([`InstalledAppCapabilities::data_declaration`]) both
+/// read it here, because a revision that disagreed would make the same package
+/// look changed on every open (G-494).
+pub fn data_declaration_revision(app_version: &str) -> String {
+    format!("manifest:{app_version}")
 }
 
 /// A validated `fredo-app.json`.
@@ -727,7 +765,7 @@ fn read_capability_data(
     // is non-empty — so the package version is recorded rather than invented.
     let declaration = ApplicationDataDeclaration {
         feature_id: app_id.to_string(),
-        declaration_revision: format!("manifest:{app_version}"),
+        declaration_revision: data_declaration_revision(app_version),
         tables: tables.clone(),
     };
     if let Some(error) = declaration.validate().into_iter().next() {
@@ -1100,6 +1138,93 @@ mod tests {
             .expect("object")
             .insert("capabilities".into(), Value::Null);
         let manifest = parse_value(&value).expect("null is inert (fail-safe)");
+        assert_eq!(manifest.capabilities, None);
+    }
+
+    /// W-1 — the composer the window-open path hands to the registry: the
+    /// manifest's tables verbatim and IN ORDER, under the derived application id,
+    /// at the install validator's own revision, and with no `source` projection
+    /// (an installed package can never declare one).
+    #[test]
+    fn the_open_declaration_carries_the_manifests_tables() {
+        let mut value = declared_manifest_json();
+        value["capabilities"]["data"]["tables"] = serde_json::json!([
+            {
+                "name": "notes",
+                "primaryKey": ["id"],
+                "columns": [
+                    { "name": "id", "type": "TEXT", "nullable": false, "owner": "application" },
+                    { "name": "body", "type": "TEXT", "nullable": true, "owner": "application" }
+                ]
+            },
+            {
+                "name": "shared_log",
+                "primaryKey": ["id"],
+                "columns": [
+                    { "name": "id", "type": "TEXT", "nullable": false, "owner": "application" }
+                ]
+            }
+        ]);
+        let manifest = parse_value(&value).expect("a two-table declaration is valid");
+        let capabilities = manifest.capabilities.as_ref().expect("declared");
+
+        let declaration = capabilities
+            .data_declaration(&manifest.id, &manifest.version)
+            .expect("a package that declares tables composes a declaration");
+
+        assert_eq!(declaration.feature_id, "qa3146-app-a");
+        assert_eq!(
+            declaration.declaration_revision,
+            data_declaration_revision(&manifest.version),
+            "one helper: the open path and the install validator share the revision"
+        );
+        assert_eq!(declaration.declaration_revision, "manifest:1.0.0");
+        assert_eq!(
+            declaration
+                .tables
+                .iter()
+                .map(|table| table.name.as_str())
+                .collect::<Vec<_>>(),
+            ["notes", "shared_log"],
+            "manifest order is preserved verbatim"
+        );
+        for table in &declaration.tables {
+            assert!(
+                table.source.is_none(),
+                "an installed package's declared table never carries a source projection: {table:?}"
+            );
+        }
+        // The composed declaration is one the registry accepts as-is.
+        assert_eq!(declaration.validate(), Vec::<String>::new());
+    }
+
+    /// W-1 — a package with no declared table composes NOTHING (so the open path
+    /// does no database work), and that includes the present-but-empty list.
+    #[test]
+    fn a_package_without_data_tables_composes_no_declaration() {
+        assert!(
+            parse_value(&valid_manifest_json())
+                .expect("valid")
+                .capabilities
+                .is_none(),
+            "control: this package declares no capabilities at all"
+        );
+
+        let mut empty = declared_manifest_json();
+        empty["capabilities"]["data"]["tables"] = serde_json::json!([]);
+        let manifest = parse_value(&empty).expect("an empty table list is valid");
+        let capabilities = manifest.capabilities.as_ref().expect("declared");
+        assert_eq!(capabilities.data_tables().len(), 0);
+        assert_eq!(
+            capabilities.data_declaration(&manifest.id, &manifest.version),
+            None,
+            "no declared table ⇒ no composition ⇒ no database work on open"
+        );
+
+        // ... and a package with no capabilities key at all is the same answer.
+        let mut absent = valid_manifest_json();
+        absent.as_object_mut().expect("object").remove("capabilities");
+        let manifest = parse_value(&absent).expect("valid without capabilities");
         assert_eq!(manifest.capabilities, None);
     }
 

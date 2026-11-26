@@ -312,6 +312,14 @@ pub struct AuthorityGrants {
     pub declared: Vec<CapabilityId>,
     /// The high-risk ids the user granted, for THIS application only.
     pub consented: Vec<CapabilityId>,
+    /// The DATA TABLES the package declared (`capabilities.data.tables`), by
+    /// name, in manifest order.
+    ///
+    /// This is the declaration input the data-scope resolver is decided from
+    /// (Spec #3146 W-2): the canonical manifest is the only place a declared
+    /// table name can come from, so `feature_data_tables` (the persisted
+    /// projection) stays a *separate* input and can never widen reach on its own.
+    pub data_tables: Vec<String>,
 }
 
 impl AuthorityGrants {
@@ -334,7 +342,8 @@ impl AuthorityGrants {
 /// sources are owned by the capsule that owns the declaration surfaces:
 ///
 /// * the package's `capabilities` object (`manifest::AppManifest::capabilities`,
-///   the 8th top-level manifest key) for [`AuthorityGrants::declared`];
+///   the 8th top-level manifest key) for [`AuthorityGrants::declared`] and
+///   [`AuthorityGrants::data_tables`];
 /// * the host-owned consent store (`<app_data_dir>/installed-apps-consent.json`,
 ///   `{ "version": 1, "grants": { "<id>": ["<capability id>", …] } }`) for
 ///   [`AuthorityGrants::consented`].
@@ -364,6 +373,11 @@ pub fn read_authority_grants(app_data_dir: &Path, app_id: &str) -> AuthorityGran
             .iter()
             .filter_map(|id| CapabilityId::parse(id))
             .filter(|id| id.is_high_risk())
+            .collect(),
+        data_tables: capabilities
+            .data_tables()
+            .iter()
+            .map(|table| table.name.clone())
             .collect(),
     }
 }
@@ -601,5 +615,71 @@ mod tests {
         // A package that declares nothing reaches nothing.
         let none = read_authority_grants(data.path(), "qa3146-never-installed");
         assert_eq!(none, AuthorityGrants::default());
+    }
+
+    /// W-2 — the per-call authority read carries the package's DECLARED tables, by
+    /// name and in manifest order, so the dispatcher decides data scope from the
+    /// declaration rather than from the persisted projection.
+    #[test]
+    fn the_authority_read_carries_the_packages_declared_tables() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let root = super::super::store::install_root(data.path());
+
+        let declare = |id: &str, tables: &str| {
+            let dir = super::super::store::app_dir(&root, id);
+            std::fs::create_dir_all(&dir).expect("app dir");
+            let manifest = format!(
+                r#"{{
+  "manifestVersion": 1,
+  "id": "{id}",
+  "displayName": "QA3146 {id}",
+  "version": "2.1.0",
+  "engines": {{ "fredo": ">=0.0.0" }},
+  "entry": {{ "document": "index.html", "module": "main.js" }},
+  "capabilities": {{
+    "version": 1,
+    "data": {{ "tables": {tables} }}
+  }}
+}}"#
+            );
+            std::fs::write(
+                dir.join(super::super::INSTALLED_MANIFEST_FILENAME),
+                manifest,
+            )
+            .expect("write manifest");
+        };
+
+        declare(
+            "qa3146-app-a",
+            r#"[
+              {"name": "notes", "primaryKey": ["id"], "columns": [
+                {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"},
+                {"name": "body", "type": "TEXT", "nullable": true, "owner": "application"}
+              ]},
+              {"name": "shared_log", "primaryKey": ["id"], "columns": [
+                {"name": "id", "type": "TEXT", "nullable": false, "owner": "application"}
+              ]}
+            ]"#,
+        );
+        declare("qa3146-no-capabilities", "[]");
+
+        let a = read_authority_grants(data.path(), "qa3146-app-a");
+        assert_eq!(a.declared, [CapabilityId::DataTables]);
+        assert_eq!(
+            a.data_tables,
+            ["notes", "shared_log"],
+            "the declared tables travel with the declaration, in manifest order"
+        );
+        assert!(a.consented.is_empty(), "data.tables needs no consent");
+
+        let empty = read_authority_grants(data.path(), "qa3146-no-capabilities");
+        assert!(
+            empty.data_tables.is_empty(),
+            "an empty table list declares no table: {empty:?}"
+        );
+
+        let none = read_authority_grants(data.path(), "qa3146-never-installed");
+        assert_eq!(none, AuthorityGrants::default());
+        assert!(none.data_tables.is_empty());
     }
 }
