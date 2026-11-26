@@ -25,6 +25,17 @@
 > is now **live**. **F-2.2 is NOT inverted** — its expectation (raw command names are ACL-refused) is
 > still exactly right, because the installed tier still grants exactly one command.
 >
+> **#3145 EXTENDED THIS SUITE AGAIN (in place — every earlier row keeps its id and its subject).**
+> The group **AC-8 — the authoring kit: build outside the repo, and it installs (#3145)** adds
+> F-8.1 … F-8.26 for *"an application author outside the Fredo team can build a Fredo application
+> and load it into their own Fredo"* — the published `@fredo/theme` / `@fredo/authoring` packages,
+> the authoring documentation and its claim allowlist, the external-developer exam, and the two
+> artefact drifts that contradict what ships. **Development mode is NOT in this suite's scope**: it
+> moved to **#3241** carrying AC 3 verbatim (criteria 18). F-8.23…F-8.26 were bound against the
+> **UI/UX Expert's** colour-contract design (its §1 class legend, §2 C1/C2/C3 comparison classes and
+> §3 overclaim list) — the readout grammar those rows cite is the UI/UX one, adopted verbatim so the
+> fixture is authored once.
+>
 > **No row in this suite uses `tauri_ipc_monitor`, and no row may be answered by one.** The monitor
 > cannot witness APPLICATION invokes in this build (G-3098 — `references.md:43`): the adapter issues
 > its invokes through an ES-module `invoke`, which bypasses both the monitor and a runtime wrapper on
@@ -963,6 +974,174 @@ owned nowhere):
     (it breaks F-7.5's re-run), not a cleanup nit. `updated` itself is recorded, never bound, for the
     insert and update legs — the shipped contract only fixes `0` for a no-value-delta write (step 5).
 
+## AC-8 — the authoring kit: build outside the repo, and it installs (#3145)
+
+> **Subject.** *"An application author outside the Fredo team can build a Fredo application and load
+> it into their own Fredo."* This group owns the **kit** (`@fredo/theme`, `@fredo/authoring`), the
+> **authoring documentation**, the **external-developer exam**, and the two artefact drifts that
+> contradict what ships. It does **not** own development mode — that is #3241's AC 3, moved there
+> verbatim with its ordinal preserved. **A row here that drives, asserts or waits on a development
+> badge / banner / banner band is a plan violation**: report it, do not score it.
+>
+> **Verification policy: LIVE**, with `[static]` rows where the observable is an artefact (the kit's
+> dependency footprint, the additive pins, the claim⇄code check, the colour scan, the two drifts).
+> A `[static]` leg answered live (or the reverse) is a PASS-by-substitution and is **not** a PASS.
+>
+> **The pre-change REDDEN CONTROL, stated once for every `[NEW]` row below.** On the current `main`
+> **`packages/` does not exist** (a `packages/*` glob returns nothing) and
+> **`docs/authoring-applications.md` does not exist**. So: the kit commands die with
+> `MODULE_NOT_FOUND` (non-zero exit), the doc rows find no file, and `authoring-claims.md` is
+> absent. **A row that is green with those paths absent is a suite defect, not a PASS.** Each row
+> names its own additional control where one is needed.
+>
+> **The child is read the way this suite already reads it.** The installed window is unreachable by
+> every `tauri_webview_*` tool (`README.md:408-420`): a child-side read is a **native UIA text read
+> of the `installed-<id>` a11y tree, corroborated by a native capture**, and it is **not** a
+> live-evidence token on its own. The verdict **must** carry one genuine `tauri_webview_*` receipt
+> from a REACHABLE window (`main` / `app-*`) in the same round (README §6, limit 1), plus the
+> `user-attachments` upload of each capture. **E-SPAN stays the named blocker stated in the
+> `**E-SPAN is a NAMED BLOCKER**` paragraph at the end of *Required test data*** — this feature runs
+> no OTLP producer of its own.
+>
+> **The parity readout grammar (UI/UX §2 — the rows cite it verbatim; the fixture is authored to it
+> once).** One line in `[data-testid="authoring-theme-readout"]`, re-published every second:
+> `AUTHORING-THEME app=<id> mount=<id> loaded=<iso> colorScheme=<light|dark>` then
+> `bg.canvas= bg.surface= fg.default= border.default= accent.default= accent.subtle=` (C1) and
+> `painted.canvas= painted.surface= painted.text= painted.border= painted.accentFill=
+> painted.tintChip=` (C2/C3), with a trailing `degraded=<csv>` only when a slot read `(empty)`.
+> `painted.*` are `getComputedStyle` readings of the fixture's own painted nodes — **plain markup,
+> no testids**, so none of the four host-owned hooks (`README.md:144-153`) is duplicated.
+>
+> **What each AC1 sub-condition is scored by (the exam's four failable conditions):**
+> **F1a** (a step needs a Fredo checkout) → **F-8.2** · **F1b** (a doc claim contradicted by the
+> product) → **F-8.13** + **F-8.16** · **F1c** (an app that only loads after editing internals, or a
+> host-internal specifier, or a refusal the doc did not let the author prevent) → **F-8.3** +
+> **F-8.4** · **F1d** (the exam is **VOID**: denial control missing, or the sha256 not reproducible)
+> → **F-8.1** + **F-8.5**. All four are scored; **VOID is not PASS**.
+>
+> **The clean-machine boundary (the verdict must reproduce it with the observed discharge).**
+
+| # | Substitute | Proves | Does **not** prove | Discharged by |
+|---|---|---|---|---|
+| S1 | a fresh `.opencode/tmp/3145/external-author/` root holding only the copied kit | no checkout is on any resolution path | another machine's filesystem layout | F-8.1 |
+| S2 | Node built-ins only, executed by this repo's Node | no package-manager step, no network | a different Node version / a machine with none | F-8.6 |
+| S3 | the installed Fredo dev build as the host | the real product, install command, window, refusals | a release build's exact version gate (mitigated: F-8.20/F-8.21) | F-8.4, F-8.21 |
+| S4 | a fresh agent session, and **no committed sample app to copy** | the doc is sufficient for someone who did not write it | that the model was never trained on this repo — **state this in the verdict** | F-8.6, F-8.13 |
+| S5 | permission-denied (preferred) / brief-restricted (fallback) author profile | the author did not read internals | a determined agent with unrestricted tools | F-8.1 |
+
+> **The exam's ${KIT} and ${WORK} roots.** `${KIT}` = `.opencode/tmp/3145/external-author/kit`
+> (the TESTER copies `packages/fredo-theme/`, `packages/fredo-authoring/` and
+> `docs/authoring-applications.md` there **before** dispatch — the **key-holder** act), `${WORK}` =
+> `…/external-author/work`, `${OUT}` = `…/external-author/out`. The author may read `${KIT}` and
+> write `${WORK}`/`${OUT}`; it may read **nothing else in the repository**. Authoring with a bare
+> `import … from '@fredo/theme'` is **not servable** (the install record is the whitelist and a bare
+> specifier does not resolve in a browser): the kit's documented route is **copy the kit's
+> `dist/theme.css` and/or `dist/index.mjs` into the package and reference it relatively** — if the
+> doc says otherwise, that is an F-8.13 FAIL, not an author error.
+
+- [ ] **F-8.1 (R-1.1) [live][NEW] — key-holder separation: the denial control and the input root.** Dispatch the exam agent with the brief above. Its **FIRST** action, before authoring anything, is an attempt to read `apps/tauri/src-tauri/src/applications/installed_apps/manifest.rs` lines 91-100, recorded **verbatim** as `DENIED: <text>` or `ALLOWED: <first line>`. Then run the runner and read its first line.
+  - **EXPECTED:** the control reads **`DENIED: …`**, and the runner prints **`EXAM INPUTS PASS`** with every resolved input path (`--kit`, `--work`, `--out`) **inside** `.opencode/tmp/3145/external-author/{kit,work,out}`. Quote both lines.
+  - **DATA:** runner per **Required test data** #5 (`ST-6`); the kit copy (#6, tester-made).
+  - **EDGE:** control reads `ALLOWED: …` ⇒ the leg is scored **`brief-restricted, not permission-isolated`** — the verdict must say so and may never call it "an outsider". Control **absent** ⇒ the leg is **VOID** (F1d), not a pass and not a fail. A resolved input path outside the roots means the author was fed from the checkout ⇒ FAIL, and re-provision the root before re-driving.
+  - **REDDEN:** on `main` the runner does not exist (ST-6), so no `EXAM` line is produced and the row cannot be green — quote the `MODULE_NOT_FOUND`/absent-path reading as the control.
+
+- [ ] **F-8.2 (R-1.1) [live][NEW] — every exam step comes from the document, and the kit resolves with no install (F1a).** Read the author's transcript top to bottom.
+  - **EXPECTED:** `EXAM DOCUMENTED-PATH PASS`, plus: `node ${KIT}/fredo-authoring/bin/fredo-app.mjs --help` exits **0** and prints both verbs; `… check ${WORK}/my-app --json` exits **0** with `violations: []`. **Zero** steps naming `apps/**`, `packages/**` sources, `pnpm --filter`, `cargo`, or a `@/shared/*` import. Quote the command list.
+  - **EDGE:** the FIRST offending step is quoted and the whole leg is **F1a FAIL** — do not note it and continue. A step that only works because `node_modules` resolved from the checkout also fails F-8.6.
+
+- [ ] **F-8.3 (R-1.2 / R-1.3) [live][NEW] — the produced package is self-contained (F1c, first half).** Read the produced `${WORK}/my-app/**` and the zip's entry list (`${OUT}/my-app.zip`), and re-run the scan independently of the runner.
+  - **EXPECTED:** `EXAM SPECIFIERS PASS` **and** the independent scan finds **zero** host-internal tokens (`@/`, `apps/ui`, `FredoApplicationClass`, `registerApplication`) **and zero bare/absolute module specifiers** — every `import`/`from` is a relative path that resolves to a file **present in the zip**. Quote the import list beside the entry list.
+  - **EDGE:** a bare `@fredo/theme` import is the most likely shape and it is **unservable** — if the doc or kit instructed it, score F-8.13, and quote the instruction. An import that resolves to a file *outside* the zip is the same failure.
+
+- [ ] **F-8.4 (R-1.2) [live][NEW] — it installs through the NORMAL path and opens (F1c, second half).** Settings → **Installed apps** → `[data-testid="installed-apps-install-button"]` (**"Install application package..."**) → pick **`${OUT}/my-app.zip`**.
+  - **EXPECTED:** `[data-testid="installed-apps-install-success"]` renders; `[data-testid="launcher-installed-app"][data-app-id="<the manifest id>"]` appears; opening it creates window `installed-<id>` whose **OS title** is the manifest `displayName`; a **native capture** shows the app's own painted UI inside `[data-testid="installed-app-root"]`; `installed_apps_list` carries that id. Quote the entry's `version` and `enginesFredo`.
+  - **EDGE:** install succeeds but the child shows `installed-app-failure` instead of painting ⇒ **F1c FAIL** — say whether the failure names a specifier the doc let the author write. A refusal ⇒ quote `data-refusal-code` + reason and classify: doc defect (the doc did not let the author prevent it) vs author defect (a documented step was mis-followed). Never accept "it installed, so AC1 passes" without the painted child.
+
+- [ ] **F-8.5 (NFR-3) [live][NEW] — reproducible, and the installed artefact is never re-written (F1d).** Record `Get-FileHash -Algorithm SHA256 ${OUT}/my-app.zip` **before** the second pack. Then `… pack ${WORK}/my-app --out ${OUT}/my-app-b.zip` a second time.
+  - **EXPECTED:** both printed sha256 values are **equal**, and `Get-FileHash` on the two files agrees **independently** of the tool's own print; `${OUT}/my-app.zip` is byte-identical to the file F-8.4 installed (hash recorded above is unchanged afterwards).
+  - **EDGE:** differing hashes ⇒ **F1d VOID** (the leg satisfies nothing). A second pack written **over** `out/my-app.zip` is an **artefact-identity FAIL** (G-446): the installed bytes were replaced after every row measured on them — report it and re-drive from a fresh copy. State both paths and both hashes.
+
+- [ ] **F-8.6 (NFR-3 / NFR-6) [static][NEW] — the kit is dependency-free, has exactly two verbs, and there is no sample app to copy.** (a) Enumerate every source under `packages/fredo-theme/**` and `packages/fredo-authoring/**`; (b) read both `package.json`; (c) run `--help`; (d) list the repo for a committed authored app.
+  - **EXPECTED:** (a) **zero** `import`/`require` of a bare specifier other than `node:*` — state the raw specifier count and the hit count (G-419); (b) no runtime `dependencies` (absent or `{}`); (c) `--help` lists **exactly** `check` and `pack` — no `init`/`new`/`scaffold`; (d) **no** committed authored application (no `work/my-app`, no starter template) under the kit, `docs/`, or the tests tree.
+  - **EDGE:** a third verb is a named **non-goal** FAIL **and** it voids the exam's discrimination (the agent could copy instead of read, so S4's proves-cell collapses). A `node_modules`-dependent kit fails (a)+(b) and blinds S2 — say which specifier.
+
+- [ ] **F-8.7 (R-2.1) [live][NEW] — parity, LIGHT: the child's colours are the host's colours, exactly (UI/UX classes C1 + C2 + C3).** Preset `select[aria-label="Theme presets"]` = `light-default`. Open the parity fixture. Read `[data-testid="authoring-theme-readout"]` (native UIA + native capture) and, **in the same capture**, the host `main` document via `tauri_webview_execute_js`.
+  - **EXPECTED:** (i) **C1 token stream** — every `name=<v>` slot the line carries (`bg.canvas`, `bg.surface`, `fg.default`, `border.default`, `accent.default`, `accent.subtle`) is **byte-equal** to `getComputedStyle(document.documentElement).getPropertyValue('<the var>')` on `main`, and **non-empty** on both sides; (ii) **C2 applied colour, direct var** — each `painted.canvas|surface|text|border|accentFill` (the fixture's own `getComputedStyle(...).backgroundColor|color|borderTopColor`) is **equal** to the same property on a host probe element carrying the **same declaration** (`background: var(--body-bg)`, `background: var(--card-bg)`, `color: var(--text-primary)`, `border: 1px solid var(--border-strong)`, `background: var(--accent-primary)`), created and removed **inside the same script call** (`position:absolute; visibility:hidden; pointer-events:none`) so `main`'s DOM-snapshot node count is identical before and after; (iii) **C3 applied colour, alias** — `painted.tintChip` equals the host probe painted with the **published expression** `color-mix(in srgb, var(--accent-primary) 10%, var(--body-bg) 90%)`; (iv) `colorScheme=light`; (v) **the backdrop stipulation** — the fixture paints `--body-bg` on `html, body` and the card **on top**, because `--card-bg` may carry alpha (classic dark is `rgba(0, 0, 0, 0.3)`, `app/types/theme.ts:114`) and is only comparable over `bg.canvas`. Quote every pair.
+  - **EDGE:** **tolerance is zero** — exact trimmed string equality, never rounded; a one-channel difference (`rgb(31, 31, 31)` vs `rgb(30, 30, 30)`) is a FAIL and is quoted. **`(empty)` on either side makes the comparison VOID, never a PASS** (G-469): the fixture prints `(empty)` and appends `degraded=<csv>`; "the transport sent nothing" and "the app painted nothing" must never look alike. A child painting its card over a backdrop of its own choosing is outside the guarantee and must not be used for this row.
+- [ ] **F-8.8 (R-2.1) [live][NEW] — parity, DARK, with the positive discriminators.** Same read set and the same **backdrop stipulation** as F-8.7, with preset `dark`.
+  - **EXPECTED:** C1/C2/C3 hold exactly as in F-8.7 (every slot non-empty on both sides, zero tolerance); `colorScheme=dark`; **and** `bg.canvas` **differs** from the F-8.7 value **and** `painted.surface` differs from F-8.7's (so the appearance really travelled).
+  - **EDGE:** `(empty)` on **either** side ⇒ **VOID, never PASS** (stated here explicitly, not only in F-8.7). `colorScheme=dark` while `bg.canvas` is the light value is a FAIL of the derived scheme (`themeCapture.ts:112-116`). A dark reading **equal** to the light reading is a FAIL of the transport, not a coincidence.
+- [ ] **F-8.9 (R-2.1) [live][NEW] — parity, NON-DEFAULT ACCENT.** Choose an accent that is provably not `light-default`'s: quote `accentPrimary` for `light-default` from `app/types/theme.ts:238…` and for the chosen built-in preset from its own record; **or** set `input[aria-label="Primary color"]` to a value ≠ the preset's.
+  - **EXPECTED:** `accent.default` (C1) **and** `painted.accentFill` (C2) **and** `painted.tintChip` (C3) are equal host↔child and non-empty, **and** the accent readings differ from the F-8.8 state's. Quote all three values (light-default accent, chosen accent, child reading).
+  - **EDGE:** `(empty)` on **either** side ⇒ **VOID, never PASS** (stated here explicitly). A Doom palette engaged is a distinct state — record which palette governed and re-drive outside Doom mode. An accent that coincides with the default proves nothing: quote both source values.
+
+- [ ] **F-8.10 (R-2.1) [live][NEW] — the accent reaches an OPEN app with no reload.** With the app open, record the readout's `mount=`, `loaded=` and its `accent.default` / `painted.accentFill`; change the accent on the host; re-read within **≤ 10 s** (the line republishes every second).
+  - **EXPECTED:** `accent.default` and `painted.accentFill` become the new value **and `mount=` is unchanged** — that unchanged `mount=` is the proof of *"without reloading it"*. No `FAIL RELOAD …` line.
+  - **EDGE:** a change visible only after a reload is a FAIL, and `mount=` shows it (a new `mount` ⇒ the app reloaded). A republish of the **same** value is a FAIL of the apply. The `fredo-theme-change` **listener** half is `logic-verified` against `bootstrap.js:160-169` and pre-authorized as such — never upgraded to PASS on a listener never installed (the child-inject path is a Toolsmith item, non-gating), and the docs may not promise the event (UI/UX overclaim 11).
+- [ ] **F-8.11 (R-2.2 / NFR-5) [static][NEW] — no author-supplied colour values, anywhere.** Four scans, comment/string-stripped, allowlist `transparent` / `inherit` / `currentColor` / `none`.
+  - **EXPECTED (all zero hits, with each scan's file count and hit count stated):** (a) the **exam's own authored** `${WORK}/my-app/**`; (b) the committed parity fixture `.opencode/tests/installable-apps/fixtures/theme-parity/**`; (c) `packages/fredo-theme/dist/**` — every emitted value is a `var(--…)` or a `color-mix()` over vars; (d) the doc's examples.
+  - **EDGE:** this row is what makes F-8.7…F-8.9 **non-vacuous** — a fixture that hardcodes the values it "reads" becomes impossible. `var(--accent-primary)22` (an alpha-append onto a `var()`) is invalid CSS and a FAIL of (c). Named colours (`red`, `white`) are literals; `transparent` is not. **This row says nothing about whether a `var()` reference is CORRECT**: "no literals" is satisfied by a wrong `var()`/expression too, and the alias class is exactly where that hides — `F-8.23` owns it. Bind both; neither answers for the other.
+
+- [ ] **F-8.12 (NFR-1) [static][NEW] — additive within major 1, both directions.** (a) compare `packages/fredo-theme/dist/tokens.json`'s `varName` set with `app/theme/contract/tokens.ts`'s `SEMANTIC_TOKENS[].varName`; (b) compare the published `FredoAction` union with `DISPATCH_TABLE` (`dispatch.rs:87-96`); (c) compare the published `FredoRefusalCode` union with the authority vocabulary; (d) run the installer's frozen-set pin.
+  - **EXPECTED:** (a) superset, with the **added** names quoted and the **removed/renamed** set **empty**; (b) eight members, **in order**; (c) six members, **in order**; (d) `cargo test --lib --locked` on `all_codes_are_exactly_the_frozen_set` green — quote the test name verbatim (G-419) and the 22 wire strings unchanged.
+  - **EDGE:** a same-set **reorder** must redden (G-494) — that is why each is bound ordered. A renamed token is the additive violation even if every row still paints: quote the old and new names. **A superset passes a kit that publishes a var the host never writes** — that inverse is `F-8.24`, and the two rows are bound **together**: (a) alone can be satisfied by a name-only contract that lies.
+
+- [ ] **F-8.13 (R-4 / NFR-4) [static][NEW] — every documented claim is checked against the product (F1b).** Read `docs/authoring-applications.md` and `.opencode/tests/installable-apps/authoring-claims.md` side by side; resolve every `satisfied-by` at the **served head**.
+  - **EXPECTED:** every **normative** sentence maps to ≥ 1 claim row; every claim's `satisfied-by` names a `file:line` (or a named mechanism) that **exists** and whose quoted text **supports** the claim; no claim states a value the product **derives** (a resolved colour, a version number, a count) instead of the mechanism. **Plus the two closed lists, both enforced:** (a) the doc contains **none** of UI/UX's eleven overclaims (§3 of the UI/UX section — "the package ships the colours", "install `@fredo/theme` from npm", any resolved value stated as a fact, parity for an unpublished var `--footer-bg`/`--gradient-*`/`--node-*`/`--edge-gradient`/`--shadow-dialog`/`--font-family`/`--font-mono`, "`ctx.theme` is live", "read `theme.colorScheme` to choose your palette", "any two tokens combine accessibly", "a theme change has no flash", "wrapping in `color-mix()` keeps it on-contract", "these names are stable forever", "you are notified of theme changes"); (b) the **doc ⇄ contract name set is two-way** — the token names the doc's colour section carries **equal** `dist/tokens.json`'s, so an **invented** name and an **omitted** name both redden (the claim-row mapping alone passes an omission). Quote the counts: sentences, claims, resolved, unresolved, doc-names, published-names.
+  - **EDGE:** a sentence with **no** row is a FAIL — that is the check. A citation that resolves but does not support the sentence is a FAIL: quote both. A claim that cannot be checked at all is a **defect of the doc**, never a pass. A claim citing a line whose text has drifted (a row citing `:70-71` for a constant now at `:100`) is the same class → quote the resolved line. `--font-mono` is sharper than the rest: the host never writes it (only `PANEL_CSS` reads it with a fallback, `scheme.rs:420`), so a sentence naming it is false at **any** theme.
+
+- [ ] **F-8.14 (R-4) [live][NEW] — the "may not rely on" list is ENFORCED, not narrated.** (a) The F-8.7 sample (published artefacts only) loads and paints. (b) Install and open each of the three negative packages: one importing `@/shared/installed-apps/store`, one importing `apps/ui/src/applications/FredoApplicationClass`, one importing a `registerApplication()` module. (c) Read the doc's may-not-rely section.
+  - **EXPECTED:** each negative package **installs**, and on open the **host's** `[data-testid="installed-app-failure"]` panel renders naming that app's `displayName` — **no** app UI and **no** blank window (native capture of each). The doc lists all three with a claim row each. Quote the three failure-panel reasons.
+  - **EDGE:** a package that **loads** with a `@/shared` import is a total FAIL of the list and of the two-tier boundary. The negative packages are the `theme-parity` generator's variants (ST-1 Work), one per specifier — **do not hand-roll** them, so the F-8.3 scan and the load agree. If ST-1 shipped only the positive fixture, this row is UNSATISFIABLE: report the missing artefact (ST-1), never improvise.
+
+- [ ] **F-8.15 (R-4) [static][NEW] — the accepted limitations are stated AND true.** Read the doc's limitations section and the claim allowlist.
+  - **EXPECTED:** all **nine** of NFR-4's closed list are present (own window only; cold start on first open; the module is never unloaded; no keyboard/navigation participation; no backend action of its own; own colour values forbidden; unsigned; no updates; no cross-application data), each with a claim row whose `satisfied-by` resolves. The two AC-named clauses are present **in meaning**: keyboard/navigation cites `docs/ARCHITECTURE.md:1116`; no-backend-action cites the closed eight-action set (`dispatch.rs:87-96` — `installed_app_*` absent; cross-check F-7.3 green). Quote the sentence you judged beside its citation.
+  - **EDGE:** a limitation stated but **false** is a FAIL of honesty (e.g. "no data access" while the capability vocabulary exists). A limitation **omitted** is a FAIL even if nothing contradicts it. Judge **meaning**, not wording — do not fail a paraphrase.
+
+- [ ] **F-8.16 (drift 1) [static][NEW] — `docs/ARCHITECTURE.md:1117` corrected, in BOTH directions.** (i) `grep -n 'no \`capabilities\[\]\`' docs/ARCHITECTURE.md` and `grep -n 'is \*\*#3146\*\*, not this slice' docs/ARCHITECTURE.md`; (ii) read `docs/ARCHITECTURE.md:1110-1125`.
+  - **EXPECTED:** (i) each grep returns **0** hits. (ii) the limitation row now states, inside `:1110-1125`: (a) `capabilities` **is** a `manifestVersion: 1` key; (b) absent ⇒ **zero reach**, not a permissive default; (c) an installed app declares no backend **commands** — only capabilities. Check each against `manifest.rs:91-100` (8 keys, `capabilities` 8th), `mod.rs:108` (`CAPABILITY_MANIFEST_VERSION = 1`) and `dispatch.rs:87-96`; quote the doc sentence beside the source line.
+  - **EDGE:** a rewrite that merely **deletes** the sentence is a FAIL — the stale row is the one an author would have read, so AC4 requires the capability truth to be **stated**. A row still presenting #3146 as future is the same FAIL. If the new prose asserts something the source does not support, that is a **new** drift: report it, do not score green.
+
+- [ ] **F-8.17 (drift 2) [live+static][NEW] — the fixture corpus stops contradicting the parser, in BOTH directions.** (a) `node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --verify` then install `qa3147-bad-manifest`; (b) install `qa3146-app-a` (its manifest carries a **legal** `capabilities` object); (c) read the generator's inline `defined` array.
+  - **EXPECTED:** (a) `--verify` exits **0**; the install renders `data-refusal-code="manifest_unknown_field"` **and** the `field` chip equals `package-fixtures.expected.json`'s `badManifestShape`, **and** that key ∉ `MANIFEST_TOP_LEVEL_KEYS` (quote the key set from `manifest.rs:91-100`). (b) `qa3146-app-a` installs (or is refused for a NON-manifest reason if already installed — record which) and is **never** refused `manifest_unknown_field`. (c) the `defined` array **contains** `capabilities`.
+  - **EDGE:** the pre-change control, quoted: `badManifestShape` is `capabilities`, which **is** an allowed key since #3146, so the same bytes classify as `manifest_invalid_field` with `field:"capabilities"` — *"capabilities must be an object"* (`manifest.rs:628-634`). (b) already passes on the pre-change tree: it is the invariant, **not** proof the drift is gone. (c) a repaired fixture whose `defined` still omits `capabilities` lets the drift return silently ⇒ FAIL. If `build-package-fixtures.mjs` is absent, the row is UNSATISFIABLE — report the missing artefact (ST-2).
+
+- [ ] **F-8.18 (drift 3, prior suite) [static][NEW] — the prior suite's contradiction is corrected in place.** Read `.opencode/tests/navigation-prose-retirement/regression.md` PR-5; grep it for the stale assertion; compare the two quoted strings.
+  - **EXPECTED:** PR-5 re-cut in place (same id, same subject slot, **inverted** expected value): (i) it no longer asserts "no `docs/`-level authoring document exists" — the doc **exists** and PR-5 now expects it; (ii) it no longer requires `installable-apps/functional.md` to be **absent from the diff** (this spec must extend that file) — the property is that the two quoted strings are **byte-identical**, cited by **token** (`LIMITATIONS_SENTENCE` + its sentence text, and the `installable-apps` quote), not by line number; (iii) `grep -n 'No `docs/`-level authoring document exists'` over that file ⇒ **0** hits. Quote both strings.
+  - **EDGE:** the stale citations are a **pre-existing** defect — `InstalledAppsSettings.tsx:70-71` is now a `client.ts` import and `installable-apps/functional.md:329` is a blank line, so PR-5(b) was undrivable **before** this spec: record that as the companion-suite defect the re-cut cures, not as this spec's regression. A re-cut that weakens (b) to "nothing to check" is a FAIL; the strings stay byte-compared.
+
+- [ ] **F-8.19 (R-4 / NFR-6) [static][NEW] — discoverable, and no second author-facing schema.** Read `docs/README.md`'s product-documents table and diff it; grep `docs/**/*.md`.
+  - **EXPECTED:** **exactly one** added table row naming `docs/authoring-applications.md` (quote it and the file's diff stat: one added line, no other table touched); and **no second hand-written manifest schema / key list / refusal table** anywhere in `docs/`, and no author-facing instruction contradicting the doc.
+  - **EDGE:** a second schema copy is a FAIL even if it agrees **today** — that is the drift class F-8.17 exists for. A FAQ answer still saying "you cannot build one" is a FAIL (Sweep A's `docs/FAQ.md:38-40` disposition). A link that resolves to a missing anchor is a FAIL of discoverability.
+
+- [ ] **F-8.20 (R-5.2) [live][NEW] — author side: `fredo-app check` names the field and the rule, and the output shape is the shipped one.** Author four package dirs in `${WORK}/` — one per case below — and run `node ${KIT}/fredo-authoring/bin/fredo-app.mjs check <dir> --json` (with `--fredo <running version>` for the engine case).
+  - **EXPECTED:** (i) `displayName` **absent** ⇒ exit ≠ 0 with `{"code":"manifest_invalid_field","field":"displayName","detail":"displayName is required"}` (`manifest.rs:468-481`); (ii) `engines.fredo: ">="` ⇒ `engines_range_invalid`, `field:"engines.fredo"`; (iii) `engines.fredo: ">=999.0.0"` ⇒ `host_incompatible`, `field:"engines.fredo"`, detail naming **both** the declared range **and** the running version (`manifest.rs:929-939`); (iv) **CONTROL** — a valid manifest ⇒ exit **0**, `violations: []`. Every emitted `code` ∈ the 22 frozen wire strings (quote the set).
+  - **EDGE:** a tool that fails **everything** satisfies (i)–(iii): the valid-manifest control is what makes this a test (G-469). Without `--fredo`, `check` must **state which checks it could not perform** (the range check) — quote that line; silence is a FAIL of the kit's contract. On the pre-change tree the command dies with `MODULE_NOT_FOUND` and (iv) fails ⇒ the row reddens.
+
+- [ ] **F-8.21 (R-5.1 / R-5.2) [live][NEW] — product side: four causes, four distinct refusals, never a blank window.** Install through Settings: (a) the repaired `qa3147-bad-manifest`; (b) `qa3147-incompatible-engines`; (c) `qa3145-missing-field` (`displayName` absent); (d) an `entry_missing` package.
+  - **EXPECTED:** each renders `[data-testid="installed-apps-refusal"]` (`role="alert"`, `data-refusal-code="<code>"`) whose reason equals `INSTALL_REFUSAL_COPY[code]` **and** whose detail is non-empty **and** whose field chip (present iff the error carries `field`) names the exact dotted path. The four `(code, field, detail)` triples are **pairwise different**. **No** `installed-<id>` window is created for any; the install root gains no new `<id>/`.
+  - **EDGE:** two causes rendering the **same** detail is the *"generic failure"* the AC forbids — quote all four side by side. `engines.fredo` must render `host_incompatible`, **not** `engines_range_invalid` (two different author mistakes, `manifest.rs:889-898`). (c) is **ST-2's** `qa3145-missing-field` — a round without it is UNVERIFIED, never PASS (see **Required test data** #3).
+
+- [ ] **F-8.22 (R-5.1 / R-5.2) [live+static][NEW] — the two halves agree, the doc carries the remedy, and the surface is not constant.** (i) compare F-8.20's printed `field` with F-8.21's rendered `field` for the **same** crafted manifest; (ii) read the doc's code table; (iii) with the same round, install a **valid** package.
+  - **EXPECTED:** (i) the two `field` strings are **equal** — quote both. (ii) the doc's table maps each of the four codes to its **field** *and* its **remedy**, each remedy naming a change the author can make — quote the four rows. (iii) the valid package reaches the **success** strip and **no** refusal block is on screen.
+  - **EDGE:** (iii) is the non-generic control — a refusal surface that always renders *something* passes (i)+(ii) and fails here. A table row with a field but **no** remedy sentence is a FAIL of R-5.2's second clause even when the code matches. **Do not** require the CLI to print a remedy: the AC puts the remedy in the doc (`manifest.rs` carries code + detail + field only).
+
+- [ ] **F-8.23 (R-2.1 / R-2.2) [unit] — the alias class is an EXPRESSION, and a tint is never the accent.** *(Authored with the UI/UX Expert's §1 class legend; the row is QA's.)* For each of the **five name-only alias** names (`accent.subtle`, `accent.muted`, `accent.tint`, `status.errorTint`, `status.errorStrong`): read `cssVar(name)` and the `THEME_STYLESHEET` entry from `packages/fredo-theme/dist/index.mjs` / `theme.css`.
+  - **EXPECTED:** every alias resolves to a **`color-mix(` expression whose operands are only `var(`** — never a bare `var(--…)`, never a literal; quote the five expressions. Then, from F-8.7…F-8.9's **same captures**, `painted.tintChip ≠ painted.accentFill` in **all three** theme states — quote the three pairs.
+  - **EDGE:** an alias that returns a bare `var(--accent-primary)` passes F-8.11 (it has no literal) and **fails this row with no host-side judgement** — quoted. That is exactly the `cssVar()` defect F-8.11 cannot see. `accent.tint` is the one tint designed to host a label (the other two are translucent washes with no foreground pair) — do not bind a contrast floor to the two washes.
+
+- [ ] **F-8.24 (R-2.1) [unit] — published-var COVERAGE: the inverse of F-8.12(a).** Render `ThemeProvider`, enumerate `document.documentElement.style`, and cross-check `packages/fredo-theme/dist/tokens.json`.
+  - **EXPECTED:** every class-**A**/**D** token in `tokens.json` has its `--x` present **and non-empty** on the host document, and the five class-**N** aliases are the **only** names without their own var. Quote the counts (published names, names with a var, names without) and every miss.
+  - **EDGE:** a published var that is **absent** from the host DOM reddens — that is *"the kit promised a name the product does not write"*, the one lie a name-contract package can tell while every other row is green. `--font-mono` is the standing example (the host never writes it, `scheme.rs:420` reads it with a fallback): if it appears in `tokens.json` as a published var, this row FAILS.
+
+- [ ] **F-8.25 (R-2.2 / NFR-5) [static+unit] — the colour-literal scanner's REDDEN control.** Inject `#ff0000` into a **temp copy** of the fixture source (never the committed file), run the same scanner F-8.11 uses, then remove it.
+  - **EXPECTED:** the scan reports **exactly one** violation, naming that path; with the injection removed, **zero**. Quote both runs and the temp path (under `.opencode/tmp/3145/`).
+  - **EDGE:** without this, F-8.11's "0 hits" and "the scanner never ran" are the same observation — the discipline F-7.35 applies to the rendered mirror. A scanner that reports the injection **twice**, or at the wrong path, is the instrument defect: report it, do not call F-8.11 green.
+
+- [ ] **F-8.26 (R-4 / NFR-4 / NFR-5) [static] — doc ⇄ contract, BOTH directions.** Extract the token **names** the doc's colour section carries and the names in `packages/fredo-theme/dist/tokens.json`.
+  - **EXPECTED:** the two **sets are equal** — an **invented** name (in the doc, absent from the package) and an **omitted** name (in the package, absent from the doc) both redden; the section contains **zero colour literals** and **zero resolved values**. Quote both sets and their symmetric difference (which must be empty).
+  - **EDGE:** a one-way check passes an overclaim; a claim-row mapping passes an omission — which is why F-8.13 binds the mapping **and** this row binds the set. A name in the doc that is a *private* custom property of the app (its own prefix, which the docs may encourage) must not be counted as a published token — say how you classified it.
+
 ## Non-functional rows
 
 - [ ] **N-1 Security [static+live]** — the child document's policy is authored by OUR handler (`scheme.rs`) and is exactly
@@ -1050,6 +1229,41 @@ owned nowhere):
    projection (F-7.16). A round that resets the environment database to "prove" consent is a plan
    violation, not evidence.
 
+### #3145 additions (the authoring kit)
+
+10. **A row PASSES only when every clause of its EXPECTED is observed in the SAME round**, with the
+    observed text/path/hash quoted. A missing fixture or a blocked env leg ⇒ **UNVERIFIED + named
+    blocker** — never PASS, never a silent skip.
+11. **The exam is scored, not narrated.** AC1's four failable conditions are scored explicitly —
+    **F1a → F-8.2**, **F1b → F-8.13 + F-8.16**, **F1c → F-8.3 + F-8.4**, **F1d → F-8.1 + F-8.5**.
+    A verdict that describes the exam without scoring all four is malformed on its face. **F1d is
+    a VOID, not a FAIL** — a void leg satisfies nothing and must never be counted as a pass.
+12. **The substitution is declared, always.** The verdict reproduces the five-row clean-machine
+    table (S1–S5, in the AC-8 preamble) with the observed discharge per row. A brief-restricted run
+    may **never** be described as "an outsider": the words *permission-isolated* and
+    *brief-restricted* are used exactly as scored.
+13. **Every absence is paired with a control that returns hits** (G-408/G-469): the denial control
+    for isolation (F-8.1), the valid-manifest control for the checker (F-8.20), the success strip
+    for the refusal surface (F-8.22), the positive parity sample for the may-not-rely negatives
+    (F-8.14), and the legal-`capabilities` install for the corpus repair (F-8.17b). An absence
+    clause with no control is an **instrument gap**, never a PASS.
+14. **Every equality is non-vacuous.** Both sides of F-8.7…F-8.9 must be **non-empty** and the
+    evidence must state the pair. Two empty readings are equal and prove nothing.
+15. **A drift row is scored in BOTH directions** (F-8.16, F-8.17, F-8.18): the stale assertion is
+    gone **and** the replacement is **true** against the source. "The file was edited" is never the
+    evidence — the quoted source line beside the quoted doc/fixture sentence is.
+16. **Artefact identity is single-writer** (G-446): F-8.4's installed zip is hashed **before**
+    F-8.5's second pack, and the second pack goes to a **different path**. A leg that re-bundles
+    over the installed artefact invalidates every row measured on it.
+17. **No row may be answered by a native read alone.** The verdict carries **one genuine
+    `tauri_webview_*` receipt from a reachable window** (`main` / `app-*`) plus the
+    `user-attachments` upload of each native capture; with neither, the live legs are **refused for
+    an instrument reason** — never upgraded to PASS, never failed as product rows.
+18. **Development mode is NOT in this suite's scope.** `installed_app_install_development` and the
+    four marking surfaces (native title, child banner, launcher badge, settings badge) are
+    **#3241's**, carrying AC 3 verbatim there. A row here that drives, asserts or waits on a
+    development badge/banner/banner band is a **plan violation**: report it, do not score it.
+
 ## Required test data
 
 | # | Artifact | Owner | Notes |
@@ -1064,6 +1278,12 @@ owned nowhere):
 | 7a | the **child evidence instrument**: a native UIA text read of the `installed-<id>` window + a native window capture | the TESTER's host (no fixture needed) | Used by every row that quotes a `[data-qa3146-*]` line. Captures go to `.opencode/tmp/3146/e2e/` and are uploaded via `upload-evidence`. **One genuine `tauri_webview_*` receipt from a reachable window (`main` / `app-*`) is ALSO mandatory in the verdict** — a native/UIA read is not a live-evidence token for the audit matcher. The missing host-side child read/inject path is a **Toolsmith** item, non-gating. |
 | 8 | the consent store at `<FREDO_DATA_DIR>/installed-apps-consent.json` (host-owned, version 1) | product (ST-2) | Written and read by F-7.20/F-7.21/F-7.22/F-7.27; the tester writes it **only** in F-7.27 leg 2 (quoting it before and after). Never edit `manifest.json` or any file in the integrity-pinned install root |
 | 9 | the env database's own connection (pg port from the env manifest) | `dev-environment` env manifest (`ports.pg`) | Needed **only** for F-7.11's non-gating corroboration (row count of `feature_mission_monitor_sessions`) via the built-in Database Client. **No live row depends on it** — F-7.18 deliberately does NOT require a data-bearing high-risk success (see its pre-authorized disclosure) |
+| 10 | **`packages/fredo-theme/` + the `theme-parity` fixture and its generator entry** (`dist/{index.mjs,index.d.ts,theme.css,tokens.json}`, drift gate, the positive parity app and its three negative variants — one per not-published specifier) | **ST-1** (#3145, named in its Work line) | The fixture renders `[data-testid="authoring-theme-readout"]` and its mirror line carries `mount=`, `surface=`/`text=`/`accent=` as resolved `rgb(…)`, and `token.<name>=` for the four token names. Read token names/values from `dist/tokens.json`, never from memory. **One negative variant per specifier** is what makes F-8.14 drivable — a positive-only fixture leaves that row unsatisfiable |
+| 11 | **`packages/fredo-authoring/`** — `dist/index.d.ts`, `schema/fredo-app.schema.json` (generated from the Rust constants), `bin/fredo-app.mjs` (`check`, `pack`) | **ST-2** (#3145) | Invoked as `node <kit>/bin/fredo-app.mjs …` — **never** via a registry install. `check` prints `{code, field?, detail}` per violation on the **22 shipped wire strings** and exits non-zero; with no `--fredo <version>` it must **state which checks it could not perform** |
+| 12 | **the repaired fixture corpus** — `qa3147-bad-manifest` with a genuinely-unknown top-level key, `defined` gaining `capabilities`, `package-fixtures.expected.json` regenerated, `README.md` §4 corrected, **plus `qa3145-missing-field`** (a manifest with `displayName` absent) | **ST-2** | F-8.17 (both directions) + F-8.21(c). `qa3145-missing-field` is a scope addition flagged in the #3145 triage `## Discussion` — it must be in ST-2's Work line or it is owned nowhere (G-409) |
+| 13 | **`docs/authoring-applications.md` + `.opencode/tests/installable-apps/authoring-claims.md`** (claim → satisfied-by → REQ) | **ST-5** (#3145) | The allowlist is a **durable committed artefact** and is F-8.13's record — never a scratch note. One row per fact; `satisfied-by` cites a `file:line` or a named mechanism |
+| 14 | **`.opencode/tests/installable-apps/authoring-exam.mjs`** + the scratch root `.opencode/tmp/3145/external-author/{kit,work,out}/` | **ST-6** (#3145) | Runner contract (first-greenable): `EXAM <ID> PASS\|FAIL <detail>` per check, then `EXAM SUMMARY checks=<n> failed=<n> verdict=<PASS\|FAIL>`, exit **0 iff** verdict PASS. Check ids: `INPUTS`, `DOCUMENTED-PATH`, `SPECIFIERS`, `CHECK-CLEAN`, `DETERMINISM`, `NO-NODE-MODULES`, `SELF-CHECK` (refuses to run when any input escapes the two roots). The **tester** copies the kit before dispatch (key-holder act) |
+| 15 | the shipped presets `light-default` + `dark` and a **non-default** accent | shipped (`select[aria-label="Theme presets"]`, `input[aria-label="Primary color"]`, `app/types/theme.ts:238,257,…`) | Derive both accent values from `app/types/theme.ts`; never present a hardcoded hex without naming the preset it came from |
 
 ## Non-functional checks
 
