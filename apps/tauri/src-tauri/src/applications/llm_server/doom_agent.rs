@@ -56,7 +56,6 @@ use crate::infrastructure::storage::SettingsStore;
 
 use super::chat::{LlmMessage, MAX_TOKENS};
 use super::engine::request::ChatTurn;
-use super::engine::sampling::DEFAULT_REASONING_MODE;
 use super::engine::stream::{EngineOneShotSource, OneShotSource};
 
 /// Persisted key carrying the main model path.
@@ -251,7 +250,10 @@ pub fn server_flags_from(args_json: Option<&str>) -> String {
         .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_REASONING_MODE.to_string());
+        // The retired `DEFAULT_REASONING_MODE` launch-config constant is gone
+        // (Spec #3233): the Doom decision turn runs thinking ON, so the reference
+        // `--reasoning` mode stands in until the stamp is taken from the turn.
+        .unwrap_or_else(|| "on".to_string());
     format!("reasoning={reasoning}")
 }
 
