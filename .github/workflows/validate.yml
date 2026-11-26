@@ -127,6 +127,17 @@ jobs:
         run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1
       - name: Navigation prose absence guard (self-test)
         run: pwsh -NoProfile -File .opencode/scripts/check-navigation-prose-retired.ps1 -SelfTest
+      # Theme-parity fixture drift gate (Spec #3145, ST-1). The generator emits all
+      # four committed fixture packages from `packages/fredo-theme/dist/`; this step
+      # fails when a committed fixture has drifted from its generator or the theme
+      # contract, so a stale vendored copy cannot ship green (the round-2 F-8.14
+      # failure: ST-1 regenerated `dist/` but not the four vendored consumers).
+      # The fixtures live under `.opencode/tests/**` — already the `docs` filter — so
+      # a PR that touches them runs this leg. Node is preinstalled on ubuntu-latest;
+      # the generator's self-check needs no `node_modules` (built-ins only), so no
+      # install step is required.
+      - name: Theme-parity fixture drift gate
+        run: node .opencode/tests/installable-apps/fixtures/theme-parity/build-theme-fixtures.mjs --check
 
   # rust-validate — thorough Rust gate (warm-cache + nextest); NOT a required check.
   #

@@ -1,0 +1,260 @@
+{
+  "$defs": {
+    "capabilities": {
+      "additionalProperties": false,
+      "description": "The declared backend reach. ABSENT means zero reach — never \"everything except a deny list\". An installed application reaches nothing else: there is no backend command of its own to declare.",
+      "properties": {
+        "data": {
+          "additionalProperties": false,
+          "properties": {
+            "tables": {
+              "description": "The tables the application declares. Presence of capabilities.data declares the data.tables capability; declare an empty list when the application writes to no table.",
+              "items": {
+                "$ref": "#/$defs/table"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tables"
+          ],
+          "type": "object"
+        },
+        "highRisk": {
+          "description": "The consent-gated capability ids this package asks to use. Each one needs a per-application user consent before its first use.",
+          "items": {
+            "enum": [
+              "high-risk.database-query",
+              "high-risk.database-reset",
+              "high-risk.process-spawn"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version": {
+          "const": 1,
+          "description": "The capability-contract major. It is versioned separately from manifestVersion and is additive within a major.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "type": "object"
+    },
+    "column": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "owner": {
+          "enum": [
+            "backend",
+            "application"
+          ]
+        },
+        "type": {
+          "enum": [
+            "TEXT",
+            "INTEGER",
+            "REAL",
+            "BOOLEAN",
+            "JSON"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "owner"
+      ],
+      "type": "object"
+    },
+    "engines": {
+      "additionalProperties": false,
+      "properties": {
+        "fredo": {
+          "description": "A semver RANGE such as \">=0.1.0\" naming the Fredo versions the package accepts. \"*\" and an empty string are refused (engines_range_invalid); a well-formed range that excludes the running Fredo is host_incompatible.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "fredo"
+      ],
+      "type": "object"
+    },
+    "entry": {
+      "additionalProperties": false,
+      "properties": {
+        "document": {
+          "description": "Relative POSIX path to the package's HTML document (must end with '.html'); the host serves it with the bootstrap, the theme and the root element already injected.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "module": {
+          "description": "Relative POSIX path to the package's ES module (must end with '.js') exporting mount(ctx). Import companions relatively — a bare specifier never resolves in an installed application's document.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "document",
+        "module"
+      ],
+      "type": "object"
+    },
+    "retention": {
+      "additionalProperties": false,
+      "properties": {
+        "maxRows": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ttlDays": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "table": {
+      "additionalProperties": false,
+      "description": "One table the application declares for ITSELF. `source` is deliberately absent: a declared source projection would read Fredo's canonical tables (your own sessions and tool activity), which an installed application may never declare.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/column"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "primaryKey": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "retention": {
+          "$ref": "#/$defs/retention"
+        }
+      },
+      "required": [
+        "name",
+        "primaryKey",
+        "columns"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://fredo.dev/schemas/fredo-app-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The manifest a Fredo compatibility package carries at its archive root as fredo-app.json. GENERATED from the Rust parser's own constants (applications/installed_apps/manifest.rs) — never edit it by hand. `additionalProperties` is false at every object level: an unknown key is refused, because a declaration this build does not read must never look accepted. NOT EXPRESSIBLE in JSON Schema and performed by `fredo-app check` in code: (1) whether engines.fredo's semver RANGE admits the running Fredo (the two failure families are distinct: a malformed range is engines_range_invalid, a well-formed range that excludes the host is host_incompatible); (2) the entry.* path rules (relative POSIX, no '..', no absolute/drive/scheme form, the documented extensions); (3) the declared table model (unique table and column names, a primary key naming declared columns); (4) entry_missing, which depends on the files actually packed. `capabilities` is optional and its absence means ZERO declared reach — never 'everything except a deny list'.",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/capabilities"
+    },
+    "description": {
+      "description": "Optional. Omit the key when you have nothing to say — an unset optional is an absent key, never null.",
+      "maxLength": 280,
+      "type": "string"
+    },
+    "displayName": {
+      "description": "The displayed name of the application.",
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "engines": {
+      "$ref": "#/$defs/engines"
+    },
+    "entry": {
+      "$ref": "#/$defs/entry"
+    },
+    "id": {
+      "description": "Lowercase letters, digits and hyphens, starting with a letter or digit; no dots; at most 96 characters. The id becomes part of your window's label, so its charset is Tauri's label charset. The eight built-in application ids are refused (id_reserved).",
+      "maxLength": 96,
+      "not": {
+        "enum": [
+          "wireframe",
+          "terminal",
+          "mission-monitor",
+          "database-client",
+          "theming",
+          "setup",
+          "settings",
+          "dev-mode"
+        ]
+      },
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "type": "string"
+    },
+    "manifestVersion": {
+      "const": 1,
+      "description": "The one manifest schema this build understands.",
+      "type": "integer"
+    },
+    "version": {
+      "description": "SemVer 2.0.0, with no \"v\" prefix.",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifestVersion",
+    "id",
+    "displayName",
+    "version",
+    "engines",
+    "entry"
+  ],
+  "title": "Fredo application manifest (manifestVersion 1)",
+  "type": "object",
+  "x-fredo-entry-extensions": {
+    "document": ".html",
+    "module": ".js"
+  },
+  "x-fredo-generated-from": [
+    "applications/installed_apps/manifest.rs (MANIFEST_* keys, MAX_* caps, entry extensions)",
+    "applications/installed_apps/mod.rs (SUPPORTED_MANIFEST_VERSION, CAPABILITY_MANIFEST_VERSION, InstalledAppRefusalCode::ALL)",
+    "applications/installed_apps/authority.rs (CapabilityId::ALL and its high-risk subset)",
+    "infrastructure/application_data/declaration.rs (DeclaredColumnType, ColumnOwner)"
+  ],
+  "x-fredo-refusal-codes": [
+    "not_a_zip",
+    "no_manifest",
+    "manifest_malformed",
+    "manifest_unknown_field",
+    "manifest_invalid_field",
+    "unsupported_manifest_version",
+    "id_invalid",
+    "id_reserved",
+    "version_invalid",
+    "engines_range_invalid",
+    "host_incompatible",
+    "entry_missing",
+    "entry_invalid",
+    "unsafe_path",
+    "reserved_path",
+    "archive_too_large",
+    "already_installed",
+    "io_error",
+    "integrity_mismatch",
+    "integrity_record_corrupt",
+    "id_not_installed",
+    "id_is_installed_app"
+  ]
+}

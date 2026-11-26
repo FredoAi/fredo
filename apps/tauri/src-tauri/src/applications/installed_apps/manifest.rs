@@ -266,31 +266,36 @@ pub struct EntryDeclaration {
     pub module: String,
 }
 
-/// The id pattern: `^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$`.
+/// The id pattern: `^[a-z0-9][a-z0-9-]*$`.
 ///
-/// Implemented by hand rather than with a regex crate: the rule is three
-/// clauses, the repo has no `regex` dependency it uses for validation of this
-/// kind, and a hand-written scan gives an exact error message per clause.
+/// Lowercase ASCII letters and digits, starting with a letter or digit, then
+/// letters, digits and hyphens only — **no dots**.
+///
+/// # Why the charset is exactly the label charset
+///
+/// The id is not only an address: it becomes part of the window label
+/// (`installed-<id>`, [`super::window::installed_app_window_label`]). Tauri's
+/// own window-label rule is the alphanumerics plus `-`, `/`, `:` and `_` — a
+/// dot is refused there (`tauri-runtime`, `window::is_label_valid`). The two
+/// charsets are therefore kept EQUAL by construction: a dot is refused here,
+/// as an `id_invalid`, instead of being silently deleted while building the
+/// label (a dot-deleting sanitise is not injective — it would map distinct ids
+/// onto one label, one window, one identity). This is the invariant whose
+/// absence let a dotted id install and then never open.
+///
+/// Implemented by hand rather than with a regex crate: the rule is small, the
+/// repo has no `regex` dependency it uses for validation of this kind, and a
+/// hand-written scan gives an exact error message per clause.
 pub fn is_valid_app_id(id: &str) -> bool {
     if id.is_empty() || id.chars().count() > MAX_APP_ID_CHARS {
         return false;
     }
-    // Split on '.', then validate each dot-separated segment: it must start
-    // with [a-z0-9] and continue with [a-z0-9-].
-    for segment in id.split('.') {
-        if segment.is_empty() {
-            return false;
-        }
-        let mut chars = segment.chars();
-        let first = chars.next().unwrap_or_default();
-        if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-            return false;
-        }
-        if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            return false;
-        }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap_or_default();
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
     }
-    true
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Is `id` one of the built-in application ids?
@@ -363,7 +368,7 @@ pub fn parse_manifest(bytes: &[u8]) -> InstalledAppResult<AppManifest> {
             InstalledAppRefusalCode::IdInvalid,
             "id",
             format!(
-                "id \"{id}\" must match ^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)*$ and be at most \
+                "id \"{id}\" must match ^[a-z0-9][a-z0-9-]*$ and be at most \
                  {MAX_APP_ID_CHARS} characters"
             ),
         ));
@@ -1429,20 +1434,35 @@ mod tests {
     // ── id ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn the_id_pattern_accepts_dotted_and_dashed_ids() {
+    fn the_id_pattern_accepts_dashed_ids_and_refuses_dots() {
         for id in [
             "a",
             "a1",
             "qa3147-sample",
-            "com.example.app",
-            "com.example-app.tool",
+            "com-example-app-tool",
             "9lives",
-            // A trailing dash IS legal under the plan's pattern
-            // (`[a-z0-9][a-z0-9-]*` allows it); kept here as the documented
-            // positive so nobody "tightens" the rule into a behaviour change.
+            // A trailing dash IS legal under the pattern (`[a-z0-9][a-z0-9-]*`
+            // allows it); kept here as the documented positive so nobody
+            // "tightens" the rule into a behaviour change.
             "trailing-dash-",
         ] {
             assert!(is_valid_app_id(id), "{id} should be valid");
+        }
+
+        // A dot is REFUSED — the id becomes part of the window label
+        // (`installed-<id>`) and Tauri's label charset excludes `.`. Round 1
+        // admitted these and the guide's own `com.example.my-app` example then
+        // installed but could never be opened; this is the reddening pin for
+        // that narrowing.
+        for dotted in [
+            "com.example.app",
+            "com.example-app.tool",
+            "dev.example.tools",
+            ".leading-dot",
+            "trailing-dot.",
+            "double..dot",
+        ] {
+            assert!(!is_valid_app_id(dotted), "{dotted:?} must NOT be a valid id");
         }
     }
 
@@ -1517,6 +1537,24 @@ mod tests {
         let error = parse_value(&value).expect_err("bad id");
         assert_eq!(error.code, InstalledAppRefusalCode::IdInvalid);
         assert_eq!(error.field.as_deref(), Some("id"));
+
+        // The narrowed charset: a dotted id is `id_invalid` — the product-side
+        // redden control for ST-7 (a dotted id must be refused at parse, never
+        // installed and then stranded at window-open time).
+        value["id"] = serde_json::json!("com.example.notes");
+        let error = parse_value(&value).expect_err("dotted id");
+        assert_eq!(error.code, InstalledAppRefusalCode::IdInvalid);
+        assert_eq!(error.field.as_deref(), Some("id"));
+        assert!(
+            error.detail.contains("^[a-z0-9][a-z0-9-]*$"),
+            "the detail must name the narrowed pattern: {}",
+            error.detail
+        );
+        assert!(
+            !error.detail.contains("\\."),
+            "the detail must no longer advertise a dot: {}",
+            error.detail
+        );
     }
 
     // ── displayName ────────────────────────────────────────────────────────
@@ -1772,5 +1810,399 @@ mod tests {
                 "{snake} must never appear on the wire"
             );
         }
+    }
+}
+
+/// The published manifest schema (Spec #3145, ST-2).
+///
+/// The schema an author reads is GENERATED FROM THE PARSER — every key set,
+/// length cap, pattern, const and enum below is one of this module's constants
+/// (or the capability vocabulary's, or the declaration model's), never a
+/// retyped copy. `schema_matches_the_committed_artifact` is the drift gate
+/// (G-480): it regenerates the text IN MEMORY and compares it to the committed
+/// `packages/fredo-authoring/schema/fredo-app.schema.json`, so mutating a rule
+/// here alone reddens, and mutating the committed file alone reddens.
+///
+/// The generator is deliberately NOT a lifecycle hook: `write_the_committed_schema`
+/// is `#[ignore]`d and only runs when a human/agent asks for it
+/// (`cargo test write_the_committed_schema -- --ignored`). Nothing regenerates
+/// the artifact implicitly, or the gate would compare a fresh generation with
+/// itself and could never fail.
+#[cfg(test)]
+mod schema_artifact {
+    use super::*;
+    use crate::infrastructure::application_data::declaration::{ColumnOwner, DeclaredColumnType};
+    use serde_json::{json, Value};
+    use std::path::PathBuf;
+
+    /// The committed artifact, relative to the crate root
+    /// (`apps/tauri/src-tauri` → the repository root is three levels up).
+    fn schema_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("packages")
+            .join("fredo-authoring")
+            .join("schema")
+            .join("fredo-app.schema.json")
+    }
+
+    /// The declared column types, in their wire spelling (UPPERCASE).
+    fn column_type_names() -> Vec<&'static str> {
+        [
+            DeclaredColumnType::Text,
+            DeclaredColumnType::Integer,
+            DeclaredColumnType::Real,
+            DeclaredColumnType::Boolean,
+            DeclaredColumnType::Json,
+        ]
+        .iter()
+        .map(|column_type| column_type.as_str())
+        .collect()
+    }
+
+    /// The declared column owners, exactly as their serde tag serializes them.
+    fn column_owner_names() -> Vec<Value> {
+        [ColumnOwner::Backend, ColumnOwner::Application]
+            .iter()
+            .map(|owner| serde_json::to_value(owner).expect("a column owner serializes"))
+            .collect()
+    }
+
+    /// The declared HIGH-RISK capability ids, in the closed vocabulary's order.
+    fn high_risk_ids() -> Vec<&'static str> {
+        CapabilityId::ALL
+            .iter()
+            .filter(|id| id.is_high_risk())
+            .map(|id| id.as_str())
+            .collect()
+    }
+
+    /// Build the schema text from the parser's own constants. Pure and
+    /// deterministic: serde_json's map is ordered, so the serialized text is a
+    /// function of these constants alone.
+    pub fn generate_manifest_schema() -> String {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://fredo.dev/schemas/fredo-app-1.json",
+            "title": "Fredo application manifest (manifestVersion 1)",
+            "description": concat!(
+                "The manifest a Fredo compatibility package carries at its archive root as ",
+                "fredo-app.json. GENERATED from the Rust parser's own constants ",
+                "(applications/installed_apps/manifest.rs) — never edit it by hand. ",
+                "`additionalProperties` is false at every object level: an unknown key is refused, ",
+                "because a declaration this build does not read must never look accepted. ",
+                "NOT EXPRESSIBLE in JSON Schema and performed by `fredo-app check` in code: (1) ",
+                "whether engines.fredo's semver RANGE admits the running Fredo (the two failure ",
+                "families are distinct: a malformed range is engines_range_invalid, a well-formed ",
+                "range that excludes the host is host_incompatible); (2) the entry.* path rules ",
+                "(relative POSIX, no '..', no absolute/drive/scheme form, the documented ",
+                "extensions); (3) the declared table model (unique table and column names, a ",
+                "primary key naming declared columns); (4) entry_missing, which depends on the ",
+                "files actually packed. `capabilities` is optional and its absence means ZERO ",
+                "declared reach — never 'everything except a deny list'."
+            ),
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["manifestVersion", "id", "displayName", "version", "engines", "entry"],
+            "properties": {
+                "manifestVersion": {
+                    "type": "integer",
+                    "const": SUPPORTED_MANIFEST_VERSION,
+                    "description": "The one manifest schema this build understands."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9][a-z0-9-]*$",
+                    "maxLength": MAX_APP_ID_CHARS,
+                    "not": { "enum": RESERVED_APP_IDS },
+                    "description": concat!(
+                        "Lowercase letters, digits and hyphens, starting with a letter or digit; ",
+                        "no dots; at most 96 characters. The id becomes part of your window's ",
+                        "label, so its charset is Tauri's label charset. The eight built-in ",
+                        "application ids are refused (id_reserved)."
+                    )
+                },
+                "displayName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_DISPLAY_NAME_CHARS,
+                    "description": "The displayed name of the application."
+                },
+                "version": {
+                    "type": "string",
+                    "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+                    "description": "SemVer 2.0.0, with no \"v\" prefix."
+                },
+                "engines": { "$ref": "#/$defs/engines" },
+                "entry": { "$ref": "#/$defs/entry" },
+                "description": {
+                    "type": "string",
+                    "maxLength": MAX_DESCRIPTION_CHARS,
+                    "description": concat!(
+                        "Optional. Omit the key when you have nothing to say — an unset optional ",
+                        "is an absent key, never null."
+                    )
+                },
+                "capabilities": { "$ref": "#/$defs/capabilities" }
+            },
+            "$defs": {
+                "engines": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": MANIFEST_ENGINES_KEYS,
+                    "properties": {
+                        "fredo": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": concat!(
+                                "A semver RANGE such as \">=0.1.0\" naming the Fredo versions the ",
+                                "package accepts. \"*\" and an empty string are refused ",
+                                "(engines_range_invalid); a well-formed range that excludes the ",
+                                "running Fredo is host_incompatible."
+                            )
+                        }
+                    }
+                },
+                "entry": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": MANIFEST_ENTRY_KEYS,
+                    "properties": {
+                        "document": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": concat!(
+                                "Relative POSIX path to the package's HTML document (must end with ",
+                                "'.html'); the host serves it with the bootstrap, the theme and the ",
+                                "root element already injected."
+                            )
+                        },
+                        "module": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": concat!(
+                                "Relative POSIX path to the package's ES module (must end with ",
+                                "'.js') exporting mount(ctx). Import companions relatively — a bare ",
+                                "specifier never resolves in an installed application's document."
+                            )
+                        }
+                    }
+                },
+                "retention": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "maxRows": { "type": "integer", "minimum": 0 },
+                        "ttlDays": { "type": "integer", "minimum": 0 }
+                    }
+                },
+                "column": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "type", "owner"],
+                    "properties": {
+                        "name": { "type": "string", "minLength": 1 },
+                        "type": { "enum": column_type_names() },
+                        "nullable": { "type": "boolean" },
+                        "owner": { "enum": column_owner_names() }
+                    }
+                },
+                "table": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "primaryKey", "columns"],
+                    "properties": {
+                        "name": { "type": "string", "minLength": 1 },
+                        "primaryKey": {
+                            "type": "array",
+                            "items": { "type": "string", "minLength": 1 },
+                            "minItems": 1
+                        },
+                        "columns": {
+                            "type": "array",
+                            "items": { "$ref": "#/$defs/column" },
+                            "minItems": 1
+                        },
+                        "retention": { "$ref": "#/$defs/retention" }
+                    },
+                    "description": concat!(
+                        "One table the application declares for ITSELF. `source` is deliberately ",
+                        "absent: a declared source projection would read Fredo's canonical tables ",
+                        "(your own sessions and tool activity), which an installed application may ",
+                        "never declare."
+                    )
+                },
+                "capabilities": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["version"],
+                    "properties": {
+                        "version": {
+                            "type": "integer",
+                            "const": CAPABILITY_MANIFEST_VERSION,
+                            "description": concat!(
+                                "The capability-contract major. It is versioned separately from ",
+                                "manifestVersion and is additive within a major."
+                            )
+                        },
+                        "data": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["tables"],
+                            "properties": {
+                                "tables": {
+                                    "type": "array",
+                                    "items": { "$ref": "#/$defs/table" },
+                                    "description": concat!(
+                                        "The tables the application declares. Presence of ",
+                                        "capabilities.data declares the data.tables capability; ",
+                                        "declare an empty list when the application writes to no table."
+                                    )
+                                }
+                            }
+                        },
+                        "highRisk": {
+                            "type": "array",
+                            "items": { "enum": high_risk_ids() },
+                            "uniqueItems": true,
+                            "description": concat!(
+                                "The consent-gated capability ids this package asks to use. Each ",
+                                "one needs a per-application user consent before its first use."
+                            )
+                        }
+                    },
+                    "description": concat!(
+                        "The declared backend reach. ABSENT means zero reach — never ",
+                        "\"everything except a deny list\". An installed application reaches nothing ",
+                        "else: there is no backend command of its own to declare."
+                    )
+                }
+            },
+            "x-fredo-entry-extensions": {
+                "document": ENTRY_DOCUMENT_EXTENSION,
+                "module": ENTRY_MODULE_EXTENSION
+            },
+            "x-fredo-refusal-codes": InstalledAppRefusalCode::ALL
+                .iter()
+                .map(|code| code.as_str())
+                .collect::<Vec<_>>(),
+            "x-fredo-generated-from": [
+                "applications/installed_apps/manifest.rs (MANIFEST_* keys, MAX_* caps, entry extensions)",
+                "applications/installed_apps/mod.rs (SUPPORTED_MANIFEST_VERSION, CAPABILITY_MANIFEST_VERSION, InstalledAppRefusalCode::ALL)",
+                "applications/installed_apps/authority.rs (CapabilityId::ALL and its high-risk subset)",
+                "infrastructure/application_data/declaration.rs (DeclaredColumnType, ColumnOwner)"
+            ]
+        });
+        let mut text = serde_json::to_string_pretty(&schema).expect("the schema serializes");
+        text.push('\n');
+        text
+    }
+
+    /// GENERATOR (opt-in only — never run implicitly, G-480).
+    #[test]
+    #[ignore = "generator: writes the committed schema artifact; run with cargo test write_the_committed_schema -- --ignored"]
+    fn write_the_committed_schema() {
+        let path = schema_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|error| panic!("cannot create {}: {error}", parent.display()));
+        }
+        std::fs::write(&path, generate_manifest_schema())
+            .unwrap_or_else(|error| panic!("cannot write {}: {error}", path.display()));
+        println!("WROTE {}", path.display());
+    }
+
+    /// THE DRIFT GATE: regenerate in memory and compare to the committed file.
+    ///
+    /// The comparison is over the LF-NORMALISED text (G-481): a Windows checkout
+    /// materialises the committed file with CRLF while the generator always emits
+    /// LF, and a content gate must not depend on the checkout's line ending.
+    ///
+    /// # One source, not two (ST-2)
+    ///
+    /// The committed artifact feeds the authoring kit's `check` **directly**: the
+    /// kit reads `schema/fredo-app.schema.json` and builds its id rule from
+    /// `top.id.pattern` — `packages/fredo-authoring/lib/validate.mjs:316`,
+    /// `const idPattern = new RegExp(top.id.pattern);`. The kit therefore moves
+    /// with the parser automatically; there is no second hand-written id rule to
+    /// keep in step. This gate is what makes that safe: regenerate here and the
+    /// kit's `check`, the guide's `id` rule and the parser's refusal are one
+    /// artifact, or this test fails.
+    #[test]
+    fn schema_matches_the_committed_artifact() {
+        let path = schema_path();
+        let committed = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
+            .replace("\r\n", "\n");
+        let generated = generate_manifest_schema();
+        assert_eq!(
+            generated, committed,
+            "the committed manifest schema drifted from the parser. If the parser's rules changed \
+             intentionally, regenerate with: cargo test write_the_committed_schema -- --ignored"
+        );
+    }
+
+    /// The artifact carries the parser's vocabulary (not a retyped copy).
+    #[test]
+    fn the_schema_carries_the_parser_vocabulary() {
+        let schema: Value =
+            serde_json::from_str(&generate_manifest_schema()).expect("the schema parses");
+        let mut keys: Vec<&str> = schema["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut expected: Vec<&str> = MANIFEST_TOP_LEVEL_KEYS.to_vec();
+        keys.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "the schema's keys are MANIFEST_TOP_LEVEL_KEYS");
+
+        assert_eq!(
+            schema["properties"]["id"]["not"]["enum"],
+            json!(RESERVED_APP_IDS),
+            "the reserved ids are RESERVED_APP_IDS"
+        );
+        assert_eq!(
+            schema["$defs"]["capabilities"]["properties"]["highRisk"]["items"]["enum"],
+            json!(high_risk_ids()),
+            "the high-risk ids come from CapabilityId"
+        );
+        assert_eq!(
+            schema["x-fredo-refusal-codes"],
+            json!(InstalledAppRefusalCode::ALL
+                .iter()
+                .map(|code| code.as_str())
+                .collect::<Vec<_>>()),
+            "the refusal vocabulary is the frozen 22"
+        );
+        assert_eq!(
+            schema["$defs"]["table"]["additionalProperties"],
+            json!(false),
+            "additionalProperties is false at every object level"
+        );
+        assert_eq!(
+            schema["$defs"]["column"]["additionalProperties"],
+            json!(false),
+            "the column object is closed too"
+        );
+        assert!(
+            schema["$defs"]["table"]["properties"].get("source").is_none(),
+            "a declared table may not carry `source` (the shared model's `source` is for canonical projections)"
+        );
+        assert_eq!(
+            schema["$defs"]["entry"]["required"],
+            json!(MANIFEST_ENTRY_KEYS),
+            "entry requires exactly document + module"
+        );
+        assert_eq!(
+            schema["x-fredo-entry-extensions"],
+            json!({
+                "document": ENTRY_DOCUMENT_EXTENSION,
+                "module": ENTRY_MODULE_EXTENSION
+            })
+        );
     }
 }

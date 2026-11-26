@@ -78,7 +78,7 @@ pub const INSTALLED_APP_WINDOW_MIN_HEIGHT: f64 = 360.0;
 /// The document URL for an installed application: the entry route the scheme
 /// handler serves (`/<id>/`, relative `""` ⇒ the app's `entry.document`).
 ///
-/// The id is already constrained to `[a-z0-9.-]` by [`manifest::is_valid_app_id`],
+/// The id is already constrained to `[a-z0-9-]` by [`manifest::is_valid_app_id`],
 /// so it needs no percent-encoding and can never introduce a path segment.
 pub fn installed_app_document_url(id: &str) -> String {
     format!("{INSTALLED_APP_ORIGIN}/{id}/")
@@ -89,6 +89,23 @@ pub fn installed_app_document_url(id: &str) -> String {
 /// A thin, named alias of [`store::window_label_for`] so this module's callers
 /// read the prefix rule from the module that owns it — the constant is defined
 /// ONCE (in [`super`]) and derived ONCE (in [`store`]).
+///
+/// # The id charset IS the label charset
+///
+/// **Every id [`manifest::is_valid_app_id`] accepts yields a label Tauri
+/// accepts.** The label is `installed-` + the id, and both parts are drawn from
+/// the alphanumerics plus `-` — a strict subset of Tauri's own window-label
+/// charset (alphanumeric, `-`, `/`, `:`, `_`; `tauri-runtime`'s
+/// `window::is_label_valid` is the predicate, and `PendingWindow::new` refuses a
+/// label it rejects). [`manifest::is_valid_app_id`] refuses `.` for exactly this
+/// reason: the id is the application's identity (`authority.rs`'s
+/// `strip_prefix(labels, "installed-")` recovers the id from the label), so a
+/// dot-deleting sanitise here would be non-injective — two ids would collapse
+/// onto one label, one window, one identity. Keeping the two charsets equal is
+/// the invariant round 1 lacked: both halves were unit-pinned and neither ever
+/// built a window, so a dotted id installed and then could never be opened.
+/// See `the_label_is_the_installed_prefix_plus_the_id` and
+/// `every_accepted_id_yields_a_label_tauri_accepts` in this module's tests.
 pub fn installed_app_window_label(id: &str) -> String {
     store::window_label_for(id)
 }
@@ -432,12 +449,12 @@ mod tests {
         assert_eq!(INSTALLED_APP_WINDOW_LABEL_PREFIX, "installed-");
         assert_eq!(installed_app_window_label("qa3147"), "installed-qa3147");
         assert_eq!(
-            installed_app_window_label("dev.example.tools"),
-            "installed-dev.example.tools"
+            installed_app_window_label("dev-example-tools"),
+            "installed-dev-example-tools"
         );
 
         // The ONE derivation (store) and this module's alias cannot drift.
-        for id in ["a", "qa3147", "dev.example.tools"] {
+        for id in ["a", "qa3147", "dev-example-tools"] {
             assert_eq!(
                 installed_app_window_label(id),
                 store::window_label_for(id),
@@ -455,6 +472,66 @@ mod tests {
             "app-qa3147",
             "built-ins keep their own label namespace, untouched by this spec"
         );
+    }
+
+    /// WHY THIS PIN AND NOT A REAL WINDOW-CREATE (ST-7).
+    ///
+    /// The defect class round 1 shipped was "both halves were green unit pins
+    /// and neither created a real window". The strongest closure is a real
+    /// create — `tauri::test::mock_app()` + `WebviewWindowBuilder::build()`,
+    /// which goes `PendingWindow::new` → `is_label_valid` → and it WAS written:
+    /// enabling `tauri`'s `test` feature made the lib test binary fail to LOAD
+    /// in this environment (`0xc0000139` STATUS_ENTRYPOINT_NOT_FOUND,
+    /// reproducible on a second run), an environment/build-property regression
+    /// unrelated to the label rule, so it was not landed. What IS landed is a
+    /// direct binding to the SAME predicate the create path consults
+    /// (`tauri-runtime-2.10.1/src/window.rs:494-498`, called from
+    /// `PendingWindow::new` at `:514-515`), so a `.` cannot re-enter the id
+    /// charset without reddening this test. The create-path leg remains
+    /// available to any environment where the mock runtime links; it is
+    /// recorded here so the fallback is visible and this class cannot recur
+    /// silently.
+    #[test]
+    fn every_accepted_id_yields_a_label_tauri_accepts() {
+        // The ids the parser accepts. `dev-example-tools` is the dotted-free
+        // successor of round 1's `dev.example.tools`.
+        let accepted = [
+            "a",
+            "a1",
+            "9lives",
+            "qa3147",
+            "qa3147-sample",
+            "dev-example-tools",
+            "com-example-myapp",
+            "trailing-dash-",
+        ];
+        for id in accepted {
+            assert!(manifest::is_valid_app_id(id), "{id} must be an accepted id");
+            let label = installed_app_window_label(id);
+            assert!(
+                tauri_runtime::window::is_label_valid(&label),
+                "Tauri refuses the label {label:?} derived from the accepted id {id:?} — \
+                 the id charset and the label charset have drifted apart"
+            );
+        }
+
+        // The predicate is not vacuous — and it is Tauri's rule, not a
+        // restatement of it: exactly the alphanumerics plus `-`, `/`, `:` and
+        // `_`. Pinning its own boundary means a future widening of the id
+        // charset is caught against the real rule, and the dotted label round 1
+        // produced is refused, which is exactly why the id rule had to narrow.
+        for accepted in ["a", "installed-qa3147", "installed-dev-example-tools", "A1_2/3:4"] {
+            assert!(
+                tauri_runtime::window::is_label_valid(accepted),
+                "Tauri accepts {accepted:?}"
+            );
+        }
+        for rejected in ["installed-com.example.my-app", "installed-a.b", "dot.ted"] {
+            assert!(
+                !tauri_runtime::window::is_label_valid(rejected),
+                "a dot must be refused by Tauri's own label rule: {rejected:?}"
+            );
+        }
     }
 
     // ── 2. The document URL ─────────────────────────────────────────────────
@@ -526,8 +603,17 @@ mod tests {
         // A well-formed id passes through, trimmed.
         assert_eq!(normalize_app_id("  qa3147  ").expect("valid"), "qa3147");
         assert_eq!(
-            normalize_app_id("dev.example.tools").expect("valid"),
-            "dev.example.tools"
+            normalize_app_id("dev-example-tools").expect("valid"),
+            "dev-example-tools"
+        );
+
+        // A dotted id is refused here too — the same narrowed charset the
+        // window label requires.
+        assert_eq!(
+            normalize_app_id("dev.example.tools")
+                .expect_err("a dotted id must be refused")
+                .code,
+            InstalledAppRefusalCode::IdInvalid
         );
     }
 

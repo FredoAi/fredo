@@ -125,6 +125,16 @@ apps/otel-local-collector/.collector/
 build/
 dist/
 
+# The AUTHORING KIT's dist/ trees are COMMITTED, generated artifacts, not build
+# output (Spec #3145): `packages/fredo-theme/dist/**` is the published token
+# contract and `packages/fredo-authoring/dist/index.d.ts` is the published type
+# surface. Both are regenerated only by their own command and drift-gated, so the
+# generic `dist`/`dist/` rules above must not swallow them.
+!packages/fredo-theme/dist/
+!packages/fredo-theme/dist/**
+!packages/fredo-authoring/dist/
+!packages/fredo-authoring/dist/**
+
 # Rust build artifacts
 apps/tauri/src-tauri/target/
 

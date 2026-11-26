@@ -1,0 +1,30 @@
+{
+  "name": "@fredo/authoring",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The published authoring surface for Fredo application packages: the installed-application types, the manifest schema GENERATED from Fredo's parser, and the check/pack verbs. Node built-ins only — no install step, no network.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts"
+    },
+    "./schema/fredo-app.schema.json": "./schema/fredo-app.schema.json",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "fredo-app": "./bin/fredo-app.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "lib",
+    "schema"
+  ],
+  "scripts": {
+    "check": "node bin/fredo-app.mjs --help",
+    "test": "node --test __tests__/package.test.mjs __tests__/cli.test.mjs __tests__/conformance.test.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

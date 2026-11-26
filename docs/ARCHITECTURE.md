@@ -1109,12 +1109,12 @@ The rules that refuse a package are Fredo's own, not a crate's sanitizer: entry 
 
 ### Installed applications: what slice 1 does not do
 
-These are deliberate, accepted scope boundaries of #3147 — not defects:
+These are deliberate, accepted scope boundaries of the installed-application tier (Specs #3147 and #3146) — not defects:
 
 | Limitation | Why it holds |
 |---|---|
 | An installed app cannot join the keyboard/navigation dispatch tree. | Its launcher entry is a plain button, and the installed document is a separate document in its own window — it opens through `openInstalledApp(id)` and is driven by the pointer inside that document, so nothing an installed app does reaches the host window's keyboard handling. |
-| An installed app cannot declare backend commands of its own. | `manifestVersion: 1` is a closed schema with no `capabilities[]`, and the `installed-<id>` label matches no capability — so it receives zero application commands. Declared-command allowlisting plus host-minted data handles is **#3146**, not this slice. |
+| An installed app cannot declare backend **commands** of its own. | `manifestVersion: 1` **does** define `capabilities` — it is the schema's eighth key (`manifest.rs:91-100`) — but a package declares capabilities, never commands. `capabilities.version` is `1` (`mod.rs:108`), the vocabulary is the closed four ids (`authority.rs:80-93`), and the `installed-<id>` window reaches exactly one command, so an installed app can invoke only the eight dispatchable actions its package declared (`dispatch.rs:87-96`). An absent `capabilities` key is **zero reach**, not a permissive default (`manifest.rs:610-626`). |
 | An installed app opens only in its own window — never inside the main window. | The window is built from the `fredoapp` URL, which the main window's document cannot present without sharing its origin. |
 | Re-opening re-fetches and re-evaluates the app's module every time. | Closing destroys the document, and each response carries `Cache-Control: no-store` so a re-verified document is never served from a cache. There is no module cache across close/reopen, so the first-open cost is paid on every open. |
 | Package artifacts are **unsigned** in v1. | There is no registry, update, or signature path. Trust in a package is the user's judgement at install time; the per-file SHA-256 record is verified at load to detect **post-install tampering**, which is a different guarantee from proving who authored the bytes. |

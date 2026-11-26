@@ -1941,6 +1941,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-mcp-bridge",
  "tauri-plugin-shell",
+ "tauri-runtime",
  "tempfile",
  "tokio",
  "tokio-util",

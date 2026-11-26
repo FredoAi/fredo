@@ -1,0 +1,27 @@
+{
+  "name": "@fredo/theme",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fredo's published colour contract for installation-package authors: 38 token NAMES and their var()/color-mix() forms. A name contract, never a value source — the host writes every value into the child document.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./theme.css": "./dist/theme.css",
+    "./tokens.json": "./dist/tokens.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node scripts/build-theme.mjs",
+    "check": "node scripts/build-theme.mjs --check",
+    "test": "node --test __tests__/package.test.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
