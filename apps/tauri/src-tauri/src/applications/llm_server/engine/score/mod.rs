@@ -34,6 +34,7 @@ pub mod baseline;
 pub mod expect;
 pub mod fixtures;
 pub mod persist;
+pub mod runner;
 
 use serde::{Deserialize, Serialize};
 
