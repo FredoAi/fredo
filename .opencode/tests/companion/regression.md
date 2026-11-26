@@ -7,6 +7,9 @@
 > **Verification policy: live** — companion behavior is only observable on a running app; the
 > tester's Evidence MUST reference `telemetry_spans` (a live-query result) for live verdicts
 > (the functional F-17 receipt).
+>
+> **#3232 extension:** the appended rows R-76..R-81 are ADDITIVE (the scoring harness must not
+> disturb the companion); the behaviour invariants R-1..R-75 above remain in force.
 
 ## Must NOT change (regression invariants)
 
@@ -1080,3 +1083,81 @@ Verdict: **PASS** — the ST-8 entity fix releases the turn-scoped status on eve
       path); the Wireframe document store, file commands and canvas are byte/behaviour-identical.
   - **Edge:** a command with a declared required arg reached from its control (not the companion) still
     behaves as before; `wireframe.mode.draw.rect` still arms the draw operator.
+
+---
+
+## #3232 extension — the scoring harness must not disturb the companion
+
+> Issue #3232 adds a maintainer-facing scoring harness (`fredo companion score`). The companion
+> engine's runtime behaviour is a NON-GOAL (the harness is measurement infrastructure). These
+> invariants MUST hold after the slice — any FAIL is a regression. Run alongside R-1..R-75.
+> **Verification policy: live** for R-76/R-77/R-79 (runtime/CLI observables); R-78/R-80/R-81 are
+> source/build reads.
+
+## R-76 — the shipped `fredo companion probe` is unchanged (exit 0/1/2, one JSON object)
+
+- [ ] R-76: run `fredo companion probe` (models resolved) and again with an empty
+      `FREDO_COMPANION_MODELS_DIR`.
+  **Expected:** the probe still prints ONE JSON object on stdout and exits `0` (answered) / `1`
+      (typed engine failure, e.g. missing model) / `2` (usage) exactly as today
+      (`companion_probe.rs:64-69`); the `Score` variant added to `CompanionCommand` does not alter
+      the `Probe` variant's args, output shape, or exit codes; `docs/CLI_GUIDE.md`'s
+      `fredo companion probe` section is unchanged (the `fredo companion score` section is ADDED
+      beside it).
+  - **Edge:** a bare `fredo companion` with no subcommand still prints clap usage (exit `2`).
+
+## R-77 — companion inference behaviour is UNCHANGED (the harness reuses the shipped seams)
+
+- [ ] R-77: static-read the score module for any sampling/request override; diff the sampling values.
+  **Expected:** the harness drives the SAME `ChatTurn` → `CompanionEngineHandle`/`ChatRequest` seam
+      the chat command drives (`commands/chat.rs:66-72`; `engine/mod.rs:280-292`) via
+      `skills::skill_turn` / `doom_agent::doom_turn`; `SamplingSettings::default` is untouched (temp
+      1.0 / top_p 0.95 / top_k 64, `sampling.rs:68-81`); the per-fixture `seed` is passed as
+      `ChatRequest.seed` only; NO second loader / shaper / sampler exists (D-2). A `SamplingSettings`
+      change or a second request path is a FAIL.
+  - **Edge:** the pure pins still use `DEFAULT_SEED = 0` (`sampling.rs:95`); the harness never mutates
+    them.
+
+## R-78 — the harness is its OWN process and never touches the app's engine/persisted state
+
+- [ ] R-78: static-read the CLI wiring; run the harness with the app NOT running and with it running.
+  **Expected:** `fredo companion score` spawns its OWN `CompanionEngineHandle` (the `probe` pattern,
+      `companion_probe.rs:11-14`) — it does not touch the process-scoped engine slot and does not
+      enable/disable the app's companion or write the app's persisted companion state; the
+      process-once `LlamaBackend` is respected (one handle per process, per `integration.rs:98`);
+      running it while the app holds the engine does not corrupt either (each is its own process).
+  - **Edge:** the app's `Fredo_companion_visible` / `Fredo_companion_idle_timeout` keys are untouched
+      by a score run (read before/after).
+
+## R-79 — no new table/DDL, no new persisted key, no UI, product telemetry separable
+
+- [ ] R-79: grep the DDL/schema registry; inspect the written span rows; grep for new persisted keys
+      and any UI/command registration.
+  **Expected:** NO new Postgres table or DDL — the AC-4 records use the EXISTING `telemetry_spans`
+      store (D-4); harness rows are namespaced `event_type='companion.score'` so a product-telemetry
+      query (`event_type != 'companion.score'`) is unaffected; NO new persisted key; NO Tauri
+      command, NO UI, NO `command_manifest.rs` entry, NO new `Transport` variant.
+  - **Edge:** the `telemetry_spans` retention sweep is unchanged; the baseline (AC-3) is a committed
+      file, so retention cannot evict the regression reference.
+
+## R-80 — the existing durable companion suite is unchanged by the promotion (merge-proof)
+
+- [ ] R-80: after the promotion, diff the durable `.opencode/tests/companion/` files against their
+      pre-promotion content.
+  **Expected:** the promotion is **append + in-place header re-cut ONLY**: every pre-existing row id
+      (`F-1..F-178`, `R-1..R-75`, `E-1..E-80` incl. the `REMOVED` records, `S-1..S-50`) is still
+      present with its checkbox/status UNCHANGED, and the merge is line-growth only (no file
+      shrinks). The #3232 appended rows are `F-179..F-191`, `R-76..R-81`, `E-81..E-86`,
+      `S-51..S-54`. Any dropped/renumbered row id or a shrinking file is a FAIL.
+  - **Edge:** the in-place re-cuts are ONLY the four file-head re-cuts listed in `PROMOTION.md`; a
+      re-cut that rewrites a row body is a FAIL.
+
+## R-81 — build gates, no new dependency, no `#[allow]`, docs
+
+- [ ] R-81: run the CI-parity command set; diff the manifests; grep the new code.
+  **Expected:** `cargo check --locked` + `cargo clippy --locked -- -D warnings` are clean; ZERO new
+      `#[allow(...)]`; ZERO `unwrap()` on a fallible path (uses `anyhow::Result` + `?`); no new entry
+      in `Cargo.toml` / `Cargo.lock` / `package.json` / `pnpm-lock.yaml`; NO eval-framework dependency
+      (no LangChain/LangGraph/`rig`/`swiftide`); `docs/CLI_GUIDE.md` documents `fredo companion score`
+      (flags, exit codes, the read-back query) (G-398).
+  - **Edge:** `mono`/clippy warnings suppressed by `#[allow]` are a FAIL, not a pass.
