@@ -116,10 +116,19 @@ pub enum ScoreStatus {
 pub struct ScoreMeasurements {
     /// Wall-clock latency of the turn, in milliseconds.
     pub latency_ms: u64,
-    /// Prompt tokens for the turn.
+    /// Prompt tokens for the turn — the engine's own media-inclusive prompt token
+    /// count (Spec #3234, ST-5), never a hard-coded `0`.
     pub prompt_tokens: u64,
-    /// Completion tokens for the turn.
+    /// Completion tokens for the turn — the engine's own generated-token count
+    /// (Spec #3234, ST-5), never the count of visible text pieces a consumer
+    /// assembled.
     pub completion_tokens: u64,
+    /// Wall-clock prompt-evaluation time, in microseconds (Spec #3234, ST-5) —
+    /// the prefill latency.
+    pub prefill_micros: u64,
+    /// Wall-clock token-loop time, in microseconds (Spec #3234, ST-5). The decode
+    /// rate is `completion_tokens` over this span.
+    pub decode_micros: u64,
     /// MTP draft tokens proposed during the turn (diffed for this fixture).
     pub mtp_drafts_proposed: u64,
     /// MTP draft tokens accepted during the turn (diffed for this fixture).
@@ -142,10 +151,14 @@ pub struct CompanionScoreResult {
     pub seed: u32,
     /// Wall-clock latency of the turn, in milliseconds.
     pub latency_ms: u64,
-    /// Prompt tokens for the turn.
+    /// Prompt tokens for the turn (the engine's media-inclusive token count).
     pub prompt_tokens: u64,
-    /// Completion tokens for the turn.
+    /// Completion tokens for the turn (the engine's generated-token count).
     pub completion_tokens: u64,
+    /// Wall-clock prompt-evaluation time, in microseconds (Spec #3234, ST-5).
+    pub prefill_micros: u64,
+    /// Wall-clock token-loop time, in microseconds (Spec #3234, ST-5).
+    pub decode_micros: u64,
     /// MTP draft tokens proposed during the turn (diffed for this fixture).
     pub mtp_drafts_proposed: u64,
     /// MTP draft tokens accepted during the turn (diffed for this fixture).
@@ -167,6 +180,8 @@ impl CompanionScoreResult {
             latency_ms: measurements.latency_ms,
             prompt_tokens: measurements.prompt_tokens,
             completion_tokens: measurements.completion_tokens,
+            prefill_micros: measurements.prefill_micros,
+            decode_micros: measurements.decode_micros,
             mtp_drafts_proposed: measurements.mtp_drafts_proposed,
             mtp_drafts_accepted: measurements.mtp_drafts_accepted,
             mtp_draft_calls: measurements.mtp_draft_calls,
@@ -295,6 +310,8 @@ mod tests {
                 latency_ms: 120,
                 prompt_tokens: 30,
                 completion_tokens: 12,
+                prefill_micros: 4_000,
+                decode_micros: 9_000,
                 mtp_drafts_proposed: 5,
                 mtp_drafts_accepted: 4,
                 mtp_draft_calls: 2,
@@ -312,6 +329,7 @@ mod tests {
             keys,
             vec![
                 "completionTokens",
+                "decodeMicros",
                 "detail",
                 "fixtureId",
                 "latencyMs",
@@ -319,6 +337,7 @@ mod tests {
                 "mtpDraftsAccepted",
                 "mtpDraftsProposed",
                 "passed",
+                "prefillMicros",
                 "promptTokens",
                 "seed",
             ]

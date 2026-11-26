@@ -471,7 +471,7 @@ fn run_chat(
     engine: &mut EngineState,
     request: crate::applications::llm_server::engine::ChatRequest,
 ) {
-    use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
+    use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent, TurnMeasurement};
 
     // AC-4: record the turn's effective reasoning policy in its own telemetry
     // record (one field per turn), so a chat turn (Disabled) is distinguishable
@@ -530,6 +530,18 @@ fn run_chat(
         }
     };
     engine.mtp_stats.accumulate(outcome.stats);
+    // The engine's own cost readout for this turn (Spec #3234, ST-5): the prompt's
+    // media-inclusive token count, the prefill/decode wall-clock spans and the
+    // token count. Published on the SAME terminal `Finished` event the settle
+    // contract already relies on, so there is no second channel and no second
+    // request shape — and so the harness reads a per-turn value, never a
+    // cumulative counter it must diff.
+    let measurement = TurnMeasurement {
+        prompt_tokens: u64::from(outcome.prompt_tokens),
+        prefill_micros: outcome.prefill_micros,
+        decode_micros: outcome.decode_micros,
+        generated_tokens: u64::from(outcome.tokens_generated),
+    };
 
     // Decide what the withheld text was: a decoded tool call, or content.
     let mut called_tools = false;
@@ -574,6 +586,7 @@ fn run_chat(
     let _ = request.events.try_send(EngineEvent::Finished {
         finish_reason,
         stopped_on_eog: outcome.stopped_on_eog,
+        measurement,
     });
 }
 

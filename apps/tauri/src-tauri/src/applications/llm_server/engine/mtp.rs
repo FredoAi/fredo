@@ -64,6 +64,7 @@
 
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::time::Instant;
 
 use serde::Serialize;
 
@@ -401,14 +402,30 @@ pub struct SpeculativeOutcome {
     /// How many tokens were emitted (including the end-of-generation token when
     /// one was produced).
     pub tokens_generated: u32,
-    /// How many prompt tokens the turn evaluated after truncation.
+    /// The prompt's TOKEN count — media-inclusive for a media turn (the plan's
+    /// chunk token count, so the projector's visual tokens are included) and the
+    /// tokenised prompt length (after truncation) for a text turn. This is the
+    /// cost the turn paid for its prompt, never the KV position count (M-RoPE
+    /// media positions are not 1:1 with tokens).
     pub prompt_tokens: u32,
+    /// Wall-clock time the prompt evaluation took, in microseconds (Spec #3234,
+    /// ST-5) — the prefill cost, measured around the one prefill call.
+    pub prefill_micros: u64,
+    /// Wall-clock time the token-sampling loop took, in microseconds (Spec #3234,
+    /// ST-5) — the decode cost; the decode rate is `tokens_generated` over this.
+    pub decode_micros: u64,
     /// Whether the model ended the turn itself rather than the budget running out.
     pub stopped_on_eog: bool,
     /// Whether the prompt had to be truncated to fit the context window.
     pub prompt_truncated: bool,
     /// The counters measured by THIS loop (R-19.1).
     pub stats: MtpStats,
+}
+
+/// Microseconds elapsed since `started`, saturating at `u64::MAX` (never a
+/// panic, never an `unwrap` on a fallible conversion).
+fn elapsed_micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Prefill the prompt on the target context, in batch-sized chunks with explicit
@@ -638,8 +655,10 @@ pub fn generate_speculative<'model>(
     // The prefill: one text path, one multimodal path, both feeding the session's
     // `process()` hook so the draft side sees every prompt position. Each reports
     // the KV position after the prompt — for a media turn that is the projector's
-    // position count (M-RoPE media positions are not 1:1 with tokens).
-    let (tracked_tokens, prompt_positions) = match media_plan.take() {
+    // position count (M-RoPE media positions are not 1:1 with tokens) — AND the
+    // prompt's TOKEN count, which is the cost the turn paid (Spec #3234, ST-5).
+    let prefill_started = Instant::now();
+    let (tracked_tokens, prompt_positions, prompt_token_count) = match media_plan.take() {
         Some(plan) => {
             let unavailable = || {
                 (
@@ -652,6 +671,10 @@ pub fn generate_speculative<'model>(
                 return Err(unavailable());
             };
             let evaluated = super::multimodal::prefill_plan(&mut session, projector, &plan)?;
+            // The plan's chunk token count is the MEDIA-INCLUSIVE prompt token
+            // count (text + the projector's visual/audio tokens) — the number the
+            // 1120-budget cost is priced from.
+            let token_count = u32::try_from(plan.n_tokens()).unwrap_or(u32::MAX);
             tracing::debug!(
                 target: "fredo::llm_server",
                 image_parts = plan.image_parts,
@@ -660,11 +683,15 @@ pub fn generate_speculative<'model>(
                 prompt_positions = evaluated.n_pos,
                 "companion multimodal prompt evaluated"
             );
-            (plan.text_tokens, evaluated.n_pos)
+            (plan.text_tokens, evaluated.n_pos, token_count)
         }
         None => {
             prefill(&mut session, &prompt_tokens)?;
-            (prompt_tokens.clone(), prompt_tokens.len() as i32)
+            (
+                prompt_tokens.clone(),
+                prompt_tokens.len() as i32,
+                u32::try_from(prompt_tokens.len()).unwrap_or(u32::MAX),
+            )
         }
     };
 
@@ -673,6 +700,8 @@ pub fn generate_speculative<'model>(
     session
         .begin(MTP_SEQ_ID, &tracked_tokens)
         .map_err(|error| mtp_failure("track the prompt", error))?;
+    // The prefill cost: the prompt evaluation plus its session tracking (ST-5).
+    let prefill_micros = elapsed_micros(prefill_started);
 
     let mut sampler: LlamaSampler =
         super::sampling::build_sampler(model, settings, grammar_spec, seed)?;
@@ -685,6 +714,7 @@ pub fn generate_speculative<'model>(
     // The first token comes straight from the prefill's last output row.
     // `try_sample` already ACCEPTS the token it sampled — an extra `accept` here
     // would advance the grammar twice per token and desynchronise it.
+    let decode_started = Instant::now();
     let mut last_token = sampler
         .try_sample(session.target_context(), -1)
         .map_err(|error| sampling_failure("sample the companion reply", error))?;
@@ -797,6 +827,10 @@ pub fn generate_speculative<'model>(
         n_past = new_n_past;
     }
 
+    // The decode cost: the whole token-sampling loop (ST-5). The decode rate is
+    // `tokens_generated` over this span.
+    let decode_micros = elapsed_micros(decode_started);
+
     // Flush whatever the decoder still holds (a truncated reply stays visible).
     let tail = decoder.finish().map_err(|error| {
         (
@@ -822,7 +856,9 @@ pub fn generate_speculative<'model>(
     Ok(SpeculativeOutcome {
         content,
         tokens_generated,
-        prompt_tokens: prompt_positions as u32,
+        prompt_tokens: prompt_token_count,
+        prefill_micros,
+        decode_micros,
         stopped_on_eog,
         prompt_truncated,
         stats,
