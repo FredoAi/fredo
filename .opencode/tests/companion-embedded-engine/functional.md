@@ -706,10 +706,20 @@
       (`engine/chat_format.rs`, `#[cfg(test)] mod reasoning_probe`, **ST-1's Work item**) renders a
       text turn AND a Doom turn through the pinned GGUF template with `ChatApplyParams.enable_thinking`
       **true vs false** (via `ChatTemplates::from_model` + `ChatApplyParams`).
-  - **Expected:** with the flag **false** the rendered system block contains **no** declared
-    reasoning opener (`applied.thinking_start_tag`, `chat_format.rs:265`); with the flag **true** it
-    does; the probe prints `supports_enable_thinking()` and both renders. This pins the injection
-    shape ST-3 relies on — the template's ACTUAL rendering with the flag off, not an assumption.
+  - **Expected (RE-CUT round 1 — the probe-recorded observable, G-3181/G-428):** with the flag
+    **false** the rendered prompt carries **no** thinking opener at all (a CLEAN system block, no
+    opener); with the flag **true** the template's OWN system-block directive **`<|think|>`** is
+    present (`<|turn>system\n<|think|>\n…`); the crate's declared `applied.thinking_start_tag`
+    (**`<|channel>thought`**) is the ASSISTANT-side runtime channel marker and is **NEVER** rendered
+    into the prompt under **either** flag; the probe prints `supports_enable_thinking()` (**true** for
+    the pinned template) and both renders. This pins the injection shape ST-3 relies on — the
+    template's ACTUAL rendering with the flag off, not an assumption.
+    **Supersession (old → new, verbatim; G-428):** the row previously asserted *"with the flag
+    **false** the rendered system block contains **no** declared reasoning opener
+    (`applied.thinking_start_tag`, `chat_format.rs:265`); with the flag **true** it does"* —
+    **FALSIFIED** by ST-1's model-loaded probe: `thinking_start_tag` (`<|channel>thought`) is NEVER in
+    the prompt, and the off/on toggle is the template directive `<|think|>`. Authorized by the
+    round-1 dispatch (trap 1 / G-3181); recorded here and in the `## Tests Runs` verdict.
   - **Data/precondition:** the GGUF is present (the product's own readiness path). **G-435:** a
     `load_model_or_skip()`-style early return makes the probe PASS vacuously with the model absent —
     the **model-present precondition is stated**, and a run without the model is a **NAMED
