@@ -57,7 +57,7 @@ function writePackage(root, { manifest, files = {} }) {
 function validManifest(overrides = {}) {
   return {
     manifestVersion: 1,
-    id: 'com.example.notes',
+    id: 'com-example-notes',
     displayName: 'Notes',
     version: '1.0.0',
     engines: { fredo: '>=0.1.0' },
@@ -112,6 +112,29 @@ test('check: a missing displayName is manifest_invalid_field naming the field', 
   assert.equal(payload.violations[0].code, 'manifest_invalid_field');
   assert.equal(payload.violations[0].field, 'displayName');
   assert.equal(payload.violations[0].detail, 'displayName is required');
+});
+
+test('check: a dotted id is id_invalid naming the id field (the narrowed charset)', () => {
+  // The kit-side redden control for ST-7. `validate.mjs` builds its id RegExp
+  // from the published schema's own `id.pattern`, so this case cannot pass
+  // while the schema still admits a dot.
+  const dir = path.join(caseRoot, 'dotted-id');
+  writePackage(dir, { manifest: validManifest({ id: 'com.example.notes' }) });
+  const { status, stdout } = run(['check', dir, '--json']);
+  assert.notEqual(status, 0);
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.violations.length, 1);
+  assert.equal(payload.violations[0].code, 'id_invalid');
+  assert.equal(payload.violations[0].field, 'id');
+  assert.match(
+    payload.violations[0].detail,
+    /\^\[a-z0-9\]\[a-z0-9-\]\*/,
+    'the detail must state the narrowed, dot-free pattern',
+  );
+  assert.ok(
+    !payload.violations[0].detail.includes('\\.'),
+    'the detail must no longer advertise a dot segment',
+  );
 });
 
 test('check: a malformed engines range and an excluding range drive DIFFERENT codes', () => {

@@ -172,6 +172,23 @@ open = "5"
 
 [dev-dependencies]
 tempfile = "3"
+# Spec #3145 ST-7 — bind the id↔label contract to Tauri's OWN window-label
+# predicate in tests: `tauri_runtime::window::is_label_valid`, the function
+# `PendingWindow::new` consults when a window is created. The plan named the
+# `tauri` `test` feature, but `tauri` 2.10.3 does not re-export the predicate —
+# `tauri-runtime` does, and it is ALREADY in this graph at exactly 2.10.1
+# (pulled by `tauri` 2.10.3; see `Cargo.lock`), so this is a pinned direct edge
+# to the existing copy, never a second one. Test-only: no runtime dependency.
+#
+# A REAL window-create (`tauri::test::mock_app()` + `WebviewWindowBuilder::build()`)
+# was attempted as the primary pin and is DELIBERATELY NOT used: enabling the
+# `tauri` `test` feature made the lib test binary fail to load in this
+# environment (exit 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND, reproducible), an
+# environment/build-property regression unrelated to the label rule. The plan
+# sanctions this fallback — "otherwise `is_label_valid` IS Tauri's own rule"
+# (`tauri-runtime-2.10.1/src/window.rs:494-498`), and `PendingWindow::new`
+# (`:514-515`) is the one place it is consulted.
+tauri-runtime = "2.10.1"
 
 # Spec #3172 ST-1 — build the in-process engine WITHOUT OpenSSL.
 #

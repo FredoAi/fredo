@@ -266,31 +266,36 @@ pub struct EntryDeclaration {
     pub module: String,
 }
 
-/// The id pattern: `^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$`.
+/// The id pattern: `^[a-z0-9][a-z0-9-]*$`.
 ///
-/// Implemented by hand rather than with a regex crate: the rule is three
-/// clauses, the repo has no `regex` dependency it uses for validation of this
-/// kind, and a hand-written scan gives an exact error message per clause.
+/// Lowercase ASCII letters and digits, starting with a letter or digit, then
+/// letters, digits and hyphens only — **no dots**.
+///
+/// # Why the charset is exactly the label charset
+///
+/// The id is not only an address: it becomes part of the window label
+/// (`installed-<id>`, [`super::window::installed_app_window_label`]). Tauri's
+/// own window-label rule is the alphanumerics plus `-`, `/`, `:` and `_` — a
+/// dot is refused there (`tauri-runtime`, `window::is_label_valid`). The two
+/// charsets are therefore kept EQUAL by construction: a dot is refused here,
+/// as an `id_invalid`, instead of being silently deleted while building the
+/// label (a dot-deleting sanitise is not injective — it would map distinct ids
+/// onto one label, one window, one identity). This is the invariant whose
+/// absence let a dotted id install and then never open.
+///
+/// Implemented by hand rather than with a regex crate: the rule is small, the
+/// repo has no `regex` dependency it uses for validation of this kind, and a
+/// hand-written scan gives an exact error message per clause.
 pub fn is_valid_app_id(id: &str) -> bool {
     if id.is_empty() || id.chars().count() > MAX_APP_ID_CHARS {
         return false;
     }
-    // Split on '.', then validate each dot-separated segment: it must start
-    // with [a-z0-9] and continue with [a-z0-9-].
-    for segment in id.split('.') {
-        if segment.is_empty() {
-            return false;
-        }
-        let mut chars = segment.chars();
-        let first = chars.next().unwrap_or_default();
-        if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-            return false;
-        }
-        if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            return false;
-        }
+    let mut chars = id.chars();
+    let first = chars.next().unwrap_or_default();
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return false;
     }
-    true
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Is `id` one of the built-in application ids?
@@ -363,7 +368,7 @@ pub fn parse_manifest(bytes: &[u8]) -> InstalledAppResult<AppManifest> {
             InstalledAppRefusalCode::IdInvalid,
             "id",
             format!(
-                "id \"{id}\" must match ^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)*$ and be at most \
+                "id \"{id}\" must match ^[a-z0-9][a-z0-9-]*$ and be at most \
                  {MAX_APP_ID_CHARS} characters"
             ),
         ));
@@ -1429,20 +1434,35 @@ mod tests {
     // ── id ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn the_id_pattern_accepts_dotted_and_dashed_ids() {
+    fn the_id_pattern_accepts_dashed_ids_and_refuses_dots() {
         for id in [
             "a",
             "a1",
             "qa3147-sample",
-            "com.example.app",
-            "com.example-app.tool",
+            "com-example-app-tool",
             "9lives",
-            // A trailing dash IS legal under the plan's pattern
-            // (`[a-z0-9][a-z0-9-]*` allows it); kept here as the documented
-            // positive so nobody "tightens" the rule into a behaviour change.
+            // A trailing dash IS legal under the pattern (`[a-z0-9][a-z0-9-]*`
+            // allows it); kept here as the documented positive so nobody
+            // "tightens" the rule into a behaviour change.
             "trailing-dash-",
         ] {
             assert!(is_valid_app_id(id), "{id} should be valid");
+        }
+
+        // A dot is REFUSED — the id becomes part of the window label
+        // (`installed-<id>`) and Tauri's label charset excludes `.`. Round 1
+        // admitted these and the guide's own `com.example.my-app` example then
+        // installed but could never be opened; this is the reddening pin for
+        // that narrowing.
+        for dotted in [
+            "com.example.app",
+            "com.example-app.tool",
+            "dev.example.tools",
+            ".leading-dot",
+            "trailing-dot.",
+            "double..dot",
+        ] {
+            assert!(!is_valid_app_id(dotted), "{dotted:?} must NOT be a valid id");
         }
     }
 
@@ -1517,6 +1537,24 @@ mod tests {
         let error = parse_value(&value).expect_err("bad id");
         assert_eq!(error.code, InstalledAppRefusalCode::IdInvalid);
         assert_eq!(error.field.as_deref(), Some("id"));
+
+        // The narrowed charset: a dotted id is `id_invalid` — the product-side
+        // redden control for ST-7 (a dotted id must be refused at parse, never
+        // installed and then stranded at window-open time).
+        value["id"] = serde_json::json!("com.example.notes");
+        let error = parse_value(&value).expect_err("dotted id");
+        assert_eq!(error.code, InstalledAppRefusalCode::IdInvalid);
+        assert_eq!(error.field.as_deref(), Some("id"));
+        assert!(
+            error.detail.contains("^[a-z0-9][a-z0-9-]*$"),
+            "the detail must name the narrowed pattern: {}",
+            error.detail
+        );
+        assert!(
+            !error.detail.contains("\\."),
+            "the detail must no longer advertise a dot: {}",
+            error.detail
+        );
     }
 
     // ── displayName ────────────────────────────────────────────────────────
@@ -1876,12 +1914,14 @@ mod schema_artifact {
                 },
                 "id": {
                     "type": "string",
-                    "pattern": "^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)*$",
+                    "pattern": "^[a-z0-9][a-z0-9-]*$",
                     "maxLength": MAX_APP_ID_CHARS,
                     "not": { "enum": RESERVED_APP_IDS },
                     "description": concat!(
-                        "Dot-separated lowercase segments; at most 96 characters. The eight ",
-                        "built-in application ids are refused (id_reserved)."
+                        "Lowercase letters, digits and hyphens, starting with a letter or digit; ",
+                        "no dots; at most 96 characters. The id becomes part of your window's ",
+                        "label, so its charset is Tauri's label charset. The eight built-in ",
+                        "application ids are refused (id_reserved)."
                     )
                 },
                 "displayName": {
@@ -2079,6 +2119,17 @@ mod schema_artifact {
     /// The comparison is over the LF-NORMALISED text (G-481): a Windows checkout
     /// materialises the committed file with CRLF while the generator always emits
     /// LF, and a content gate must not depend on the checkout's line ending.
+    ///
+    /// # One source, not two (ST-2)
+    ///
+    /// The committed artifact feeds the authoring kit's `check` **directly**: the
+    /// kit reads `schema/fredo-app.schema.json` and builds its id rule from
+    /// `top.id.pattern` — `packages/fredo-authoring/lib/validate.mjs:316`,
+    /// `const idPattern = new RegExp(top.id.pattern);`. The kit therefore moves
+    /// with the parser automatically; there is no second hand-written id rule to
+    /// keep in step. This gate is what makes that safe: regenerate here and the
+    /// kit's `check`, the guide's `id` rule and the parser's refusal are one
+    /// artifact, or this test fails.
     #[test]
     fn schema_matches_the_committed_artifact() {
         let path = schema_path();

@@ -185,7 +185,7 @@
       "$ref": "#/$defs/entry"
     },
     "id": {
-      "description": "Dot-separated lowercase segments; at most 96 characters. The eight built-in application ids are refused (id_reserved).",
+      "description": "Lowercase letters, digits and hyphens, starting with a letter or digit; no dots; at most 96 characters. The id becomes part of your window's label, so its charset is Tauri's label charset. The eight built-in application ids are refused (id_reserved).",
       "maxLength": 96,
       "not": {
         "enum": [
@@ -199,7 +199,7 @@
           "dev-mode"
         ]
       },
-      "pattern": "^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)*$",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
       "type": "string"
     },
     "manifestVersion": {
