@@ -1,5 +1,45 @@
-# Prevent CRLF round-trip corruption of UTF-8 docs that carry non-ASCII (em-dashes).
-# Git's autocrlf on Windows re-encodes these on checkout, producing mojibake.
+# Repository line-ending policy.
+#
+# Text files are stored as LF in the repository AND checked out as LF.
+#
+# Why the global rule: on a Windows checkout git would otherwise materialise
+# text files as CRLF. Pipeline tooling that writes files directly to a branch
+# through the API (persist_tests / tests-commit) reads those working-tree bytes
+# verbatim, bypassing git's clean filter, so main ends up holding CRLF blobs
+# while the spec branch holds LF ones. Git then reports whole-file changes on
+# files whose text is identical, and merges are refused. `eol=lf` makes the
+# working tree LF as well, so a raw writer copies LF and the divergence cannot
+# be created in the first place.
+#
+# This takes precedence over core.autocrlf (currently `true` on this machine),
+# so no per-machine git config change is required.
+* text=auto eol=lf
+
+# UTF-8 docs carrying non-ASCII (em-dashes): git's autocrlf re-encodes these on
+# checkout and produces mojibake. The rule above already covers them; these are
+# kept explicit because they were the original site of that bug and are worth
+# naming.
 docs/agentic-pipeline/playbooks/references.md text eol=lf
 docs/agentic-pipeline/common-rules.md text eol=lf
 AGENTS.md text eol=lf
+
+# Windows command scripts in the test tree are governed by the LF rule above,
+# deliberately: files under .opencode/tests/** are rewritten by persist_tests,
+# so a CRLF working tree there would recreate the blob divergence. If a shim
+# ever mis-parses under LF (cmd.exe is line-ending sensitive with goto/labels),
+# give that specific fixture `text eol=crlf` — stored LF, checked out CRLF.
+
+# Binary assets: never convert, never attempt a text diff. `text=auto` detects
+# most of these by content, but these types are byte-pinned by tests or are
+# shipped model/font assets, so the intent is declared rather than inferred.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.glb   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.pdf   binary
+*.zip   binary
