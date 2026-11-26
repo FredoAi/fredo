@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "qa3145-theme-neg-base-class",
+  "displayName": "QA3145 Theme Neg Base Class",
+  "version": "1.0.0",
+  "engines": {
+    "fredo": ">=0.0.0"
+  },
+  "entry": {
+    "document": "index.html",
+    "module": "main.js"
+  },
+  "description": "Spec 3145 ST-1 theme-parity fixture: paints only published theme tokens and mirrors every reading as plain visible text for a native accessibility read."
+}
