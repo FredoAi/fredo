@@ -154,6 +154,13 @@ pub struct ChatTurn {
     /// [`ReasoningMode::Disabled`] by [`ChatTurn::text`]; a turn opts in with
     /// [`ChatTurn::with_reasoning`].
     pub reasoning: ReasoningMode,
+    /// The per-turn visual-token BUDGET DECLARATION (Spec #3234, ST-2; R-3a /
+    /// R-5b). `Some(SCREEN_VISUAL_TOKEN_BUDGET)` for a screen capture; `None`
+    /// leaves the turn on the projector's own resolved ceiling (a deliberate,
+    /// bounded default — R-5b). The budget is PROJECTOR-level (the engine owns
+    /// one projector), so this is a declaration the engine records and reads
+    /// back — never a per-bitmap lever.
+    pub visual_token_budget: Option<i32>,
 }
 
 impl ChatTurn {
@@ -169,6 +176,7 @@ impl ChatTurn {
             json_schema: None,
             max_tokens: MAX_TOKENS,
             reasoning: ReasoningMode::Disabled,
+            visual_token_budget: None,
         }
     }
 
@@ -210,6 +218,18 @@ impl ChatTurn {
     /// every turn [`ReasoningMode::Disabled`].
     pub fn with_reasoning(mut self, mode: ReasoningMode) -> Self {
         self.reasoning = mode;
+        self
+    }
+
+    /// Declare this turn's visual-token budget (Spec #3234, ST-2; R-3a / R-5b).
+    ///
+    /// A screen-capture turn declares [`super::multimodal::SCREEN_VISUAL_TOKEN_BUDGET`]
+    /// here. The budget is a PROJECTOR-level ceiling (the engine owns one
+    /// projector), so this declaration records the turn's intent and is read
+    /// back by [`super::multimodal::visual_token_budget_for`] — it is never a
+    /// per-bitmap lever (`MtmdBitmap::from_buf` takes no budget).
+    pub fn with_visual_token_budget(mut self, visual_token_budget: i32) -> Self {
+        self.visual_token_budget = Some(visual_token_budget);
         self
     }
 

@@ -20,14 +20,36 @@
 //! where the media part sits in the message, and this module never guesses at
 //! template structure:
 //!
-//! * an **image** turn renders `[text, image_url]`, so the prompt is
-//!   `…<user text><marker>…` ⇒ parts `[text(user), bitmap(image), text(rest)]`
-//!   (the plan's "text + bitmap");
+//! * an **image** turn renders `[image_url, text]` (the vendor's own guidance:
+//!   "place Image content before the text"), so the prompt is
+//!   `…<marker><user text>…` ⇒ parts `[text(prefix), bitmap(image), text(user)]`
+//!   — the plan's "`[bitmap, text]`" (image BEFORE text);
 //! * an **audio** turn renders exactly ONE `input_audio` part and NO text part
 //!   (`engine/request.rs`'s shipped rule), so the prompt is
 //!   `…<start_of_turn>user\n<marker><end_of_turn>…` ⇒ parts
 //!   `[text, bitmap(audio), text]` with **no transcript text anywhere**
 //!   (#2897 REQ-3: this module NEVER fabricates a transcript).
+//!
+//! ## The visual-token budget is PROJECTOR-level (R-3a / R-5b / R-3c)
+//!
+//! `mtmd`'s visual-token budget is a property of the [`MtmdContext`], set ONCE
+//! at projector creation (`MtmdContextParams::image_max_tokens`,
+//! `mmproj -> clip_context_params`), NOT a parameter of a bitmap:
+//! `MtmdBitmap::from_buf` takes no budget. The engine owns exactly ONE projector,
+//! so [`load_projector`] loads it with [`SCREEN_VISUAL_TOKEN_BUDGET`] (the pinned
+//! Gemma-4 E2B projector's native ceiling — `clip.cpp:1852`). The screen-vs-
+//! non-screen distinction is carried as a per-turn DECLARATION
+//! (`ChatTurn::with_visual_token_budget`, read by [`visual_token_budget_for`]),
+//! and the ENCODED image-token count is recorded on the plan
+//! ([`MediaPlan::image_tokens`]) — the observable budget. There is deliberately
+//! NO per-bitmap budget API.
+//!
+//! ## The fit guard reuses the existing typed refusal (R-5c)
+//!
+//! A multimodal prompt plus its reply that does not fit the context window is
+//! refused with the EXISTING [`CompanionEngineErrorCode::ContextCreateFailed`]
+//! ([`plan_fits_context`]) — never a silent media truncation and never a new
+//! error enum.
 //!
 //! ## Why the encoder's tokens go through the session
 //!
@@ -65,6 +87,63 @@ use super::CompanionEngineErrorCode;
 
 /// The one sequence a turn uses (the retired config pinned `--parallel 1`).
 pub const MEDIA_SEQ_ID: i32 = 0;
+
+// ── The visual-token budget (Spec #3234, ST-2; R-3a / R-5b / R-3c) ────────────
+
+/// The screen-capture visual-token budget (R-3a).
+///
+/// The pinned Gemma-4 E2B projector's native ceiling is ALREADY 1120
+/// (`clip.cpp:1852` `set_limit_image_tokens(70, 1120)`), so this constant
+/// declares that ceiling EXPLICITLY: [`load_projector`] loads the ONE projector
+/// with it as its `image_max_tokens`, which stops a future model-metadata change
+/// from silently lowering the visual detail a screen region reaches the model
+/// with. The budget is PROJECTOR-level, not a per-bitmap parameter —
+/// `MtmdBitmap::from_buf` takes no budget.
+pub const SCREEN_VISUAL_TOKEN_BUDGET: i32 = 1120;
+
+/// The visual-token budget a NON-screen image resolves to (R-5b).
+///
+/// The engine owns exactly ONE projector, loaded at
+/// [`SCREEN_VISUAL_TOKEN_BUDGET`], so a non-screen image resolves to the SAME
+/// deliberate, bounded ceiling — never `0`-by-omission and never unbounded. The
+/// bound R-5b states is on the RESOLVED value (`0 < resolved ≤ 1120`), which is
+/// why this is the resolved ceiling rather than the `0`
+/// "defer-to-model-default" sentinel that would fail the bound.
+pub const NON_SCREEN_VISUAL_TOKEN_BUDGET: i32 = SCREEN_VISUAL_TOKEN_BUDGET;
+
+/// The visual-token budget a turn DECLARES (R-3a / R-5b).
+///
+/// A screen capture declares [`SCREEN_VISUAL_TOKEN_BUDGET`] on its turn
+/// ([`ChatTurn::with_visual_token_budget`]); a turn with no declaration (a
+/// non-screen image) resolves to [`NON_SCREEN_VISUAL_TOKEN_BUDGET`]. Pure, so
+/// the declaration is pinned without a model or a projector.
+pub fn visual_token_budget_for(turn: &ChatTurn) -> i32 {
+    turn
+        .visual_token_budget
+        .unwrap_or(NON_SCREEN_VISUAL_TOKEN_BUDGET)
+}
+
+/// The media-path fit guard (R-5c).
+///
+/// A multimodal prompt plus its reply MUST fit `ctx_size`, or the turn is
+/// refused with the EXISTING [`CompanionEngineErrorCode::ContextCreateFailed`] —
+/// never a silently truncated media turn, and never a new error enum. Pure, so
+/// the refusal is pinned without a model; the media arm of the generator wraps
+/// it.
+pub fn plan_fits_context(
+    plan_tokens: u64,
+    reply_budget: u32,
+    ctx_size: u32,
+) -> Result<(), (CompanionEngineErrorCode, String)> {
+    if plan_tokens.saturating_add(u64::from(reply_budget)) > u64::from(ctx_size) {
+        return Err((
+            CompanionEngineErrorCode::ContextCreateFailed,
+            "the multimodal prompt and its reply do not fit the engine's context window."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
 
 // ── The typed failure ────────────────────────────────────────────────────────
 
@@ -141,15 +220,22 @@ impl MtmdCapability {
 
 /// Load the multimodal projector from the manifest's `vision` path.
 ///
-/// A failure here is the typed [`CompanionEngineErrorCode::MmprojInitFailed`]
-/// refusal — the engine start fails, and no turn can run in a silent
-/// "text-only, media ignored" mode.
+/// The ONE projector is loaded with [`SCREEN_VISUAL_TOKEN_BUDGET`] as its
+/// `image_max_tokens` ceiling (R-3a): the budget is a projector-creation
+/// parameter, so making the intent explicit stops a future model-metadata change
+/// from silently lowering it. A failure here is the typed
+/// [`CompanionEngineErrorCode::MmprojInitFailed`] refusal — the engine start
+/// fails, and no turn can run in a silent "text-only, media ignored" mode.
 pub fn load_projector(
     model: &LlamaModel,
     mmproj: &Path,
 ) -> Result<MtmdContext, (CompanionEngineErrorCode, String)> {
-    MtmdContext::init_from_file(mmproj, model, MtmdContextParams::default())
-        .map_err(|error| mmproj_failure("be initialised", error))
+    MtmdContext::init_from_file(
+        mmproj,
+        model,
+        MtmdContextParams::default().image_max_tokens(SCREEN_VISUAL_TOKEN_BUDGET),
+    )
+    .map_err(|error| mmproj_failure("be initialised", error))
 }
 
 // ── The placement rule (pure) ────────────────────────────────────────────────
@@ -302,6 +388,13 @@ pub struct MediaPlan {
     pub audio_parts: usize,
     /// The number of image attachments the plan carries (0 or 1 in production).
     pub image_parts: usize,
+    /// The ENCODED token count of the plan's image chunk(s) (Spec #3234, ST-2;
+    /// R-3c) — the observable visual budget. `0` when the plan carries no image.
+    /// This is what a live screen-region turn records (the projector reports it
+    /// per chunk via `MtmdInputChunk::n_tokens`), and it is how "an image whose
+    /// visual encoding exceeds 512 tokens evaluates completely" is made
+    /// observable.
+    pub image_tokens: usize,
 }
 
 impl MediaPlan {
@@ -384,12 +477,18 @@ pub fn plan_turn(
     }
 
     // Every text token in prompt order — the session's prompt tracking input.
+    // The ENCODED image-token count is the observable visual budget (R-3c).
     let mut text_tokens = Vec::new();
+    let mut image_tokens = 0usize;
     for chunk in chunks.iter() {
-        if chunk.chunk_type() == MtmdInputChunkType::Text {
-            if let Some(tokens) = chunk.text_tokens() {
-                text_tokens.extend(tokens.iter().map(|raw| LlamaToken(*raw)));
+        match chunk.chunk_type() {
+            MtmdInputChunkType::Text => {
+                if let Some(tokens) = chunk.text_tokens() {
+                    text_tokens.extend(tokens.iter().map(|raw| LlamaToken(*raw)));
+                }
             }
+            MtmdInputChunkType::Image => image_tokens += chunk.n_tokens(),
+            MtmdInputChunkType::Audio => {}
         }
     }
 
@@ -398,6 +497,7 @@ pub fn plan_turn(
         text_tokens,
         audio_parts,
         image_parts,
+        image_tokens,
     })
 }
 

@@ -38,8 +38,9 @@ use llama_cpp_4::mtmd::MtmdContext;
 
 use super::chat_format::ChatFormat;
 use super::multimodal::{
-    interleave, load_projector, plan_turn, prefill_plan, require_projector, MtmdCapability,
-    PromptSegment,
+    interleave, load_projector, plan_fits_context, plan_turn, prefill_plan, require_projector,
+    visual_token_budget_for, MtmdCapability, PromptSegment, NON_SCREEN_VISUAL_TOKEN_BUDGET,
+    SCREEN_VISUAL_TOKEN_BUDGET,
 };
 use super::paths;
 use super::request::{ChatTurn, ContentPart, AUDIO_FORMAT};
@@ -194,7 +195,8 @@ fn a_live_image_turn_names_image_content() {
     let question = "In one short sentence, describe what is visible in this image. \
                     If it shows a desktop or windows, say so and name any visible colours.";
 
-    // (a) The SHIPPED shaping rule: `[text, image_url]` on the last user message.
+    // (a) The SHIPPED shaping rule: `[image_url, text]` on the last user message
+    //     (the vendor's guidance — "place Image content before the text").
     let turn = ChatTurn::text(vec![
         message("system", "You are Fredo, a desktop companion."),
         message("user", question),
@@ -231,10 +233,18 @@ fn a_live_image_turn_names_image_content() {
         .expect("the image plan must tokenise through mtmd");
     assert_eq!(plan.image_parts, 1, "exactly one image attachment");
     assert_eq!(plan.audio_parts, 0, "the image turn carries no audio");
+    // R-3c: the plan RECORDS the encoded image-token count — the observable
+    // budget. A real screen region always encodes to at least one image token.
+    assert!(
+        plan.image_tokens > 0,
+        "the plan must record the ENCODED image-token count (R-3c): image_tokens={}",
+        plan.image_tokens
+    );
     eprintln!(
-        "ST-5 IMAGE PLAN: image_parts={} audio_parts={} prompt_tokens={} (png {} bytes)",
+        "ST-5 IMAGE PLAN: image_parts={} audio_parts={} image_tokens={} prompt_tokens={} (png {} bytes)",
         plan.image_parts,
         plan.audio_parts,
+        plan.image_tokens,
         plan.n_tokens(),
         png.len()
     );
@@ -542,6 +552,10 @@ fn a_live_audio_turn_carries_one_wav_part_and_settles_once() {
         .expect("the audio plan must tokenise through mtmd");
     assert_eq!(plan.audio_parts, 1, "exactly one audio attachment");
     assert_eq!(plan.image_parts, 0, "the audio turn carries no image");
+    assert_eq!(
+        plan.image_tokens, 0,
+        "the audio plan records no image tokens (the audio plan is unchanged)"
+    );
     assert!(plan.n_tokens() > 0);
 
     // The real media prefill: an `mtmd` audio encode + decode against a live
@@ -758,4 +772,100 @@ fn audio_readiness_is_a_projector_fact_not_a_model_name() {
     }
     .audio_ready());
     assert!(!MtmdCapability::default().audio_ready());
+}
+
+// ── The visual-token budget / placement / fit-guard pins (Spec #3234, ST-2) ──
+//
+// R-3a / R-5b / R-3c / R-5c: pure pins that run everywhere (no model needed).
+
+/// R-3a / R-5b: the screen-capture budget is the vendor's ceiling (1120), and a
+/// non-screen image resolves to a deliberate, bounded budget — never 0-by-omission.
+#[test]
+fn the_screen_budget_constant_is_the_ceiling_and_the_non_screen_budget_is_sane() {
+    assert_eq!(
+        SCREEN_VISUAL_TOKEN_BUDGET, 1120,
+        "the screen-capture budget is the vendor's highest supported value"
+    );
+    assert!(
+        NON_SCREEN_VISUAL_TOKEN_BUDGET > 0 && NON_SCREEN_VISUAL_TOKEN_BUDGET <= 1120,
+        "a non-screen image resolves to a deliberate budget in (0, 1120]: {}",
+        NON_SCREEN_VISUAL_TOKEN_BUDGET
+    );
+}
+
+/// R-3a / R-5b: a screen-capture turn declares the screen budget; a non-screen
+/// image (no declaration) resolves to the same deliberate, bounded ceiling.
+#[test]
+fn a_screen_turn_declares_the_screen_budget_and_a_non_screen_image_resolves_sane() {
+    let screen = ChatTurn::text(vec![message("user", "look")])
+        .with_image("QUJD")
+        .with_visual_token_budget(SCREEN_VISUAL_TOKEN_BUDGET);
+    assert_eq!(visual_token_budget_for(&screen), SCREEN_VISUAL_TOKEN_BUDGET);
+    assert_eq!(visual_token_budget_for(&screen), 1120);
+
+    let non_screen = ChatTurn::text(vec![message("user", "look")]).with_image("QUJD");
+    assert_eq!(
+        visual_token_budget_for(&non_screen),
+        NON_SCREEN_VISUAL_TOKEN_BUDGET
+    );
+    let resolved = visual_token_budget_for(&non_screen);
+    assert!(
+        resolved > 0 && resolved <= 1120,
+        "a non-screen image never gets 0-by-omission or an unbounded budget: {resolved}"
+    );
+}
+
+/// R-1c: the media plan evaluates `[bitmap, text]` — the media segment sits in
+/// POSITION 0 and the user's text follows it (image-first, the vendor order).
+#[test]
+fn the_media_plan_evaluates_the_bitmap_before_the_text() {
+    let segments = interleave("<__media__>look at this", "<__media__>", 1)
+        .expect("one marker for one image");
+    assert_eq!(
+        segments,
+        vec![
+            PromptSegment::Text(""),
+            PromptSegment::Media(0),
+            PromptSegment::Text("look at this"),
+        ],
+        "the image turn's parts are [bitmap, text] — media in position 0"
+    );
+    // The media segment precedes the user's text — the vendor order ("place
+    // Image content before the text"). This is the plan's `[bitmap, text]`.
+    let media_at = segments
+        .iter()
+        .position(|segment| matches!(segment, PromptSegment::Media(_)))
+        .expect("the media segment is present");
+    let text_at = segments
+        .iter()
+        .position(|segment| matches!(segment, PromptSegment::Text(t) if *t == "look at this"))
+        .expect("the user's text segment is present");
+    assert!(
+        media_at < text_at,
+        "the bitmap must come BEFORE the user text: {segments:?}"
+    );
+}
+
+/// R-5c: an over-context media plan is refused with the EXISTING typed
+/// `ContextCreateFailed` (no new enum), never truncated; a fitting plan is `Ok`.
+#[test]
+fn an_over_context_media_plan_is_the_existing_typed_refusal() {
+    // Fits exactly — the bound is a strict `>` on `plan + reply > ctx`.
+    assert!(
+        plan_fits_context(130_000, 1_072, 131_072).is_ok(),
+        "plan + reply == ctx fits"
+    );
+
+    let (code, detail) =
+        plan_fits_context(130_000, 1_073, 131_072).expect_err("one token over must refuse");
+    assert_eq!(code, CompanionEngineErrorCode::ContextCreateFailed);
+    assert_eq!(
+        detail,
+        "the multimodal prompt and its reply do not fit the engine's context window."
+    );
+
+    // A plan far over the window refuses the SAME way — never a silent truncation.
+    let (code, _) = plan_fits_context(200_000, 1_024, 131_072)
+        .expect_err("a plan far over the window must refuse");
+    assert_eq!(code, CompanionEngineErrorCode::ContextCreateFailed);
 }

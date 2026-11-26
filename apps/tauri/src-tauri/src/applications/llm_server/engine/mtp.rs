@@ -601,14 +601,14 @@ pub fn generate_speculative<'model>(
     let mut prompt_truncated = false;
     let prompt_tokens = match &media_plan {
         Some(plan) => {
-            let needed = plan.n_tokens() as u64 + u64::from(budget);
-            if needed > u64::from(settings.ctx_size) {
-                return Err((
-                    CompanionEngineErrorCode::ContextCreateFailed,
-                    "the multimodal prompt and its reply do not fit the engine's context window."
-                        .to_string(),
-                ));
-            }
+            // The media-path fit guard is the ONE pure rule (multimodal.rs,
+            // R-5c): a plan that does not fit with its reply is the EXISTING
+            // typed `ContextCreateFailed`, never a silently truncated media turn.
+            super::multimodal::plan_fits_context(
+                plan.n_tokens() as u64,
+                budget,
+                settings.ctx_size,
+            )?;
             Vec::new()
         }
         None => {
@@ -679,6 +679,8 @@ pub fn generate_speculative<'model>(
                 target: "fredo::llm_server",
                 image_parts = plan.image_parts,
                 audio_parts = plan.audio_parts,
+                image_tokens = plan.image_tokens,
+                visual_token_budget = super::multimodal::visual_token_budget_for(turn),
                 prompt_tokens = plan.n_tokens(),
                 prompt_positions = evaluated.n_pos,
                 "companion multimodal prompt evaluated"
