@@ -256,7 +256,14 @@ fn run_with_timeout(mut cmd: std::process::Command, label: &str) -> anyhow::Resu
                 if !status.success() {
                     anyhow::bail!("{} failed: {}", label, String::from_utf8_lossy(&err).trim());
                 }
-                return Ok(String::from_utf8_lossy(&out).trim().to_string());
+                // `trim_end()` — NOT `trim()`. A porcelain status line's FIRST column is
+                // significant (` M <path>`; a leading SPACE is a valid status char), and
+                // `trim()` stripped it from the FIRST line of a multi-line result: the
+                // line became `M <path>`, `porcelain_path`'s fixed `l[3..]` then ate the
+                // path's first character (`.gitattributes` → `gitattributes`), and the
+                // mis-parsed, non-existent path was silently classified as HEAD-equal
+                // (#3145). Preserve every line's leading column; trailing whitespace only.
+                return Ok(String::from_utf8_lossy(&out).trim_end().to_string());
             }
             Ok(None) => {
                 if started.elapsed() > timeout {
@@ -1460,16 +1467,26 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // #3192: the FULL working-tree dirty set (a `git status --porcelain` with
             // no pathspec) is modelled by two markers — `dirty-content` (REAL content
             // changes) and `dirty-eol-only` (EOL-only artefacts with no content
-            // change). Both report as modified here; `git diff --numstat` /
-            // `--ignore-cr-at-eol` tell them apart below.
+            // change). `maint-base-equal` (#3145) models a dirty path whose content
+            // equals the PR base (`origin/main`) but not HEAD. All report as modified
+            // here; `git diff --numstat` / `--ignore-cr-at-eol` tell them apart below.
             {
                 let mut out = String::new();
-                for marker in ["dirty-content", "dirty-eol-only"] {
+                for marker in ["dirty-content", "dirty-eol-only", "maint-base-equal", "maint-base-idx-head"] {
                     if let Some(raw) = mock_read(&mock_file(&[marker])) {
                         for l in raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
                             out.push_str(&format!(" M {}\n", l));
                         }
                     }
+                }
+                // `status-trim-first` reproduces the #3145 ROOT bug offline: the real
+                // `run_with_timeout` `.trim()`ed the whole result, stripping the FIRST
+                // status line's leading space (a valid ` M` status char), which shifted
+                // the first path by one byte and made `porcelain_path` return a WRONG
+                // path (`.gitattributes` → `gitattributes`). Emit the same corruption
+                // here so the parser's robustness is pinned by a test.
+                if mock_file(&["status-trim-first"]).exists() && !out.is_empty() {
+                    out = out[1..].to_string();
                 }
                 if !out.is_empty() {
                     return Ok(out.trim_end().to_string());
@@ -1560,9 +1577,52 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             Ok(String::new())
         }
         "checkout" => {
-            // git checkout -b|-B <branch> [start] (create/reset a LOCAL ref) /
-            // git checkout <branch> (no-op)
+            // git checkout <source> -- <path> — the RECONCILE of a provably-lossless
+            // dirty path to the revision its content already equals (maint-pr, #3145).
+            // The mock has no worktree, so the observable is the recorded path.
+            if args.iter().any(|a| *a == "--") {
+                if let Some(p) = args.iter().position(|a| *a == "--").and_then(|i| args.get(i + 1)).copied() {
+                    // Record `<source>\t<path>`: the reconcile makes the path equal that
+                    // source on BOTH parts, which the diff model below reflects — so the
+                    // reconcile's post-write verification passes.
+                    let source = args.get(1).copied().unwrap_or("");
+                    let entry = format!("{}\t{}", source, p);
+                    let mut cur = mock_read(&mock_file(&["maint-reconciled"])).unwrap_or_default();
+                    if !cur.lines().any(|l| l == entry) {
+                        cur.push_str(&entry);
+                        cur.push('\n');
+                        mock_write(&mock_file(&["maint-reconciled"]), &cur)?;
+                    }
+                }
+                return Ok(String::new());
+            }
+            // git checkout -b|-B <branch> [start] (create/reset a LOCAL ref).
             if args.iter().any(|a| *a == "-b" || *a == "-B") {
+                // Real git REFUSES the switch when a tracked path is modified against
+                // the current branch and would be overwritten — even when its WORKTREE
+                // content already equals the target (a ` M` path: index still at HEAD).
+                // `maint-base-equal` (worktree+index == base) and `maint-base-idx-head`
+                // (worktree == base, index == HEAD) both model such a path, so the mock
+                // refuses until each has been reconciled above (recorded in
+                // `maint-reconciled`) — the exact live error (#3145).
+                let reconciled = mock_read(&mock_file(&["maint-reconciled"])).unwrap_or_default();
+                let is_reconciled = |p: &str| reconciled.lines().any(|l| l.split('\t').nth(1) == Some(p));
+                let mut unreconciled: Vec<String> = Vec::new();
+                for marker in ["maint-base-equal", "maint-base-idx-head"] {
+                    if let Some(raw) = mock_read(&mock_file(&[marker])) {
+                        for p in raw.lines().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+                            if !is_reconciled(p) {
+                                unreconciled.push(p.to_string());
+                            }
+                        }
+                    }
+                }
+                if !unreconciled.is_empty() {
+                    anyhow::bail!(
+                        "error: Your local changes to the following files would be overwritten by checkout:\n\t{}\nPlease commit your changes or stash them before you switch branches.\nAborting",
+                        unreconciled.join("\n\t")
+                    );
+                }
                 let branch = args.get(2).copied().unwrap_or("");
                 if !branch.is_empty() {
                     mock_local_ref_write(branch)?;
@@ -1606,22 +1666,55 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                 }
                 return Ok(String::new());
             }
-            // #3192: the EOL-only distinction. `git diff --numstat -- <path>` and
-            // `git diff --ignore-cr-at-eol [--cached] <rev> -- <path>`: a path listed
-            // in the `dirty-eol-only` marker carries NO content change (both outputs
-            // empty). `align-redundant` models the OTHER provably-lossless case for
-            // align-root: an uncommitted path whose content EQUALS the target
-            // (EOL-insensitive), so a checkout restores it losslessly. Every other
-            // path reports a real change — default-to-real is the fail-closed direction.
+            // #3192 / #3145: the content-loss exemption. `git diff --numstat -- <path>`
+            // and `git diff --ignore-cr-at-eol [--cached] <rev> -- <path>`: a path listed
+            // in `dirty-eol-only` (EOL-only vs HEAD) or `align-redundant` (content equals
+            // the align target) carries NO content change for the rev it models, so both
+            // outputs are empty for ANY rev probe. `maint-base-equal` models the #3145
+            // base-relative case: an uncommitted path whose content EQUALS the PR base
+            // (`origin/main`) but DIFFERS from HEAD — empty ONLY for the base-relative
+            // probe, a real change for every HEAD-equality probe (fail closed). Every
+            // other path reports a real change — default-to-real is the fail-closed
+            // direction.
             if args.iter().any(|a| *a == "--numstat" || *a == "--ignore-cr-at-eol") {
                 let path = args.iter().position(|a| *a == "--").and_then(|i| args.get(i + 1)).copied().unwrap_or("");
+                // The revision the caller compares against, when it names one (the
+                // `git diff --ignore-cr-at-eol <rev> -- <path>` form); the no-rev form
+                // (worktree vs index) names none.
+                let rev = args.iter().copied()
+                    .skip(1)
+                    .take_while(|a| *a != "--")
+                    .find(|a| !a.starts_with('-'))
+                    .unwrap_or("");
                 let listed = |marker: &str| mock_read(&mock_file(&[marker]))
                     .map(|raw| raw.lines().any(|l| l.trim() == path))
                     .unwrap_or(false);
+                // A path already RECONCILED to `rev` now equals it (both parts) — model
+                // that so the reconcile's post-write verification passes.
+                if mock_read(&mock_file(&["maint-reconciled"]))
+                    .map(|raw| raw.lines().any(|l| l == format!("{}\t{}", rev, path)))
+                    .unwrap_or(false)
+                {
+                    return Ok(String::new());
+                }
                 let eol_only = listed("dirty-eol-only");
                 let redundant = listed("align-redundant");
                 if eol_only || redundant {
                     return Ok(String::new());
+                }
+                if listed("maint-base-equal") && rev == "origin/main" {
+                    return Ok(String::new());
+                }
+                // `maint-base-idx-head` (#3145, the `.gitattributes` shape): the WORKTREE
+                // equals the PR base, the INDEX still equals HEAD — empty for the
+                // worktree-vs-base and index-vs-HEAD probes, a real change for
+                // worktree-vs-HEAD and index-vs-base. The classifier must still send it
+                // to the BASE, and the reconcile asserts on BOTH parts.
+                if listed("maint-base-idx-head") {
+                    let cached = args.iter().any(|a| *a == "--cached");
+                    if (!cached && rev == "origin/main") || (cached && rev == "HEAD") {
+                        return Ok(String::new());
+                    }
                 }
                 if args.iter().any(|a| *a == "--numstat") {
                     return Ok(format!("1\t0\t{}", path));
@@ -3043,7 +3136,13 @@ fn porcelain_path(line: &str) -> Option<String> {
     if l.len() < 4 {
         return None;
     }
-    let rest = &l[3..];
+    // Porcelain is `XY <path>` (path at byte 3). Defensive: a result whose leading
+    // whitespace was trimmed (the #3145 runner bug) leaves the FIRST line as
+    // `X <path>` — one column short — so if the separator is not at index 2, the path
+    // starts at index 2. Without this a leading-` M` path parsed one byte long
+    // (`.gitattributes` → `gitattributes`) and was silently mis-classified.
+    let start = if l.as_bytes().get(2) == Some(&b' ') { 3 } else { 2 };
+    let rest = &l[start..];
     let path = match rest.find(" -> ") {
         Some(i) => &rest[i + 4..],
         None => rest,
@@ -3052,43 +3151,155 @@ fn porcelain_path(line: &str) -> Option<String> {
     if p.is_empty() { None } else { Some(p.to_string()) }
 }
 
-/// True when `path` carries a **real content change** in the working tree.
+/// The verdict on a dirty path for a `maint-pr` checkout: is writing the PR's base
+/// (`origin/main`) over it lossless, and on which basis?
 ///
-/// git refuses to switch branches when a dirty path would be overwritten. An
-/// **EOL-only artefact** (a CRLF/autocrlf rewrite, build-generated churn such as
-/// `apps/tauri/src-tauri/gen/schemas/*` or `Cargo.toml`) shows up in `git status`
-/// yet carries **no content change at all**: `git diff --numstat` is empty and the
-/// `--ignore-cr-at-eol` patch is empty. Such a path cannot be overwritten
-/// meaningfully, so it must never block a checkout nor be named as the reason for a
-/// refusal (#3192). Any answer other than "both diffs are empty" — including git
-/// failing to answer — counts as a real change (fail closed).
-fn path_has_content_change(path: &str) -> bool {
-    match run_cmd("git", &["diff", "--numstat", "--", path]) {
-        Ok(out) if out.trim().is_empty() => {}
-        _ => return true,
+/// The hazard a `maint-pr` checkout poses is **content loss against the base it
+/// writes**, not dirt against HEAD. The serving checkout stays on `spec/<N>`, which
+/// can predate a human commit on `main`, so a path can be dirty against HEAD yet
+/// byte-equal (EOL-insensitively) to the `origin/main` the checkout writes — the
+/// #3145 false positive.
+///
+/// A checkout rewrites BOTH the worktree and the index; it loses nothing only when
+/// each is either **what it will write** (`origin/main`) or **what is already
+/// committed** (`HEAD`, recoverable). Expressed on the ONE predicate `align-root`
+/// uses to call a dirty path **provably redundant** — `rev_content_matches`'s core,
+/// `worktree_matches_rev` / `index_matches_rev` (EOL-insensitive) — the verdicts are:
+///   - `HeadEqual` — worktree **and** index both equal `HEAD`: no uncommitted content
+///     at all (the #3192 EOL-only / stat-only artefact); restored losslessly from HEAD.
+///     This is the #3192 EOL exemption, **folded onto the same basis** as `BaseEqual`;
+///   - `BaseEqual` — neither part would lose work: `(worktree == HEAD or origin/main)`
+///     and `(index == HEAD or origin/main)`. The #3145 case (worktree == the base the
+///     checkout writes, index still at HEAD) and the planning-time `tests-commit`
+///     reconcile (index == the base) are both instances;
+///   - `Real` — some part differs from BOTH `HEAD` and `origin/main`: real in-flight
+///     work, never overwritten.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+enum MaintDirty {
+    BaseEqual,
+    HeadEqual,
+    Real,
+}
+
+fn classify_maint_dirty(dir: &std::path::Path, path: &str) -> MaintDirty {
+    let wt_head = worktree_matches_rev(dir, "HEAD", path);
+    let idx_head = index_matches_rev(dir, "HEAD", path);
+    if wt_head && idx_head {
+        return MaintDirty::HeadEqual;
     }
-    match run_cmd("git", &["diff", "--ignore-cr-at-eol", "--", path]) {
-        Ok(out) => !out.trim().is_empty(),
-        Err(_) => true,
+    let wt_base = worktree_matches_rev(dir, "origin/main", path);
+    let idx_base = index_matches_rev(dir, "origin/main", path);
+    // The WORKTREE picks the source revision — a reconcile must never write a revision
+    // the on-disk content does not equal — and the index must hold nothing the write
+    // would lose (it is at the base or at HEAD, recoverable). `.gitattributes` is the
+    // exact case `wt_base && idx_head`: worktree == the base, index still at HEAD.
+    if wt_base && (idx_base || idx_head) {
+        return MaintDirty::BaseEqual;
     }
+    MaintDirty::Real
+}
+
+/// True when `path`'s **working-tree** content equals `rev`'s copy (EOL-insensitive):
+/// a checkout that writes `rev` over the worktree loses no worktree content. An
+/// unreadable answer is `false` — callers treat "unknown" as real work (fail closed).
+fn worktree_matches_rev(dir: &std::path::Path, rev: &str, path: &str) -> bool {
+    matches!(
+        run_git_in(dir, &["diff", "--ignore-cr-at-eol", rev, "--", path]),
+        Ok(out) if out.trim().is_empty()
+    )
+}
+
+/// True when `path`'s **index** content equals `rev`'s copy (EOL-insensitive): a
+/// checkout that rewrites the index with `rev` loses no staged content. Fail closed.
+fn index_matches_rev(dir: &std::path::Path, rev: &str, path: &str) -> bool {
+    matches!(
+        run_git_in(dir, &["diff", "--cached", "--ignore-cr-at-eol", rev, "--", path]),
+        Ok(out) if out.trim().is_empty()
+    )
 }
 
 /// True when `path`'s **uncommitted content equals `rev`'s copy** (EOL-insensitive),
 /// so a checkout that writes `rev`'s copy over it would lose nothing. Both the
 /// worktree and the index are compared: `git checkout` may refuse on either. An
 /// unreadable or unresolvable answer is `false` — callers treat "unknown" as real
-/// work (fail closed).
+/// work (fail closed). The #3196-family contract `align-root` depends on.
 fn rev_content_matches(dir: &std::path::Path, rev: &str, path: &str) -> bool {
-    for args in [
-        vec!["diff", "--ignore-cr-at-eol", rev, "--", path],
-        vec!["diff", "--cached", "--ignore-cr-at-eol", rev, "--", path],
-    ] {
-        match run_git_in(dir, &args) {
-            Ok(out) if out.trim().is_empty() => {}
-            _ => return false,
-        }
+    worktree_matches_rev(dir, rev, path) && index_matches_rev(dir, rev, path)
+}
+
+/// The revision a **provably-lossless** dirty path is reconciled to before a switch:
+/// the one its content already equals — `origin/main` for `BaseEqual`, `HEAD` for
+/// `HeadEqual`. `Real` has no source (never reconciled). ONE mapping, driven by
+/// `classify_maint_dirty`'s verdict (not a second, drift-prone branch).
+fn reconcile_source(class: MaintDirty) -> Option<&'static str> {
+    match class {
+        MaintDirty::BaseEqual => Some("origin/main"),
+        MaintDirty::HeadEqual => Some("HEAD"),
+        MaintDirty::Real => None,
     }
-    true
+}
+
+/// Bring BOTH the index and the worktree of a provably-lossless dirty `path` to the
+/// revision its content already equals, so `git checkout -B <branch> <base>` accepts
+/// the switch. `git checkout` refuses a path that is modified against the current
+/// branch and differs from the target **even when its worktree content already equals
+/// the target** (a ` M` path: index at HEAD, worktree at the base) — the #3145 second
+/// half; this reconcile clears git's own precondition for **every** such path,
+/// including ones OUTSIDE the PR's committed set (e.g. `.gitattributes`).
+///
+/// **Never reconciles to a revision the content does not equal, and never fails
+/// silently.** BEFORE the write the equality assertion is re-run with the SAME
+/// predicate, judging **both** the worktree and the index and naming **both**
+/// revisions considered (`HEAD` and `origin/main`); a failed assertion returns an
+/// error naming the path, the expected revision and the actual diff, WITHOUT writing.
+/// AFTER the write the index+worktree are verified to equal `source`. The reconcile is
+/// content-neutral by construction (the content already equals `source`), so no work
+/// is lost and it is NEVER written to a revision it does not equal — reconciling a
+/// base-equal path to HEAD would silently disable the line-ending policy for this
+/// checkout (#3145: invisible damage — no error, no diff in any artefact).
+fn reconcile_lossless_path(dir: &std::path::Path, path: &str, class: MaintDirty) -> anyhow::Result<()> {
+    let source = match reconcile_source(class) {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    // BEFORE the write — assert the content equals `source` on BOTH parts, naming both
+    // revisions considered. The worktree must equal `source` (the on-disk content is
+    // what the reconcile writes over); the index must be at `source` or at HEAD
+    // (already committed), so the write loses nothing.
+    let wt_head = worktree_matches_rev(dir, "HEAD", path);
+    let idx_head = index_matches_rev(dir, "HEAD", path);
+    let wt_base = worktree_matches_rev(dir, "origin/main", path);
+    let idx_base = index_matches_rev(dir, "origin/main", path);
+    let wt_src = if source == "HEAD" { wt_head } else { wt_base };
+    let idx_src = if source == "HEAD" { idx_head } else { idx_base };
+    if !(wt_src && (idx_src || idx_head)) {
+        anyhow::bail!(
+            "REFUSED to reconcile `{}` to `{}`: its content does not equal that revision. Considered `HEAD` [worktree={} index={}] and `origin/main` [worktree={} index={}]; actual diff vs `{}`: {}. A path is never reconciled to a revision its content does not equal.",
+            path, source, wt_head, idx_head, wt_base, idx_base, source, diff_numstat(dir, source, path)
+        );
+    }
+    // THE WRITE — restore index + worktree to `source` (content-neutral per the assertion).
+    run_git_in(dir, &["checkout", source, "--", path])
+        .map_err(|e| anyhow::anyhow!("reconcile `{}` to `{}` FAILED: {}", path, source, e))?;
+    // AFTER the write — verify it took; a silent no-op is exactly what let
+    // `.gitattributes` block the switch for three rounds (#3145).
+    if !(worktree_matches_rev(dir, source, path) && index_matches_rev(dir, source, path)) {
+        anyhow::bail!(
+            "reconcile `{}` to `{}` DID NOT TAKE — the worktree/index still differ from `{}`: {}",
+            path, source, source, diff_numstat(dir, source, path)
+        );
+    }
+    Ok(())
+}
+
+/// The `--numstat` summary of `path` vs `rev`, for a reconcile failure message —
+/// `added<TAB>deleted<TAB>path`, or `<no diff>` when empty/unreadable.
+fn diff_numstat(dir: &std::path::Path, rev: &str, path: &str) -> String {
+    run_git_in(dir, &["diff", "--numstat", rev, "--", path])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "<no diff>".to_string())
 }
 
 /// **`align-root`** — put the repo root ON the spec tip, safely, so the
@@ -3276,12 +3487,18 @@ fn align_root(issue: u32, actor: &str) -> anyhow::Result<()> {
 /// An already-open `maint/<N>` PR (a failed earlier attempt) is closed and its stale
 /// head dropped before a clean PR is opened and merged (idempotent recovery).
 ///
-/// **Checkout cleanliness (#3192):** `git checkout -B maint/<N> origin/main`
-/// rewrites EVERY path that differs between HEAD and `origin/main`, so the refusal
-/// set is the full dirty × changed intersection (not just the post-audit paths). An
-/// EOL-only path — `git diff --numstat` empty AND the `--ignore-cr-at-eol` patch
-/// empty — is exempt and restored losslessly from HEAD; a path with a REAL content
-/// change still refuses, and is named.
+/// **Checkout cleanliness (#3192, base-relative #3145):** `git checkout -B
+/// maint/<N> origin/main` rewrites EVERY path that differs between HEAD and
+/// `origin/main`, so the refusal set is the full dirty × changed intersection (not
+/// just the post-audit paths). A dirty path is judged by **content loss against the
+/// PR's base `origin/main`**, not by dirt against HEAD (the serving checkout stays
+/// on `spec/<N>`, which can predate a human commit on `main`): a base-equal path
+/// (content equals `origin/main` EOL-insensitively) and a HEAD-equal EOL-only path
+/// are both exempt, and each is RECONCILED to the revision its content already
+/// equals before the switch — `git checkout -B` refuses a ` M` path even when its
+/// working tree already equals the target. Both use the ONE `align-root` predicate
+/// (`rev_content_matches`), see `classify_maint_dirty` / `reconcile_lossless_path`.
+/// A path whose content differs from BOTH still refuses, and is named.
 fn post_audit_maint_pr(
     issue: u32,
     actor: &str,
@@ -3365,11 +3582,16 @@ fn post_audit_maint_pr(
     // blocks the checkout just the same. Switching the base rewrites those paths;
     // a forced checkout would discard the pending edit.
     //
-    // An **EOL-only artefact** is exempt: `git diff --numstat` reports nothing and
-    // the `--ignore-cr-at-eol` patch is empty, so the path carries no content change
-    // and cannot be overwritten meaningfully. It is restored losslessly from HEAD so
-    // the checkout cannot trip on it. A path with a REAL content change still
-    // refuses, and is named. Untracked paths (`??`) are always treated as real.
+    // A dirty path is judged by CONTENT LOSS AGAINST THE BASE (#3145), not by dirt
+    // against HEAD: the serving checkout stays on `spec/<N>`, which can predate a
+    // human commit on `main`, so a path can be dirty against HEAD yet byte-equal
+    // (EOL-insensitively) to the `origin/main` the checkout writes. `classify_maint_dirty`
+    // applies the ONE `align-root` predicate to the base and to HEAD: a base-equal path
+    // and a HEAD-equal (EOL-only) path are both exempt, and each is RECONCILED to the
+    // revision its content already equals before the switch (git refuses a ` M` path even
+    // when its working tree already equals the target); only a path differing from BOTH
+    // refuses. Untracked paths (`??`) always count as real.
+    let root = project_root()?;
     let changed_all_raw = run_cmd("git", &["diff", "--name-only", "HEAD", "origin/main"])?;
     let changed_all: Vec<String> = changed_all_raw
         .lines()
@@ -3384,54 +3606,85 @@ fn post_audit_maint_pr(
         .filter(|(_, p)| !p.is_empty())
         .collect();
     let mut real_dirty: Vec<String> = Vec::new();
-    let mut eol_only: Vec<String> = Vec::new();
+    let mut exempt: Vec<(String, MaintDirty)> = Vec::new();
     for (code, path) in &dirty_all {
-        if !changed_all.iter().any(|c| c == path) {
+        // An untracked path has no committed copy at either rev, so a tree diff can
+        // never prove it recoverable — and only a path the switch would rewrite can
+        // block it, so gate on `changed_all` (as before).
+        if code.contains('?') {
+            if changed_all.iter().any(|c| c == path) {
+                real_dirty.push(path.clone());
+            }
             continue;
         }
-        if code.contains('?') || path_has_content_change(path) {
-            real_dirty.push(path.clone());
-        } else {
-            eol_only.push(path.clone());
+        match classify_maint_dirty(&root, path) {
+            MaintDirty::Real => {
+                // Not every dirty path can block the switch — only one it would
+                // rewrite. A Real path outside `changed_all` (e.g. this run's own
+                // doc-sync edits outside the changed set) is neither refused nor
+                // reconciled; it just rides along into the PR.
+                if changed_all.iter().any(|c| c == path) {
+                    real_dirty.push(path.clone());
+                }
+            }
+            cls => exempt.push((path.clone(), cls)),
         }
     }
     real_dirty.sort();
     real_dirty.dedup();
-    eol_only.sort();
-    eol_only.dedup();
     if !real_dirty.is_empty() {
         anyhow::bail!(
-            "REFUSED: building the SPEC MAINT PR for #{} on origin/main would overwrite uncommitted changes in {} path(s): {}. These carry REAL content changes (`git diff --numstat` is non-empty). Commit, stash, or move them (under .opencode/tmp/{}/) before re-running `maint-pr` — the machine never forces a checkout and never discards your work. (An EOL-only artefact — `--numstat` empty AND the `--ignore-cr-at-eol` patch empty — is exempt and never blocks.)",
+            "REFUSED: building the SPEC MAINT PR for #{} on origin/main would overwrite uncommitted changes in {} path(s): {}. These carry REAL content changes — their content differs from BOTH the PR base (`origin/main`) and HEAD, so they hold genuine in-flight work. Do NOT expect to move them aside: no addressed role holds a grant to move a repo-root file (their file grants all target .opencode/**). REPORT this to the human (commit the work, or the human authorises a set-aside); the machine never forces a checkout and never discards work, so the gate stays blocked until it is reported. (A dirty path whose content equals the base `origin/main`, or equals HEAD EOL-insensitively, is exempt and never blocks.)",
             issue,
             real_dirty.len(),
             real_dirty.join(", "),
-            issue
+        );
+    }
+    exempt.sort();
+    exempt.dedup();
+    // RECONCILE every provably-lossless dirty path to the revision its content already
+    // equals — ONE reconcile path, source parameterised by the verdict (#3145's second
+    // half). `git checkout -B maint/<N> origin/main` refuses a ` M` path (index at HEAD,
+    // worktree at the base) EVEN when its worktree content already equals the target, so
+    // git's own precondition must be cleared for every such path — including ones
+    // OUTSIDE the PR's committed set (e.g. `.gitattributes`).
+    let base_equal: Vec<String> = exempt.iter()
+        .filter(|(_, c)| *c == MaintDirty::BaseEqual)
+        .map(|(p, _)| p.clone())
+        .collect();
+    let eol_only: Vec<String> = exempt.iter()
+        .filter(|(_, c)| *c == MaintDirty::HeadEqual)
+        .map(|(p, _)| p.clone())
+        .collect();
+    for (p, cls) in &exempt {
+        reconcile_lossless_path(&root, p, *cls)?;
+    }
+    if !base_equal.is_empty() {
+        println!(
+            "NOTE: reconciling {} base-equal dirty path(s) to the PR base `origin/main` before the switch — uncommitted content already equals the base (EOL-insensitive), so the reconcile (index + worktree → the base) is content-neutral and loses nothing: {}.",
+            base_equal.len(),
+            base_equal.join(", ")
         );
     }
     if !eol_only.is_empty() {
         println!(
-            "NOTE: ignoring {} EOL-only artefact path(s) — no content change (`git diff --numstat` empty, `--ignore-cr-at-eol` patch empty), so nothing can be overwritten: {}. Restored losslessly from HEAD.",
+            "NOTE: reconciling {} EOL-only artefact path(s) to HEAD before the switch — uncommitted content equals HEAD (EOL-insensitive), so there is no content change to lose: {}.",
             eol_only.len(),
             eol_only.join(", ")
         );
-        for p in &eol_only {
-            // Lossless by definition: there is no content change to discard. Restoring
-            // makes the subsequent checkout clean instead of tripping over a stat-only
-            // entry. Best-effort — an untracked path is never exempt.
-            let _ = run_cmd("git", &["checkout", "HEAD", "--", p]);
-        }
     }
     // Safety (G-1976): the post-audit paths specifically. Still refuses a REAL
-    // pending edit on a path `main` changed (never clobbers); EOL-only paths are
-    // exempt by the same rule as above.
+    // pending edit on a path `main` changed (never clobbers). The exemption is the
+    // SAME content predicate as the sweep above (`classify_maint_dirty`): a
+    // base-equal or HEAD-equal (EOL-only) path is provably lossless and exempt.
     let mut diff_args: Vec<&str> = vec!["diff", "--name-only", "HEAD", "origin/main", "--"];
     diff_args.extend(PATHS.iter().copied());
     let base_changed = run_cmd("git", &diff_args)?;
-    // `git status --porcelain` lines are `XY <path>` (path starts at column 3).
+    // `git status --porcelain` lines are `XY <path>`; `porcelain_path` parses the
+    // path robustly (a fixed column offset mis-read the FIRST line — #3145).
     let dirty_paths: Vec<String> = dirty
         .lines()
-        .filter_map(|line| line.get(3..).map(|p| p.trim().to_string()))
-        .filter(|p| !p.is_empty())
+        .filter_map(porcelain_path)
         .collect();
     let mut clobbered: Vec<String> = base_changed
         .lines()
@@ -3440,25 +3693,29 @@ fn post_audit_maint_pr(
         .collect();
     clobbered.sort();
     clobbered.dedup();
-    let (clobbered_real, clobbered_eol): (Vec<String>, Vec<String>) = clobbered
-        .into_iter()
-        .partition(|p| path_has_content_change(p));
-    if !clobbered_eol.is_empty() {
+    let mut clobbered_real: Vec<String> = Vec::new();
+    let mut clobbered_exempt: Vec<(String, MaintDirty)> = Vec::new();
+    for p in clobbered {
+        match classify_maint_dirty(&root, &p) {
+            MaintDirty::Real => clobbered_real.push(p),
+            cls => clobbered_exempt.push((p, cls)),
+        }
+    }
+    if !clobbered_exempt.is_empty() {
         println!(
-            "NOTE: ignoring {} EOL-only artefact path(s) on post-audit paths — no content change, exempt from the G-1976 refusal: {}",
-            clobbered_eol.len(),
-            clobbered_eol.join(", ")
+            "NOTE: reconciling {} provably-lossless dirty path(s) on post-audit paths to the revision their content already equals (base `origin/main` or HEAD) — no work can be lost; exempt from the G-1976 refusal: {}",
+            clobbered_exempt.len(),
+            clobbered_exempt.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ")
         );
-        for p in &clobbered_eol {
-            let _ = run_cmd("git", &["checkout", "HEAD", "--", p]);
+        for (p, cls) in &clobbered_exempt {
+            reconcile_lossless_path(&root, p, *cls)?;
         }
     }
     if !clobbered_real.is_empty() {
         anyhow::bail!(
-            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. These carry REAL content changes (`git diff --numstat` non-empty); preserve them (commit, or copy under .opencode/tmp/{}/) and reconcile before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed. (EOL-only artefacts are exempt and never named here.)",
+            "cannot base the SPEC MAINT PR for #{} on origin/main: pending post-audit edit(s) overlap path(s) changed on main: {}. These carry REAL content changes — their content differs from BOTH the base `origin/main` and HEAD. Preserve them and REPORT this to the human (commit the work, or the human authorises a set-aside) before re-running `maint-pr` — refusing to discard them (G-1976); the post-audit gate failed. (Base-equal and EOL-only paths are exempt and never named here.)",
             issue,
             clobbered_real.join(", "),
-            issue
         );
     }
     // Create/reset the branch on origin/main, carrying the working-tree edits.
@@ -3994,6 +4251,42 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
     if digits.is_empty() { None } else { digits.parse().ok() }
 }
 
+/// Return `bytes` with CRLF (`\r\n`) normalized to LF (`\n`) when the content is
+/// TEXT, or the bytes unchanged when it is BINARY.
+///
+/// WHY: `persist_tests` writes the RAW working-tree bytes to `main` through the
+/// GitHub Contents API, which bypasses git's clean filter. On a Windows checkout
+/// (`core.autocrlf` set globally) the working tree materialises CRLF, while every
+/// commit made through git stores LF (the clean filter normalizes CRLF→LF on
+/// `git add`/`commit`). Without this normalization a `tests-commit` write puts CRLF
+/// blobs on `main` for text that the spec branch stores as LF, and `sync-spec-branch`
+/// then reports a CONFLICT on files that are byte-identical modulo CR — a whole-file
+/// EOL artefact, never a content difference (#3145). Normalizing here makes the
+/// Contents-API write equivalent to what git itself would have stored.
+///
+/// Heuristic (small + conservative): a file is TEXT unless its first 8 KiB contain a
+/// NUL byte — the classic binary sniff. Binary content is returned byte-exact. Only
+/// the CRLF pair is collapsed (a lone CR is preserved), matching git's own
+/// `crlf_to_git` clean filter.
+fn normalize_line_endings(bytes: Vec<u8>) -> Vec<u8> {
+    let sniff_len = bytes.len().min(8192);
+    if bytes[..sniff_len].contains(&0u8) {
+        return bytes;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Persist one feature-domain test suite `.opencode/tests/<feature>/` to `main`.
 /// Returns the number of files persisted (0 when the suite does not exist yet).
 /// Reused by the `tests-commit` action and the transition side-effect.
@@ -4004,6 +4297,12 @@ fn plan_feature(plan_issue: u32) -> Option<u32> {
 /// them from `main` SILENTLY and forced a developer to commit them on the spec
 /// branch instead (#3197). Silence is the defect: anything that cannot be persisted
 /// is collected and the call REFUSES LOUDLY, naming every unpersisted path.
+///
+/// TEXT content is persisted LF-normalized (CRLF→LF) and BINARY content is persisted
+/// byte-exact — `normalize_line_endings` documents why. The Contents API write bypasses
+/// git's clean filter, so an un-normalized write of a Windows working tree (CRLF) put
+/// CRLF blobs on `main` while every git-committed blob on `spec/<N>` carries LF, and
+/// `sync-spec-branch` then conflicted on EOL alone across whole files (#3145).
 fn persist_tests(feature: &str) -> anyhow::Result<usize> {
     let dir = project_root()?.join(".opencode").join("tests").join(feature);
     if !dir.is_dir() {
@@ -4037,6 +4336,7 @@ fn persist_tests(feature: &str) -> anyhow::Result<usize> {
             Ok(b) => b,
             Err(e) => { failed.push(format!("{} (read failed: {})", rel, e)); continue; }
         };
+        let bytes = normalize_line_endings(bytes);
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         match upsert_file(&repo, "main", &rel, &encoded, &format!("tests({}): update {}", feature, rel_suffix)) {
             Ok(()) => persisted.push(path.clone()),
