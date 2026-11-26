@@ -47,9 +47,12 @@
  *
  * # The absent-key rule at the render boundary (G-413)
  *
- * `description` and `failureCode` arrive as ABSENT KEYS when unset, so each
- * renders only when present — a `null`/`undefined` never reaches the DOM.
- * `capabilities` is the opposite guarantee: ALWAYS present, read directly.
+ * `failureCode` arrives as an ABSENT KEY when unset and renders only when
+ * present. `description` also arrives as an absent key, but its absence is now a
+ * VISIBLE state (Spec #3244, AC-1): the description slot renders the typed muted
+ * marker (`NO_DESCRIPTION_MARKER`) instead of nothing. Either way a
+ * `null`/`undefined` never reaches the DOM. `capabilities` is the opposite
+ * guarantee: ALWAYS present, read directly.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -158,6 +161,18 @@ export const STATE_LEGEND_LINE =
 
 /** The muted helper shown under a `disabled` row (only true while it is off). */
 export const DISABLED_HELPER_LINE = "It can't be opened while it's turned off.";
+
+/**
+ * The typed muted marker rendered at the description slot when an installed
+ * application declares NO description (Spec #3244, AC-1; UI/UX §1b).
+ *
+ * The absence is redefined from "render nothing" to this typed marker: an author
+ * auditing their installs can see, without launching the app, WHY it is not
+ * intelligible to Fredo. It is deliberately NOT an install-refusal sentence (no
+ * new refusal code) and it carries the state as TEXT — never colour alone.
+ */
+export const NO_DESCRIPTION_MARKER =
+  "No description — Fredo can't understand this app until it declares one.";
 
 /** The turn-off control's accessible name (contains the visible label). */
 export function turnOffLabel(displayName: string): string {
@@ -397,12 +412,26 @@ const InstalledAppRow: React.FC<InstalledAppRowProps> = ({
           {entry.id} @ {entry.version}
           {entry.enginesFredo ? ` · Fredo ${entry.enginesFredo}` : ''}
         </Text>
-        {/* Present-key only: an absent description never becomes a DOM value. */}
-        {entry.description !== undefined ? (
+        {/* The description slot. A present, non-blank description renders as
+            itself; an absent (or blank) one renders the typed muted marker —
+            NEVER nothing (Spec #3244 AC-1 / UI/UX §1b), and never `undefined`
+            or `null` in the DOM (G-413). */}
+        {entry.description !== undefined && entry.description.trim() !== '' ? (
           <Text fontSize="xs" color="fg.muted" lineClamp={2} mt={0.5}>
             {entry.description}
           </Text>
-        ) : null}
+        ) : (
+          <Text
+            data-testid="installed-apps-entry-no-description"
+            role="status"
+            fontSize="xs"
+            color="fg.muted"
+            lineClamp={2}
+            mt={0.5}
+          >
+            {NO_DESCRIPTION_MARKER}
+          </Text>
+        )}
         {/* Present iff failing; the code is the machine witness, the sentence is
             the inventory's own copy (never an install-time claim — Adjudication 10.4). */}
         {entry.state === 'failing' ? (

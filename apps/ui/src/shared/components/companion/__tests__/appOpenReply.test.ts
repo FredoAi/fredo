@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  appNoDescriptionReply,
   appOpenAmbiguousReply,
   appOpenFailedReply,
   appOpenSuccessReply,
@@ -40,6 +41,21 @@ describe('appOpenReply — exact copy (UI/UX §1)', () => {
     expect(appOpenFailedReply('Mission Monitor')).toBe(
       'I couldn\'t open Mission Monitor. Try again from the launcher grid.',
     );
+  });
+
+  it('noDescription: names the app + the cause, and is NOT the "couldn\'t open it" copy (Spec #3244, G-505)', () => {
+    const reply = appNoDescriptionReply('Sketchy');
+    expect(reply).toBe("Sketchy declares no description, so Fredo can't work in it yet.");
+    // The observable cause and the app identity are present.
+    expect(reply).toContain('Sketchy');
+    expect(reply).toContain('declares no description');
+    // G-505: never borrows the open-failed sentence.
+    expect(reply).not.toBe(appOpenFailedReply('Sketchy'));
+    expect(reply).not.toContain("couldn't open");
+    // Plain ASCII, no curly quotes.
+    expect(reply).not.toContain('\u201c');
+    expect(reply).not.toContain('\u201d');
+    expect(reply).not.toContain('\u2019');
   });
 });
 

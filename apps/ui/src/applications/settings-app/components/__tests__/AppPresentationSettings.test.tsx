@@ -28,6 +28,7 @@ import { AppPresentationSettings } from '../AppPresentationSettings';
 class StubFeature extends FredoApplicationClass {
   readonly id: string;
   readonly name: string;
+  readonly description: string;
   readonly icon = LuAppWindow;
   readonly showable: boolean;
   readonly isMultiWindow: boolean;
@@ -35,11 +36,12 @@ class StubFeature extends FredoApplicationClass {
   constructor(
     id: string,
     name: string,
-    opts: { showable?: boolean; isMultiWindow?: boolean } = {},
+    opts: { showable?: boolean; isMultiWindow?: boolean; description?: string } = {},
   ) {
     super();
     this.id = id;
     this.name = name;
+    this.description = opts.description ?? `What ${name} does.`;
     this.showable = opts.showable ?? true;
     this.isMultiWindow = opts.isMultiWindow ?? false;
   }
@@ -236,5 +238,18 @@ describe('Spec #2955 ST-3 — Settings → Apps section', () => {
     renderSection();
     await waitFor(() => expect(screen.getByTestId('app-presentation-row-terminal')).toBeTruthy());
     expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it("renders each app's declared description (Spec #3244, R-1c)", async () => {
+    renderSection();
+    await waitFor(() => expect(screen.getByTestId('app-presentation-row-terminal')).toBeTruthy());
+
+    // The description is the app's OWN declaration, rendered in this listing.
+    expect(screen.getByTestId('app-presentation-description-terminal')).toHaveTextContent(
+      'What Terminal does.',
+    );
+    expect(screen.getByTestId('app-presentation-description-factory-app')).toHaveTextContent(
+      'What Factory App does.',
+    );
   });
 });

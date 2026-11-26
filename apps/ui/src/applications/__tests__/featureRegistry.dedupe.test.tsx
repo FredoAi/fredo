@@ -61,6 +61,7 @@ class FakeFeature extends FredoApplicationClass {
   constructor(readonly id: string, readonly name: string) {
     super();
   }
+  readonly description = 'A test application.';
   readonly icon = LuAppWindow;
   render(): ReactElement {
     return <div />;

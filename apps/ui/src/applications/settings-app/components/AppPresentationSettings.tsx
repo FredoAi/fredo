@@ -130,6 +130,7 @@ const ModeOption: React.FC<{
 interface AppRowProps {
   appId: string;
   name: string;
+  description: string;
   icon: IconType;
   mode: AppPresentation;
   disabled: boolean;
@@ -139,10 +140,15 @@ interface AppRowProps {
 /**
  * One app's control strip: identity left, a two-up Main/Own toggle right.
  * Primitive props + `React.memo` so N rows stay cheap; no fresh-object churn.
+ *
+ * R-1c (Spec #3244): the row ALSO renders the app's declared `description` — the
+ * built-in tier's own declaration (required on `FredoApplicationClass`), so the
+ * Apps pane is a listing surface where an app's description is read.
  */
 const AppRow = React.memo(function AppRow({
   appId,
   name,
+  description,
   icon,
   mode,
   disabled,
@@ -158,16 +164,27 @@ const AppRow = React.memo(function AppRow({
       _last={{ borderBottom: 'none' }}
     >
       <HStack align="center" justify="space-between" gap={4}>
-        <HStack gap={3} minW={0}>
-          <Icon as={icon} boxSize="18px" color="fg.muted" flexShrink={0} />
-          <Text
-            id={`app-presentation-row-${appId}-label`}
-            fontWeight="600"
-            color="fg.default"
-            truncate
-          >
-            {name}
-          </Text>
+        <HStack gap={3} minW={0} align="flex-start">
+          <Icon as={icon} boxSize="18px" color="fg.muted" flexShrink={0} mt="2px" />
+          <VStack align="flex-start" gap={0} minW={0}>
+            <Text
+              id={`app-presentation-row-${appId}-label`}
+              fontWeight="600"
+              color="fg.default"
+              truncate
+              maxW="100%"
+            >
+              {name}
+            </Text>
+            <Text
+              data-testid={`app-presentation-description-${appId}`}
+              fontSize="xs"
+              color="fg.muted"
+              lineClamp={2}
+            >
+              {description}
+            </Text>
+          </VStack>
         </HStack>
         <RadioCard.Root
           value={mode}
@@ -374,6 +391,7 @@ export const AppPresentationSettings: React.FC = () => {
               key={feature.id}
               appId={feature.id}
               name={feature.name}
+              description={feature.description}
               icon={feature.icon}
               mode={mode}
               disabled={disabled}

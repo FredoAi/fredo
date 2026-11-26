@@ -169,6 +169,12 @@ the host and may not appear in your archive. <!-- claim:C-10 -->
 `version`, `engines`, `entry`, `description`, `capabilities`. Any other key is refused. An optional
 value you do not use is an **absent key**, never `null`. <!-- claim:C-11 -->
 
+`description` is optional in the schema, but it is how Fredo understands your application: the
+companion reads it (together with the current screen) to work in an application it was never taught.
+An application that declares no description still installs and still opens — a missing description is
+**not** one of the refusals in section 7 — but Fredo's companion cannot work inside it until it
+declares one.
+
 | Key | Rule |
 |---|---|
 | `manifestVersion` | the number `1` |
@@ -178,7 +184,7 @@ value you do not use is an **absent key**, never `null`. <!-- claim:C-11 -->
 | `engines.fredo` | a SemVer **range** string such as `">=0.1.0"`; `"*"` and an empty string are refused |
 | `entry.document` | relative POSIX path ending `.html` |
 | `entry.module` | relative POSIX path ending `.js` |
-| `description` | optional string, at most 280 characters |
+| `description` | optional in the schema, at most 280 characters — Fredo reads it to understand what your application is for; one that declares none cannot be worked in by Fredo's companion |
 | `capabilities` | optional; see section 3 |
 
 These eight ids belong to Fredo and are refused as `id_reserved`: `wireframe`, `terminal`,
@@ -529,6 +535,10 @@ Two of these are deliberately distinct: `engines_range_invalid` means the range 
 `host_incompatible` means it is a well-formed range that excludes the running Fredo. Collapsing them
 would tell you your range is malformed when it is simply too narrow.
 <!-- claim:C-58 -->
+
+A missing `description` is **not** a refusal — it stays optional in the schema above and never appears
+in this table. Its consequence is elsewhere: Fredo's companion cannot work inside an application that
+declares none, and the Settings pane shows a "No description" marker on its row.
 
 ---
 

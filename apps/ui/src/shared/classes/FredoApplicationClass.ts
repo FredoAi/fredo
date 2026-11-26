@@ -61,7 +61,22 @@ export abstract class FredoApplicationClass<TProps = {}> {
    * Display name shown in the grid (when minimized)
    */
   abstract readonly name: string;
-  
+
+  /**
+   * Plain-language description of what this application does.
+   *
+   * REQUIRED — never optional (Spec #3244, AC-1). The description is how Fredo
+   * understands the application: the companion resolves it as the app's
+   * `AppDescription` (`shared/app-intelligibility`), and an app that declares no
+   * description is a **typed failure** (`noDescription`), never a silent gap.
+   *
+   * Because this is an abstract member (not an optional one), a feature class
+   * that omits it fails `tsc` in `pnpm --filter @fredo/ui build` — the build IS
+   * the enforcement, and an optional member would be exactly the silent gap
+   * AC-1 bans.
+   */
+  abstract readonly description: string;
+
   /**
    * Icon shown in the grid (when minimized)
    */

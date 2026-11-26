@@ -11,6 +11,7 @@ import { ThemingSettings } from './components/ThemingSettings';
 export class ThemingFeature extends FredoApplicationClass {
   readonly id = 'theming';
   readonly name = 'Theming';
+  readonly description = "Customise Fredo's colours, fonts and overall appearance.";
   readonly icon = LuPalette;
   readonly showable = false;
   readonly hasSettings = false;

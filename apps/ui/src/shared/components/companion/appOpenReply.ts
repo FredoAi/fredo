@@ -20,7 +20,7 @@
  */
 
 /** Which settle/hold the companion applies to a pushed reply (UI/UX §2). */
-export type AppOpenReplyKind = 'success' | 'unknown' | 'ambiguous' | 'failed';
+export type AppOpenReplyKind = 'success' | 'unknown' | 'ambiguous' | 'failed' | 'noDescription';
 
 /** A composed deterministic reply: the whole bubble text + its outcome. */
 export interface AppOpenReply {
@@ -55,6 +55,21 @@ export function appOpenAmbiguousReply(
  */
 export function appOpenFailedReply(displayName: string): string {
   return `I couldn't open ${displayName}. Try again from the launcher grid.`;
+}
+
+/**
+ * R-1b (Spec #3244, AC-1) — the app declares NO description, so Fredo cannot
+ * understand what it is for. This is the app's OWN sentence, keyed to the
+ * observable (a missing/blank description): it names the app and the cause, and
+ * is deliberately NOT the "couldn't open it" copy (`appOpenFailedReply`) — the
+ * app may well have opened; the fault is intelligibility, not a failed open
+ * (G-505). It is also NOT an install-refusal sentence and introduces NO new
+ * refusal code (the frozen 22 stay frozen).
+ *
+ * kind `noDescription`, so the shipped idle/error hold applies (no celebration).
+ */
+export function appNoDescriptionReply(displayName: string): string {
+  return `${displayName} declares no description, so Fredo can't work in it yet.`;
 }
 
 /**

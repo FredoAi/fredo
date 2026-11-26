@@ -16,6 +16,7 @@ import { WireframeEditor } from './components/WireframeEditor';
 export class WireframeFeature extends FredoApplicationClass {
   readonly id = WIREFRAME_APP_ID;
   readonly name = 'Wireframe';
+  readonly description = 'Draw and edit UI wireframes on a canvas.';
   readonly icon = LuPenTool;
   readonly showable = true;
   readonly isMultiWindow = false;
