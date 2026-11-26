@@ -3274,7 +3274,7 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 
 - [ ] **F-179 (R-1 / AC-1) — the fixture set is `ChatTurn` data with the required coverage and ≤ 20 members.**
   **Steps:** static-read `apps/tauri/src-tauri/src/applications/llm_server/engine/score/fixtures.rs`
-  and run the committed ST-1 pin `every_fixture_is_a_chat_turn_and_coverage_is_complete`.
+  and run the committed ST-1 pin `every_fixture_is_a_chat_turn_and_the_coverage_set_is_present`.
   **Expected:** the set is a fixed `Vec<ScoreFixture>` (from a `fixtures()` accessor) whose `turn`
   field is a `ChatTurn` value (`engine/request.rs:110`); the ids include `text-chat`,
   `skill-open-app`, `schema-doom-plan`, `vision-screen-text` and (when the clip is committed)
@@ -3340,16 +3340,17 @@ Verdict: **PASS** — ST-8/ST-9 release the turn-scoped status on every hold-can
 ## F-183 (R-2 / AC-2 + INVEST "T") — the harness CAN FAIL: a wrong expectation yields `passed:false`
 
 - [ ] **F-183 (R-2 / AC-2) — the deliberately-wrong-expectation control.**
-  **Steps (unit tier — always runnable, no model):** run the ST-1 pin
-  `a_wrong_expectation_fails_and_a_matching_one_passes`: it builds a `ScoreFixture` whose
-  expectation does NOT match a synthetic outcome and asserts `passed == false`, then a matched twin
-  and asserts `passed == true`.
+  **Steps (unit tier — always runnable, no model):** run the two committed ST-1 pins
+  `the_wrong_expectation_control_fails_the_mismatched_twin` (`score/expect.rs`) and
+  `a_deliberately_wrong_expectation_fails_the_same_observed_turn` (`score/fixtures.rs`): together
+  they assert a MATCHED expectation passes and each deliberately-wrong twin (wrong NAME, wrong ARG
+  value, absent required arg, absent required schema field) returns `passed == false`.
   **Steps (live tier — models resolved; requires the scratch-fixture seam, QA Discussion QA-3):** run
   `fredo companion score --fixtures <scratch path under .opencode/tmp/3232/>` carrying a
   deliberately-wrong-expectation fixture; capture stdout + exit code.
   **Expected:** the unit negative control FAILS the wrong expectation and PASSES the matching one
-  (both asserted in one pin); the live run reports that fixture FAIL, names it in the failure list,
-  and exits non-zero — a green run over a wrong expectation is a FAIL of this row.
+  (asserted across the two committed pins); the live run reports that fixture FAIL, names it in the
+  failure list, and exits non-zero — a green run over a wrong expectation is a FAIL of this row.
   - **Edge:** three wrong shapes must each FAIL — wrong NAME, wrong required ARGS, missing required
     schema field — so the control cannot pass by matching a partially-correct shape.
   - **Named blocker / fallback:** if the Architect declines the seam, the live tier is recorded
