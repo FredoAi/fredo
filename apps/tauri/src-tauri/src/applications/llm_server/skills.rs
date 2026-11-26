@@ -135,6 +135,10 @@ pub enum RawSkillCallArguments {
 pub struct ToolCallAccumulator {
     calls: BTreeMap<usize, PartialToolCall>,
     finish_reason: Option<String>,
+    /// Whether any NON-EMPTY content delta was forwarded (the empty-turn
+    /// guarantee's predicate, Spec #3233 AC-2). A buffered tool-call fragment
+    /// and an empty delta are NOT visible content.
+    saw_content: bool,
 }
 
 impl ToolCallAccumulator {
@@ -150,7 +154,15 @@ impl ToolCallAccumulator {
     /// token).
     pub fn push(&mut self, event: StreamEvent) -> Option<String> {
         match event {
-            StreamEvent::Delta(content) => Some(content),
+            StreamEvent::Delta(content) => {
+                // Only a NON-EMPTY delta is visible content (the settle guard
+                // drops an empty token), so an empty piece never satisfies the
+                // empty-turn guarantee.
+                if !content.is_empty() {
+                    self.saw_content = true;
+                }
+                Some(content)
+            }
             StreamEvent::ToolCallDelta {
                 index,
                 name,
@@ -191,6 +203,15 @@ impl ToolCallAccumulator {
     /// fragment arrived.
     pub fn ended_on_tool_call(&self) -> bool {
         self.finish_reason.as_deref() == Some("tool_calls")
+    }
+
+    /// Whether the turn produced any visible content (a non-empty delta).
+    ///
+    /// The empty-turn guarantee (Spec #3233, AC-2) reads this: a turn that
+    /// produced no visible content, no tool call, and did not end on a tool-call
+    /// turn must not terminate silently.
+    pub fn content_seen(&self) -> bool {
+        self.saw_content
     }
 
     /// Whether any tool-call fragment was buffered (test observability).
@@ -253,6 +274,17 @@ const NO_NAME_DETAIL: &str =
 const TOOL_CALL_TURN_WITHOUT_CALL_DETAIL: &str =
     "the model ended on a tool call but no tool call was received; nothing was executed.";
 
+/// The empty-turn guarantee's readable detail (Spec #3233, AC-2).
+///
+/// MUST contain the exact phrase `no visible reply` (case-sensitive): the
+/// frontend copy branch matches `/no visible reply/i` (Adjudication #3), so a
+/// later reword that drops the phrase would silently disable that branch. The
+/// [`tests::the_empty_reply_detail_carries_the_discriminator_phrase`] pin reddens
+/// first. It is also [`super::engine::CompanionEngineErrorCode::EmptyReply`]'s
+/// curated detail, so the code and the wire text share ONE source.
+pub const EMPTY_REPLY_DETAIL: &str =
+    "the companion produced no visible reply for this turn; the model may have spent its whole budget reasoning.";
+
 /// Resolve the accumulated stream into the terminal events to emit.
 ///
 /// Fail-closed (R-3.3/R-3.4): an unknown skill name, malformed argument JSON, a
@@ -293,9 +325,29 @@ pub fn plan_terminal_events(
         events.push(TerminalEvent::Error(TOOL_CALL_TURN_WITHOUT_CALL_DETAIL.to_string()));
     }
 
+    // The empty-turn guarantee (Spec #3233, AC-2): a turn that produced NO
+    // visible content, NO tool call, and did not END on a tool-call turn must
+    // never terminate silently. A tool-call turn keeps its OWN reason (above), a
+    // turn with content stays error-free, and a settled error turn never reaches
+    // this plan (it goes through `plan_stream_error_events`).
+    if events.is_empty() && !accumulator.content_seen() {
+        events.push(TerminalEvent::Error(EMPTY_REPLY_DETAIL.to_string()));
+    }
+
     // ALWAYS complete — never hang (R-3.4 / ST-9).
     events.push(TerminalEvent::Done);
     events
+}
+
+/// Whether a terminal event is the empty-turn guarantee's own failure (Spec
+/// #3233, AC-2).
+///
+/// Extracted so a caller that owns a RETRY — the schema-constrained status
+/// attempt, which must NOT be retyped with an empty reply but re-runs its plain
+/// path (Risk 6) — can defer the guarantee to the terminal path instead of
+/// settling a retryable attempt on it.
+pub fn is_empty_reply_event(event: &TerminalEvent) -> bool {
+    matches!(event, TerminalEvent::Error(detail) if detail == EMPTY_REPLY_DETAIL)
 }
 
 /// The terminal events for a failed skill-aware stream (engine start / model
@@ -405,22 +457,30 @@ pub(crate) async fn run_skill_stream(
 ///
 /// The content-turn entry shared by the status path's bounded plain retry
 /// (Spec #2918, R-5/R-6). A content turn and a tool-call turn remain disjoint.
+/// Carries the SAME empty-turn guarantee as the skill path (Spec #3233, AC-2):
+/// a turn that produced no visible content settles `[llm-error, llm-done]`,
+/// never a silent bare `llm-done`.
 pub(crate) async fn stream_plain_turn(
     source: &dyn TurnSource,
     settled: &mut SettledStream<'_>,
     turn: ChatTurn,
 ) -> Result<(), String> {
+    let mut accumulator = ToolCallAccumulator::new();
     let outcome = source
         .stream(turn, &mut |frame| {
             for event in frame.events {
-                if let StreamEvent::Delta(delta) = event {
+                if let Some(delta) = accumulator.push(event) {
                     settled.token(delta);
                 }
             }
         })
         .await;
-    if let Err(detail) = outcome {
-        settled.error(detail);
+    match outcome {
+        Err(detail) => settled.error(detail),
+        // The SAME empty-turn guarantee as the skill path: a content turn that
+        // produced no visible content must never settle silently (AC-2).
+        Ok(()) if !accumulator.content_seen() => settled.error(EMPTY_REPLY_DETAIL),
+        Ok(()) => {}
     }
     Ok(())
 }
@@ -505,7 +565,7 @@ mod settle_tests {
     }
 
     /// An ordinary content turn streams its deltas and settles with exactly the
-    /// single trailing `llm-done` — and NO skill call.
+    /// single trailing `llm-done` — and NO skill call, and NO terminal error.
     #[tokio::test]
     async fn an_ordinary_content_turn_settles_once_with_no_skill_call() {
         let registry = SkillRegistry::with_open_app();
@@ -514,6 +574,11 @@ mod settle_tests {
 
         assert_settles_once(&sink, "ordinary content");
         assert_eq!(sink.count("llm-skill-call"), 0);
+        assert_eq!(
+            sink.count("llm-error"),
+            0,
+            "a content turn emits no terminal error"
+        );
         assert_eq!(sink.payloads("llm-token"), vec!["hello there"]);
     }
 
@@ -560,6 +625,9 @@ mod settle_tests {
     }
 
     /// A `tool_calls` finish with NO call still settles with a reason then done.
+    ///
+    /// POSITIVE CONTROL: a tool-call turn keeps its OWN reason — the empty-reply
+    /// guarantee never fires for it (Risk 6).
     #[tokio::test]
     async fn a_tool_call_turn_without_a_call_settles_once() {
         let registry = SkillRegistry::with_open_app();
@@ -569,6 +637,12 @@ mod settle_tests {
         assert_settles_once(&sink, "tool-call turn without a call");
         assert_eq!(sink.count("llm-error"), 1);
         assert_eq!(sink.count("llm-skill-call"), 0);
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![TOOL_CALL_TURN_WITHOUT_CALL_DETAIL.to_string()],
+            "a tool-call turn keeps its own detail, never the empty-reply one"
+        );
+        assert_ne!(sink.payloads("llm-error")[0], EMPTY_REPLY_DETAIL);
     }
 
     /// An ENGINE FAILURE (`Err` from the source) still settles: a readable
@@ -588,6 +662,12 @@ mod settle_tests {
         assert_eq!(sink.count("llm-error"), 1);
         assert_eq!(sink.count("llm-skill-call"), 0);
         assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
+        // POSITIVE CONTROL: an engine failure keeps ITS OWN detail (via
+        // `plan_stream_error_events`), never the empty-reply one.
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec!["the companion engine stopped".to_string()]
+        );
     }
 
     /// THE pin for the failed-turn settle contract (Spec #3141 fix F1).
@@ -643,8 +723,13 @@ mod settle_tests {
         );
     }
 
-    /// An EMPTY stream (a source that yields no frames at all) settles with just
-    /// the single `llm-done`.
+    /// An EMPTY stream (a source that yields no frames at all) is an EMPTY TURN:
+    /// the shipped empty-turn guarantee (Spec #3233, AC-2) settles it with the
+    /// typed `llm-error` and the single trailing `llm-done`.
+    ///
+    /// Before Spec #3233 this pinned a bare `["llm-done"]` — the silent
+    /// termination the guarantee exists to eliminate. That sequence is now the
+    /// negative control this pin REJECTS.
     #[tokio::test]
     async fn an_empty_stream_settles_once() {
         let registry = SkillRegistry::with_open_app();
@@ -652,7 +737,42 @@ mod settle_tests {
         run(&registry, vec![ScriptedResponse::ok(vec![])], &sink).await;
 
         assert_settles_once(&sink, "empty stream");
-        assert_eq!(sink.names(), vec!["llm-done"]);
+        assert_eq!(
+            sink.names(),
+            vec!["llm-error", "llm-done"],
+            "an empty turn surfaces the typed error, never a silent bare llm-done"
+        );
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![EMPTY_REPLY_DETAIL.to_string()],
+            "the detail is the shipped const, byte for byte (never a paraphrase)"
+        );
+    }
+
+    /// AC-2 / R-2 (QA-2 / FR-36) — THE decisive pin. A turn whose budget was
+    /// exhausted by reasoning ends on `finish_reason "length"` with zero visible
+    /// content and no tool call, so it MUST surface the typed empty-reply error
+    /// BEFORE the single trailing `llm-done`.
+    ///
+    /// A bare `["llm-done"]` — the pre-change behaviour this lever was chosen to
+    /// expose — is the FAIL this pin rejects.
+    #[tokio::test]
+    async fn a_length_limited_turn_with_no_content_settles_with_the_empty_reply_error() {
+        let registry = SkillRegistry::with_open_app();
+        let sink = RecordingSink::new();
+        run(&registry, vec![ScriptedResponse::finish_only("length")], &sink).await;
+
+        assert_settles_once(&sink, "length-limited empty turn");
+        assert_eq!(
+            sink.names(),
+            vec!["llm-error", "llm-done"],
+            "the empty turn emits the typed error before the single terminator"
+        );
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![EMPTY_REPLY_DETAIL.to_string()],
+            "the detail is the shipped EMPTY_REPLY_DETAIL, byte for byte (never a paraphrase)"
+        );
     }
 
     /// An EARLY STOP (`length`) with partial content settles once: the partial
@@ -715,6 +835,32 @@ mod settle_tests {
             assert_settles_once(&sink, label);
             assert_eq!(sink.count("llm-skill-call"), 0, "{label}");
         }
+    }
+
+    /// AC-2 / R-2 positive control — `stream_plain_turn` carries the SAME
+    /// empty-turn guarantee as the skill path: a content-only turn that produced
+    /// no visible content settles `[llm-error, llm-done]` with the SHIPPED
+    /// `EMPTY_REPLY_DETAIL`.
+    #[tokio::test]
+    async fn a_plain_turn_with_no_content_settles_with_the_empty_reply_error() {
+        let sink = RecordingSink::new();
+        let source = ScriptedTurnSource::new(vec![ScriptedResponse::finish_only("length")]);
+        let mut settled = SettledStream::new(&sink);
+        stream_plain_turn(&source, &mut settled, ChatTurn::text(vec![]))
+            .await
+            .expect("the plain path settles instead of erroring");
+        settled.finish();
+
+        assert_settles_once(&sink, "plain empty turn");
+        assert_eq!(
+            sink.names(),
+            vec!["llm-error", "llm-done"],
+            "the plain path never terminates an empty turn silently"
+        );
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![EMPTY_REPLY_DETAIL.to_string()]
+        );
     }
 
     /// The typed path's turn really offers the registry (a non-vacuity control
@@ -986,6 +1132,80 @@ mod tests {
         // Blank reasons never overwrite a real one.
         accumulator.set_finish_reason("  ");
         assert_eq!(accumulator.finish_reason(), Some("tool_calls"));
+    }
+
+    /// Spec #3233 (AC-2) — `content_seen` is TRUE only after a NON-EMPTY content
+    /// delta: a tool-call fragment and an empty delta are not visible content.
+    #[test]
+    fn content_seen_tracks_only_non_empty_content_deltas() {
+        let mut accumulator = ToolCallAccumulator::new();
+        assert!(!accumulator.content_seen(), "a fresh accumulator saw no content");
+
+        // A buffered tool-call fragment is NOT visible content.
+        accumulator.push(fragment(0, Some("open_app"), Some("{}")));
+        assert!(!accumulator.content_seen(), "a tool-call fragment is not content");
+
+        // An EMPTY delta is not visible content (the settle guard drops it).
+        accumulator.push(StreamEvent::Delta(String::new()));
+        assert!(!accumulator.content_seen(), "an empty delta is not visible content");
+
+        // A non-empty delta IS visible content.
+        assert_eq!(
+            accumulator.push(StreamEvent::Delta("hello".to_string())),
+            Some("hello".to_string())
+        );
+        assert!(accumulator.content_seen());
+    }
+
+    /// Adjudication #3 — the frontend copy branch matches `/no visible reply/i`,
+    /// so `EMPTY_REPLY_DETAIL` MUST carry the exact phrase `no visible reply`
+    /// (case-sensitive). A later reword that drops it would silently disable the
+    /// branch; this pin reddens first.
+    #[test]
+    fn the_empty_reply_detail_carries_the_discriminator_phrase() {
+        assert!(
+            EMPTY_REPLY_DETAIL.contains("no visible reply"),
+            "the frontend discriminator phrase is missing: {EMPTY_REPLY_DETAIL}"
+        );
+    }
+
+    /// Spec #3233 (AC-2) — the terminal plan emits the typed empty-reply error
+    /// for a contentless, call-less, non-tool-call turn, and NOT for a content
+    /// turn (R-5: nothing else moved).
+    #[test]
+    fn an_empty_turn_plans_the_empty_reply_error_and_a_content_turn_does_not() {
+        let registry = SkillRegistry::with_open_app();
+
+        let empty = ToolCallAccumulator::new();
+        assert_eq!(
+            plan_terminal_events(&registry, &empty),
+            vec![
+                TerminalEvent::Error(EMPTY_REPLY_DETAIL.to_string()),
+                TerminalEvent::Done,
+            ]
+        );
+
+        let mut content = ToolCallAccumulator::new();
+        content.push(StreamEvent::Delta("hi".to_string()));
+        content.set_finish_reason("stop");
+        assert_eq!(
+            plan_terminal_events(&registry, &content),
+            vec![TerminalEvent::Done]
+        );
+    }
+
+    /// Spec #3233 — `is_empty_reply_event` matches ONLY the empty-turn
+    /// guarantee's own detail, so the schema status attempt can defer exactly
+    /// that event and keep its own retry (Risk 6).
+    #[test]
+    fn the_empty_reply_event_predicate_matches_only_its_own_detail() {
+        assert!(is_empty_reply_event(&TerminalEvent::Error(
+            EMPTY_REPLY_DETAIL.to_string()
+        )));
+        assert!(!is_empty_reply_event(&TerminalEvent::Error(
+            TOOL_CALL_TURN_WITHOUT_CALL_DETAIL.to_string()
+        )));
+        assert!(!is_empty_reply_event(&TerminalEvent::Done));
     }
 
     #[test]
