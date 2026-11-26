@@ -14,7 +14,7 @@ toolchain and no dependency install is needed. <!-- claim:C-02 -->
 
 > **Where the kit lives.** The kit is the `fredo-theme/` and `fredo-authoring/` package directories
 > plus this guide. Download or copy those three items into one folder and treat that folder as
-> `<kit>` for every command below.
+> `<kit>` for every command below. <!-- claim:C-59 -->
 
 ---
 
@@ -128,7 +128,7 @@ that uses them fails to load. <!-- claim:C-09 -->
 ## 1. What your application may rely on
 
 The published surface is small by design. These are the things that will not change under you while
-the major version is `1`.
+the major version is `1`. <!-- claim:C-61 -->
 
 ### 1.1 The package artifact
 
@@ -235,7 +235,7 @@ package that fails to load. <!-- claim:C-23 -->
 ## 3. Capabilities — what you can declare, and what each grants
 
 An installed application declares **capabilities**, never backend commands. Capabilities live in the
-optional `capabilities` object of `fredo-app.json`:
+optional `capabilities` object of `fredo-app.json`: <!-- claim:C-62 -->
 
 ```json
 {
@@ -506,4 +506,4 @@ would tell you your range is malformed when it is simply too narrow.
   the window, and what an installed application does not do.
 - `docs/SECURITY.md` — the four containment mechanisms and their limits.
 - The kit's `fredo-theme/tokens.json` and `fredo-authoring/schema/fredo-app.schema.json` — the
-  generated artifacts behind this document.
+  generated artifacts behind this document. <!-- claim:C-60 -->

@@ -32,6 +32,7 @@ the contract's own constant.
 | C-07 | `pack` validates before emitting; the archive is deterministic (fixed entry order, stored entries, a fixed timestamp), so two packs of the same input are byte-identical; use a second output path so a measured artifact is never re-written. | `packages/fredo-authoring/bin/fredo-app.mjs` (deterministic writer — NFR-3); the determinism rule is proved by the suite's generators (`README.md:53-68`) and driven by F-8.5 | NFR-3 |
 | C-08 | Install is the normal Settings → Installed applications path (the same command the button calls); a valid package shows the success strip, appears on the launcher shelf, and opens in its own window with the app's UI painted. | `apps/tauri/src-tauri/src/applications/installed_apps/commands_install.rs:107` (`installed_app_install`); `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx:84,322,355` (label + testids); `apps/tauri/src-tauri/src/applications/installed_apps/window.rs` (per-app window); F-8.4 | R-1.2 |
 | C-09 | Every `import`/`from` in the package must be a relative path resolving to a file the package carries; host-internal modules and bare package names are not served and the app fails to load. | `scheme.rs` route rule (a file resolves only inside `<id>/files/`; the record is the whitelist) and the child policy `script-src 'self'` (`docs/ARCHITECTURE.md:1089,1091`); the three negative loads are F-8.14 | R-1.3, NFR-5 |
+| C-59 | The kit is two package directories plus this guide; copy or download those three items into one folder and treat it as `<kit>`; no install step is implied. | `packages/fredo-theme/`, `packages/fredo-authoring/` and `docs/authoring-applications.md` are committed files; `packages/fredo-authoring/bin/fredo-app.mjs` runs as a plain file (no registry client) — F-8.6(b) | R-1.1, NFR-3 |
 
 ## §1 What your application may rely on
 
@@ -49,6 +50,7 @@ the contract's own constant.
 | C-19 | `cssVar(name)` returns the `var()` expression or the published `color-mix()` expression for an alias; `theme.css` is optional because the values are already on the document. | `packages/fredo-theme/dist/index.mjs` (`cssVar`), `dist/theme.css`; the derivation and the alias set are the contract's (`apps/ui/src/app/theme/contract/tokens.ts:151-210`; `apps/ui/src/app/theme/system.ts:42-64`); F-8.23 | R-2.1 |
 | C-20 | The published token names are the whole colour contract; names may be added within major `1`, none renamed, removed or re-pointed. | `apps/ui/src/app/theme/contract/tokens.ts:70-325` (`SEMANTIC_TOKENS`) + `packages/fredo-theme/dist/tokens.json`; additive rule: `mod.rs:96-108`, `authority.rs:97-102` | NFR-1, NFR-5 |
 | C-21 | `engines.fredo` is a SemVer range checked against the running Fredo's crate version. | `manifest.rs:899-942` (`check_engines_range` against `HOST_FREDO_VERSION`); `mod.rs:124-129` (`CARGO_PKG_VERSION`); `docs/release-process.md:380` | R-5.1 |
+| C-61 | The published surface is stable within major `1`: names and meanings are added, never renamed, removed or re-pointed. | `mod.rs:96-108` (additive rule stated for the capability contract); `authority.rs:97-102` (ordered closed set); `contract/tokens.ts:70-325` with the additive rule in F-8.12 | NFR-1 |
 
 ## §2 What your application may not rely on
 
@@ -62,6 +64,7 @@ the contract's own constant.
 | Claim | What the document asserts | Satisfied by | REQ |
 |---|---|---|---|
 | C-24 | Capabilities live in the optional `capabilities` object; `capabilities.version` names the contract major; this Fredo implements `1`; another major is refused at install. | `manifest.rs:107-137` (`MANIFEST_CAPABILITIES_KEYS`, `InstalledAppCapabilities`); `manifest.rs:660-710` (version refusal); `mod.rs:99-108` (`CAPABILITY_MANIFEST_VERSION`) | NFR-1, R-4 |
+| C-62 | An installed application declares capabilities, never backend commands. | `manifest.rs:86-100` (`capabilities` is one of the eight manifest keys; the manifest has no command field); `dispatch.rs:82-96` (the app cannot name a command; the eight actions are fixed) | R-4, NFR-2 |
 | C-25 | Absent `capabilities` means zero reach — there is no permissive default. | `manifest.rs:610-626` (absent/`null` ⇒ `None`); `authority.rs` grants path + `dispatch.rs:186-196` (a call whose capability is not declared is refused) | R-4 |
 | C-26 | The four capability ids and what each grants in user terms; `data.tables` is not separately consent-gated; the three `high-risk.*` ids are. | `authority.rs:80-93` (the closed vocabulary + doc comments), `:119-129` (`is_high_risk`); `dispatch.rs:87-96` (action → capability) | R-4 |
 | C-27 | A declared but unconsented high-risk capability is refused as `consent_required`; the grant is per application and re-read per call. | `dispatch.rs:197-205` (consent refusal); `authority.rs:119-129`; `mod.rs:110-121` (the host-owned consent file) | R-4 |
@@ -116,5 +119,11 @@ the contract's own constant.
 |---|---|---|---|
 | C-57 | The product and the kit share one refusal vocabulary; each refusal carries a detail and, when one field is at fault, a `field` naming the exact dotted path. | `apps/tauri/src-tauri/src/applications/installed_apps/mod.rs:149-256` (the 22 codes and their order), `:264-277` (`InstalledAppError { code, detail, field? }`); `packages/fredo-authoring/bin/fredo-app.mjs` (`check` prints the same shape) | R-5.2 |
 | C-58 | The code → field → remedy table, and the deliberate `engines_range_invalid` vs `host_incompatible` distinction. | `mod.rs:202-227` (wire strings) plus the field paths in `manifest.rs:445-466,553-557,581-605,660-710,787,800-810,856-883,899-942`; the two families are split at `manifest.rs:889-898` and `:929-939` (the detail names both the declared range and the running version); the Settings surface renders the code + detail + chip from `apps/ui/src/shared/installed-apps/refusals.ts:100-150` | R-5.1, R-5.2 |
+
+## Where to go next
+
+| Claim | What the document asserts | Satisfied by | REQ |
+|---|---|---|---|
+| C-60 | ARCHITECTURE documents the installed tier, SECURITY documents the four mechanisms and their limits, and the kit carries `tokens.json` and the generated manifest schema. | `docs/ARCHITECTURE.md:1081-1141`; `docs/SECURITY.md:191-209`; `packages/fredo-theme/dist/tokens.json`; `packages/fredo-authoring/schema/fredo-app.schema.json` | R-4, NFR-6 |
 
 *Authored by Developer*
