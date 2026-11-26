@@ -64,7 +64,9 @@ pub fn audio_content_part(audio_base64: &str) -> serde_json::Value {
 /// * **audio** — the LAST user message's `content` becomes
 ///   `[{ "type": "input_audio", … }]`; no transcript text part is ever emitted.
 /// * **image** — the LAST user message's `content` becomes
-///   `[{"type":"text",…},{"type":"image_url",…}]`.
+///   `[{"type":"text",…},{"type":"image_url",…}]` (text BEFORE the image — the
+///   reverted shipped order; image-first was falsified on the dense screen case,
+///   #3234 AC-1).
 #[cfg(test)]
 pub fn render_messages(
     messages: &[LlmMessage],
@@ -88,6 +90,7 @@ pub fn render_messages(
 
     if let Some(image) = image_base64 {
         if let Some(index) = messages.iter().rposition(|message| message.role == "user") {
+            // Text FIRST, then the image — the reverted shipped order (#3234 AC-1).
             rendered[index] = serde_json::json!({
                 "role": messages[index].role,
                 "content": [
@@ -221,6 +224,7 @@ mod tests {
 
         let last = &body["messages"][3]["content"];
         assert!(last.is_array(), "last user content must be the multimodal array");
+        // Text BEFORE the image (the reverted shipped order, #3234 AC-1).
         assert_eq!(last[0]["type"], "text");
         assert_eq!(last[0]["text"], "look at this");
         assert_eq!(last[1]["type"], "image_url");
@@ -437,7 +441,7 @@ mod tests {
             })
         );
 
-        // The image body keeps the shipped `text` + `image_url` array.
+        // The image body keeps the shipped `text` + `image_url` array (text first).
         let image_body = build_request_body(&messages, Some("QUJD"));
         assert_eq!(
             image_body,

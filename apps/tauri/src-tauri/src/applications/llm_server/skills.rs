@@ -30,6 +30,7 @@ use tauri::AppHandle;
 use crate::infrastructure::companion::skills::{validate, SkillRegistry};
 
 use super::chat::LlmMessage;
+use super::engine::multimodal::SCREEN_VISUAL_TOKEN_BUDGET;
 use super::engine::request::ChatTurn;
 use super::engine::stream::{AppSink, SettledStream, StreamEvent, TurnSource};
 
@@ -88,7 +89,13 @@ pub fn skill_turn(
     if let Some(audio) = audio_base64 {
         turn = turn.with_audio(audio);
     } else if let Some(image) = image_base64 {
-        turn = turn.with_image(image);
+        // The SCREEN-CAPTURE path: the image comes from `capture_screen_region`,
+        // so the turn DECLARES the screen visual-token budget (R-3a). The engine
+        // owns ONE projector (loaded at the same ceiling), so this records the
+        // turn's deliberate budget — it is never a second, per-bitmap lever.
+        turn = turn
+            .with_image(image)
+            .with_visual_token_budget(SCREEN_VISUAL_TOKEN_BUDGET);
     }
     turn
 }
@@ -889,9 +896,14 @@ mod settle_tests {
         assert!(turn.offer_tools);
         assert_eq!(turn.audio.as_deref(), Some("UklGRg=="));
         assert!(turn.image.is_none());
+        assert!(
+            turn.visual_token_budget.is_none(),
+            "an audio turn declares no image budget (unchanged)"
+        );
     }
 
-    /// The image turn carries the image (never audio) on the same offer.
+    /// The image turn carries the image (never audio) on the same offer, and it
+    /// DECLARES the screen visual-token budget (the screen-capture path, R-3a).
     #[test]
     fn the_image_skill_turn_carries_the_image_and_the_offer() {
         let registry = SkillRegistry::with_app_control();
@@ -899,6 +911,16 @@ mod settle_tests {
         assert!(turn.offer_tools);
         assert_eq!(turn.image.as_deref(), Some("QUJD"));
         assert!(turn.audio.is_none());
+        // DERIVED, not restated (human directive 1; #3192's rule): the pin
+        // compares the produced turn's budget to the SYMBOL, never to the
+        // constant's numeric value, so it tracks the constant (moving
+        // `SCREEN_VISUAL_TOKEN_BUDGET` keeps this green) instead of reddening the
+        // day the budget moves.
+        assert_eq!(
+            turn.visual_token_budget,
+            Some(SCREEN_VISUAL_TOKEN_BUDGET),
+            "the screen-capture image path declares the screen visual-token budget (R-3a)"
+        );
     }
 }
 

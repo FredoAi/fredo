@@ -87,6 +87,36 @@ pub const CONTROL_TOKEN_CLOSE: &str = "|>";
 
 // ── Engine → application layer ───────────────────────────────────────────────
 
+/// The engine's own cost readout for one settled turn (Spec #3234, ST-5).
+///
+/// Every field is a value the engine ALREADY computes for the turn — this struct
+/// adds no second request shaper, no second loader and no second sampler. It is
+/// the minimal readout a harness needs to price a turn's prompt/decoding cost:
+///
+/// * [`Self::prompt_tokens`] — the prompt's TOKEN count as the engine evaluated
+///   it, media-inclusive for an image/audio turn (the multimodal plan's chunk
+///   token count, so the projector's visual tokens are counted), the tokenised
+///   prompt length (after truncation) for a text turn.
+/// * [`Self::prefill_micros`] — wall-clock time the prompt evaluation took.
+/// * [`Self::decode_micros`] — wall-clock time the token-sampling loop took.
+/// * [`Self::generated_tokens`] — how many tokens the turn generated (the engine's
+///   own count, never the number of visible text pieces the consumer assembled).
+///
+/// A consumer derives the decode rate as
+/// `generated_tokens / (decode_micros / 1_000_000)`. All values are measured at
+/// the engine seam; nothing here is a claim from an unmeasured field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TurnMeasurement {
+    /// The prompt's token count (media-inclusive for a media turn).
+    pub prompt_tokens: u64,
+    /// Wall-clock prompt-evaluation time, in microseconds.
+    pub prefill_micros: u64,
+    /// Wall-clock token-loop time, in microseconds.
+    pub decode_micros: u64,
+    /// How many tokens the turn generated.
+    pub generated_tokens: u64,
+}
+
 /// One piece of a streaming turn as the ENGINE produced it.
 ///
 /// Deliberately channel-free: the engine names no webview event.
@@ -116,6 +146,10 @@ pub enum EngineEvent {
         finish_reason: Option<String>,
         /// Whether the model ended the turn itself (an end-of-generation token).
         stopped_on_eog: bool,
+        /// The engine's own cost readout for this turn (Spec #3234, ST-5). The
+        /// harness diffs nothing here — it is the turn's own measurement, so a
+        /// cumulative counter can never be misread as a per-fixture delta.
+        measurement: TurnMeasurement,
     },
     /// The turn failed with a typed code and curated detail.
     Failed {
@@ -1803,6 +1837,7 @@ mod tests {
         let frame = StreamFrame::from_engine(EngineEvent::Finished {
             finish_reason: Some("tool_calls".to_string()),
             stopped_on_eog: true,
+            measurement: TurnMeasurement::default(),
         });
         assert_eq!(frame.events, vec![StreamEvent::Done]);
         assert_eq!(frame.finish_reason.as_deref(), Some("tool_calls"));
@@ -1930,6 +1965,7 @@ mod tests {
         tx.send(EngineEvent::Finished {
             finish_reason: Some("stop".to_string()),
             stopped_on_eog: true,
+            measurement: TurnMeasurement::default(),
         })
         .await
         .expect("send the terminator");

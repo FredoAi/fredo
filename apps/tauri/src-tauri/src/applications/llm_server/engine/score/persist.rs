@@ -290,6 +290,8 @@ mod tests {
                     latency_ms: 123,
                     prompt_tokens: 40,
                     completion_tokens: 8,
+                    prefill_micros: 4_000,
+                    decode_micros: 9_000,
                     mtp_drafts_proposed: 5,
                     mtp_drafts_accepted: 3,
                     mtp_draft_calls: 2,

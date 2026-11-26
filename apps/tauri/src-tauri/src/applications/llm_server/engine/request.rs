@@ -14,8 +14,12 @@
 //!   content with exactly ONE [`ContentPart::InputAudio`] part — model audio IS
 //!   the turn's input, so the message's string content is discarded and **no
 //!   `text` part is ever fabricated** (#2897 REQ-3);
-//! * **image** turns the last user message into `[text, image_url]`, where the
-//!   URL is the shipped `data:image/png;base64,<image>` data URL (R-3.2);
+//! * **image** turns the last user message into `[text, image_url]` — the text
+//!   LEADS the image — where the URL is the shipped `data:image/png;base64,<image>`
+//!   data URL (R-3.2). The image-before-text order was **reverted**: it was
+//!   measured to degrade this projector's reading of dense on-screen text (the
+//!   target case), so the vendor-placement premise does not hold here (#3234
+//!   AC-1/AC-2);
 //! * every other message keeps its plain string content.
 //!
 //! The rule is what ST-5 (`engine/multimodal.rs`) consumes: the part list says
@@ -152,6 +156,13 @@ pub struct ChatTurn {
     /// [`ReasoningMode::Disabled`] by [`ChatTurn::text`]; a turn opts in with
     /// [`ChatTurn::with_reasoning`].
     pub reasoning: ReasoningMode,
+    /// The per-turn visual-token BUDGET DECLARATION (Spec #3234, ST-2; R-3a /
+    /// R-5b). `Some(SCREEN_VISUAL_TOKEN_BUDGET)` for a screen capture; `None`
+    /// leaves the turn on the projector's own resolved ceiling (a deliberate,
+    /// bounded default — R-5b). The budget is PROJECTOR-level (the engine owns
+    /// one projector), so this is a declaration the engine records and reads
+    /// back — never a per-bitmap lever.
+    pub visual_token_budget: Option<i32>,
 }
 
 impl ChatTurn {
@@ -167,6 +178,7 @@ impl ChatTurn {
             json_schema: None,
             max_tokens: MAX_TOKENS,
             reasoning: ReasoningMode::Disabled,
+            visual_token_budget: None,
         }
     }
 
@@ -211,6 +223,18 @@ impl ChatTurn {
         self
     }
 
+    /// Declare this turn's visual-token budget (Spec #3234, ST-2; R-3a / R-5b).
+    ///
+    /// A screen-capture turn declares [`super::multimodal::SCREEN_VISUAL_TOKEN_BUDGET`]
+    /// here. The budget is a PROJECTOR-level ceiling (the engine owns one
+    /// projector), so this declaration records the turn's intent and is read
+    /// back by [`super::multimodal::visual_token_budget_for`] — it is never a
+    /// per-bitmap lever (`MtmdBitmap::from_buf` takes no budget).
+    pub fn with_visual_token_budget(mut self, visual_token_budget: i32) -> Self {
+        self.visual_token_budget = Some(visual_token_budget);
+        self
+    }
+
     /// Shape the conversation under the ONE media rule.
     ///
     /// Semantically equal to [`super::super::chat::render_messages`] for every
@@ -239,6 +263,10 @@ impl ChatTurn {
 
         if let Some(image) = self.image.as_deref() {
             if let Some(index) = last_user_index(&self.messages) {
+                // Text LEADS the image. The image-before-text order was measured to
+                // degrade this projector's reading of dense on-screen text (the
+                // target case), so the order was reverted — the vendor-placement
+                // premise was falsified for this projector (#3234 AC-1/AC-2).
                 rendered[index].content = RenderedContent::Parts(vec![
                     ContentPart::Text {
                         text: self.messages[index].content.clone(),
@@ -449,8 +477,10 @@ mod tests {
         assert!(matches!(parts[0], ContentPart::InputAudio { .. }));
     }
 
-    /// The image turn is `[text, image_url]` with the shipped PNG data URL, on the
-    /// LAST user message only — earlier messages keep plain content.
+    /// The image turn is `[text, image_url]` — the text BEFORE the image (the
+    /// reverted shipped order; image-first was falsified on the dense screen case,
+    /// #3234 AC-1) — with the shipped PNG data URL, on the LAST user message only;
+    /// earlier messages keep plain content.
     #[test]
     fn an_image_turn_attaches_text_and_image_url_to_the_last_user_message() {
         let turn = ChatTurn::text(conversation()).with_image("QUJD");
@@ -519,8 +549,9 @@ mod tests {
     }
 
     /// ST-5's media projection places the projector marker EXACTLY where the media
-    /// part sits: the image turn is `text + marker` on the last user message, and
-    /// the empty marker reproduces the text-only projection byte for byte.
+    /// part sits: the image turn is `text + marker` on the last user message (the
+    /// text part leads, so the user's text leads and the marker follows), and the
+    /// empty marker reproduces the text-only projection byte for byte.
     #[test]
     fn the_media_projection_places_the_marker_where_the_part_sits() {
         let marker = "<__media__>";
@@ -528,7 +559,8 @@ mod tests {
         let json = turn.template_messages_json_with_media(marker);
         let parsed: Value = serde_json::from_str(&json).expect("valid messages JSON");
 
-        // The image turn is `[text, image_url]` ⇒ `text\nmarker`.
+        // The image turn is `[text, image_url]` ⇒ `look at this<__media__>` — the
+        // marker follows the user's text (no newline before the media marker).
         assert_eq!(parsed[3]["content"], "look at this<__media__>");
         // The markers appear in the PROMPT, never the media bytes.
         assert!(!json.contains("QUJD"));
