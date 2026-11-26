@@ -1,4 +1,5 @@
 pub mod companion_probe;
+pub mod companion_score;
 pub mod doom_export;
 pub mod emit;
 pub mod open_app;

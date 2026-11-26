@@ -5,7 +5,7 @@ The `fredo` binary is installed alongside the desktop app and added to your syst
 1. **GUI mode** (no arguments) — launches the Fredo desktop window
 2. **CLI mode** (with arguments) — forwards commands to the running Fredo process via the local IPC socket
 
-> **Prerequisite**: The Fredo **process** must be running for CLI commands to work — a window is not required — except `fredo companion probe`, which is self-contained. If no Fredo process is running, a CLI command prints an error to stderr and exits with code `2`.
+> **Prerequisite**: The Fredo **process** must be running for CLI commands to work — a window is not required — except `fredo companion probe` and `fredo companion score`, which are self-contained. If no Fredo process is running, a CLI command prints an error to stderr and exits with code `2`.
 
 ## How Fredo runs
 
@@ -217,6 +217,105 @@ fredo companion probe [--prompt <TEXT>]
 | `2` | A usage or local precondition error (e.g. a blank `--prompt`); the app-not-running fallback does not apply |
 
 > `fredo companion probe` runs entirely in this process: no app instance is needed, and nothing is written to the app's persisted companion state.
+
+### `fredo companion score`
+
+Scores the committed companion **fixture set** and reports per-fixture pass/fail — the harness that turns an engine tuning change into a **measured delta** instead of an anecdote. Each fixture is scored against its OWN declared, structural expectation (an expected skill call, or a schema-validity predicate); the run's pass set is compared against a committed baseline, and any **regression** (a fixture that passed and now fails) is named and exits non-zero. Like `probe`, it is self-contained: it spawns its OWN in-process engine and needs no running app.
+
+```bash
+fredo companion score [--baseline <PATH>] [--pg-port <N> | --manifest <PATH>] [--report <PATH>] [--fixtures <PATH>]
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `--baseline` | No | The committed baseline to compare against (default: `.opencode/tests/companion/score-baseline.json`). A **requested** file that is missing or malformed is a usage error (exit `2`); when the default path is absent the run performs **no comparison** and says so. |
+| `--pg-port` | No | The embedded-PostgreSQL port the score store is reached on — the explicit endpoint that enables persistence (mutually exclusive with `--manifest`). |
+| `--manifest` | No | The environment process-manifest path recording `ports.pg`, used to resolve the store port (the store seam's manifest lever). |
+| `--report` | No | Write the run's report JSON to this path, in addition to stdout. |
+| `--fixtures` | No | Override committed fixtures from a scratch JSON file — the deliberate-wrong-expectation seam used to drive a forced failure/regression. Each entry names a COMMITTED fixture id and replaces its expectation (and optionally its `seed`); the turn stays the committed one. An unknown id is a usage error (exit `2`). |
+
+**Behaviour.** It resolves the models directory from `FREDO_COMPANION_MODELS_DIR` (a non-blank value wins, else `<home>/fredo-models`), and with any of the three GGUF files absent it takes a **named skip** (see below). With the files present it starts its own engine, runs one turn per fixture through the SAME request path the chat command drives, scores each turn against the fixture's own expectation, diffs the process-cumulative MTP counters per fixture, compares the pass set against the baseline, and prints ONE JSON object on stdout.
+
+**Precondition.** The three GGUF files must be present under `<models_dir>/gemma-4-e2b-it-qat/` (run `fredo setup --download-model`). Point the harness at a manifest-shaped directory with `FREDO_COMPANION_MODELS_DIR`.
+
+**JSON shape — scored**
+
+```json
+{
+  "status": "scored",
+  "fixtures": [
+    {
+      "fixtureId": "skill-open-app",
+      "passed": true,
+      "seed": 1002,
+      "latencyMs": 812,
+      "promptTokens": 0,
+      "completionTokens": 9,
+      "mtpDraftsProposed": 24,
+      "mtpDraftsAccepted": 18,
+      "mtpDraftCalls": 12,
+      "detail": ""
+    }
+  ],
+  "total": 4,
+  "passed": 4,
+  "failed": 0,
+  "regressions": [],
+  "newlyPassing": [],
+  "detail": "4 of 4 fixtures passed"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `"scored"` or `"skipped"` |
+| `fixtures[].fixtureId` | The kebab fixture id (the baseline key) |
+| `fixtures[].passed` | The boolean decided by comparing the turn against the fixture's OWN expectation |
+| `fixtures[].seed` | The committed per-fixture seed the turn ran with |
+| `fixtures[].latencyMs` | Wall-clock latency of the fixture's turn |
+| `fixtures[].promptTokens` / `completionTokens` | Token counts where the streaming engine seam exposes them (`promptTokens` is `0` on today's seam) |
+| `fixtures[].mtpDraftsProposed` / `mtpDraftsAccepted` / `mtpDraftCalls` | The speculative-decoding counters for THIS fixture (the process-cumulative counters diffed per turn) |
+| `fixtures[].detail` | The failure detail (empty on a pass) |
+| `total` / `passed` / `failed` | The pass/fail total — **absent on the skip path** |
+| `regressions` | Fixture ids that passed in the baseline and FAIL now (AC-3) |
+| `newlyPassing` | Fixture ids that failed in the baseline and PASS now |
+
+**JSON shape — skipped** (the pinned model files are absent; **no total is reported**)
+
+```json
+{
+  "status": "skipped",
+  "missingFiles": [
+    "gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
+    "gemma-4-e2b-it-qat/mmproj-BF16.gguf",
+    "gemma-4-e2b-it-qat/MTP/mtp-gemma-4-E2B-it-Q4_0.gguf"
+  ],
+  "modelsDirLever": "FREDO_COMPANION_MODELS_DIR",
+  "detail": "missing model file(s): … — set FREDO_COMPANION_MODELS_DIR to a manifest-shaped models dir."
+}
+```
+
+The skip shape carries **only** `status`, `missingFiles`, `modelsDirLever` and `detail` — it has no `fixtures`/`regressions`/`newlyPassing`/`total` field at all, so a skip can never be mistaken for a scored run.
+
+**Exit codes**
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Every fixture passed and no regression was detected |
+| `1` | A fixture failed, the engine could not start, or a regression was detected |
+| `2` | A usage or local precondition error (a missing/unparsable requested `--baseline`, an unusable store target) |
+| `3` | **Skipped** — the pinned model files are absent; nothing ran and NO pass/fail total is printed |
+
+> **A skip is not a failure, and a skip never reports a total.** With the models absent (every CI runner), `fredo companion score` reports the named skip and exits `3`; a run that printed a total it did not measure is the defect the harness exists to prevent.
+
+> **The baseline.** The committed baseline (`.opencode/tests/companion/score-baseline.json`) is a machine-readable record keyed by fixture id — `{ "version": 2, "provenance": { "measured": true, "tool": "fredo companion score", "commit": "<git-sha>" }, "fixtures": [ { "id": "…", "passed": true, "seed": 101 } ] }`. It is produced **by a run**, never hand-authored: run `fredo companion score`, derive each fixture's `id`/`passed`/`seed` from the scored report, and record the producing tool and the measured git commit. The `provenance` block is required and read **fail-closed** — a baseline that does not declare a measured run (`measured: true` with a 7–40 hex `commit`) will not load, so a reference set no run produced cannot be committed.
+
+> **The store (persistence).** Each fixture's record is written as one span namespaced `event_type = 'companion.score'` (`span_name = 'companion.score.fixture'`, `session_id = 'companion-score'`, `status_code = 'OK'`/`'ERROR'`) into the existing telemetry store through the shared span store, so it is readable **after the process exits**. The embedded cluster's port is published in memory only, so the harness takes an **explicitly supplied endpoint** — `--pg-port`, or `--manifest` carrying `ports.pg` — never a probed port (the password comes from `FREDO_PG_PASSWORD_FILE`, then `PGPASSWORD`). With neither lever the run still scores and reports, and the report's `detail` names that persistence was skipped. Read the rows back with the `telemetry-query` skill:
+>
+> ```sql
+> SELECT span_id, start_time_ns, status_code, attributes_json
+> FROM telemetry_spans WHERE event_type = 'companion.score' ORDER BY start_time_ns
+> ```
 
 > **Login auto-start.** Settings → **Background capture** manages a per-user login entry that starts the resident app at sign-in with **no window** (`"<current_exe>" --background`); disabling it removes the entry, and no administrator rights are required. An entry an earlier version wrote is rewritten in place — at startup or on the next toggle, with its enabled state preserved — and an entry the product does not own is never modified. OS-level service installation (Windows Service / systemd / launchd daemon) and elevation are out of scope.
 

@@ -94,6 +94,24 @@ pub enum CompanionCommand {
     ///   1  a typed engine failure (the `code` field names it)
     ///   2  a usage or local precondition error
     Probe(ProbeArgs),
+    /// Score the committed companion fixture set and detect regressions
+    ///
+    /// Drives every committed fixture through the in-process engine, scores each
+    /// against its OWN structural expectation, compares the pass set against a
+    /// committed baseline, and prints one JSON object on stdout.
+    ///
+    /// Precondition: the three GGUF model files are present. The `score` command
+    /// resolves the models dir from `FREDO_COMPANION_MODELS_DIR` (non-blank) else
+    /// `<home>/fredo-models`; the `probe` resolves `<home>/fredo-models` and
+    /// IGNORES that lever. With them absent the command takes a NAMED skip and
+    /// prints NO total.
+    ///
+    /// Exit codes:
+    ///   0  every fixture passed and no regression was detected
+    ///   1  a fixture failed, the engine could not start, or a regression
+    ///   2  a usage or local precondition error
+    ///   3  skipped: the pinned model files are absent (no score)
+    Score(super::companion_score::ScoreArgs),
 }
 
 /// Arguments for `fredo companion probe`.
@@ -244,6 +262,9 @@ fn fresh_seed() -> u32 {
 pub async fn run_companion(args: &CompanionArgs) -> anyhow::Result<()> {
     match &args.command {
         CompanionCommand::Probe(probe) => run_probe(probe).await,
+        CompanionCommand::Score(score) => {
+            super::companion_score::run_score(score).await
+        }
     }
 }
 

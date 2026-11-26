@@ -54,6 +54,17 @@ pub use applications::doom;
 #[doc(hidden)]
 pub use applications::llm_server::doom_agent;
 
+// Spec #3232 ST-1 — the companion scoring harness's shared contract
+// (`llm_server::engine::score`: the fixture set, the structural expectation model,
+// the result/report/skip records, the baseline, and the AC-4 persistence seam).
+// The runner (ST-2), the baseline comparison (ST-3) and the CLI subcommand (ST-5)
+// consume this surface; the module is re-exported so the frozen contract remains
+// reachable (and free of dead-code) while those consumers land in the same round.
+// `mod applications` is private, hence the re-export. `#[doc(hidden)]`: not part
+// of the app surface.
+#[doc(hidden)]
+pub use applications::llm_server::engine::score;
+
 // Spec #3099 ST-4 — test seam. The durable companion-offer suite
 // (`tests/companion_offer_static_only.rs`) renders the offer through the SAME
 // renderer the live paths use (`render_tools`), so the shipped static skills are

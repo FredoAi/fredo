@@ -49,6 +49,7 @@ pub mod multimodal;
 pub mod paths;
 pub mod request;
 pub mod sampling;
+pub mod score;
 pub mod stream;
 pub mod thread;
 

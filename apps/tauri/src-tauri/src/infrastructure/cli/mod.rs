@@ -37,7 +37,7 @@ pub enum Commands {
     OpenTerminal(OpenTerminalArgs),
     /// Doom Mode maintenance commands (local only; no egress)
     Doom(DoomArgs),
-    /// Companion engine diagnostics (runs locally; no app instance required)
+    /// Companion engine diagnostics and the scoring harness (runs locally; no app instance required)
     Companion(CompanionArgs),
 }
 
@@ -56,8 +56,9 @@ async fn run_async(cli: Cli) -> Result<()> {
         Commands::Setup(ref args) => return commands::setup::run_setup(args).await,
         // `companion probe` is the ONE shipped diagnostic for a RELEASE binary:
         // the release build has no MCP bridge, so it starts its own in-process
-        // engine, runs one bounded turn, and prints JSON. Handled BEFORE the IPC
-        // dispatch — it needs no running app.
+        // engine, runs one bounded turn, and prints JSON. `companion score` is its
+        // scoring sibling (the fixture harness). Both are handled BEFORE the IPC
+        // dispatch — neither needs a running app.
         Commands::Companion(ref args) => {
             return commands::companion_probe::run_companion(args).await;
         }
