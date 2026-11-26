@@ -3,6 +3,9 @@
 > Standardized boilerplate (from `.opencode/tests/README.md`) adapted to the companion surface.
 > Runs on a running Fredo desktop app with the spec branch (`spec/2850`), MCP driver
 > `com.fredo.app`. Live policy — capture + console-clean at each step.
+>
+> **#3232 extension:** the appended rows S-51..S-54 run the CLI scoring harness
+> (`fredo companion score`) — no app, webview or MCP driver; the smoke rows above are unchanged.
 
 - [x] S-1: App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a non-empty `<body>`.
   - **PASS.** `body.theme-classic` → `div#root` with the WindowManager/DesktopBackground/LauncherChrome surfaces (125+ indexed elements).
@@ -387,3 +390,25 @@
       ZERO windows open, NO `app-command-intent` is emitted (the relay does not exist), and nothing
       claims an action was performed; screenshot succeeds; console clean of
       `Error:`/`Uncaught`/`Maximum update depth exceeded`.
+
+---
+
+## #3232 extension — scoring-harness quick paths
+
+> Quick paths for #3232 (`fredo companion score`). These run the CLI harness — **no app, no webview,
+> no MCP driver** (the `fredo companion probe` shape). **Verification policy: live.** Two-state
+> honesty: with the models RESOLVED (the documented default; `FREDO_COMPANION_MODELS_DIR` unset)
+> S-51/S-52/S-54 run the scored path; with models absent they run the S-53 skip path.
+
+- [ ] S-51: **The harness runs end-to-end on the current tip.** `fredo companion score` (models
+      resolved) exits `0` or `1` and prints a per-fixture report (a pass/fail line per fixture + a
+      total); stderr carries no unhandled error / panic. (With models absent, the run is S-53 instead.)
+- [ ] S-52: **The read-back returns the just-written rows.** After the run process EXITS, a separate
+      `telemetry_spans` query for `event_type='companion.score'` returns one row per fixture with the
+      expected fields; disclose the resolved port/manifest.
+- [ ] S-53: **The skip path is honest.** `FREDO_COMPANION_MODELS_DIR=<empty scratch dir>` ⇒ exit `3`,
+      `status:"skipped"`, the missing-file list, the lever `FREDO_COMPANION_MODELS_DIR`, and NO
+      pass/fail total.
+- [ ] S-54: **Build gates + docs.** `cargo check --locked` + `cargo clippy --locked -- -D warnings`
+      are clean (zero warnings, no new `#[allow]`); `docs/CLI_GUIDE.md` documents
+      `fredo companion score` (flags, exit codes, the read-back).
