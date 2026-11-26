@@ -911,12 +911,16 @@ mod settle_tests {
         assert!(turn.offer_tools);
         assert_eq!(turn.image.as_deref(), Some("QUJD"));
         assert!(turn.audio.is_none());
+        // DERIVED, not restated (human directive 1; #3192's rule): the pin
+        // compares the produced turn's budget to the SYMBOL, never to the
+        // constant's numeric value, so it tracks the constant (moving
+        // `SCREEN_VISUAL_TOKEN_BUDGET` keeps this green) instead of reddening the
+        // day the budget moves.
         assert_eq!(
             turn.visual_token_budget,
             Some(SCREEN_VISUAL_TOKEN_BUDGET),
             "the screen-capture image path declares the screen visual-token budget (R-3a)"
         );
-        assert_eq!(turn.visual_token_budget, Some(1120));
     }
 }
 
