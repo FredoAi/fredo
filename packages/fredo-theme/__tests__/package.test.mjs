@@ -3,8 +3,9 @@
  *
  * These are the export contract: the package name, the 38 published names,
  * `cssVar()` on a direct var AND on the five name-only aliases (an alias must
- * return the published `color-mix()` expression, never a bare `var()`), the
- * artifact drift gate, and the zero-colour-literal scan over `dist/`.
+ * return its OWN published `color-mix()` expression, never a bare `var()` and
+ * never a neighbour's mix), the artifact drift gate, and the zero-colour-literal
+ * scan over `dist/`.
  *
  * Run with: node --test packages/fredo-theme/__tests__/package.test.mjs
  */
@@ -38,6 +39,28 @@ const ALIAS_NAMES = [
   'status.errorTint',
   'status.errorStrong',
 ];
+
+/**
+ * The EXACT published expression each name-only alias must resolve to.
+ *
+ * Provenance: the committed published contract artifact `dist/tokens.json` (the
+ * same file the drift gate pins to the regenerated output; its `value` for each
+ * alias is the `color-mix()` this package publishes). These are LITERALS on
+ * purpose — the shape-only half of the pin below cannot tell one alias's mix
+ * from another's, so an alias that returned a NEIGHBOUR's expression would sail
+ * through every "starts with color-mix(" / "operands are var()s" assertion. An
+ * anchor INDEPENDENT of the generated set is what makes a swap fail; reading the
+ * value back from `tokens.json` would only compare the artifact with itself. The
+ * cross-check inside the test proves these literals still equal what the
+ * committed contract publishes, so the anchor cannot rot into a stale copy.
+ */
+const EXPECTED_ALIAS_EXPRESSIONS = {
+  'accent.subtle': 'color-mix(in srgb, var(--accent-primary) 8%, transparent)',
+  'accent.muted': 'color-mix(in srgb, var(--accent-primary) 15%, transparent)',
+  'accent.tint': 'color-mix(in srgb, var(--accent-primary) 10%, var(--body-bg) 90%)',
+  'status.errorTint': 'color-mix(in srgb, var(--status-error) 15%, var(--body-bg) 85%)',
+  'status.errorStrong': 'color-mix(in srgb, var(--status-error) 50%, var(--text-primary) 50%)',
+};
 
 test('the package is named @fredo/theme and every export path resolves', () => {
   const manifest = JSON.parse(readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
@@ -99,7 +122,10 @@ test('cssVar(): the direct-var case', () => {
   assert.equal(cssVar('--card-bg'), 'var(--card-bg)', 'a raw custom property composes too');
 });
 
-test('cssVar(): the five name-only aliases return the published color-mix() expression', () => {
+test('cssVar(): each name-only alias returns ITS OWN exact published color-mix() expression', () => {
+  // The committed contract artifact the literals above are anchored to.
+  const published = JSON.parse(readFileSync(path.join(DIST_DIR, 'tokens.json'), 'utf8'));
+  const publishedByName = new Map(published.tokens.map((token) => [token.name, token.value]));
   for (const name of ALIAS_NAMES) {
     const value = cssVar(name);
     assert.equal(typeof value, 'string', `${name} must resolve`);
@@ -108,6 +134,20 @@ test('cssVar(): the five name-only aliases return the published color-mix() expr
     assert.ok(
       !/^var\(/.test(value),
       `${name} must not be a bare var() — that is the alias defect this pin exists for`,
+    );
+    // The EXACT expression — a swapped alias (this name returning a neighbour's
+    // mix) reddens here; the shape assertions above cannot see it.
+    assert.equal(
+      value,
+      EXPECTED_ALIAS_EXPRESSIONS[name],
+      `${name} must resolve to its OWN published expression, not another alias's`,
+    );
+    // The literal anchor IS the contract: the committed tokens.json still
+    // publishes it (so the anchor cannot drift into a stale second source).
+    assert.equal(
+      publishedByName.get(name),
+      EXPECTED_ALIAS_EXPRESSIONS[name],
+      `${name}: dist/tokens.json must publish the pinned expression`,
     );
     // Every operand is a var() (or the single documented `transparent` stop).
     const inner = value.slice('color-mix(in srgb, '.length, -1);
