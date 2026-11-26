@@ -1,0 +1,52 @@
+/*
+ * @fredo/theme — generated. Do not edit by hand:
+ *   node packages/fredo-theme/scripts/build-theme.mjs
+ *
+ * The host writes every token VALUE into your document’s documentElement before
+ * your code runs, so this stylesheet never supplies a colour. It (1) declares the
+ * five published alias NAMES as custom properties computed from the host’s own
+ * vars, and (2) offers the zero-colour panel recipe built only from published
+ * token names. Including it is an ergonomic choice, never a source of values.
+ *
+ * Do NOT redefine a published token on :root or body: the host pushes a resolved
+ * token stream, so redefining one leaves its derived neighbours stale.
+ */
+
+:root {
+  --fredo-alias-accent-subtle: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  --fredo-alias-accent-muted: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+  --fredo-alias-accent-tint: color-mix(in srgb, var(--accent-primary) 10%, var(--body-bg) 90%);
+  --fredo-alias-status-errortint: color-mix(in srgb, var(--status-error) 15%, var(--body-bg) 85%);
+  --fredo-alias-status-errorstrong: color-mix(in srgb, var(--status-error) 50%, var(--text-primary) 50%);
+}
+
+/* The zero-colour panel recipe (UI/UX §1) — published token names only. */
+.fredo-theme-panel {
+  background: var(--body-bg);
+  color: var(--text-primary);
+}
+.fredo-theme-panel__surface {
+  background: var(--card-bg);
+  border: 1px solid var(--border-strong);
+}
+.fredo-theme-panel__text {
+  color: var(--text-primary);
+}
+.fredo-theme-panel__muted {
+  color: var(--text-secondary);
+}
+.fredo-theme-panel__focus:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+.fredo-theme-panel__accent {
+  background: var(--accent-primary);
+  color: var(--accent-contrast);
+}
+.fredo-theme-panel__tint {
+  background: var(--fredo-alias-accent-subtle);
+}
+.fredo-theme-panel__disabled {
+  color: var(--text-subtle);
+  border-color: var(--border-color);
+}
