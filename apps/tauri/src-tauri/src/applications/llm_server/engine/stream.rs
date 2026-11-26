@@ -115,6 +115,11 @@ pub struct TurnMeasurement {
     pub decode_micros: u64,
     /// How many tokens the turn generated.
     pub generated_tokens: u64,
+    /// The ENCODED token count of the turn's image chunk(s) (Spec #3244, ST-6;
+    /// AC-4) — the projector's `MediaPlan::image_tokens`. `0` for a text turn
+    /// (no image chunk). This is the screenshot-leg number the AC-4 screen-read
+    /// measurement records, and it lives ONLY here (the projector encoded it).
+    pub image_tokens: u64,
 }
 
 /// One piece of a streaming turn as the ENGINE produced it.
@@ -486,6 +491,13 @@ pub struct EngineTurnSource {
     handle: std::sync::Arc<super::handle::CompanionEngineHandle>,
     paths: super::paths::EnginePaths,
     mode: super::CompanionBackendMode,
+    /// The FIRST terminal [`TurnMeasurement`] this source observed (Spec #3244,
+    /// ST-6; AC-4). A turn may run more than one stream (a content turn's bounded
+    /// status-only pass follows its media turn), so the cell is FIRST-WINS: the
+    /// media-carrying attempt reports before the status pass, and the status pass
+    /// (a text turn, `image_tokens == 0`) can never clobber it. The receipt
+    /// recorder reads it after the turn to complete the per-turn injection span.
+    measurement: std::sync::Arc<std::sync::Mutex<Option<TurnMeasurement>>>,
 }
 
 impl EngineTurnSource {
@@ -500,7 +512,15 @@ impl EngineTurnSource {
             handle,
             paths,
             mode,
+            measurement: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// The turn's engine cost readout, once one has been observed (Spec #3244,
+    /// ST-6; AC-4). `None` until the first stream settles with a terminal
+    /// measurement.
+    pub fn last_measurement(&self) -> Option<TurnMeasurement> {
+        self.measurement.lock().ok().and_then(|guard| *guard)
     }
 
     /// Build the source for `app` from its managed engine handle, resolved model
@@ -545,7 +565,7 @@ impl TurnSource for EngineTurnSource {
             .chat(request)
             .map_err(|(code, detail)| failed(code, &detail, "refused a turn"))?;
 
-        drain_turn(&mut received, on_frame).await
+        drain_turn(&mut received, on_frame, Some(&self.measurement)).await
     }
 }
 
@@ -565,6 +585,7 @@ impl TurnSource for EngineTurnSource {
 async fn drain_turn(
     received: &mut tokio::sync::mpsc::Receiver<EngineEvent>,
     on_frame: &mut (dyn FnMut(StreamFrame) + Send),
+    measurement: Option<&std::sync::Mutex<Option<TurnMeasurement>>>,
 ) -> Result<(), String> {
     let mut finished = false;
     while let Some(event) = received.recv().await {
@@ -572,10 +593,21 @@ async fn drain_turn(
             EngineEvent::Failed { code, detail } => {
                 return Err(failed(code, &detail, "failed a turn"));
             }
-            event => {
-                if matches!(event, EngineEvent::Finished { .. }) {
-                    finished = true;
+            // Capture the engine's per-turn cost readout (Spec #3244, ST-6; AC-4)
+            // FIRST-WINS: the media-carrying attempt reports before any text-only
+            // status pass, so its encoded image-token count is the one kept.
+            EngineEvent::Finished { measurement: m, .. } => {
+                finished = true;
+                if let Some(cell) = measurement {
+                    if let Ok(mut guard) = cell.lock() {
+                        if guard.is_none() {
+                            *guard = Some(m);
+                        }
+                    }
                 }
+                on_frame(StreamFrame::from_engine(event));
+            }
+            event => {
                 on_frame(StreamFrame::from_engine(event));
             }
         }
@@ -1338,7 +1370,7 @@ pub(crate) mod testing {
             // event).
             let (sender, mut receiver) = tokio::sync::mpsc::channel::<EngineEvent>(1);
             drop(sender);
-            drain_turn(&mut receiver, on_frame).await
+            drain_turn(&mut receiver, on_frame, None).await
         }
     }
 }
@@ -1942,7 +1974,7 @@ mod tests {
         drop(tx);
 
         let mut frames = Vec::new();
-        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame)).await;
+        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame), None).await;
 
         let detail = outcome.expect_err("a channel close with no Finished is NOT success");
         assert!(
@@ -1972,7 +2004,7 @@ mod tests {
         drop(tx);
 
         let mut frames = Vec::new();
-        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame)).await;
+        let outcome = drain_turn(&mut rx, &mut |frame| frames.push(frame), None).await;
         assert!(outcome.is_ok(), "a Finished turn must settle Ok: {outcome:?}");
         assert_eq!(frames.len(), 2, "the token frame and the terminal frame");
         assert!(frames.iter().any(|frame| frame.events == vec![StreamEvent::Done]));
@@ -1991,7 +2023,7 @@ mod tests {
         .expect("send the failure");
         drop(tx);
 
-        let outcome = drain_turn(&mut rx, &mut |_frame| {}).await;
+        let outcome = drain_turn(&mut rx, &mut |_frame| {}, None).await;
         assert_eq!(
             outcome.err().as_deref(),
             Some("the companion could not sample the reply")

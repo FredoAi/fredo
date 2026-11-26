@@ -61,10 +61,33 @@ pub struct CompanionInjectionSpan {
     pub screenshot_bytes: i64,
     /// UTF-8 bytes of the injected screen outline.
     pub simplified_html_bytes: i64,
+    /// The number of nodes the injected screen outline carries (Spec #3244, ST-6;
+    /// AC-4) — the `outline` leg's size alongside its byte count.
+    pub simplified_html_nodes: i64,
     /// A content digest of the screenshot (freshness witness).
     pub screenshot_digest: String,
     /// A content digest of the screen outline (freshness witness).
     pub simplified_html_digest: String,
+    /// The screenshot's ENCODED visual-token count (Spec #3244, ST-6; AC-4) — the
+    /// engine's `MediaPlan::image_tokens` for the turn's image leg.
+    ///
+    /// It is NOT an input the webview knows: the projector computes it while
+    /// ENCODING the screenshot, so it is filled in AFTER the turn
+    /// ([`CompanionInjectionSpan::completed`]) and is absent when the engine
+    /// never ran (a failed start). This is the number the AC-4 screen-read
+    /// measurement records — the amount of screen Fredo can act on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_tokens: Option<i64>,
+}
+
+impl CompanionInjectionSpan {
+    /// Complete the receipt with the engine's encoded image-token readout (or
+    /// `None` when the engine never produced one). Consuming, so the facts are
+    /// recorded exactly once with the value the run observed.
+    pub fn completed(mut self, image_tokens: Option<i64>) -> Self {
+        self.image_tokens = image_tokens;
+        self
+    }
 }
 
 fn now_ns() -> i64 {
@@ -135,8 +158,10 @@ mod tests {
             description_bytes: 42,
             screenshot_bytes: 2048,
             simplified_html_bytes: 512,
+            simplified_html_nodes: 9,
             screenshot_digest: "0a1b2c3d4e5f6071".to_string(),
             simplified_html_digest: "1122334455667788".to_string(),
+            image_tokens: Some(1120),
         }
     }
 
@@ -175,13 +200,54 @@ mod tests {
             "descriptionBytes",
             "screenshotBytes",
             "simplifiedHtmlBytes",
+            "simplifiedHtmlNodes",
             "screenshotDigest",
             "simplifiedHtmlDigest",
+            "imageTokens",
         ] {
             assert!(object.contains_key(key), "the facts must carry `{key}`: {stored}");
         }
         assert_eq!(object["taught"], serde_json::json!(false));
         assert_eq!(object["perAppEntries"], serde_json::json!(0));
+        assert_eq!(object["simplifiedHtmlNodes"], serde_json::json!(9));
+        assert_eq!(object["imageTokens"], serde_json::json!(1120));
+    }
+
+    /// Spec #3244 ST-6 (AC-4): `imageTokens` is NOT a webview input — the engine
+    /// adds it AFTER the turn. A webview payload that omits it deserializes to
+    /// `None`, and `completed` fills it from the run; when the engine never ran
+    /// the key is ABSENT (G-413), never a fabricated `0`.
+    #[test]
+    fn the_image_token_readout_is_filled_from_the_run_never_the_webview() {
+        // The webview's own payload: every input fact, no imageTokens key.
+        let webview_payload = serde_json::json!({
+            "appId": "qa3244-untaught",
+            "taught": false,
+            "perAppEntries": 0,
+            "descriptionBytes": 42,
+            "screenshotBytes": 2048,
+            "simplifiedHtmlBytes": 512,
+            "simplifiedHtmlNodes": 9,
+            "screenshotDigest": "0a1b2c3d4e5f6071",
+            "simplifiedHtmlDigest": "1122334455667788",
+        });
+        let mut facts: CompanionInjectionSpan =
+            serde_json::from_value(webview_payload).expect("the webview payload deserializes");
+        assert_eq!(facts.image_tokens, None, "the webview carries no image tokens");
+
+        // The engine's readout fills it (the AC-4 number).
+        facts = facts.completed(Some(1120));
+        assert_eq!(facts.image_tokens, Some(1120));
+        let stored = serde_json::to_value(&facts).expect("serialize");
+        assert_eq!(stored["imageTokens"], serde_json::json!(1120));
+
+        // An engine that never ran leaves the key ABSENT — never an invented 0.
+        let absent = sample().completed(None);
+        let stored = serde_json::to_value(&absent).expect("serialize");
+        assert!(
+            stored.get("imageTokens").is_none(),
+            "an unmeasured turn must not carry an imageTokens key: {stored}"
+        );
     }
 
     /// Freshness (AC-3): two records of the SAME facts still differ by identity —

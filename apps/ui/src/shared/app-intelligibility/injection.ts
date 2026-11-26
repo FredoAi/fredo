@@ -48,6 +48,9 @@ export interface CompanionInjectionFacts {
   readonly descriptionBytes: number;
   readonly screenshotBytes: number;
   readonly simplifiedHtmlBytes: number;
+  /** The injected outline's node count (Spec #3244, ST-6; AC-4) — its size
+   *  alongside the byte count. */
+  readonly simplifiedHtmlNodes: number;
   readonly screenshotDigest: string;
   readonly simplifiedHtmlDigest: string;
 }
@@ -98,6 +101,7 @@ export function buildCompanionInjectionFacts(
     descriptionBytes: utf8ByteLength(input.description ?? ''),
     screenshotBytes: utf8ByteLength(input.screenshotPngBase64),
     simplifiedHtmlBytes: utf8ByteLength(outlineJson),
+    simplifiedHtmlNodes: input.outline.nodes.length,
     screenshotDigest: contentDigest(input.screenshotPngBase64),
     simplifiedHtmlDigest: contentDigest(outlineJson),
   };

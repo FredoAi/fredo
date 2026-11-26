@@ -24,3 +24,7 @@ export type {
 // ONE added re-export line; the module itself is ST-1's and nothing else here
 // changes.
 export * from './screenOutline';
+
+// Spec #3244 ST-6 — the screen-read measurement surface (AC-4). ONE added
+// re-export line; the module itself is ST-1's and nothing else here changes.
+export * from './measurement';

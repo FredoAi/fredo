@@ -952,16 +952,16 @@ pub fn spawn_chat_with_status(
     injection: Option<CompanionInjectionSpan>,
 ) {
     tauri::async_runtime::spawn(async move {
-        // Spec #3244 ST-4 — record the turn's injection facts FIRST, before the
-        // engine is even consulted: the receipt is about what the turn CARRIED,
-        // so a not-yet-loaded engine or a failed stream must not lose it.
-        if let Some(facts) = injection.as_ref() {
-            record_injection_span(&app, facts).await;
-        }
         let sink = AppSink::new(&app);
         let source = match super::engine::stream::EngineTurnSource::for_app(&app) {
             Ok(source) => source,
             Err((_code, detail)) => {
+                // Spec #3244 ST-6 — the engine never ran, so no encoded image-token
+                // readout exists: record the receipt WITHOUT an `imageTokens` key
+                // (never an invented `0`), then settle the failed turn.
+                if let Some(facts) = injection.as_ref() {
+                    record_injection_span(&app, facts).await;
+                }
                 let mut settled = SettledStream::new(&sink);
                 for event in plan_stream_error_events(&detail) {
                     skills::emit_terminal_event(&mut settled, event);
@@ -979,6 +979,16 @@ pub fn spawn_chat_with_status(
             image_base64,
         )
         .await;
+        // Spec #3244 ST-6 — record the turn's injection facts ONCE, completed with
+        // the engine's encoded image-token readout (AC-4). The screenshot's
+        // visual-token count exists only AFTER the projector encoded it, so the
+        // receipt is completed at turn end; every exit path above still records.
+        if let Some(facts) = injection {
+            let image_tokens = source
+                .last_measurement()
+                .and_then(|measurement| i64::try_from(measurement.image_tokens).ok());
+            record_injection_span(&app, &facts.completed(image_tokens)).await;
+        }
     });
 }
 
