@@ -5,8 +5,8 @@
  * A NAME contract, not a value source: the host writes every token value onto your document's documentElement, and this package only names those values. Every entry's `value` is a var() reference or a color-mix() whose operands are var()s — the package contains no colour literal and cannot become a second source of colour.
  *
  * The consumption route is VENDORING: copy this file (and `theme.css`) into your
- * package as `vendor/fredo-theme/` and import it RELATIVELY
- * (`import { cssVar } from './vendor/fredo-theme/index.mjs'`). A bare
+ * package as `vendor/fredo-theme/`, then import the vendored file
+ * `vendor/fredo-theme/index.mjs` RELATIVELY from your own module. A bare
  * `@fredo/theme` specifier never resolves in an installed application's document —
  * there is no bundler and no import map — and the host's serve whitelist is the
  * install record, so a file outside the package has no route.

@@ -6,14 +6,25 @@ import '@/shared/installed-apps/store';
 
 const READOUT_TESTID = "authoring-theme-readout";
 const TOKEN_SLOTS = ['bg.canvas', 'bg.surface', 'fg.default', 'border.default', 'accent.default', 'accent.subtle'];
+// Each readout slot name -> the property the host actually writes. Derived from
+// the published contract (tokens.json) by the generator; a bare --custom-property
+// passes through as itself, and an unlisted name has no entry.
+const TOKEN_VARS = {"bg.canvas":"--body-bg","bg.surface":"--card-bg","fg.default":"--text-primary","border.default":"--border-strong","accent.default":"--accent-primary","accent.subtle":"--accent-primary"};
 
 /** A per-mount identity: a new value means the document reloaded. */
 function makeMountId() {
   return 'm-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36);
 }
 
+/**
+ * Resolve a slot to the property the host writes: a published NAME through
+ * TOKEN_VARS, a bare --custom-property as itself (cssVar's own rule). An
+ * unlisted name reads NOTHING — never a made-up property like --bg.canvas.
+ */
 function readVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue('--' + name.replace(/^--/, '')).trim();
+  var resolved = name.indexOf('--') === 0 ? name : TOKEN_VARS[name];
+  if (!resolved) return '';
+  return getComputedStyle(document.documentElement).getPropertyValue(resolved).trim();
 }
 
 function readPainted(node, property) {
