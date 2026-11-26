@@ -589,8 +589,8 @@ mod tests {
 
     /// Spec #3233 — the per-turn reasoning default: `ChatTurn::text` seeds every
     /// chat turn to thinking OFF, and `with_reasoning` opts a turn in. This is the
-    /// re-pointed home of the retired `DEFAULT_REASONING_MODE` launch-config pin
-    /// (`sampling.rs`), now that the mode is a per-turn property.
+    /// re-pointed home of the retired launch-config reasoning-default pin, now
+    /// that the mode is a per-turn property of the turn.
     #[test]
     fn the_reasoning_default_is_disabled_for_a_chat_turn() {
         assert_eq!(

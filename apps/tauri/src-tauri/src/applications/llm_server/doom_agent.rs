@@ -250,7 +250,7 @@ pub fn server_flags_from(args_json: Option<&str>) -> String {
         .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        // The retired `DEFAULT_REASONING_MODE` launch-config constant is gone
+        // The retired launch-config reasoning-default constant is gone
         // (Spec #3233): the Doom decision turn runs thinking ON, so the reference
         // `--reasoning` mode stands in until the stamp is taken from the turn.
         .unwrap_or_else(|| "on".to_string());
