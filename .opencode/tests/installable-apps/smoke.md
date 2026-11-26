@@ -5,7 +5,7 @@ on the spec tip, after `pnpm install --frozen-lockfile` if the spec added a UI d
 
 ## Prerequisites
 
-- `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3147 -EnvId <id> -EnvSlot <n> -RequireIsolation` reports ready (never `Restart`, G-328).
+- `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3147 -EnvId <id> -EnvSlot <n> -RequireIsolation` reports ready (never `Restart`, G-328). **For a #3145 run, substitute `-Spec 3145` and capture to `.opencode/tmp/3145/e2e/`.**
 - `tauri_driver_session start` connected at the env's MCP port (a decimal-string `appIdentifier`).
 - Screenshot dir exists: `.opencode/tmp/3147/e2e/`.
 - Both fixture generators have been run once and their output dirs recorded.
@@ -23,10 +23,13 @@ on the spec tip, after `pnpm install --frozen-lockfile` if the spec added a UI d
 - [ ] **S-7 — Capture captured.** `tauri_webview_screenshot(format="jpeg", quality=80, filePath=".opencode/tmp/3146/e2e/smoke.jpeg")` succeeds and shows the rendered shell (not a blank/white webview); a **native capture** of the child window (`installed-<id>`, via `PrintWindow` / OS screenshot — **not** `tauri_webview_screenshot(windowId="installed-<id>")`, which times out) shows the app's own interface **and its `QA3146-FIXTURE` header line**.
 - [ ] **S-8 — Both build gates green.** `pnpm --filter @fredo/ui build` ⇒ `EXITCODE=0`; `cargo check --locked` (from `apps/tauri/src-tauri`) ⇒ `EXITCODE=0` with zero `warning:` lines. Use `run-exitcode.ps1 -Command "<cmd>"` to capture the exit code in this sandbox.
 - [ ] **S-9 — The pane's two empty/loaded states.** With zero installed apps, `[data-testid="installed-apps-empty"]` renders and `[data-testid="installed-apps-list"]` is absent; after installing one app the list renders and the empty state is gone (F-6.3's smoke-level leg).
+- [ ] **S-10 — The authoring kit boots from a bare directory (#3145).** From a directory containing nothing but the copied kit (no `node_modules`, no checkout): `node <kit>/fredo-authoring/bin/fredo-app.mjs --help` ⇒ exit `0` and lists **exactly** `check` and `pack`; `node <kit>/fredo-authoring/bin/fredo-app.mjs check <a valid package dir> --json` ⇒ exit `0` with `violations: []`; and the theme package's **committed drift-gate command**, quoted verbatim from `packages/fredo-theme/package.json`'s `scripts` entry (do not invent a flag) ⇒ exit `0`.
+  - EXPECT: all three exit `0` from the bare directory; no `pnpm`/`npm`/`cargo` invocation anywhere in the sequence; the `--help` verb list is exactly two. Use `run-exitcode.ps1 -Command "<cmd>"` for each `EXITCODE=`.
+  - EDGE: a kit that needs `node_modules`, a registry install, or the repo root on the resolution path is a FAIL of NFR-3 — record the exact failing import. A third verb in `--help` means a scaffolder shipped (a named non-goal, and it voids the exam's F-8.1 discrimination — report it, do not accept it).
 
 ## Expected outcome
 
-S-1..S-9 all PASS on the spec tip. A capability-denied error on a `main`/`terminal`/`doom`/`app-*`
+S-1..S-10 all PASS on the spec tip. A capability-denied error on a `main`/`terminal`/`doom`/`app-*`
 window is a regression (see `regression.md` R-2) — do not dismiss it as an environment wedge until
 the G-046/G-067 ladder has been tried and disclosed.
 
