@@ -118,12 +118,12 @@ written. These layers stop a loop; keep them enabled:
 | `software-architect` | tmp + refs | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Research/planning only - no code edits, no gh/git writes. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
 | `ui-ux-expert` | tmp + refs | (baseline only) | Design assets only - no code edits. |
 | `qa-expert` | tmp + refs + `.opencode/tests/**` | `telemetry-query.ps1` (read-only PostgreSQL telemetry) | Writes only under `.opencode/tests/`; sole test-suite author. |
-| `developer` | **allow (all files)** | `git checkout/switch/add/commit/rebase/stash`, `git worktree add*/remove*` (#3098), `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*`, `run-exitcode.ps1`, `check-navigation-prose-retired.ps1` (#3153), `gate-release-artifact.ps1` + `gate-artifact-window.ps1` (#3181, `-File` and `-NoProfile -File` forms) | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. **Read-only wrappers only** — the two `powershell -File` entries are a thin exit-code printer (`run-exitcode.ps1`, 39 lines: `Invoke-Expression` + `EXITCODE=<n>`) and a file-scanner absence guard that reads its roots and writes transient probes under its own roots **and deletes them**; neither performs a product write. They are granted per-script, never as a `.opencode/scripts/*` wildcard. **NO `git pull`** — deliberately not granted (#3098): sync with `git fetch` then `git rebase origin/spec/<N>`, since a bare pull can merge main outside the SHA-pinned form. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
+| `developer` | **allow (all files)** | `git checkout/restore/switch/add/commit/rebase/stash`, `git worktree add*/remove*` (#3098), `git push origin HEAD:spec/<N>` (never main/master/force), `cargo/pnpm/npm/npx/node/rustc`, `copilot*` (Copilot CLI live-capture leg, spec #2933), `Remove-Item .opencode/*`, `run-exitcode.ps1`, `check-navigation-prose-retired.ps1` (#3153), `gate-release-artifact.ps1` + `gate-artifact-window.ps1` (#3181, `-File` and `-NoProfile -File` forms) | NO `gh pr create/edit`, NO `git push` to main/master/force, NO `git merge main/master`, NO `git commit --no-verify`. **Read-only wrappers only** — the two `powershell -File` entries are a thin exit-code printer (`run-exitcode.ps1`, 39 lines: `Invoke-Expression` + `EXITCODE=<n>`) and a file-scanner absence guard that reads its roots and writes transient probes under its own roots **and deletes them**; neither performs a product write. They are granted per-script, never as a `.opencode/scripts/*` wildcard. **NO `git pull`** — deliberately not granted (#3098): sync with `git fetch` then `git rebase origin/spec/<N>`, since a bare pull can merge main outside the SHA-pinned form. `external_directory` denies opencode's runtime dir and re-allows `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) - no other path is granted. |
 | `tester` | tmp + refs + `.opencode/tests/**` | `dev-env.ps1`, `test-scripts.ps1`, `telemetry-query.ps1`, `git checkout/add/commit`, `git worktree add*/remove*` (#3098), `git push origin HEAD:spec/<N>`, `bun/npm/pnpm`, `cargo check/clippy/test` (CI-parity re-run of the Rust gates), `copilot*` (Copilot CLI live-capture leg, spec #2933), `Test-Path`, `fredo`, `Copy-Item/New-Item/Remove-Item/Set-Content .opencode/*`, `$env:OPENCODE_ENABLE_TELEMETRY=...`, `gate-release-artifact.ps1` + `gate-artifact-window.ps1` (#3181, both invocation forms), `gh release download*` (#3181 — fetches the historical `app-v0.2.4` installer for the AC5 fail-closed demonstration), `opencode*` + `Get-FileHash*` + `powershell -File .opencode/tests/*` (#3197 — the external-session live-capture leg, the artifact-currency hash proof, and the durable suite scripts the QA authors) | NO raw `Remove-Item` outside `.opencode/*` - the store is reset via `dev-env.ps1 -Action Clean`, NOT a direct path (sandbox denies it, G-009). **NO `git pull`** (same decision as the developer: fetch + rebase). NO gh writes, NO command chains. **NO `powershell -NoProfile -File` form** — the `-NoProfile` spelling does not match the granted `.opencode/tmp/*` / `.opencode/tests/*` resource patterns (one wasted round-trip per leg). **`opencode` is the external-session leg ONLY**, never an in-app driver or a diagnosis route (see the note below) — in-app live sessions are launched through Fredo's Terminal feature (`write_pty_input`). `external_directory` **denies by default** — the app-data directory, the installed-plugin path, and `~/.cargo/registry/src/**` (pinned dependency sources, path-scoped) are the only re-allowed paths (G-009), so no other out-of-repo read/write is reachable. |
-| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git merge` (never main/master), `git checkout`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO `git push origin main` (denied — the post-audit gate opens + force-merges (`--admin`) the single `maint/<N>` SPEC MAINT PR through the machine's `maint-pr` action instead), NO force-push, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
-| `auditor` | tmp only | (baseline only) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
-| `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | (baseline only) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
-| `toolsmith` | tmp + `.opencode/skills/**` + `.opencode/scripts/**` (`pipeline-state.rs` denied) + `.opencode/tests/**` | `test-scripts.ps1` | Reusable capability only — every script ships with its skill + a test. No gh/git writes. |
+| `orchestrator` | **allow** | `dev-env.ps1`, `test-scripts.ps1`, `git add/commit/push`, `git merge` (never main/master), `git checkout`, `git restore`, `git push origin HEAD:spec/<N>`, `bun/npm/pnpm/cargo`, `.opencode/*` file ops, `$env:OPENCODE_ENABLE_TELEMETRY=...` | NO `git push origin main` (denied — the post-audit gate opens + force-merges (`--admin`) the single `maint/<N>` SPEC MAINT PR through the machine's `maint-pr` action instead), NO force-push, NO merge of main/master, NO gh writes. NO direct `opencode` CLI invocation — live opencode sessions run only via Fredo's Terminal feature. |
+| `auditor` | tmp only | `inspect-webview-config.ps1` (read-only static inspector — re-executes the predicate it judges; the mutating harness/probe scripts stay DENIED) | Read-only verification gate — no code/plan/test/record edits; its only output is the `audit-record` verdict. No gh/git writes. |
+| `curator` | tmp + `docs/agentic-pipeline/**` (`principles.md` denied) | `test-scripts.ps1` (validates its own pipeline-doc edits) | Durable lessons only — edits playbooks/`references.md`/pipeline docs; never product source. No gh/git writes. |
+| `toolsmith` | tmp + `.opencode/skills/**` + `.opencode/scripts/**` (`pipeline-state.rs` denied) + `.opencode/tests/**` | `test-scripts.ps1`, `inspect-webview-config.ps1` (runs the guard it must prove) | Reusable capability only — every script ships with its skill + a test. No gh/git writes. |
 | `machinist` | tmp + `.opencode/scripts/pipeline-state.rs` + `.opencode/pipeline.json` + `.opencode/skills/pipeline-state/**` + `docs/agentic-pipeline/state-machine.md` + `docs/agentic-pipeline/permissions.md` (the sandbox contract this role owns — without it the "document a sandbox change in the same pass" rule is unexecutable by the only role allowed to change the sandbox) | `test-scripts.ps1`, `git worktree list*`, `git rev-parse*` (read-only tree identity — the machine must be able to verify a worktree claim it is asked to judge, #3197) | The state machine, permissions/sandbox, and measurement. Every state-machine edit passes `test-scripts.ps1`. No gh/git writes. |
 
 ### Per-agent notes
@@ -134,10 +134,14 @@ guard must be able to **execute** it. `developer` (authoring role) carries
 and capture the numeric `EXITCODE=`/`HITS:` receipt; `tester` (verifying role) drives the
 same guard through its existing `run-exitcode.ps1 -Command "..."` route, which is how its
 rows are written (G-399) — no extra direct grant is needed. The `auditor` is **deliberately
-not** widened: it judges the record the tester produced, not the tree (auditor playbook,
-"Never research code or telemetry"; its sandbox's baseline read set is the record). Any
-future guard that a role must evidence gets the same per-script treatment via
-`set-permission` — never a general `.opencode/scripts/*` glob. Pinned by the harness
+not** widened *for this guard*: it re-derives the tester's rows from the record, not from the
+tree, and an absence guard is exactly the kind of predicate a judge should not be handed the
+lever for (auditor playbook, "Never research code or telemetry"; its sandbox's baseline read
+set is the record). The single exception is the **static, read-only** config inspector
+(`inspect-webview-config.ps1`) — see "Inspector re-execution" below: it re-executes, it never
+launches, mutates, or manufactures evidence. Any future guard that a role must evidence gets
+the same per-script treatment via `set-permission` — never a general `.opencode/scripts/*`
+glob. Pinned by the harness
 assertion `Guard-evidence roles can run the retirement/prose guards they must prove (#3153)`.
 
 **Release-gate execution (#3181).** A role that must RUN the release gate must be able to
@@ -163,6 +167,31 @@ property. As with every script grant, this stays per-script: never a general
 - `Get-FileHash*` is read-only and pairs with the existing `external_directory` allow on the installed-plugin path, replacing the ad-hoc hashing scripts the artifact-currency guard (G-084) had been improvising.
 - **Suite-script execution (`powershell -File .opencode/tests/*`) is a tree glob, deliberately.** It departs from the per-script discipline (#3153/#3181) because the tree IS the tester/QA suite: the tester already holds `edit: .opencode/tests/**`, so it could always author and drive a suite script there. Do NOT widen it to `.opencode/scripts/*` (Toolsmith-owned pipeline tooling the tester does not own) and do NOT grant it to `developer` (it does not run the QA suite).
 - **Declined:** no `opencode*` for `developer` or `orchestrator` (their legs build/install and orchestrate; neither starts an external client). A role that later needs it reports the gap and the Machinist grants it per-role.
+
+**Inspector re-execution, consumer skills, and the recurring dev-loop grants.** A batch of
+grants for denials the pipeline hit repeatedly across recent specs:
+
+- **`inspect-webview-config.ps1` is per-script granted to `toolsmith` and `auditor`** (it was
+  already held by `software-architect`, `developer`, and `tester`). `toolsmith` authors the
+  probe and must be able to RUN the guard it ships; `auditor` must be able to re-execute the
+  predicate it judges instead of only reading it. This is the one deliberate widening of
+  `auditor`: the inspector is **static and read-only** — it parses `tauri.conf.json`, the
+  capability set, and the bridge registration, launches nothing, and writes nothing — so
+  re-running it re-derives an inspection result rather than producing evidence. The **live**
+  probe (`launch-artifact-probe.ps1`) and the validation harness (`test-scripts.ps1`) remain
+  DENIED to the auditor; it still does not research the tree or manufacture evidence (the
+  #3153 rule stands for every mutating/launching script).
+- **`webview-security-evidence` is granted as a `skill`** to `tester`, `developer`, `auditor`,
+  and `toolsmith` — the roles that cite it. It was documented but granted to no role, so the
+  skill that names the two committed probes was unreachable by every agent told to use it. A
+  documented skill with no consumer is a dead surface: a skill grant is part of shipping it.
+- **`git restore*` is granted to `developer` and `orchestrator`**, alongside the long-standing
+  `git checkout*`. Only the checkout spelling existed, so both roles worked around restoring a
+  path with `git checkout HEAD -- <path>`; the identical verb now has its own grant. It is a
+  working-tree restore, not a history operation.
+- **`test-scripts.ps1` is granted to `curator`** — it edits pipeline docs
+  (`docs/agentic-pipeline/**`) and must be able to run the harness that validates them; a role
+  required to keep the machine's docs in step could not execute the gate that checks them.
 
 **Restart-inert grants, and what the gate actually matches (#3197).** `opencode.json` is read at process start, so a grant applied mid-run is INERT for the live round — it does not reach an already-running agent, and it does not propagate into a child session. Two consequences, both operational:
 
