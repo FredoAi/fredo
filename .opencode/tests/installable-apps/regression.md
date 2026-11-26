@@ -275,16 +275,66 @@ code. "No change" without a quoted artifact is not evidence._
 > shipped *"installed windows reach nothing"* invariant into *"installed windows reach exactly one
 > command, granted from exactly one capability"* — a **tighter** statement that is easier to widen by
 > accident. Each row below names the widening it would catch.
+>
+> **One exception to "must not change", stated up front: R-8.1.** The declared-table insert path (W-3)
+> lands in the SHARED write body, so "the built-in tier is not reduced" cannot be asserted as "that file
+> is byte-identical" any more — an empty-diff clause would fail a correct build. R-8.1 asserts the
+> property instead: the diff is **confined** to the write path, every removed line is justified, the
+> write contract is unchanged from `main` except for the intended insert, and both directions are
+> failable. R-8.2…R-8.6 are unchanged "must not change" rows.
 
-- [ ] **R-8.1 — the built-in tier is NOT reduced.** `git diff --stat origin/main...HEAD --
-  apps/tauri/src-tauri/src/infrastructure/application_data/commands.rs` is **empty** (quoted), and the
-  built-in windows still reach every command they reach today (cross-run R-2.1…R-2.4 above).
-  - EXPECT: empty diff for `commands.rs` (the dispatcher must validate-and-REWRITE before calling these
-    bodies, never modify them); every R-2.x command still resolves from `main`; and — the discriminator
-    that this is not vacuous — a built-in `application_data_read` on an installed app's **declared**
-    table still succeeds (tier 1 takes the id from the payload and is unchanged by design).
-  - EDGE: a `commands.rs` diff is a FAIL even if the behaviour reads identical — tier 1 is the surface
-    every shipped application depends on, and the plan states it is byte-identical.
+- [ ] **R-8.1 — the built-in tier is NOT reduced (re-cut: the shared write body gains the INSERT path
+  and nothing else in it moves).**
+  > **Why this row no longer asserts an "empty diff".** W-3 lands the declared-table insert path
+  > *inside* `apps/tauri/src-tauri/src/infrastructure/application_data/commands.rs`: `write()` returns
+  > `record_missing_error` when the named key is absent (`commands.rs:726-728` and `762-764`), so the
+  > file MUST change for a write to a new key to create a row. An "empty diff" clause would therefore
+  > fail a correct build — it asserted a shape the fix contradicts, not the property this row exists
+  > for. The row now binds the diff's **shape** (confined, every removed line justified) plus the write
+  > contract's **observable behaviour driven from `main`**, which is what "the built-in tier is not
+  > reduced" actually means, and it binds BOTH directions (see EDGE).
+  - **EXPECT A — the diff is CONFINED, not empty.** Quote `git diff --stat origin/main...HEAD --
+    apps/tauri/src-tauri/src/infrastructure/application_data/commands.rs` and `git diff -U3
+    origin/main...HEAD -- <same path>`, including **every** `@@` hunk header with the function its
+    context line names. Every hunk must sit inside `write()`, a helper `write()` newly adds,
+    `record_missing_error()`, or that file's `#[cfg(test)]` module. A hunk touching `read()`, `watch()`,
+    `unwatch()`, `delete()`, `declare()`, `resolve_declaration()`, `guard_application_write()`,
+    `key_map()`, `diff_fields()`, `normalize_row()`, `bump_and_notify()`, or the
+    `ApplicationDataWriteResult` field list is a **FAIL — quote the hunk.**
+  - **EXPECT B — every removed line is justified.** Enumerate each `-` line of that diff. A removed
+    `#[test]`, `assert`, match arm or branch is a FAIL unless the same hunk replaces it with an
+    equivalent-or-stronger assertion (quote both sides). A removed `fn` other than a signature change
+    *inside* `write()` is a FAIL.
+  - **EXPECT C — the write contract, driven from `main`, is unchanged EXCEPT for the insert.** Drive
+    the built-in tier on a built-in declared table and quote every result: (a) existing key + a changed
+    value ⇒ `updated === 1` and the next read shows the new value; (b) existing key + the IDENTICAL
+    value ⇒ `updated === 0`, no version bump, no notification (the documented one-diff rule,
+    `commands.rs:183-193`); (c) an EMPTY `set` ⇒ the named error `… carries an empty set` (guard
+    unchanged); (d) a real change advances `_rowVersion` by exactly `1` and re-stamps `_updatedAt`
+    (quote both, before/after); (e) a read still returns the ordinary `{version, rows, retention}`
+    shape.
+  - **EXPECT C′ — THE INTENDED CHANGE, stated as intended and quoted as the failability control.** A
+    write naming a key that does **not** exist now **INSERTS**: record its `updated`, then a read with
+    `where:[{field:"<pk>", eq:<the key>}]` returns **exactly one row**. On the pre-W-3 body this same
+    call is **REJECTED** with `record […] does not exist in application '…' table '…'` — quote that
+    detail from the pre-change comparison (or from a build where it still appears) and FAIL C′. This
+    leg is why EXPECT A can no longer be "empty", and it is what proves the insert path landed.
+    F-7.36 (`functional.md`) owns the same observable from the **installed** tier.
+  - **EXPECT D — not vacuous, and the tier below stays reachable.** Every `R-2.x` built-in command
+    still resolves from `main` (cross-run `R-2.1`…`R-2.4` above), **and** a built-in
+    `application_data_read` on an installed app's **declared** table still succeeds and returns the
+    ordinary `{version, rows, retention}` shape — and where the round produced an installed-tier write
+    (F-7.36 / F-7.12 / P-1 in `functional.md`), that exact row comes back (tier 1 takes the id from the
+    payload by design). Quote both; if no installed-tier write was made this round, say so instead of
+    quoting an empty pair as equality (G-469).
+  - **EDGE (both directions — an "empty or tiny diff" is no longer a pass).** A diff that rewrites
+    `delete()` "for symmetry", adds a second result field, or relaxes an existing assertion is a FAIL
+    even with every row above green — tier 1 is the surface every shipped application depends on. A
+    write that reports `updated: 1` for an identical value is a FAIL of the one diff rule. **And an
+    EMPTY `commands.rs` diff is a FAIL too**: the plan binds W-3 to that file, so no hunk here means the
+    insert path did not land — report the deviation (and the file that carries it, if any) rather than
+    scoring EXPECT A green; conversely C′ passing while A reads "empty" means the two readings describe
+    different trees — record both and FAIL the row on the contradiction.
 
 - [ ] **R-8.2 — two SEPARATE refusal vocabularies; neither grows into the other.** Read
   `src/applications/installed_apps/mod.rs` (`InstalledAppRefusalCode`) and its unit pin, plus the new

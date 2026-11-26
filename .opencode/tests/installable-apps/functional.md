@@ -495,10 +495,89 @@ owned nowhere):
 >    with a new `mount=` and a fresh set of lines — never mix lines from two documents into one
 >    observation, and never treat a stale capture as the current state.
 >
+> **THE REFUSAL `detail` — read it for EVERY refusing call (binding on every row below that observes a
+> refusal: F-7.5/7.6/7.7/7.11/7.12/7.13/7.17/7.20/7.22/7.24/7.26/7.28/7.31/7.36).** A `codes=` clause
+> carries the refusal **code** only, so several different causes read identically there. The `detail`
+> is what separates an authority refusal from a handler-body failure and from a leak, so:
+> 1. in the **same capture** read `[data-call-log]` — a `<pre>` whose text is
+>    `JSON.stringify(records, null, 2)`, one entry per call in drive order, each
+>    `{ "action": …, "raw": <bool>, "ok": <bool>, "value": <any>|null, "refusal": <object>|null }`;
+> 2. select the entry by **`action` AND `ok:false`** — never "the first `ok:false`" when the row drove
+>    more than one refusing call, and **never** `[data-refusal-json]` unless the call the row names is
+>    the LAST refusal the document made (that node carries only the last one; it is a `<pre>` with the
+>    same object verbatim);
+> 3. quote `refusal.code`, `refusal.appId`, `refusal.action` and **`refusal.detail` verbatim**, and
+>    state the `mount=` of the document they came from. A detail that is not visible as text in the
+>    capture is a FAIL of AC-2's displayable-refusal clause.
+>
+> **What each cause must say — fixed text, quote the constants beside the reading**
+> (`authority.rs:288-302`, `scope.rs:43-52`, `dispatch.rs:420-457`):
+>
+> | Cause | `code` | Expected `detail` (verbatim) |
+> |---|---|---|
+> | the package declared no such capability | `action_not_declared` | `This application's package did not declare the capability this action needs.` |
+> | the action is outside the dispatchable vocabulary | `action_not_grantable` | `This action is not one an installed application may invoke, so Fredo refused it.` |
+> | a high-risk capability is declared but not consented | `consent_required` | `You have not allowed this capability for this application yet. Allow it in Settings > Installed applications, then try again.` |
+> | **any** scope cause: a foreign `applicationId`, a table the caller did not declare, a composed/constructed canonical-name collision, a persisted declaration owned by another application, or a canonical (`source:"canonical"`) ref | `scope_denied` | `This application can only reach the data tables it declared for itself.` — the SAME sentence, byte-identical, for **all** of them |
+> | the window label did not classify to an installed app | `caller_unknown` | `Fredo could not establish which application made this call, so it refused it.` |
+> | the install record is gone | `app_not_installed` | `This application has no install record any more, so Fredo refused the call.` |
+> | a handler **body** failed AFTER every authority gate passed (the vocabulary is closed at six, so the body's own message rides under `scope_denied`) | `scope_denied` | the body's own message — e.g. `record ["n1"] does not exist in application 'qa3146-app-a' table 'notes'` (the pre-W-3 shape) or `application_data_write for application '…' table '…' carries an empty set`. **Quote it and FAIL the leg the row says must succeed** — on a green build no `application_data_*` leg carries this shape |
+> | the request could not be read as the action's arguments | `scope_denied` | `the request could not be read as a <action> call: <serde detail>` — a FAIL of any row that drove a well-formed request |
+>
+> **The scope causes are deliberately INDISTINGUISHABLE — do not require distinct wording per cause.**
+> `SCOPE_DENIED_DETAIL` is one sentence for every scope cause and F-7.31 *requires* that ("that table
+> exists and is someone else's" and "that table does not exist" must read the same, or the refusal is an
+> installed-application enumeration oracle). So the **cause is established by the call the row drove**
+> (`action` + `ref` in that same log entry) while the **`detail` is asserted as the byte-identical
+> sentence**, including across causes: a row that demanded different wording per scope cause, or that
+> accepted a detail naming another application, another application's table, the composed physical name
+> (`feature_<id>_<table>`), `mission-monitor`, or a count of installed apps, is wrong in both
+> directions. `appId` echoing the caller's OWN id is explicitly allowed.
+> **FAIL conditions for this clause:** a missing or empty `detail`; a `detail` that is a bare code; a
+> `scope_denied` on a SCOPE leg whose detail is not the fixed sentence; a body-failure detail on a leg
+> that must succeed; any forbidden string above; and a `refusal.appId` that echoes the requested id
+> instead of the derived one.
+>
+> **POSITIVE CONTROL P-1 — the app's OWN declared table, driven from the HOST, held in the same round
+> (binding on every D-A row: F-7.5, F-7.6, F-7.7, F-7.11, F-7.12, F-7.13, F-7.22, F-7.24, F-7.26,
+> F-7.36).** The child mirror proves what the *installed* tier did; it cannot prove the shared handler
+> body works, and a run where everything refuses would otherwise satisfy every negative clause. Each of
+> those rows therefore requires this five-reading sequence from `main` against `qa3146-app-a`'s declared
+> `notes` table (primary key `id`, column `body`), every reading quoted:
+> 1. **declare** — `application_data_declare {declarations:[{applicationId:"qa3146-app-a",
+>    declarationRevision:"qa3146-probe-r1", tables:[<the `notes` table object copied from
+>    CAPABILITY-FIXTURES.json>]}]}` ⇒ resolves (same content as the fixture's own declare; a capability
+>    refusal here is a FAIL of P-1);
+> 2. **`0`** — `application_data_delete {ref:{applicationId:"qa3146-app-a",table:"notes"}, key:["pc1"]}`
+>    (any outcome), then `application_data_read {ref:…, where:[{field:"id",eq:"pc1"}], limit:10}` ⇒
+>    `rows.length === 0`, quoting the whole `{version, rows, retention}` result;
+> 3. **insert ⇒ `1`** — `application_data_write {ref:…, key:["pc1"], set:{body:"pc-insert"}}` ⇒
+>    **resolves** (record its `updated`; P-1 does not adjudicate that number — F-7.36 owns it), then the
+>    same read ⇒ **exactly one row** with `body === "pc-insert"`;
+> 4. **update** — `application_data_write {…, key:["pc1"], set:{body:"pc-updated"}}` ⇒ resolves, and the
+>    next read shows `body === "pc-updated"` on **one** row (an insert path that degrades the update
+>    path is a FAIL of P-1);
+> 5. **cleanup** — `application_data_delete {ref:…, key:["pc1"]}`, then the same read ⇒
+>    `rows.length === 0`, leaving the table as P-1 found it so F-7.5 stays re-runnable.
+> **P-1 writes ONLY into `qa3146-app-a`'s `notes`.** Never run a P-1-style write against
+> `qa3146-app-b`'s `records` while B's document is open: B's live watch (F-7.13) announces any change
+> in that table and would redden on the control's own write, masking a landed write. B's own-table
+> control is a **read** (see F-7.11).
+> **Why this is the control and not decoration:** steps 2→3 are the host-observed `0 → 1` of the
+> declared-table insert path (W-3). On the pre-W-3 body step 3 is **REJECTED** with
+> `record ["pc1"] does not exist in application 'qa3146-app-a' table 'notes'` — quote it and report P-1
+> as NOT held; never answer a D-A row from the child's mirror alone. **Record P-1 once per round** (with
+> the readings and when they were taken) and cite that one record from each listed row — but a row whose
+> round has no held P-1 is **UNVERIFIED, never PASS**. P-1 is a control, not a row: it is not graded as
+> an AC, and it never substitutes for the row's own audited leg.
+>
 > **A row PASSES only when its line is `PASS <row id>` AND its `codes=` clause is exactly the one the
 > row states.** `codes=` is positional (`ok` = resolved). A visible `FAIL`, a missing line, or a
-> `codes=` clause that differs from the row's is a FAIL of that row. For every row in this group also
-> record the `qa3146-mirror-control` line in the same round (see **Child evidence transport**).
+> `codes=` clause that differs from the row's is a FAIL of that row. A row whose evidence is
+> **host-driven** (F-7.36 and P-1, and the `(b)` half of F-7.11/F-7.13's controls) has no child line by
+> design: it quotes the `main` command calls and their results and says so explicitly. For every row in
+> this group also record the `qa3146-mirror-control` line in the same round (see **Child evidence
+> transport**).
 
 - [ ] **F-7.1 (R-3.2 / R-3.1 / R-3.4) [unit][NEW] — the ownership resolver is a PURE function and its decisive case is the composed name.** Instrument: `cargo test --lib --locked resolve_data_scope` from `apps/tauri/src-tauri` (disclose a `cargo test` substitution for `nextest`, G-282). The function is `resolve_data_scope(caller_app_id, requested_app_id, table, declared_tables, known_app_ids, owned_tables) -> ScopeDecision::{Allow, Deny(&'static str)}` — **no database**, so this row never opens a window.
   - **EXPECTED — quote every case's inputs and verdict, table-driven:**
@@ -528,30 +607,53 @@ owned nowhere):
 - [ ] **F-7.5 (R-1.1 / R-1.2 / R-1.3) [live][NEW] — AC-1: every declared action succeeds, and "everything refused" cannot pass.** Fixture `qa3146-app-a` (declares `data.tables{notes, shared_log}`), installed and open.
   - **READ** `[data-assertion="F-7.5"]`. The fixture itself drives, in order: a pre-clean delete of `n1`+`n2` (so a re-open re-runs the same assertions), `application_data_write` `{ref:{source:"application",applicationId:"qa3146-app-a",table:"notes"},key:["n1"],set:{body:"hello-a"}}` → `application_data_read` `{…same…}` → `application_data_delete` `{key:["n1"]}` → `application_data_read` → `application_data_declare` `{declarations:[{applicationId:"qa3146-app-a",declarationRevision:"qa3146-probe-r1",tables:[<the notes table copied from CAPABILITY-FIXTURES.json>]}]}`.
   - **EXPECTED:** the line reads `PASS F-7.5` with `codes=<c1>,<c2>,ok,ok,ok,ok,ok` — the two pre-clean deletes may carry any code, and the **five assertions all `ok`** — plus `rowsAfterWrite=1`, `rowsAfterDelete=0`. **No `ok` position may instead be a capability code** (`action_not_declared`, `action_not_grantable`, `consent_required`, `scope_denied`, `caller_unknown`); if one is, quote it and FAIL. The declare resolves **or** refuses only with a declaration-content validation error (quote it from that call's `[data-call-log]` entry) — never a capability refusal (the registry is idempotent, so a same-content re-declare must not be refused for being declared by an installed app).
-  - **NON-VACUITY CONTROL (mandatory, same round, from `main`):** after the drive, invoke `application_data_write` then `application_data_read` from the HOST with `applicationId:"qa3146-app-a", table:"notes"` and confirm the row comes back. This proves the command, the table and the ordinary handler body are all live — so A's success is a real success and A's *other* refusals (F-7.8) are real refusals.
-  - **REDDEN CONTROL:** on the pre-change tree the log reads `no-invoke-shim` (see the group preamble).
-  - **EDGE:** do **not** bind a literal `updated` value — the AC does not state one; record what you saw (0 and 1 are both plausible on an insert path). A write that resolves while the host control's read shows nothing is a FAIL of the handler body, not of the row.
+  - **NON-VACUITY CONTROL = P-1 (mandatory, same round, from `main`):** hold the AC-6 preamble's P-1
+    recipe against `qa3146-app-a`'s `notes` table and quote its five readings — `rows.length === 0`
+    before, the write resolving, **exactly one row with `body === "pc-insert"` after** (the host-observed
+    `0 → 1`), the same key updated to `pc-updated`, and the cleanup back to `0`. That is what proves the
+    command, the table, the ordinary handler body **and the insert path** are live — so A's success is a
+    real success and A's *other* refusals (F-7.8) are real refusals. A round with no held P-1 leaves this
+    row UNVERIFIED.
+  - **DETAIL (mandatory if any step is refused):** read the refusing call's own `[data-call-log]` entry
+    and quote `refusal.code` + `refusal.detail`. The write step (call 3 in the fixture's sequence,
+    `application_data_write … key:["n1"]`) must be `ok:true`; if it is refused, quote the detail — a
+    `scope_denied` carrying `record ["n1"] does not exist in application 'qa3146-app-a' table 'notes'`
+    is a FAIL of the declared-table insert path (W-3), never a scope refusal. Any refusal on any step
+    must match the AC-6 cause table verbatim (see the preamble).
+  - **REDDEN CONTROL:** on the pre-change tree — the #3146 authority diff absent (`authority.rs` /
+    `dispatch.rs` / `scope.rs` / `commands_consent.rs` unmodified) — the log reads `no-invoke-shim`; on
+    a tree with the authority diff but without W-3, the write step is refused with the
+    `record […] does not exist` detail above and `rowsAfterWrite` reads `0`. Both are the row's
+    failability; quote which tree you are on.
+  - **EDGE:** do **not** bind a literal `updated` value here — the AC does not state one; record what you
+    saw (F-7.36 owns the insert's `updated` contract). A write that resolves while the host read shows
+    **no** row is a FAIL of the handler body/insert path, not of this row's shape. A `rowsAfterWrite=1`
+    read from the child alone, with no P-1, is not non-vacuity.
 
 - [ ] **F-7.6 (R-1.3 / NFR no-caller-supplied-identity) [live][NEW] — the app supplies no identity and the host derives it.** Fixture `qa3146-app-a`, open.
   - **READ** `[data-assertion="F-7.6"]`. The fixture writes `{ref:{applicationId:"qa3146-app-a",table:"notes"},key:["n2"],set:{body:"no-identity"}}` (so a row exists that ONLY A wrote), then runs a read whose `ref` **omits `applicationId` entirely**: `{action:"application_data_read", args:{ref:{source:"application",table:"notes"},where:[],limit:10}}`, then deletes `n2` so the table is left as it found it.
   - **EXPECTED:** `PASS F-7.6 codes=ok,ok,<any>` (the trailing cleanup delete) — the read resolved and returned the `n2` row with `body === "no-identity"` (the fixture's `derivedId` check asserts exactly that); the id was injected from the window label `installed-qa3146-app-a`. Quote the `codes=` you read.
-  - **EDGE:** a resolve that returns the row of a DIFFERENT app is a total FAIL. A rejection here is a FAIL of R-1.3's "without the application supplying any identity value" — record the refusal code verbatim; do not re-drive with the id supplied and call it a pass.
+  - **THE INSERT LEG IS INSIDE THIS ROW:** `n2` is a key that does not exist yet, so step 1 is a declared-table **insert**. Read its `[data-call-log]` entry and quote it: `ok:true` with `.value` (record `updated`), and **no** refusal. A `scope_denied` there whose `detail` is `record ["n2"] does not exist in application 'qa3146-app-a' table 'notes'` is a FAIL of the insert path (W-3) — quote it; do not read that as "the identity NFR failed". Any other refusal on any step must match the AC-6 cause table verbatim (`refusal.code` + `refusal.detail` quoted from that call's entry).
+  - **D-A POSITIVE CONTROL (P-1, mandatory):** cite the AC-6 preamble's P-1 record held in this round (`0 → 1` on A's own `notes` table, driven from `main`). A round in which only the negative legs ran leaves this row UNVERIFIED.
+  - **EDGE:** a resolve that returns the row of a DIFFERENT app is a total FAIL. A rejection here is a FAIL of R-1.3's "without the application supplying any identity value" — record the refusal code **and detail** verbatim; do not re-drive with the id supplied and call it a pass.
 
 - [ ] **F-7.7 (R-1.4, restart-free half) [live][NEW] — close → re-open → the same declared actions are still accepted.** Fixture `qa3146-app-a`.
   - **STEPS:** `installed_app_close{appId:"qa3146-app-a"}` ⇒ `tauri_manage_window list` shows no `installed-qa3146-app-a`; then `installed_app_open{appId:"qa3146-app-a"}` ⇒ exactly one such window, the document line reads `ready=true` with a **NEW** `mount=` (a fresh document, not a reused context), and `[data-qa3146-assertions]` carries a fresh set of lines (read the new document's lines, not the closed one's capture).
-  - **EXPECTED:** `[data-assertion="F-7.7"]` reads `PASS F-7.7 codes=ok` — the read resolves on the re-opened document (it exercises ST-1's materialize-declarations-on-open) — **and no capability refusal appears on any line of the new document**. Quote `rowsAfterReopen=<n>` (a reading, not a floor).
+  - **EXPECTED:** `[data-assertion="F-7.7"]` reads `PASS F-7.7 codes=ok` — the read resolves on the re-opened document (it exercises ST-1's materialize-declarations-on-open) — **and no capability refusal appears on any line of the new document**. Quote `rowsAfterReopen=<n>` (a reading, not a floor; after P-1's cleanup it should read `0` — if it does not, quote the rows it returned and report the leftover as row hygiene).
+  - **DETAIL (mandatory — this row's negative clause is what needs it):** "no capability refusal appears" is only checkable against the code **and** the detail. Read every `ok:false` entry in the new document's `[data-call-log]` (there should be none) and quote the `[data-refusal-code]` / `[data-refusal-json]` nodes too: a `scope_denied` whose detail is the body-failure shape (`record […] does not exist …`, or `… carries an empty set`) is a FAIL of this row even though it is not a *capability* refusal — that is exactly the read that separates a re-materialization defect from a handler-body defect. Any refusal present must match the AC-6 cause table verbatim.
+  - **D-A POSITIVE CONTROL (P-1, mandatory):** cite the AC-6 preamble's P-1 record held in this round. A re-opened document that only ever refuses, with no held P-1, leaves this row UNVERIFIED.
   - **EDGE:** a staged write that does not persist across the reopen is a FAIL of R-1.3's store semantics, not of this row — record it and cross-check via the `main` control read. The **reinstall** half of R-1.4 is INERT in this slice — see F-7.25.
 
 - [ ] **F-7.8 (R-2.1 / R-2.3) [live][NEW] — AC-2: an undeclared action is refused cleanly, the app displays a refusal it can handle, and both keep running.** Fixture `qa3146-app-a` (declares `data.tables` only), open; record the document line's `mount=` first.
   - **READ** `[data-assertion="F-7.8"]`; the fixture drives `pg_database_reset` itself.
-  - **EXPECTED:** `PASS F-7.8 codes=action_not_declared appId=qa3146-app-a` — the call was **refused** (a rejected promise: never a resolved value, never a silent no-op) with code `action_not_declared`; the same call's entry in `[data-call-log]` carries a refusal object with `code === "action_not_declared"`, `appId === "qa3146-app-a"` (**the DERIVED id**), `action === "pg_database_reset"`, and a non-empty `detail` — quote the code and `detail` as readable text (never colour-only). `[data-qa3146-summary]` reads `done=true`.
+  - **EXPECTED:** `PASS F-7.8 codes=action_not_declared appId=qa3146-app-a` — the call was **refused** (a rejected promise: never a resolved value, never a silent no-op) with code `action_not_declared`; the same call's entry in `[data-call-log]` carries a refusal object with `code === "action_not_declared"`, `appId === "qa3146-app-a"` (**the DERIVED id**), `action === "pg_database_reset"`, and the detail **verbatim `This application's package did not declare the capability this action needs.`** — quote it as readable text (never colour-only; the AC-6 cause table is the reference). `[data-qa3146-summary]` reads `done=true`.
   - **BOTH KEEP RUNNING:** `tauri_manage_window list` still lists `installed-qa3146-app-a` **and** `main`; the host PID is unchanged; the host still answers (`get_control_setting{key:"app_window_presentation"}` from `main` returns without error); the env database is still functional (the `main` control read of F-7.5 still returns).
   - **NO FALLBACK PATH:** the log contains **one** entry for the attempt, not two — a resolved-then-refused pair, a retry against a neighbouring action, or a value synthesised from a default is a FAIL of "no fallback path".
   - **EDGE:** a refusal that says `scope_denied` or `action_not_grantable` here is a FAIL of the code taxonomy (the capability exists; this package simply did not declare it). A child whose document dies on the rejection is a FAIL of containment.
 
 - [ ] **F-7.9 (R-2.2 / R-2.3) [live][NEW] — an action outside the dispatchable vocabulary is `action_not_grantable`, and no side effect exists.** Fixture `qa3146-app-a`, open. The fixture generates the child key itself and **prints it** on the line.
   - **READ** `[data-assertion="F-7.9"]`; the fixture drives `save_control_setting{key:"qa3146-child-<token>", value:"probe-sentinel"}`, `installed_apps_list`, and `installed_app_consent_grant{appId:"qa3146-app-a", capability:"high-risk.database-reset"}`.
-  - **EXPECTED:** `PASS F-7.9 codes=action_not_grantable,action_not_grantable,action_not_grantable childKey=qa3146-child-<token>` — **all three** refused (quote each code). The dispatcher **never forwards** an `installed_app_*` command — an installed app can never consent for itself, which is why the third leg matters.
+  - **EXPECTED:** `PASS F-7.9 codes=action_not_grantable,action_not_grantable,action_not_grantable childKey=qa3146-child-<token>` — **all three** refused (quote each code), and each call's `[data-call-log]` `refusal.detail` must be verbatim `This action is not one an installed application may invoke, so Fredo refused it.` The dispatcher **never forwards** an `installed_app_*` command — an installed app can never consent for itself, which is why the third leg matters.
   - **NO-SIDE-EFFECT CONTROL (mandatory):** from `main`, `get_control_setting{key:"<the childKey the line printed>"}` returns `null`/`None`; and the same-round HOST control `save_control_setting{key:"qa3146-host-<uuid>", value:"ok"}` then `get_control_setting` on that key **returns the value** — so the child's `null` means refusal, not a dead probe.
   - **EDGE:** a run where any of the three resolves is a total FAIL. A control that also reads `null` makes the child's `null` vacuous (G-430) — re-drive, do not report a PASS.
 
@@ -565,7 +667,25 @@ owned nowhere):
   - **STEPS:** install `mission` (`installed_app_install{archivePath:"<out>/mission-1.0.0.zip"}`), install `qa3146-app-b`; open **B first** (its probe seeds `records{id:"r1"}` = `value:"b-original"` and its F-7.13 watch starts), then open `mission`.
   - **READ (on `installed-mission`)** `[data-assertion="F-7.11"]`; the fixture drives `application_data_read` of `{applicationId:"mission",table:"monitor_sessions"}` and, second, of a table `mission` did not declare.
   - **EXPECTED:** `PASS F-7.11 codes=scope_denied,scope_denied appId=mission` — refused with `scope_denied`, `appId === "mission"` and **no rows came back at all** (a rejected promise is the structural form of "receives no data"). Read the FIRST call's `[data-call-log]` entry and quote its `detail`: the refusal must name the AMBIGUITY/ownership rule, not "no such table" (a `detail` that only says the table does not exist is a FAIL — quote it either way). Nothing changed (corroborate: the row count of `feature_mission_monitor_sessions` — read from `main` via the Database Client or `db_query_execute` if a connection is configured — is identical before and after; **non-gating corroboration**, and if it cannot be read, say so rather than substituting).
-  - **SAME-RUN POSITIVE CONTROL (mandatory):** read `[data-assertion="F-7.11"]` on `installed-qa3146-app-b` ⇒ `PASS F-7.11 codes=ok,ok` (its own declared `records` resolves with `value === "b-original"`). So B's own declared tables work while A's composed reach is denied — "everything denied" cannot pass this row.
+  - **SAME-RUN POSITIVE CONTROL (mandatory, two halves):** (a) read `[data-assertion="F-7.11"]` on
+    `installed-qa3146-app-b` ⇒ `PASS F-7.11 codes=ok,ok` (its own declared `records` resolves with
+    `value === "b-original"`); (b) from `main`, `application_data_read` on
+    `{ref:{applicationId:"qa3146-app-b",table:"records"}, where:[], limit:10}` ⇒ exactly one row with
+    `value === "b-original"` — quote `rows.length` and the value. So B's own declared table works in
+    **both** tiers while mission's composed reach is denied: "everything denied" cannot pass this row.
+    **Cite the AC-6 preamble's P-1 record too** (declare → write → read → update on A's own table), and
+    **never** write into B's `records` while B's watch is live — that would redden F-7.13's watch line
+    and mask a landed write. A round with neither (b) nor a held P-1 leaves this row UNVERIFIED.
+  - **DETAIL (mandatory, both refusing calls, read by cause):** read the `[data-call-log]` entry of call
+    1 (`application_data_read` of `mission` + `monitor_sessions`) and of call 2 (a table `mission` did
+    **not** declare) and quote each one's `refusal.code`, `refusal.appId` and `refusal.detail`, plus the
+    `mount=`. **Expected `detail` for BOTH: `This application can only reach the data tables it declared
+    for itself.` — the same sentence, byte-identical** (the cause is identified by the call the row
+    drove, not by the wording: the scope causes are deliberately indistinguishable, `scope.rs:43-52` +
+    F-7.31). A detail naming the table's absence ("does not exist"), any application id
+    (`qa3146-app-b`, `mission-monitor`), any table name (`records`, `monitor_sessions`), the composed
+    physical name (`feature_mission_monitor_sessions`), or an installed count is a FAIL — quote it. The
+    two details differing at all also fails the non-oracular clause; report it under F-7.31 as well.
   - **NON-GATING CORROBORATION that the collision target is REAL:** record whether `feature_mission_monitor_sessions` exists in the env database. The deny does not depend on it (the reserved ids are in the known-id set unconditionally) — this is a reading, not a precondition.
   - **EDGE:** a `scope_denied` that arrives only because the table does not exist is not the proof — the refusal detail must name the AMBIGUITY/ownership rule, not "no such table" (quote it). A `mission` read of a table it did **not** declare must also be `scope_denied`, never `action_not_declared` (the capability is declared; the table is not).
 
@@ -574,12 +694,39 @@ owned nowhere):
   - **READ (on `installed-orbit`)** `[data-assertion="F-7.12"]`; the fixture drives, in ONE document: `application_data_write` of `{applicationId:"orbit",table:"orbit_own"},key:["o1"],set:{body:"orbit-own-value"}`, then reads `lab_notes`, then reads `orbit_own`.
   - **EXPECTED:** `PASS F-7.12 codes=ok,scope_denied,ok` — (1) `lab_notes` ⇒ `scope_denied` (the write and the second read must be `ok`): `orbit` + `lab_notes` composes to `feature_orbit_lab_notes`, byte-identical to `orbit-lab` + `notes`, and **`orbit` never names `orbit-lab`**; (2) `orbit_own` ⇒ **resolves** with `body === "orbit-own-value"` in the SAME document. Then on `installed-orbit-lab`: `[data-assertion="F-7.12"]` reads `PASS F-7.12 codes=scope_denied` (its `notes` read is refused).
   - **RECORDED CONSEQUENCE (state it, do not FAIL it):** an installed id whose sanitized form extends another known id's (`orbit-lab` vs `orbit`) is shadowed on **every** table. That is the documented fail-safe direction — the Architect's rule is that a stale/expensive id index may only ever produce a **false refusal**, never a false permit. Record the observation and the reasoning; it is a product-behaviour note for the PO, not a row failure.
+  - **DETAIL (mandatory, the refusing call only):** read the `[data-call-log]` entry for the `lab_notes` read and quote `refusal.code`, `refusal.appId` (`orbit` — the derived id) and `refusal.detail`. **Expected: `This application can only reach the data tables it declared for itself.`** A detail containing `orbit-lab`, `notes`, `feature_orbit_lab_notes` or any count is a FAIL (it would confirm WHICH id collided — F-7.31's sharpest clause). Note the cause is identified by the driven ref, not the wording, so `orbit_own` (allowed) and `lab_notes` (denied) are still distinguishable from one capture.
+  - **CROSS-TIER POSITIVE CONTROL (mandatory, from `main`, same round — it must be the FULL
+    declare → write → read → update cycle on `orbit`'s OWN table):** after reading the child's line
+    (which must show `body === "orbit-own-value"`), (a) `application_data_read` on
+    `{ref:{applicationId:"orbit", table:"orbit_own"}, where:[], limit:10}` ⇒ **exactly one row** with
+    `body === "orbit-own-value"` — the row the child wrote in that same document, read by tier 1, which
+    is what proves the child's write actually **inserted** (`o1` is a new key) instead of resolving
+    without a row; (b) `application_data_write {ref:…, key:["o1"], set:{body:"orbit-own-updated"}}` ⇒
+    resolves, and the next read shows `body === "orbit-own-updated"` on that same one row; (c) restore
+    it (`set:{body:"orbit-own-value"}`) and read it back, quoting all three readings. On a tree without
+    W-3 the child's write is refused with `record ["o1"] does not exist in application 'orbit' table
+    'orbit_own'`, so codes position 1 reads `scope_denied` instead of `ok` and (a) reads `0` rows.
+    **Cite the AC-6 preamble's P-1 record too.** A round with neither leaves this row UNVERIFIED.
   - **EDGE:** (1) and (2) must be produced in **one** `run` — two separate drives let a stale cache pass. An implementation that denies both fails (2); one that allows both fails (1).
 
 - [ ] **F-7.13 (R-3.1) [live][NEW] — AC-3: another application's data is unreachable BY NAME, and nothing of B's changes.** Fixtures `qa3146-app-a` and `qa3146-app-b`, both installed and open, B's `records{id:"r1"}` holding `value:"b-original"` (F-7.11's precondition — open B first).
   - **READ (on `installed-qa3146-app-a`)** `[data-assertion="F-7.13"]`; the fixture drives read / write / delete against `{applicationId:"qa3146-app-b",table:"records"}` and then a read of A's own `notes`.
   - **EXPECTED:** `PASS F-7.13 codes=scope_denied,scope_denied,scope_denied,ok` with `readAppId=qa3146-app-a writeAppId=qa3146-app-a deleteAppId=qa3146-app-a` — the first **three** are refused `scope_denied` with the DERIVED id (never the requested one); the **fourth resolves** (A's own declared table keeps working in the same document, which is the AC's third clause).
-  - **B's SIDE (the "nothing changed" leg):** B's own `[data-assertion="F-7.13"]` lines read `PASS F-7.13 codes=ok unchanged` **and** `PASS F-7.13 watch value=b-original rows-observed`. The second line is B's **live watch**: it re-reads `records` every 2 s in the still-open document and announces any change, so a write that landed shows as `FAIL F-7.13 watch state=changed:pwned …`. **Do not re-open B to read it** — a re-open re-seeds `r1` and would mask a landed write; read the watch line from the document that was open when A attempted the write.
+  - **DETAIL (mandatory, all three refusing calls):** read each of the three `ok:false` entries in
+    `[data-call-log]` (select by `action` — read / write / delete — never by position) and quote
+    `refusal.code`, `refusal.appId` and `refusal.detail`. **Expected `detail` for all three:
+    `This application can only reach the data tables it declared for itself.` — byte-identical**, even
+    though the three causes are nominally different (a foreign id on a read, a write and a delete). The
+    cause is identified by the driven `action` + `ref`; the wording must NOT differ (F-7.31's
+    non-oracular clause). A detail containing `qa3146-app-b`, `records`, `mission-monitor` or a
+    `feature_…` physical name is a FAIL — quote it.
+  - **HOST CROSS-CHECK + P-1 (mandatory):** (a) from `main`, the SAME own-table read
+    (`{ref:{applicationId:"qa3146-app-a", table:"notes"}, where:[], limit:10}`) **resolves** with the
+    ordinary `{version, rows, retention}` shape — rows may legitimately be empty here, so the
+    discriminator is the result SHAPE and the absence of a refusal, never a count; (b) cite the AC-6
+    preamble's P-1 record held in this round, so the own-table leg is proven by a write that landed, not
+    by two empty readings. A round with no held P-1 leaves this row UNVERIFIED.
+  - **B's SIDE (the "nothing changed" leg):** B's own `[data-assertion="F-7.13"]` lines read `PASS F-7.13 codes=ok unchanged` **and** `PASS F-7.13 watch value=b-original rows-observed`. The second line is B's **live watch**: it re-reads `records` every 2 s in the still-open document and announces any change, so a write that landed shows as `FAIL F-7.13 watch state=changed:pwned …`. **Do not re-open B to read it** — a re-open re-seeds `r1` and would mask a landed write; read the watch line from the document that was open when A attempted the write. **Do not write into B's `records` yourself** (no P-1-style control on B while this watch is live).
   - **EDGE:** a read that resolves with an EMPTY row set instead of refusing is a FAIL — the AC says "receives no data", and a silent empty result is the shape a confused-deputy bug takes. A delete that resolves `{deleted:false}` instead of refusing is the same FAIL. If B's row cannot be written first (B is not open/refused), the row is UNVERIFIED, not PASS.
 
 - [ ] **F-7.14 (R-3.3, runtime half) [live][NEW] — the SECOND DOOR at runtime: a canonical table ref is refused.** Fixture `qa3146-app-a`, open.
@@ -639,6 +786,18 @@ owned nowhere):
   - **STEPS:** record the baseline snapshot (A's grant held for query only; B unconsented; `mission` denied on `monitor_sessions`; A's own `notes` read OK). Then, holding the SAME env id and slot (G-328 — **never the `Restart` verb**): `powershell -File .opencode/scripts/dev-env.ps1 -Action Down -EnvId <id>` then `powershell -File .opencode/scripts/dev-env.ps1 -Action Up -Spec 3146 -EnvId <id> -EnvSlot <n>`. `Down` **keeps** `FREDO_DATA_DIR` (documented, `dev-environment` SKILL) — that is what makes this a persistence proof, not a wipe test. Budget the 3–5 min first paint (G-386) and attach a NEW driver session.
   - **EXPECTED, after the restart:** the same apps are listed; A's projection reads `consented:["high-risk.database-query"]` (re-read from disk — the process that held the grant in memory is gone); opening A produces a fresh document whose `[data-qa3146-consent]` line reads `state=granted query=<not consent_required>` (so the query leg is **not** `consent_required`) and whose `[data-assertion="F-7.20"]` reads `PASS … capability=high-risk.database-reset` (the reset leg is **`consent_required`** — the grant was per-capability, so it survived correctly and only what was granted survived); B reads `[data-assertion="F-7.19"] codes=consent_required`; A's `[data-assertion="F-7.7"]` reads `PASS F-7.7 codes=ok` (its own `notes` read returns); `mission` reads `[data-assertion="F-7.11"] codes=scope_denied,…` on `monitor_sessions`.
   - **WHY THIS IS THE PROOF:** the restarted process has no in-memory state at all, so everything that still holds was re-derived from disk — this is the live form of "no in-memory grant survives as authority" (R-5.1) and the substitution recorded for the INERT reinstall clause (F-7.25).
+  - **DETAIL (mandatory, post-restart):** the two refusals this row observes must also be read by cause.
+    On the re-opened A document read the refusing call's `[data-call-log]` entry — for the reset leg
+    (`pg_database_reset`, `consent_required`) quote `refusal.detail` and require `You have not allowed this capability for this application yet. Allow it in Settings > Installed applications, then try again.` verbatim (a detail that describes the reset instead of the consent gate is the FAIL F-7.17's discriminator names). On `mission` read `[data-assertion="F-7.11"]`'s first entry and
+    require the scope sentence `This application can only reach the data tables it declared for itself.`
+    byte-identical — a post-restart detail that differs from the pre-restart one means the process is
+    re-deriving it from different inputs (report it). A body-failure detail (`record […] does not
+    exist …`) anywhere here is a FAIL.
+  - **P-1 AFTER THE RESTART (mandatory, this is the row's second half):** re-run the AC-6 preamble's P-1
+    recipe against the restarted process and quote all five readings (`0` → write resolves → exactly one
+    row → updated value → cleanup `0`). The fresh process has no in-memory state, so a held P-1 here
+    proves the declared-table insert path is re-derived from disk too — and a P-1 that fails post-restart
+    while it held pre-restart is a FAIL of "nothing in memory is authority", not an environment quirk.
   - **EDGE:** a post-restart consent that has drifted (query granted AND reset granted) is a total FAIL. A restart that loses the install root means `Up` did not carry the env id — disclose it as an ENVIRONMENT defect, never as a product FAIL. Leave the env RUNNING afterwards (the round's other rows and the auditor reuse it).
 
 - [ ] **F-7.23 (R-5.3) [live][NEW] — a second window of the same app IS the same app.** Fixture `qa3146-app-a`, open; record the document line's `mount=`.
@@ -649,6 +808,18 @@ owned nowhere):
 - [ ] **F-7.24 (R-5.4 / R-5.3) [static+live][NEW] — a forged identity is impossible — and this row states exactly what the round CAN observe.** Both legs mandatory; neither answers for the other.
   - **STATIC LEG (the mechanism):** (a) `capabilities/installed-app-commands.json` grants exactly `allow-installed-app-invoke` — quote it (F-7.4 quotes the whole file); (b) `core:window:allow-create` appears **only** in `capabilities/default.json`, and that file's `windows` array is `["main","terminal","doom","app-*"]` — quote both, so an installed document has no window-creating permission at all; (c) enumerate every call site of `installed_app_window_label` across `apps/tauri/src-tauri/src` (grep + directory listing) and confirm the ONLY producer is `open_installed_app_window`, which `installed_app_open` reaches only after `resolve_open_target` verified the install record; (d) quote the signature of `installed_app_invoke` showing the identity source is `webview: tauri::Webview` and **not** a field of `InstalledAppCallRequest`.
   - **LIVE LEG (what the tester can actually observe).** Read `[data-assertion="F-7.24"]` on `installed-qa3146-app-a`; the fixture drives three reads: own `notes` with no `applicationId`, `qa3146-app-b`'s `records`, and a non-existent id `qa3146-ghost`. **EXPECTED:** `PASS F-7.24 codes=ok,scope_denied,<refused> otherAppId=qa3146-app-a ghostAppId=qa3146-app-a` — leg 1 resolves as A (identity injected); legs 2 and 3 are **refused** (leg 2 is `scope_denied`; leg 3's code is the product's own taxonomy for an unknown target and the row binds only "refused", never a code) and the refusal's `appId` is **`"qa3146-app-a"` in both cases** — the derived id, never the payload's, never `qa3146-ghost`.
+  - **DETAIL (mandatory, legs 2 and 3 — this row's `appId` claim is only half the identity proof):** read
+    each refusing call's own `[data-call-log]` entry and quote `refusal.code`, `refusal.appId` and
+    `refusal.detail`. Leg 2 (`qa3146-app-b` + `records`) ⇒ `scope_denied` with
+    `This application can only reach the data tables it declared for itself.` Leg 3 (`qa3146-ghost`) ⇒
+    quote whatever code the product uses (only "refused" is bound) and require its `detail` to be
+    **either the same scope sentence or a sentence naming no application other than the caller** — a
+    detail that confirms or denies the existence of `qa3146-ghost`, or that names any other id, is a
+    FAIL of the no-caller-supplied-identity NFR *and* of F-7.31's non-oracular clause. A body-failure
+    detail (`record […] does not exist …`) is a FAIL here.
+  - **D-A POSITIVE CONTROL (P-1, mandatory):** cite the AC-6 preamble's P-1 record held in this round, so
+    leg 1's `ok` is a resolve against a table a write actually landed in (two empty readings cannot prove
+    it). A round with no held P-1 leaves this row UNVERIFIED.
   - **EXPLICIT LIMITATION (record it; a verdict claiming more is malformed on its face).** The tester **cannot** observe a forged window LABEL: no installed document can create a window (leg (b)) and the driver has no verb that mints a window with a chosen label. So the round's evidence is (i) the absence of a window-creating grant, (ii) the single minting site, and (iii) the derived `appId` in every refusal. State it in those three terms.
   - **EDGE:** a refusal whose `appId` echoes the REQUESTED id is a total FAIL of the no-caller-supplied-identity NFR. Any `core:*` permission appearing in the installed capability is a FAIL of leg (a) and of F-7.4.
 
@@ -659,7 +830,21 @@ owned nowhere):
 - [ ] **F-7.26 (NFR fail-safe default) [live][NEW] — no declaration means NO reach, never "everything except a deny list".** Fixture `qa3146-no-capabilities` (no `capabilities` key at all), open.
   - **READ** `[data-assertion="F-7.26"]`; the fixture drives `application_data_read` of its own id + `notes`, `application_data_declare{declarations:[]}`, and `pg_database_reset`.
   - **EXPECTED:** `PASS F-7.26 codes=action_not_declared,action_not_declared,action_not_declared` — all three refused `action_not_declared` (the CAPABILITY is undeclared — not `scope_denied`); the projection's `declared`/`highRisk`/`consented` are all empty; the settings entry renders no consent section (F-7.16).
-  - **SAME-ROUND CONTROL (mandatory):** `qa3146-app-a` — which does declare — reads `[data-assertion="F-7.5"]` with all five assertion steps `ok`. So "everything refuses" is not the pass condition, and the fail-safe claim is about the DECLARATION, not about a broken dispatcher.
+  - **DETAIL (mandatory, all three calls — this row's whole claim is WHY they were refused):**
+    the row's claim is *which gate* fired (the CAPABILITY gate, not the scope gate), and a code alone is a
+    token. Read each of the three `[data-call-log]` entries by `action`
+    (`application_data_read`, `application_data_declare`, `pg_database_reset`) and quote
+    `refusal.code` + `refusal.detail`. **Expected `detail` for all three:
+    `This application's package did not declare the capability this action needs.`** A
+    `scope_denied` (with the scope sentence) here is a FAIL — the package declared nothing, so the
+    capability gate must fire first; a scope sentence instead means the row's fail-safe claim is being
+    answered by a different gate, which is not this NFR.
+  - **SAME-ROUND CONTROL (mandatory, and it is now non-vacuous by construction):** `qa3146-app-a` —
+    which does declare — reads `[data-assertion="F-7.5"]` with all five assertion steps `ok`, **and** the
+    AC-6 preamble's P-1 record is held in this round (`0` → write resolves → exactly one row → updated
+    → cleanup `0` on A's own declared table). So "everything refuses" is not the pass condition, the
+    fail-safe claim is about the DECLARATION, and a round with no held P-1 leaves this row UNVERIFIED
+    rather than PASS.
   - **EDGE:** a package with no `capabilities` key that can reach ANY action is a total FAIL of the fail-safe NFR. A refusal code of `caller_unknown` here means the tier classifier mis-read the label — report the label you saw.
 
 - [ ] **F-7.27 (NFR complete mediation / R-3.5 / R-4.4) [live+unit][NEW] — the decision is re-derived on EVERY call; nothing is cached at subscribe, mount or window-open time.** Three legs; A and B are the same legs F-7.18/F-7.19 drive, but this row owns the *re-derivation* claim and its instrument.
@@ -738,6 +923,45 @@ owned nowhere):
     (3) `[data-qa3146-summary]` reads `QA3146-SUMMARY calls=1 probes=1 done=true`.
   - **WHY THIS IS A ROW.** Every other line in this group is a `PASS`. Without a control that MUST fail, "all PASS" and "the mirror never ran / renders nothing" are indistinguishable — a blank capture would look like success. This row is the discriminator.
   - **EDGE:** a **missing** `MIRROR-CONTROL` line, or a missing header/document line, ⇒ the transport is dead: record every remaining `[data-qa3146-assertions]`-based row as **UNVERIFIED — instrument refused (mirror did not run)**, never PASS and never a product FAIL. A `PASS MIRROR-CONTROL` line ⇒ either the declared read really was refused (a **product defect**: a package cannot read its own declared table) or the mirror fabricates results — report both possibilities and fail the round's child evidence. This row is **never graded as a product AC**; it grades the instrument.
+
+- [ ] **F-7.36 (R-1.1 / R-1.3, the W-3 declared-table INSERT path) [live][NEW] — a write naming a key that does not exist CREATES the row, and the row is read back by the HOST.** Fixture `qa3146-app-a` installed and open (so its `notes` table — primary key `id`, column `body` — is declared and materialized on open); drive from `main` with the shipped `application_data_*` commands. This row exists because the round-2 verdict's real gap was observing the write path only from the fixture's own mirror: the mirror cannot prove the shared handler body inserted anything.
+  - **DRIVE (one run, in this order, quoting every result — this is P-1 plus its discriminators):**
+    1. `application_data_delete {ref:{applicationId:"qa3146-app-a",table:"notes"}, key:["pc1"]}` (any
+       outcome), then `application_data_read {ref:…, where:[{field:"id",eq:"pc1"}], limit:10}` ⇒
+       **`rows.length === 0`** — the **`0`**; quote the whole `{version, rows, retention}` result.
+    2. `application_data_write {ref:…, key:["pc1"], set:{body:"pc-insert"}}` ⇒ **resolves** (never
+       rejected); quote `updated` as a reading (not adjudicated — see EDGE).
+    3. the SAME read ⇒ **exactly one row** with `body === "pc-insert"` — the **`1`**, read by the HOST
+       through `application_data_read`, not from the child's mirror.
+    4. `application_data_write {…, key:["pc1"], set:{body:"pc-updated"}}` ⇒ resolves; the next read shows
+       `body === "pc-updated"` and still **one** row (the insert path must not degrade the update path).
+    5. the IDENTICAL write again (`{body:"pc-updated"}`) ⇒ **`updated === 0`** and the read is unchanged —
+       the documented one-diff rule still governs (`commands.rs:183-193`); a path that reports `1` here
+       rewrote an unchanged row.
+    6. `application_data_delete {ref:…, key:["pc1"]}`, then the read ⇒ `rows.length === 0` (cleanup, so
+       F-7.5 and P-1 stay re-runnable).
+  - **EXPECTED (the INSTALLED tier, same round, same path):** A's own document reads
+    `PASS F-7.5` with `rowsAfterWrite=1` / `rowsAfterDelete=0`, and the write step's `[data-call-log]`
+    entry (call 3) is `ok:true` — quote its `.value` (the `updated`) and the document's `mount=`. The
+    child write and the host writes above go through the SAME body, so this is one insert path seen from
+    both tiers; a child write that resolves while the host read shows no row is a FAIL of the body.
+  - **RE-RUN (mandatory, one second pass):** repeat the whole DRIVE once. Step 1 must read `0` again
+    (a non-zero reading means an earlier leg leaked a row — report it as row hygiene, and note that
+    F-7.5's own probe deletes `n1`/`n2` first for the same reason). If step 2 ever REFUSES, stop and read
+    the refusal (next clause) — do not re-drive a different key to get a greener result.
+  - **FAILABILITY (the pre-W-3 tree, named):** before the fix `write()` returns `record_missing_error`
+    when the named key is absent (`infrastructure/application_data/commands.rs:726-728`, `762-764`), so
+    step 2 is **REJECTED** with `record ["pc1"] does not exist in application 'qa3146-app-a' table 'notes'`, step 3 reads `0` again, and the child's line reads
+    `FAIL F-7.5 codes=…,scope_denied,…` whose detail is that same body-failure string. Quote it (see the
+    AC-6 detail table: a body failure rides under `scope_denied`) and report the insert path as NOT
+    landed — never a PASS by substituting a key that already exists, and never by answering from the
+    child's mirror alone.
+  - **EDGE:** an insert that reports `updated: 1` while the next read shows **no** row is a FAIL of the
+    handler body (quote both readings, do not pick one). An insert that overwrites an existing row
+    (`body` replaced across two different keys) is a FAIL of the key mapping — verify by writing
+    `pc1` then `pc2` and reading both back. A leftover row at step 6 is a row-hygiene FAIL to report
+    (it breaks F-7.5's re-run), not a cleanup nit. `updated` itself is recorded, never bound, for the
+    insert and update legs — the shipped contract only fixes `0` for a no-value-delta write (step 5).
 
 ## Non-functional rows
 
