@@ -696,12 +696,31 @@ pub fn requested_offload_layers(mode: CompanionBackendMode) -> u32 {
     device::gpu_layers_for(projection)
 }
 
+/// The prefill micro-batch (`n_ubatch`) every generation context is sized with
+/// (R-3b / AC-3b).
+///
+/// A visual encoding is decoded through the context's prefill batch, so a batch
+/// smaller than the visual-token budget would clamp a large screen-capture
+/// encoding. `llama.cpp` caps `n_ubatch` at the logical batch `n_batch` (2048
+/// here, the crate default) and BLAS requires at least 32, so
+/// `COMPANION_N_UBATCH = 2048` is simultaneously ≥
+/// [`SCREEN_VISUAL_TOKEN_BUDGET`](super::multimodal::SCREEN_VISUAL_TOKEN_BUDGET)
+/// (1120), ≥ 32, and ≤ `n_batch`. The `n_ubatch` pin below is the failability
+/// control for the clamp: it reddens on the pre-change default of 512.
+///
+/// Honest caveat (recorded, not a claim this change makes): an external
+/// `-ub 2048` benchmark saw no score movement. The batch change exists to stop
+/// the visual budget from being clamped by a physical batch — not to claim a
+/// quality win.
+pub const COMPANION_N_UBATCH: u32 = 2048;
+
 /// Build the context parameters from the relocated sampling defaults.
 pub fn context_params(settings: &SamplingSettings) -> LlamaContextParams {
     LlamaContextParams::default()
         .with_n_ctx(NonZeroU32::new(settings.ctx_size))
         .with_n_threads(settings.threads)
         .with_n_threads_batch(settings.threads_batch)
+        .with_n_ubatch(COMPANION_N_UBATCH)
 }
 
 /// Serialises one engine start at a time across the whole process.
@@ -1047,6 +1066,7 @@ pub fn decode_error(detail: String) -> (CompanionEngineErrorCode, String) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::multimodal::SCREEN_VISUAL_TOKEN_BUDGET;
     use super::*;
 
     /// The offload request is a pure function of the mode: `cpu` ⇒ zero,
@@ -1069,6 +1089,32 @@ mod tests {
         assert_eq!(params.n_ctx().map(NonZeroU32::get), Some(131_072));
         assert_eq!(params.n_threads(), 6);
         assert_eq!(params.n_threads_batch(), 12);
+    }
+
+    /// R-3b / AC-3b: the prefill batch carries the screen visual-token budget, so
+    /// a screen-capture visual encoding is never clamped by a physical batch.
+    ///
+    /// This is the failability control for the clamp: on the pre-change tree
+    /// `context_params` set no `n_ubatch`, so the crate default of 512 reddened
+    /// this pin (512 < 1120). It now passes because the batch is sized to
+    /// [`COMPANION_N_UBATCH`].
+    #[test]
+    fn context_params_size_the_prefill_batch_for_the_visual_budget() {
+        let params = context_params(&SamplingSettings::default());
+        assert_eq!(params.n_ubatch(), COMPANION_N_UBATCH);
+        assert!(
+            params.n_ubatch() >= SCREEN_VISUAL_TOKEN_BUDGET as u32,
+            "the prefill batch ({}) must carry the visual budget ({SCREEN_VISUAL_TOKEN_BUDGET})",
+            params.n_ubatch()
+        );
+        assert!(
+            params.n_ubatch() >= 32,
+            "n_ubatch must be at least 32 so the batch can use BLAS"
+        );
+        assert!(
+            params.n_ubatch() <= params.n_batch(),
+            "n_ubatch must not exceed the logical batch n_batch"
+        );
     }
 
     /// The prompt budget keeps room for the completion: a prompt that fits is left
