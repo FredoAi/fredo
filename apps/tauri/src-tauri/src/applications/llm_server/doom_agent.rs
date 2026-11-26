@@ -55,7 +55,7 @@ use crate::infrastructure::companion::doom_decision::{
 use crate::infrastructure::storage::SettingsStore;
 
 use super::chat::{LlmMessage, MAX_TOKENS};
-use super::engine::request::ChatTurn;
+use super::engine::request::{ChatTurn, ReasoningMode};
 use super::engine::stream::{EngineOneShotSource, OneShotSource};
 
 /// Persisted key carrying the main model path.
@@ -68,8 +68,9 @@ const LLAMA_SERVER_MODEL_PATH_KEY: &str = "llama_server_model_path";
 
 /// Persisted key carrying the optional launch-argv override JSON.
 ///
-/// Read ONLY for the decision trace's served alias / `--reasoning` flag, never
-/// for engine configuration. Declared locally for the same reason.
+/// Read ONLY for the decision trace's served alias, never for engine
+/// configuration (and no longer for the reasoning mode — Spec #3233 takes that
+/// from the turn itself). Declared locally for the same reason.
 const LLAMA_SERVER_ARGS_KEY: &str = "llama_server_args";
 
 /// The Doom-playing persona.
@@ -210,10 +211,17 @@ fn doom_messages(observation: &Value, vocabulary: &Value) -> Vec<LlmMessage> {
 ///
 /// This is the ONE production shaping rule for the decision source, and it
 /// carries NO media (no image, no audio), so the text-only receipt holds.
+///
+/// The turn **opts in** to the model's thinking channel (Spec #3233, R-3): the
+/// Doom decision benefits from the reasoning pass, and the per-turn policy makes
+/// that an explicit property of THIS turn rather than a global engine default.
+/// [`server_flags_from`] then renders [`ChatTurn::reasoning`] into the decision
+/// trace, so the record stamps the mode the turn actually ran with.
 pub fn doom_turn(observation: &Value, vocabulary: &Value) -> ChatTurn {
     ChatTurn::text(doom_messages(observation, vocabulary))
         .with_json_schema(DOOM_PLAN_SCHEMA_NAME, doom_plan_schema())
         .with_max_tokens(DOOM_AGENT_MAX_TOKENS)
+        .with_reasoning(ReasoningMode::Enabled)
 }
 
 // ── Model-source metadata + dataset capture gates (Spec #3032 ST-4) ──────────
@@ -241,19 +249,19 @@ pub fn model_id_from(model_path: Option<&str>, args_json: Option<&str>) -> Optio
     })
 }
 
-/// The best-effort server flags for the decision trace: the persisted
-/// `--reasoning` mode (else the reference default), rendered as
-/// `reasoning=<mode>`. Pure.
-pub fn server_flags_from(args_json: Option<&str>) -> String {
-    let reasoning = args_json
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .and_then(|value| value.get("reasoning").and_then(Value::as_str).map(str::to_string))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        // The retired launch-config reasoning-default constant is gone
-        // (Spec #3233): the Doom decision turn runs thinking ON, so the reference
-        // `--reasoning` mode stands in until the stamp is taken from the turn.
-        .unwrap_or_else(|| "on".to_string());
+/// The best-effort server flags for the decision trace: the TURN's reasoning
+/// policy, rendered as `reasoning=<on|off>`. Pure.
+///
+/// Spec #3233, R-3: the stamp describes **what was served** — the mode the Doom
+/// turn actually ran with ([`doom_turn`] opts in to
+/// [`ReasoningMode::Enabled`]) — never a persisted launch-config value. A turn
+/// that ran with reasoning OFF therefore stamps `reasoning=off`, so the dataset
+/// record can never claim a mode the engine did not run.
+pub fn server_flags_from(mode: ReasoningMode) -> String {
+    let reasoning = match mode {
+        ReasoningMode::Enabled => "on",
+        ReasoningMode::Disabled => "off",
+    };
     format!("reasoning={reasoning}")
 }
 
@@ -406,16 +414,17 @@ impl ModelDoomDecisionSource {
         }
     }
 
-    /// The best-effort model identity + server flags for the trace, read from the
-    /// persisted server settings (an absent setting yields `None` / the config
-    /// default). Never fails a decision.
-    fn model_metadata(&self) -> (Option<String>, Option<String>) {
+    /// The best-effort model identity + server flags for the trace. The model
+    /// identity is read from the persisted server settings (an absent setting
+    /// yields `None`); the server flags render the TURN's reasoning mode
+    /// (`mode`), so the trace stamps what was served. Never fails a decision.
+    fn model_metadata(&self, mode: ReasoningMode) -> (Option<String>, Option<String>) {
         let store = self.app.state::<Arc<SettingsStore>>();
         let model_path = store.cached_get(LLAMA_SERVER_MODEL_PATH_KEY).ok().flatten();
         let args_json = store.cached_get(LLAMA_SERVER_ARGS_KEY).ok().flatten();
         (
             model_id_from(model_path.as_deref(), args_json.as_deref()),
-            Some(server_flags_from(args_json.as_deref())),
+            Some(server_flags_from(mode)),
         )
     }
 }
@@ -424,6 +433,9 @@ impl ModelDoomDecisionSource {
 impl DoomDecisionSource for ModelDoomDecisionSource {
     async fn decide(&self, observation: &Value) -> Result<DoomPlan, DoomDecisionError> {
         let turn = doom_turn(observation, &self.vocabulary);
+        // The trace stamps the mode THIS turn runs with (Spec #3233, R-3), so the
+        // record describes what was served rather than a persisted default.
+        let reasoning_mode = turn.reasoning;
 
         let decision = match EngineOneShotSource::for_app(&self.app) {
             Ok(source) => {
@@ -436,7 +448,10 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
             // A missing handle is a source-availability condition, not a fatal
             // malformed decision: the loop degrades and keeps advancing.
             Err((_code, detail)) => {
-                return Err(self.record_and_classify(DoomDecisionError::ModelUnavailable(detail)))
+                return Err(self.record_and_classify(
+                    reasoning_mode,
+                    DoomDecisionError::ModelUnavailable(detail),
+                ))
             }
         };
 
@@ -446,7 +461,7 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
             Ok(Ok(reply)) => (reply.content.clone(), reply.reasoning.clone()),
             _ => (String::new(), String::new()),
         };
-        self.record_trace(&content, &reasoning);
+        self.record_trace(reasoning_mode, &content, &reasoning);
 
         match decision {
             Err(_elapsed) => Err(DoomDecisionError::TimedOut),
@@ -468,9 +483,10 @@ impl DoomDecisionSource for ModelDoomDecisionSource {
 
 impl ModelDoomDecisionSource {
     /// Record the trace for the reply captured so far (the failure paths also
-    /// carry it, so a dataset record is never lost).
-    fn record_trace(&self, content: &str, reasoning: &str) {
-        let (model_id, server_flags) = self.model_metadata();
+    /// carry it, so a dataset record is never lost). `mode` is the mode the turn
+    /// ran with — the trace stamps it as the served reasoning mode.
+    fn record_trace(&self, mode: ReasoningMode, content: &str, reasoning: &str) {
+        let (model_id, server_flags) = self.model_metadata(mode);
         let (raw_enabled, reasoning_enabled) = dataset_capture_flags();
         let trace = build_decision_trace(
             model_id,
@@ -487,8 +503,12 @@ impl ModelDoomDecisionSource {
     }
 
     /// Record an empty trace and return `error` — the source-availability path.
-    fn record_and_classify(&self, error: DoomDecisionError) -> DoomDecisionError {
-        self.record_trace("", "");
+    fn record_and_classify(
+        &self,
+        mode: ReasoningMode,
+        error: DoomDecisionError,
+    ) -> DoomDecisionError {
+        self.record_trace(mode, "", "");
         error
     }
 }
@@ -847,7 +867,7 @@ mod tests {
     }
 
     /// **Spec #3032 ST-4.** The model identity prefers the served alias and falls
-    /// back to the model file stem; the server flags render the reasoning mode.
+    /// back to the model file stem.
     #[test]
     fn model_metadata_prefers_alias_and_falls_back_to_the_file_stem() {
         assert_eq!(
@@ -864,13 +884,38 @@ mod tests {
         );
         assert_eq!(model_id_from(None, None), None);
         assert_eq!(model_id_from(Some("   "), Some("not json")), None);
+    }
 
-        assert_eq!(server_flags_from(None), "reasoning=on");
+    /// **Spec #3233 ST-4 (R-3).** The Doom decision turn opts IN to the model's
+    /// thinking channel, and the trace's server flags render the TURN's mode —
+    /// so the record stamps **what was served**, never a persisted
+    /// launch-config value.
+    ///
+    /// Failability (G-476): the stamp is a function of the TURN's mode, so a
+    /// `Disabled` turn renders `reasoning=off` — the `doom_turn` opt-in is what
+    /// makes the Doom record read `reasoning=on`.
+    #[test]
+    fn st4_doom_turn_opts_in_and_stamps_the_served_mode() {
+        // The Doom decision turn opts in (R-3) — this is the discriminator: if it
+        // inherited `ChatTurn::text`'s `Disabled` default, the trace would say off.
+        let observation = json!({ "tic": 1 });
+        let vocabulary = json!([{ "type": "forward", "summary": "hold forward" }]);
+        let turn = doom_turn(&observation, &vocabulary);
         assert_eq!(
-            server_flags_from(Some(r#"{"reasoning":"off"}"#)),
-            "reasoning=off"
+            turn.reasoning,
+            ReasoningMode::Enabled,
+            "the Doom decision turn runs thinking ON"
         );
-        assert_eq!(server_flags_from(Some("not json")), "reasoning=on");
+
+        // The stamp renders the TURN's mode, not a global/persisted value.
+        assert_eq!(
+            server_flags_from(turn.reasoning),
+            "reasoning=on",
+            "the served mode is on"
+        );
+        // Failability: a turn that ran OFF stamps off — the string is a function
+        // of the mode, so this row reddens if the stamp stops tracking the turn.
+        assert_eq!(server_flags_from(ReasoningMode::Disabled), "reasoning=off");
     }
 
     // ── ST-3: the Doom decision still parses through the ONE-SHOT turn ────────
