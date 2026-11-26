@@ -165,6 +165,15 @@ A package is a **zip** with `fredo-app.json` at the archive root. `entry.documen
 are relative POSIX paths naming files the zip carries. The path segment `__fredo/` is reserved for
 the host and may not appear in your archive. <!-- claim:C-10 -->
 
+Inside the reserved `__fredo/` host surface the host serves the bootstrap (`/__fredo/bootstrap.js`)
+and, since Spec #3244, a bounded **outline uplink** (`/__fredo/beacon`): while a companion turn is in
+flight the host may `eval` a reporter into your document, which loads a same-origin sub-resource
+carrying a text-only outline of your current screen so Fredo can read it. This is host-driven and
+needs **no cooperation from your application** — you declare nothing and install nothing for it — and
+it is permitted by the document's existing policy (`img-src 'self'`). The reserved segment is still
+host-owned in both directions: your archive may not claim `__fredo/`, and the uplink is granted by no
+command and no capability.
+
 `fredo-app.json` has exactly eight top-level keys: `manifestVersion`, `id`, `displayName`,
 `version`, `engines`, `entry`, `description`, `capabilities`. Any other key is refused. An optional
 value you do not use is an **absent key**, never `null`. <!-- claim:C-11 -->

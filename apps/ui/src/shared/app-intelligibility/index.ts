@@ -28,3 +28,9 @@ export * from './screenOutline';
 // Spec #3244 ST-6 — the screen-read measurement surface (AC-4). ONE added
 // re-export line; the module itself is ST-1's and nothing else here changes.
 export * from './measurement';
+
+// Spec #3244 ST-7 — the installed-tier outline fetch (the host correlation seam).
+// ONE added re-export line; the module itself is ST-1's and nothing else here
+// changes.
+export { requestInstalledOutline } from './installedOutline';
+export type { OutlineReply } from './installedOutline';

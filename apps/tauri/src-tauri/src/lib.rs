@@ -1330,6 +1330,17 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
                     let _ = window.set_title(&window_title);
                 }
                 infrastructure::launch::apply_launch_mode(app, launch);
+
+                // Spec #3244 ST-7 — the installed-tier outline uplink's frontend
+                // correlation seam. The companion turn that targets an installed
+                // app needs that app's screen outline, and there is NO command for
+                // it (the transport is the host's OWN `fredoapp` scheme handler), so
+                // the frontend emits a request event (`core:event:allow-emit` is
+                // already granted to the built-in windows) and this listener answers
+                // with the correlated reply. Registering a listener performs no
+                // installed-app work: no window is built and no install directory is
+                // read.
+                applications::installed_apps::beacon::install_beacon_listener(app);
             }
             // Spec #3192 ST-1 (R-1a/R-2d/R-3) — the resident exit policy. This is
             // the ONE place exit is gated; the DEFAULT close of `main` stays the

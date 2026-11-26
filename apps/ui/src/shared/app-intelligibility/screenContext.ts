@@ -34,6 +34,7 @@ import { resolveAppDescription } from './description';
 import type { AppDescription } from './description';
 import { buildCompanionInjectionFacts } from './injection';
 import type { CompanionInjectionFacts } from './injection';
+import { requestInstalledOutline } from './installedOutline';
 import {
   SCREEN_OUTLINE_MAX_NODES,
   simplifyDom,
@@ -47,6 +48,12 @@ export type ScreenContextUnavailableReason =
   | 'unknownApp'
   /** The app is not rendered in THIS webview (it is not mounted here). */
   | 'notMountedHere'
+  /**
+   * Spec #3244 ST-7 — the app renders in a SEPARATE installed-app webview and its
+   * outline did not arrive through the beacon uplink (not open, timeout, or a
+   * rejected nonce). A typed "nothing to read", never an empty pair.
+   */
+  | 'beaconUnavailable'
   /** The host capture produced nothing for the target's rectangle. */
   | 'captureUnavailable';
 
@@ -108,9 +115,18 @@ export async function buildTurnScreenContext(appId: string): Promise<TurnScreenC
   }
   const description = resolution.description;
 
-  const outline = projectTargetScreenOutline(appId);
+  // The outline leg: read the target's DOM HERE when it is mounted in this
+  // webview; otherwise the app renders in its OWN installed-app webview, so fetch
+  // the outline through the host's beacon uplink (Spec #3244 ST-7) — the same
+  // bounded `ScreenOutline` shape, so the rest of this composition is unchanged.
+  const inWindowOutline = projectTargetScreenOutline(appId);
+  const outline = inWindowOutline ?? (await requestInstalledOutline(appId));
   if (outline === null) {
-    return { kind: 'unavailable', appId, reason: 'notMountedHere' };
+    return {
+      kind: 'unavailable',
+      appId,
+      reason: inWindowOutline === null ? 'beaconUnavailable' : 'notMountedHere',
+    };
   }
 
   const fitted = fitScreenContextOutline(outline, description);

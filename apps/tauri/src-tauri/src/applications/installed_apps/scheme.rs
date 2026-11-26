@@ -11,12 +11,12 @@
 //! `<id>/<relative>` in the **URL path**, so routing is path-based and
 //! platform-agnostic.
 //!
-//! The handler owns four things, and only these:
+//! The handler owns five things, and only these:
 //!
-//! 1. **Routing** — the app's entry document, its files, and the one reserved
-//!    host path (`__fredo/bootstrap.js`). Nothing outside `<id>/files/` is
-//!    reachable; `record.json` and `manifest.json` live outside `files/` and
-//!    have no route at all.
+//! 1. **Routing** — the app's entry document, its files, and the two reserved
+//!    host paths (`__fredo/bootstrap.js` and `__fredo/beacon`). Nothing outside
+//!    `<id>/files/` is reachable; `record.json` and `manifest.json` live outside
+//!    `files/` and have no route at all.
 //! 2. **Integrity at serve time** (AC-4.4 / R-4.4, CWE-367) — each requested
 //!    file is read **once**, that same buffer is hashed, the hash is compared to
 //!    the install record, and **that buffer** is served. There is deliberately
@@ -30,6 +30,13 @@
 //!    `<style>` block (theme custom properties + the panel styles) and the
 //!    `__fredo/bootstrap.js` script injected, so the loading → usable /
 //!    loading → failure lifecycle lives at the same origin as the app.
+//! 5. **The outline uplink** (Spec #3244 ST-7) — the `__fredo/beacon` INGRESS: a
+//!    same-origin sub-resource load from the child document carrying its screen
+//!    outline, observed here and handed to [`super::beacon`] (which treats it as
+//!    untrusted input: size-bounded, nonce-gated, typed failure, and a
+//!    `telemetry_spans` receipt). The handler is therefore not only a server but a
+//!    bounded **uplink** — a **human-approved** expansion (Option A, 2026-11-26),
+//!    with **no new command and no new capability**.
 //!
 //! # What this module must never do
 //!
@@ -102,6 +109,10 @@ pub const TRACE_TARGET: &str = "fredo::installed_apps";
 pub enum Route {
     /// The host-authored bootstrap.
     Bootstrap,
+    /// Spec #3244 ST-7 — the outline uplink's reserved host path
+    /// (`/__fredo/beacon`). A SECOND serve under the reserved `__fredo/` segment,
+    /// admitted deliberately (human-approved Option A, 2026-11-26).
+    Beacon,
     /// An installed application's document or one of its files. `relative` is
     /// empty for the entry document.
     App { id: String, relative: String },
@@ -239,6 +250,13 @@ pub fn route(path: &str) -> Result<Route, RouteMiss> {
         let relative = rest.trim_end_matches('/');
         if relative == BOOTSTRAP_SEGMENTS[1] {
             return Ok(Route::Bootstrap);
+        }
+        // Spec #3244 ST-7 — the outline uplink. A SECOND serve under `__fredo/`
+        // is now DELIBERATE (human-approved Option A, 2026-11-26): the child
+        // document delivers its screen outline to the host's OWN origin server.
+        // Every OTHER reserved path stays a miss.
+        if relative == super::beacon::BEACON_RELATIVE {
+            return Ok(Route::Beacon);
         }
         return Err(RouteMiss::Reserved);
     }
@@ -684,6 +702,10 @@ pub fn serve_request(install_root: &Path, path: &str, theme: &ThemePayload) -> S
         Ok(Route::Bootstrap) => {
             ServedResponse::ok(JAVASCRIPT_CONTENT_TYPE, BOOTSTRAP_SCRIPT.as_bytes().to_vec())
         }
+        // The beacon ingress is STATEFUL (a nonce store + the ingress receipt),
+        // so the real serve happens in `handle_uri_request`, which holds the app
+        // handle. This pure helper answers only so routing stays unit-testable.
+        Ok(Route::Beacon) => ServedResponse::ok("image/gif", Vec::new()),
         Ok(Route::App { id, relative }) => serve_app(install_root, &id, &relative, theme),
         Err(RouteMiss::Reserved) => ServedResponse::not_found("reserved path"),
         Err(RouteMiss::Escapes) => ServedResponse::not_found("path escapes the application root"),
@@ -868,6 +890,16 @@ pub fn handle_uri_request(
     let url = request.uri().to_string();
     let path = request.uri().path().to_string();
 
+    // Spec #3244 ST-7 — the outline uplink. Handled BEFORE the install-root work:
+    // it needs no install directory (the payload is the child's own document), only
+    // the app handle, so the ingress receipt can be recorded.
+    if matches!(route(&path), Ok(Route::Beacon)) {
+        let query = request.uri().query().map(str::to_string);
+        let response = super::beacon::serve_beacon(app, query.as_deref());
+        serve_line(&url, &response);
+        return to_http_response(response);
+    }
+
     let Some(data_dir) = app_data_dir(app) else {
         let response = ServedResponse::not_found("this build cannot resolve its app data directory");
         serve_line(&url, &response);
@@ -979,10 +1011,30 @@ mod tests {
 
     #[test]
     fn only_the_bootstrap_is_reachable_under_the_reserved_segment() {
+        // Spec #3244 ST-7 — RE-CUT, never deleted. `__fredo/` now serves TWO host
+        // paths: the bootstrap AND the outline uplink (`/__fredo/beacon`). A second
+        // serve under the reserved segment is a DELIBERATE, human-approved
+        // expansion (Option A, 2026-11-26; see `docs/ARCHITECTURE.md`), so the
+        // bootstrap assertions SURVIVE unchanged and the beacon route is ADDED —
+        // while EVERY OTHER reserved path remains a miss.
+        //
+        // SURVIVING (the pin's original assertions, verbatim):
         assert_eq!(route("/__fredo/bootstrap.js"), Ok(Route::Bootstrap));
         assert_eq!(route("__fredo/bootstrap.js"), Ok(Route::Bootstrap));
 
-        for reserved in ["/__fredo/other.js", "/__fredo/", "/__fredo"] {
+        // ADDED (ST-7): the uplink route is reachable — and ONLY it is added.
+        assert_eq!(route("/__fredo/beacon"), Ok(Route::Beacon));
+        assert_eq!(route("__fredo/beacon"), Ok(Route::Beacon));
+        assert_eq!(route("/__fredo/beacon/"), Ok(Route::Beacon));
+
+        // SURVIVING: every OTHER reserved path is still a miss, never a serve.
+        for reserved in [
+            "/__fredo/other.js",
+            "/__fredo/",
+            "/__fredo",
+            "/__fredo/beacon.js",
+            "/__fredo/beaconextra",
+        ] {
             assert_eq!(
                 route(reserved),
                 Err(RouteMiss::Reserved),
@@ -994,6 +1046,11 @@ mod tests {
             route("/qa3147-test/__fredo/bootstrap.js"),
             Err(RouteMiss::Reserved),
             "an app may not shadow the host path"
+        );
+        assert_eq!(
+            route("/qa3147-test/__fredo/beacon"),
+            Err(RouteMiss::Reserved),
+            "an app may not shadow the host uplink either"
         );
     }
 
