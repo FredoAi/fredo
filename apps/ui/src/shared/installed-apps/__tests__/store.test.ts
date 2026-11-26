@@ -20,10 +20,12 @@ import type { InstalledAppEntry } from '@/shared/installed-apps/types';
 import {
   getInstalledApps,
   getInstalledAppsListError,
+  forgetInstalledApp,
   isInstalledAppsLoading,
   isInstalledAppsSettled,
   recordInstalledApp,
   refreshInstalledApps,
+  replaceInstalledApp,
   resetInstalledAppsStoreForTests,
   subscribeInstalledApps,
 } from '@/shared/installed-apps/store';
@@ -52,6 +54,8 @@ function entry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntry {
     enginesFredo: '^0.1.0',
     installedAt: '2026-01-01T00:00:00Z',
     windowLabel: 'installed-dev.example.tools',
+    state: 'working',
+    capabilities: { appId: 'dev.example.tools', declared: [], highRisk: [], consented: [] },
     ...over,
   };
 }
@@ -151,5 +155,59 @@ describe('#3147 ST-6 — the separate installed-app store', () => {
     // The built-in registry is untouched: an installed app is a second trust tier
     // and must never join the pinned set (`retainedApplicationSet.test.ts`).
     expect(getApplications().map((feature) => feature.id)).toEqual(before);
+  });
+});
+
+describe('#3144 — replaceInstalledApp / forgetInstalledApp (the management store verbs)', () => {
+  it('replaceInstalledApp upserts by id in place (never a duplicate, no reorder on state change)', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeInstalledApps(listener);
+    recordInstalledApp(entry({ id: 'a', installedAt: '2026-01-01T00:00:00Z' }));
+    recordInstalledApp(entry({ id: 'b', installedAt: '2026-02-01T00:00:00Z' }));
+    expect(getInstalledApps().map((e) => e.id)).toEqual(['b', 'a']);
+    listener.mockClear();
+
+    // A disable returns the same id with a new state — an in-place update.
+    replaceInstalledApp(entry({ id: 'a', installedAt: '2026-01-01T00:00:00Z', state: 'disabled' }));
+
+    const rows = getInstalledApps();
+    expect(rows.map((e) => e.id)).toEqual(['b', 'a']);
+    expect(rows.find((e) => e.id === 'a')?.state).toBe('disabled');
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('replaceInstalledApp records a net-new id at the top', () => {
+    recordInstalledApp(entry({ id: 'a', installedAt: '2026-01-01T00:00:00Z' }));
+    replaceInstalledApp(entry({ id: 'z', installedAt: '2026-03-01T00:00:00Z' }));
+    expect(getInstalledApps().map((e) => e.id)).toEqual(['z', 'a']);
+  });
+
+  it('forgetInstalledApp drops the row and notifies', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeInstalledApps(listener);
+    recordInstalledApp(entry({ id: 'a' }));
+    recordInstalledApp(entry({ id: 'b' }));
+    listener.mockClear();
+
+    forgetInstalledApp('a');
+
+    expect(getInstalledApps().map((e) => e.id)).toEqual(['b']);
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('forgetInstalledApp is a no-op (no notify) for an id that is not present', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeInstalledApps(listener);
+    recordInstalledApp(entry({ id: 'a' }));
+    listener.mockClear();
+
+    forgetInstalledApp('not-there');
+
+    expect(getInstalledApps().map((e) => e.id)).toEqual(['a']);
+    // The version counter advances only on a real mutation (the store's contract).
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
   });
 });

@@ -10,6 +10,9 @@
  * | `pushTheme` | `installed_apps_push_theme` | `payload` | `()` |
  * | `grantCapabilityConsent` | `installed_app_consent_grant` | `appId`, `capability` | `InstalledAppCapabilityStatus` |
  * | `revokeCapabilityConsent` | `installed_app_consent_revoke` | `appId`, `capability` | `InstalledAppCapabilityStatus` |
+ * | `disableInstalledApp` | `installed_app_disable` | `appId` | `InstalledAppEntry` |
+ * | `enableInstalledApp` | `installed_app_enable` | `appId` | `InstalledAppEntry` |
+ * | `removeInstalledApp` | `installed_app_remove` | `appId` | `InstalledAppRemovalOutcome` |
  *
  * # Transport
  *
@@ -37,6 +40,7 @@ import {
   type InstalledAppEntry,
   type InstalledAppError,
   type InstalledAppRefusalCode,
+  type InstalledAppRemovalOutcome,
 } from './types';
 
 /** The `code` a malformed/unknown failure is reported under (the frozen set has no "unknown"). */
@@ -239,7 +243,62 @@ export async function revokeCapabilityConsent(
   }
 }
 
-/** The seven wrappers, also available as one object for injection in tests. */
+// ── Spec #3144 — the three management commands ──────────────────────────────
+
+/**
+ * Turn an installed application off (Spec #3144).
+ *
+ * Returns the recomposed `InstalledAppEntry` — the authority for the row's new
+ * state. The surface must paint the state word from THIS result, never
+ * optimistically (the word is a claim about the host's record).
+ *
+ * An unknown id, or a write that fails, rejects with a typed
+ * [`InstalledAppsCommandError`] (`id_not_installed` / `io_error` — the frozen
+ * vocabulary, never a new code).
+ */
+export async function disableInstalledApp(appId: string): Promise<InstalledAppEntry> {
+  try {
+    const entry = await adapterBridge.invoke<InstalledAppEntry>('installed_app_disable', {
+      appId,
+    });
+    return requireResult(entry, 'turn that application off');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/** Turn an installed application back on. Returns the authoritative entry. */
+export async function enableInstalledApp(appId: string): Promise<InstalledAppEntry> {
+  try {
+    const entry = await adapterBridge.invoke<InstalledAppEntry>('installed_app_enable', {
+      appId,
+    });
+    return requireResult(entry, 'turn that application on');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/**
+ * Remove an installed application. Returns the removal outcome.
+ *
+ * `dataKept` is the observed treatment of the application's stored data — the
+ * value the pre-confirmation disclosure must have matched. A removal that cannot
+ * complete rejects with a typed [`InstalledAppsCommandError`] reusing `io_error`.
+ */
+export async function removeInstalledApp(appId: string): Promise<InstalledAppRemovalOutcome> {
+  try {
+    const outcome = await adapterBridge.invoke<InstalledAppRemovalOutcome>(
+      'installed_app_remove',
+      { appId },
+    );
+    return requireResult(outcome, 'remove that application');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/** The ten wrappers, also available as one object for injection in tests. */
 export const installedAppsClient = {
   installPackage,
   listInstalledApps,
@@ -248,4 +307,7 @@ export const installedAppsClient = {
   pushTheme,
   grantCapabilityConsent,
   revokeCapabilityConsent,
+  disableInstalledApp,
+  enableInstalledApp,
+  removeInstalledApp,
 };

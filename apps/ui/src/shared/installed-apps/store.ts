@@ -148,9 +148,37 @@ export async function refreshInstalledApps(): Promise<void> {
  * cleared so a previously-failed listing no longer masks a known-good row.
  */
 export function recordInstalledApp(entry: InstalledAppEntry): void {
+  replaceInstalledApp(entry);
+}
+
+/**
+ * Upsert an entry by id (Spec #3144).
+ *
+ * The management commands (`installed_app_disable`/`_enable`) return the
+ * recomposed entry, and the row must reflect the authority it just received —
+ * same id, new state. A disable/enable of an id already in the list is an
+ * in-place update (never a duplicate, never a reorder driven by the new
+ * snapshot); a `net-new` id lands at the top like a fresh install.
+ */
+export function replaceInstalledApp(entry: InstalledAppEntry): void {
   const withoutSameId = entries.filter((existing) => existing.id !== entry.id);
   entries = Object.freeze(newestFirst([entry, ...withoutSameId]));
   listError = null;
+  notify();
+}
+
+/**
+ * Drop an entry by id (Spec #3144) — after a successful removal.
+ *
+ * A removal that did not change the list (an id that was not present) is a
+ * no-op and does NOT notify: the store's version counter advances only on a
+ * real mutation, so a spurious notify would rebuild every consumer's derived
+ * snapshot for nothing.
+ */
+export function forgetInstalledApp(appId: string): void {
+  const next = entries.filter((existing) => existing.id !== appId);
+  if (next.length === entries.length) return;
+  entries = Object.freeze(next);
   notify();
 }
 

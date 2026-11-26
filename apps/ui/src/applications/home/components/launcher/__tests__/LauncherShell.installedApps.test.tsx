@@ -60,6 +60,8 @@ function entry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntry {
     enginesFredo: '^0.1.0',
     installedAt: '2026-01-01T00:00:00Z',
     windowLabel: 'installed-dev.example.tools',
+    state: 'working',
+    capabilities: { appId: 'dev.example.tools', declared: [], highRisk: [], consented: [] },
     ...over,
   };
 }

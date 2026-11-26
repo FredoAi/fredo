@@ -29,6 +29,8 @@ import type {
 const storeMock = vi.hoisted(() => ({
   refresh: vi.fn(),
   record: vi.fn(),
+  replace: vi.fn(),
+  forget: vi.fn(),
   status: {
     entries: [] as InstalledAppEntry[],
     loading: false,
@@ -41,11 +43,16 @@ const clientMock = vi.hoisted(() => ({
   install: vi.fn(),
   grant: vi.fn(),
   revoke: vi.fn(),
+  disable: vi.fn(),
+  enable: vi.fn(),
+  remove: vi.fn(),
 }));
 
 vi.mock('@/shared/installed-apps/store', () => ({
   refreshInstalledApps: () => storeMock.refresh(),
   recordInstalledApp: (entry: InstalledAppEntry) => storeMock.record(entry),
+  replaceInstalledApp: (entry: InstalledAppEntry) => storeMock.replace(entry),
+  forgetInstalledApp: (appId: string) => storeMock.forget(appId),
 }));
 
 vi.mock('@/shared/installed-apps/useInstalledApps', () => ({
@@ -59,6 +66,9 @@ vi.mock('@/shared/installed-apps/client', async (importOriginal) => {
     installPackage: (...args: unknown[]) => clientMock.install(...args),
     grantCapabilityConsent: (...args: unknown[]) => clientMock.grant(...args),
     revokeCapabilityConsent: (...args: unknown[]) => clientMock.revoke(...args),
+    disableInstalledApp: (...args: unknown[]) => clientMock.disable(...args),
+    enableInstalledApp: (...args: unknown[]) => clientMock.enable(...args),
+    removeInstalledApp: (...args: unknown[]) => clientMock.remove(...args),
   };
 });
 
@@ -72,18 +82,34 @@ import {
   CONSENT_SECTION_INTRO,
   CONSENT_STATE_ALLOWED,
   CONSENT_STATE_NOT_ALLOWED,
+  DISABLED_HELPER_LINE,
   EMPTY_HEADLINE,
   EMPTY_NEXT_ACTION,
+  GRANTS_EMPTY_LINE,
+  HIGH_RISK_CLASS_TAG,
   INSTALL_BUTTON_LABEL,
   LIMITATIONS_HEADING,
   LIMITATIONS_SENTENCE,
+  MANAGEMENT_REFUSAL_COPY_OVERRIDES,
+  ORDINARY_CLASS_TAG,
   REVOKE_BUTTON_TEXT,
+  STATE_LEGEND_LINE,
+  STATE_WORDS,
   UNKNOWN_CAPABILITY_LINE,
   UNSIGNED_PACKAGE_NOTE,
   allowConsentLabel,
+  removeLabel,
   revokeConsentLabel,
+  turnOffLabel,
+  turnOnLabel,
 } from '../InstalledAppsSettings';
-import { CAPABILITY_CONSENT_COPY } from '@/shared/installed-apps/capabilityRefusals';
+import {
+  REMOVE_CANCEL_LABEL,
+  REMOVE_CONFIRM_LABEL,
+  removalDisclosureSentence,
+} from '../RemoveInstalledAppDialog';
+import { CAPABILITY_CONSENT_COPY, CAPABILITY_DECLARED_COPY } from '@/shared/installed-apps/capabilityRefusals';
+import { installedAppFailureReason } from '@/shared/installed-apps/failureReasons';
 import { INSTALL_REFUSAL_COPY } from '@/shared/installed-apps/refusals';
 
 /** No declared reach — the fail-safe projection the backend always emits. */
@@ -99,6 +125,7 @@ const ENTRY: InstalledAppEntry = {
   installedAt: '2026-01-01T00:00:00Z',
   windowLabel: 'installed-dev.example.tools',
   description: 'A helpful tool.',
+  state: 'working',
   capabilities: noCapabilities('dev.example.tools'),
 };
 
@@ -114,6 +141,7 @@ function declaredEntry(id = 'qa3146-app-a', displayName = 'QA3146 App A'): Insta
     enginesFredo: '>=0.0.0',
     installedAt: '2026-01-01T00:00:00Z',
     windowLabel: `installed-${id}`,
+    state: 'working',
     capabilities: {
       appId: id,
       declared: ['high-risk.database-query', 'high-risk.database-reset'],
@@ -167,10 +195,15 @@ function consentRow(appId: string): HTMLElement {
 beforeEach(() => {
   storeMock.refresh = vi.fn(async () => {});
   storeMock.record = vi.fn();
+  storeMock.replace = vi.fn();
+  storeMock.forget = vi.fn();
   storeMock.status = { entries: [], loading: false, settled: true, error: null };
   clientMock.install = vi.fn();
   clientMock.grant = vi.fn();
   clientMock.revoke = vi.fn();
+  clientMock.disable = vi.fn();
+  clientMock.enable = vi.fn();
+  clientMock.remove = vi.fn();
 });
 
 afterEach(cleanup);
@@ -222,7 +255,7 @@ describe('#3147 ST-6 — InstalledAppsSettings states', () => {
     expect(screen.queryByTestId('installed-apps-list')).toBeNull();
   });
 
-  it('populated: renders a read-only list with no Open/Remove control', () => {
+  it('populated: renders a list whose row carries its OWN controls — and no Open control', () => {
     storeMock.status = { entries: [ENTRY], loading: false, settled: true, error: null };
     renderWithChakra(<InstalledAppsSettings />);
 
@@ -234,8 +267,21 @@ describe('#3147 ST-6 — InstalledAppsSettings states', () => {
     expect(row).toHaveTextContent(ENTRY.displayName);
     expect(row).toHaveTextContent(ENTRY.version);
 
-    // Read-only: no button inside the row (one open surface, in the launcher).
-    expect(row.querySelectorAll('button')).toHaveLength(0);
+    // #3144 (G-374): the row now legitimately carries its OWN management controls
+    // — exactly the ones its state warrants, and NO OTHER button. The pane is
+    // still a registry view, so there is STILL no Open control.
+    const controls = within(row).getAllByRole('button');
+    expect(controls.map((control) => control.getAttribute('data-testid')).sort()).toEqual([
+      'installed-apps-disable',
+      'installed-apps-remove',
+    ]);
+    expect(within(row).queryByText(/open/i)).toBeNull();
+
+    // The state is carried as TEXT (never colour alone).
+    expect(row).toHaveAttribute('data-app-state', 'working');
+    expect(within(row).getByTestId('installed-apps-entry-state')).toHaveTextContent(
+      STATE_WORDS.working,
+    );
     expect(screen.queryByTestId('installed-apps-empty')).toBeNull();
   });
 
@@ -249,6 +295,7 @@ describe('#3147 ST-6 — InstalledAppsSettings states', () => {
       enginesFredo: '^0.1.0',
       installedAt: '2026-01-02T00:00:00Z',
       windowLabel: 'installed-no.desc',
+      state: 'working',
       capabilities: noCapabilities('no.desc'),
     } as InstalledAppEntry;
     expect('description' in wireShape).toBe(false);
@@ -323,16 +370,26 @@ describe('#3147 ST-6 — install verdicts (R-3.5 recovery)', () => {
 // ── Spec #3146 — the consent section ────────────────────────────────────────
 
 describe('#3146 — consent section presence (S0 / S6 / S7)', () => {
-  it('S0: no application declares a high-risk capability ⇒ the section is absent, not empty', () => {
+  it('S0 (RE-CUT — #3144, Adjudication 10.1): a zero-capability app still gets its OWN row, reading none + grants-empty', () => {
     storeMock.status = { entries: [ENTRY], loading: false, settled: true, error: null };
     renderWithChakra(<InstalledAppsSettings />);
 
-    expect(screen.queryByTestId('installed-apps-consent-section')).toBeNull();
-    expect(screen.queryByTestId('installed-apps-consent-row')).toBeNull();
-    // The pane is otherwise fully rendered — the absence is a claim about the
-    // declaration, not a failure to render.
+    // Adjudication 10.1: the section renders when the list is settled and non-empty
+    // (the older "render only when some app declares high-risk" gate is WITHDRAWN
+    // — it left `installed-apps-grants-empty` unreachable). EVERY entry gets a row.
+    const section = screen.getByTestId('installed-apps-consent-section');
+    const row = consentRow(ENTRY.id);
+    expect(section.contains(row)).toBe(true);
+    expect(row).toHaveAttribute('data-consent-state', 'none');
+    expect(within(row).getByTestId('installed-apps-grants-empty')).toHaveTextContent(
+      GRANTS_EMPTY_LINE,
+    );
+    // No high-risk line for a zero-capability app.
+    expect(row.querySelector('[data-capability-class="high-risk"]')).toBeNull();
+
+    // The pane is otherwise fully rendered, and the legend is absent (legend is
+    // per-list, not per-row).
     expect(screen.getByTestId('installed-apps-list')).toBeInTheDocument();
-    // No tab stop added either.
     expect(screen.getByTestId('installed-apps-limitations').getAttribute('tabindex')).toBeNull();
   });
 
@@ -369,7 +426,7 @@ describe('#3146 — consent section presence (S0 / S6 / S7)', () => {
     );
   });
 
-  it('renders its own section, outside every entry row (the zero-button pin survives)', () => {
+  it('renders its own section, outside every entry row — with the consent controls OUTSIDE the row (G-374 both directions)', () => {
     storeMock.status = { entries: [declaredEntry()], loading: false, settled: true, error: null };
     renderWithChakra(<InstalledAppsSettings />);
 
@@ -382,7 +439,19 @@ describe('#3146 — consent section presence (S0 / S6 / S7)', () => {
 
     const entryRow = screen.getByTestId('installed-apps-entry');
     expect(entryRow).not.toContainElement(section);
-    expect(entryRow.querySelectorAll('button')).toHaveLength(0);
+    // The RE-CUT direction A: the old "zero buttons" pin is gone; the row carries
+    // exactly its state's management controls and nothing else.
+    expect(
+      within(entryRow)
+        .getAllByRole('button')
+        .map((control) => control.getAttribute('data-testid'))
+        .sort(),
+    ).toEqual(['installed-apps-disable', 'installed-apps-remove']);
+    // The RE-CUT direction B (the property the old pin protected): every
+    // grant/revoke control still lives OUTSIDE every entry row.
+    for (const control of screen.getAllByTestId('installed-apps-consent-grant')) {
+      expect(control.closest('[data-testid="installed-apps-entry"]')).toBeNull();
+    }
     expect(section.contains(entryRow)).toBe(false);
   });
 });
@@ -418,6 +487,12 @@ describe('#3146 — one control line per declared capability', () => {
     // Default state is neutral and named in words, never by colour alone.
     expect(within(row).getAllByText(CONSENT_STATE_NOT_ALLOWED)).toHaveLength(2);
     expect(row).toHaveTextContent(CONSENT_BLOCKED_LINE);
+
+    // #3144 — every declared line is TAGGED high-risk and the tag is TEXT.
+    const highRiskLines = row.querySelectorAll('[data-capability-class="high-risk"]');
+    expect(highRiskLines).toHaveLength(2);
+    expect(row.querySelectorAll('[data-capability-class="ordinary"]')).toHaveLength(0);
+    expect(within(row).getAllByText(HIGH_RISK_CLASS_TAG)).toHaveLength(2);
   });
 
   it('accessible names carry the application and the consequence (label in name)', () => {
@@ -459,6 +534,12 @@ describe('#3146 — one control line per declared capability', () => {
     // The raw id is shown — never filtered away.
     expect(row).toHaveTextContent(unknownId);
     expect(within(row).getByText(CONSENT_STATE_NOT_ALLOWED)).toBeInTheDocument();
+    // It is still classified high-risk (the backend's own classification), so its
+    // data-capability-class is high-risk even though its copy is unknown.
+    expect(
+      row.querySelector(`[data-capability="${unknownId}"]`)?.getAttribute('data-capability-class'),
+    ).toBe('high-risk');
+    expect(row).toHaveAttribute('data-consent-state', 'not-allowed');
     // No control: Fredo cannot honestly ask for a scope it cannot read.
     expect(row.querySelectorAll('button')).toHaveLength(0);
     expect(screen.queryByTestId('installed-apps-consent-grant')).toBeNull();
@@ -622,6 +703,442 @@ describe('#3146 — grant / revoke is confirmed, never optimistic', () => {
 
     // The refusal is the section's, not the install verdict slot's.
     expect(screen.queryByTestId('installed-apps-refusal')).toBeNull();
+  });
+});
+
+// ── Spec #3144 — lifecycle state, management controls, the removal dialog ────
+
+/** A minimal entry with a chosen state (empty capabilities unless overridden). */
+function lifecycleEntry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntry {
+  return {
+    id: 'qa3147-valid',
+    displayName: 'QA3147 Valid',
+    version: '1.0.0',
+    enginesFredo: '>=0.0.0',
+    installedAt: '2026-01-01T00:00:00Z',
+    windowLabel: 'installed-qa3147-valid',
+    state: 'working',
+    capabilities: noCapabilities('qa3147-valid'),
+    ...over,
+  };
+}
+
+describe('#3144 — the inventory state word, the legend and the failure line', () => {
+  it('renders exactly one state WORD as text per row, agreeing with data-app-state', () => {
+    storeMock.status = {
+      entries: [
+        lifecycleEntry({ id: 'a', displayName: 'A', state: 'working' }),
+        lifecycleEntry({ id: 'b', displayName: 'B', state: 'failing', failureCode: 'io_error' }),
+        lifecycleEntry({ id: 'c', displayName: 'C', state: 'disabled' }),
+      ],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const rows = screen.getAllByTestId('installed-apps-entry');
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      const state = row.getAttribute('data-app-state') ?? '';
+      const word = STATE_WORDS[state as keyof typeof STATE_WORDS];
+      const stateNode = within(row).getByTestId('installed-apps-entry-state');
+      expect(stateNode).toHaveTextContent(word);
+      expect(within(row).getAllByTestId('installed-apps-entry-state')).toHaveLength(1);
+    }
+  });
+
+  it('renders the legend exactly once inside the inventory region, only when the list is non-empty', () => {
+    storeMock.status = { entries: [lifecycleEntry()], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+    const legends = screen.getAllByTestId('installed-apps-state-legend');
+    expect(legends).toHaveLength(1);
+    expect(legends[0]).toHaveTextContent(STATE_LEGEND_LINE);
+
+    cleanup();
+    storeMock.status = { entries: [], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+    expect(screen.queryByTestId('installed-apps-state-legend')).toBeNull();
+  });
+
+  it('failure line: present iff failing, with the INVENTORY sentence + the witness code (never install copy)', () => {
+    storeMock.status = {
+      entries: [
+        lifecycleEntry({ id: 'bad', state: 'failing', failureCode: 'integrity_record_corrupt' }),
+        lifecycleEntry({ id: 'ok', state: 'working' }),
+      ],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const failure = screen.getByTestId('installed-apps-entry-failure');
+    expect(failure).toHaveAttribute('data-failure-code', 'integrity_record_corrupt');
+    expect(failure).toHaveTextContent(
+      installedAppFailureReason('integrity_record_corrupt'),
+    );
+    // The install-time sentences NEVER render here (R-10.10's absence, quoted).
+    expect(failure.textContent ?? '').not.toContain(INSTALL_REFUSAL_COPY.id_not_installed);
+    expect(failure.textContent ?? '').not.toContain(INSTALL_REFUSAL_COPY.io_error);
+    expect(screen.getAllByTestId('installed-apps-entry-failure')).toHaveLength(1);
+  });
+
+  it('a failing row carries its own turn-off + remove controls', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'bad', state: 'failing', failureCode: 'io_error' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(
+      within(row)
+        .getAllByRole('button')
+        .map((control) => control.getAttribute('data-testid'))
+        .sort(),
+    ).toEqual(['installed-apps-disable', 'installed-apps-remove']);
+  });
+
+  it('a disabled row swaps the toggle to enable and shows the honest disabled helper', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'off', state: 'disabled' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(
+      within(row)
+        .getAllByRole('button')
+        .map((control) => control.getAttribute('data-testid'))
+        .sort(),
+    ).toEqual(['installed-apps-enable', 'installed-apps-remove']);
+    expect(row).toHaveTextContent(DISABLED_HELPER_LINE);
+  });
+});
+
+describe('#3144 — the management controls and their accessible names (NFR-a11y)', () => {
+  it('names the turn-off and remove controls with the application name', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'ok', displayName: 'Ok App', state: 'working' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+    expect(screen.getByTestId('installed-apps-disable')).toHaveAttribute(
+      'aria-label',
+      turnOffLabel('Ok App'),
+    );
+    expect(screen.getByTestId('installed-apps-remove')).toHaveAttribute(
+      'aria-label',
+      removeLabel('Ok App'),
+    );
+  });
+
+  it('names the enable control with the application name', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'off', displayName: 'Off App', state: 'disabled' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+    expect(screen.getByTestId('installed-apps-enable')).toHaveAttribute(
+      'aria-label',
+      turnOnLabel('Off App'),
+    );
+  });
+
+  it('turn off is CONFIRMED, not optimistic — the word holds until the host answers', async () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'ok', displayName: 'Ok App', state: 'working' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    let settle: (entry: InstalledAppEntry) => void = () => {};
+    clientMock.disable = vi.fn(
+      () =>
+        new Promise<InstalledAppEntry>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-disable'));
+    await waitFor(() => expect(screen.getByTestId('installed-apps-disable')).toBeDisabled());
+    // Not painted early: the state is still the host's record.
+    expect(screen.getByTestId('installed-apps-entry')).toHaveAttribute('data-app-state', 'working');
+    // The other management control stays live.
+    expect(screen.getByTestId('installed-apps-remove')).not.toBeDisabled();
+
+    const disabled = lifecycleEntry({ id: 'ok', displayName: 'Ok App', state: 'disabled' });
+    settle(disabled);
+    await waitFor(() => expect(storeMock.replace).toHaveBeenCalledWith(disabled));
+  });
+
+  it('a disabled app is enabled through the swapped control (same DOM slot)', async () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'off', displayName: 'Off App', state: 'disabled' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    const enabled = lifecycleEntry({ id: 'off', displayName: 'Off App', state: 'working' });
+    clientMock.enable = vi.fn(async () => enabled);
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-enable'));
+    await waitFor(() => expect(clientMock.enable).toHaveBeenCalledWith('off'));
+    await waitFor(() => expect(storeMock.replace).toHaveBeenCalledWith(enabled));
+  });
+
+  it('a refused action renders installed-apps-action-refusal and leaves every control live', async () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'ok', displayName: 'Ok App', state: 'working' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    clientMock.disable = vi.fn(async () => {
+      throw { code: 'io_error', detail: 'the write failed' };
+    });
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-disable'));
+
+    const refusal = await screen.findByTestId('installed-apps-action-refusal');
+    expect(refusal).toHaveAttribute('role', 'alert');
+    expect(refusal).toHaveAttribute('data-refusal-code', 'io_error');
+    // The honest management-context sentence — NOT the install-time one (R-10.10).
+    expect(refusal).toHaveTextContent(MANAGEMENT_REFUSAL_COPY_OVERRIDES.io_error!);
+    expect(refusal.textContent ?? '').not.toContain(INSTALL_REFUSAL_COPY.io_error);
+    expect(refusal.textContent ?? '').not.toContain(INSTALL_REFUSAL_COPY.id_not_installed);
+    // State unchanged, and nothing is left wedged (R-3.5 / F-9.19).
+    expect(screen.getByTestId('installed-apps-entry')).toHaveAttribute('data-app-state', 'working');
+    await waitFor(() => expect(screen.getByTestId('installed-apps-disable')).not.toBeDisabled());
+    expect(screen.getByTestId('installed-apps-remove')).not.toBeDisabled();
+  });
+
+  it('an id_not_installed action refusal also never renders the install-time sentence', async () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'ok', displayName: 'Ok App', state: 'working' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    clientMock.disable = vi.fn(async () => {
+      throw { code: 'id_not_installed', detail: 'no such application' };
+    });
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-disable'));
+
+    const refusal = await screen.findByTestId('installed-apps-action-refusal');
+    expect(refusal).toHaveAttribute('data-refusal-code', 'id_not_installed');
+    expect(refusal).toHaveTextContent(MANAGEMENT_REFUSAL_COPY_OVERRIDES.id_not_installed!);
+    // The lie constraint (a) names: an "isn't installed any more" sentence must
+    // NEVER render here (R-10.10 quotes it verbatim).
+    expect(refusal.textContent ?? '').not.toContain(INSTALL_REFUSAL_COPY.id_not_installed);
+  });
+});
+
+describe('#3144 — the removable dialog (AC-3)', () => {
+  it('opens with the disclosure BEFORE any confirm; Cancel is the safe exit and removes nothing', async () => {
+    const target = lifecycleEntry({ id: 'gone', displayName: 'Gone App' });
+    storeMock.status = { entries: [target], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    expect(screen.queryByTestId('installed-apps-remove-dialog')).toBeNull();
+    fireEvent.click(screen.getByTestId('installed-apps-remove'));
+
+    const dialog = await screen.findByTestId('installed-apps-remove-dialog');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAttribute('aria-labelledby', 'installed-apps-remove-dialog-heading');
+    const disclosure = screen.getByTestId('installed-apps-remove-disclosure');
+    expect(disclosure).toHaveTextContent(removalDisclosureSentence(target));
+    // The disclosure states the data is KEPT, and nothing happens yet.
+    expect(disclosure).toHaveTextContent('kept');
+    expect(clientMock.remove).not.toHaveBeenCalled();
+    expect(screen.getByTestId('installed-apps-remove-confirm')).toHaveTextContent(
+      REMOVE_CONFIRM_LABEL,
+    );
+    expect(screen.getByTestId('installed-apps-remove-cancel')).toHaveTextContent(
+      REMOVE_CANCEL_LABEL,
+    );
+
+    fireEvent.click(screen.getByTestId('installed-apps-remove-cancel'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('installed-apps-remove-dialog')).toBeNull(),
+    );
+    expect(clientMock.remove).not.toHaveBeenCalled();
+    expect(storeMock.forget).not.toHaveBeenCalled();
+  });
+
+  it('confirm runs the removal and drops the row from the store', async () => {
+    const target = lifecycleEntry({ id: 'gone', displayName: 'Gone App' });
+    storeMock.status = { entries: [target], loading: false, settled: true, error: null };
+    clientMock.remove = vi.fn(async () => ({
+      appId: 'gone',
+      removed: true,
+      dataKept: true,
+      dataTables: [],
+    }));
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-remove'));
+    await screen.findByTestId('installed-apps-remove-dialog');
+    fireEvent.click(screen.getByTestId('installed-apps-remove-confirm'));
+
+    await waitFor(() => expect(clientMock.remove).toHaveBeenCalledWith('gone'));
+    await waitFor(() => expect(storeMock.forget).toHaveBeenCalledWith('gone'));
+  });
+
+  it('a removal refusal closes the dialog and reports in the ONE pane slot', async () => {
+    const target = lifecycleEntry({ id: 'gone', displayName: 'Gone App' });
+    storeMock.status = { entries: [target], loading: false, settled: true, error: null };
+    clientMock.remove = vi.fn(async () => {
+      throw { code: 'io_error', detail: 'a file is still open' };
+    });
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-remove'));
+    await screen.findByTestId('installed-apps-remove-dialog');
+    fireEvent.click(screen.getByTestId('installed-apps-remove-confirm'));
+
+    const refusal = await screen.findByTestId('installed-apps-action-refusal');
+    expect(refusal).toHaveAttribute('data-refusal-code', 'io_error');
+    await waitFor(() =>
+      expect(screen.queryByTestId('installed-apps-remove-dialog')).toBeNull(),
+    );
+    // No second refusal hook inside the dialog (G-266 — one owner per hook).
+    expect(screen.queryByTestId('installed-apps-remove-dialog-refusal')).toBeNull();
+    expect(storeMock.forget).not.toHaveBeenCalled();
+  });
+});
+
+describe('#3144 — the removal disclosure sentence', () => {
+  it('names the data treatment specifically and never hedges the keep', () => {
+    const withTables = lifecycleEntry({
+      id: 'a',
+      displayName: 'With Tables',
+      capabilities: {
+        appId: 'a',
+        declared: ['data.tables'],
+        highRisk: [],
+        consented: [],
+      },
+    });
+    expect(removalDisclosureSentence(withTables)).toBe(
+      'Removing With Tables removes it from Fredo and from the launcher. Its stored data is kept, in the tables it declared.',
+    );
+
+    const noTables = lifecycleEntry({ id: 'b', displayName: 'No Tables' });
+    expect(removalDisclosureSentence(noTables)).toBe(
+      'Removing No Tables removes it from Fredo and from the launcher. Nothing of its own is removed. Its stored data is kept.',
+    );
+  });
+});
+
+describe('#3144 — the widened grants section (all declared capabilities)', () => {
+  function ordinaryEntry(id = 'qa3146-app-a', displayName = 'QA3146 App A'): InstalledAppEntry {
+    return lifecycleEntry({
+      id,
+      displayName,
+      capabilities: { appId: id, declared: ['data.tables'], highRisk: [], consented: [] },
+    });
+  }
+
+  it('shows an ordinary line with NO control, tagged ordinary, and reads data-consent-state none', () => {
+    storeMock.status = { entries: [ordinaryEntry()], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const row = consentRow('qa3146-app-a');
+    expect(row).toHaveAttribute('data-consent-state', 'none');
+    const line = row.querySelector('[data-capability="data.tables"]');
+    expect(line).not.toBeNull();
+    expect(line).toHaveAttribute('data-capability-class', 'ordinary');
+    expect(line).toHaveTextContent(ORDINARY_CLASS_TAG);
+    expect(line).toHaveTextContent(CAPABILITY_DECLARED_COPY['data.tables'].consequence);
+    // Not presented as a grant: no chip, no control.
+    expect(within(row).queryByText(CONSENT_STATE_ALLOWED)).toBeNull();
+    expect(within(row).queryByText(CONSENT_STATE_NOT_ALLOWED)).toBeNull();
+    expect(row.querySelectorAll('button')).toHaveLength(0);
+  });
+
+  it('a zero-capability row reads none, has no high-risk line, and renders grants-empty INSIDE it', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ id: 'qa3146-no-capabilities', displayName: 'No Caps' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const row = consentRow('qa3146-no-capabilities');
+    expect(row).toHaveAttribute('data-consent-state', 'none');
+    expect(row.querySelector('[data-capability-class="high-risk"]')).toBeNull();
+    expect(within(row).getByTestId('installed-apps-grants-empty')).toHaveTextContent(
+      GRANTS_EMPTY_LINE,
+    );
+  });
+
+  it('reports allowed / not-allowed / none per the adjudicated rule (10.2)', () => {
+    const allConsented = lifecycleEntry({
+      id: 'all',
+      displayName: 'All',
+      capabilities: {
+        appId: 'all',
+        declared: ['high-risk.database-query'],
+        highRisk: ['high-risk.database-query'],
+        consented: ['high-risk.database-query'],
+      },
+    });
+    const someUnconsented = lifecycleEntry({
+      id: 'some',
+      displayName: 'Some',
+      capabilities: {
+        appId: 'some',
+        declared: ['high-risk.database-query', 'high-risk.database-reset'],
+        highRisk: ['high-risk.database-query', 'high-risk.database-reset'],
+        consented: ['high-risk.database-query'],
+      },
+    });
+    const noneHighRisk = lifecycleEntry({
+      id: 'none',
+      displayName: 'None',
+      capabilities: { appId: 'none', declared: ['data.tables'], highRisk: [], consented: [] },
+    });
+    storeMock.status = {
+      entries: [allConsented, someUnconsented, noneHighRisk],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    expect(consentRow('all')).toHaveAttribute('data-consent-state', 'allowed');
+    expect(consentRow('some')).toHaveAttribute('data-consent-state', 'not-allowed');
+    expect(consentRow('none')).toHaveAttribute('data-consent-state', 'none');
+  });
+
+  it('is present even when no application declares a high-risk capability (Adjudication 10.1)', () => {
+    storeMock.status = { entries: [ordinaryEntry()], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+    expect(screen.getByTestId('installed-apps-consent-section')).toBeInTheDocument();
+    expect(screen.getAllByTestId('installed-apps-consent-row')).toHaveLength(1);
+  });
+
+  it('is absent when the list is empty (never an empty heading)', () => {
+    storeMock.status = { entries: [], loading: false, settled: true, error: null };
+    renderWithChakra(<InstalledAppsSettings />);
+    expect(screen.queryByTestId('installed-apps-consent-section')).toBeNull();
+    expect(screen.getByTestId('installed-apps-empty')).toBeInTheDocument();
   });
 });
 

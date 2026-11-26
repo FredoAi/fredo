@@ -48,6 +48,8 @@ function entry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntry {
     enginesFredo: '^0.1.0',
     installedAt: '2026-01-01T00:00:00Z',
     windowLabel: 'installed-dev.example.tools',
+    state: 'working',
+    capabilities: { appId: 'dev.example.tools', declared: [], highRisk: [], consented: [] },
     ...over,
   };
 }
@@ -156,6 +158,21 @@ describe('#3147 ST-6 — LauncherInstalledAppsSection', () => {
 
     storeMock.entries = entries;
     renderWithChakra(<LauncherInstalledAppsSection query="nothing-matches" />);
+    expect(screen.queryByTestId('launcher-installed-apps-section')).toBeNull();
+  });
+
+  it('#3144 — drops a turned-off app, but keeps a FAILING app openable', () => {
+    const disabled = entry({ id: 'off', displayName: 'Off App', state: 'disabled' });
+    const failing = entry({ id: 'bad', displayName: 'Bad App', state: 'failing' });
+    const working = entry({ id: 'ok', displayName: 'Ok App', state: 'working' });
+
+    // The filter drops ONLY `disabled`.
+    const filtered = filterInstalledApps([disabled, failing, working], '');
+    expect(filtered.map((e) => e.id)).toEqual(['bad', 'ok']);
+
+    // A boot where the ONLY app is turned off renders nothing at all.
+    storeMock.entries = [disabled];
+    renderWithChakra(<LauncherInstalledAppsSection query="" />);
     expect(screen.queryByTestId('launcher-installed-apps-section')).toBeNull();
   });
 });
