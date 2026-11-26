@@ -468,3 +468,141 @@ code. "No change" without a quoted artifact is not evidence._
 
 _Evidence convention: quote the artifact. A build/unit gate quotes `EXITCODE=`; a static case quotes
 the file:line and the assertion; a live case quotes the observed value._
+
+---
+
+## R-10 — the #3144 management surface must not widen the frozen boundary, hollow the pane, or move the launcher
+
+- [ ] **R-10.1 — the frozen vocabularies do not grow.**
+  Read `apps/tauri/src-tauri/src/applications/installed_apps/mod.rs` (`InstalledAppRefusalCode` + its
+  `ALL`/`as_str` unit pin) and the authority vocabulary (`authority.rs`).
+  - **EXPECT:** `InstalledAppRefusalCode` is still **exactly 22** — quote the committed pin's assertion
+    **and** its count; the authority vocabulary is still the separate **six**; the two types stay
+    distinct (no authority code smuggled into `InstalledAppRefusalCode`; the frontend mirrors stay
+    distinct: `INSTALL_REFUSAL_COPY` vs `CAPABILITY_REFUSAL_COPY`). #3144 reuses `id_not_installed` and
+    `io_error` and adds **nothing**.
+  - **EDGE:** a 23rd installer code added to carry the disabled/removal outcome is a **plan defect**
+    (R-8.2) — report it; never accept it. This row is the #3144-shaped restatement of R-8.2's property
+    (R-8.2 itself is NOT re-cut).
+
+- [ ] **R-10.2 — the open path's behaviour for an ENABLED application is unchanged.**
+  Read `apps/tauri/src-tauri/src/applications/installed_apps/commands_window.rs` (`installed_app_open`)
+  and `window.rs` (`resolve_open_target`).
+  - **EXPECT:** the disabled check (`lifecycle::is_disabled`) is inserted **before** `resolve_open_target`
+    and changes nothing else: an enabled app still runs `resolve_open_target` → `scheme::verify_install`
+    → `open_installed_app_window` as before; the singleton window behaviour, the `fredoapp` origin, the
+    declared-table materialisation and the close path (`close_installed_window`) are untouched. Quote the
+    inserted clause and the unchanged lines around it.
+  - **EXPECT (live):** with A1 enabled, `installed_app_open` resolves and the `installed-<id>` window
+    renders `installed-app-root` exactly as `F-1.3`/`S-5` already assert.
+  - **EDGE:** a gate placed AFTER materialisation (so a disabled app still writes/registers tables) is a
+    FAIL of the "no side effect from a disabled open" clause.
+
+- [ ] **R-10.3 — a disabled application keeps its registry directory, so re-install is still refused.**
+  Read `apps/tauri/src-tauri/src/applications/installed_apps/store.rs` (the `already_installed` check)
+  and drive an install of an already-installed (and now disabled) id.
+  - **EXPECT:** `installed_app_install` of a disabled app's id is still refused `already_installed` (the
+    `<id>/` directory remains in the registry; disabling does not remove it). Quote the code.
+  - **EDGE:** a disable that renames or hides the directory so the install check no longer fires would
+    let a second copy land — FAIL.
+
+- [ ] **R-10.4 — the pane's retained structure is intact.**
+  `Read` `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx`; grep the
+  `__tests__` for the retained assertions.
+  - **EXPECT:** the pane keeps `role="list"`/`listitem`, and ALL of: the loading state, the empty state
+    (`installed-apps-empty`), the populated state, the refusal state, the success state, and the
+    `list-load-failed` state; the **absent-key render rule** (an absent optional key renders nothing);
+    the **v1 limitations block** (`installed-apps-limitations`); the **install action row** with the
+    unsigned-package note; and the **"no Open control here"** rule (quote it — the pane is a registry
+    view). No new token, no new colour, no animation.
+  - **EXPECT (the grants heading/intro carry the ADJUDICATED values, not the superseded high-risk-only
+    datum — Adjudication 10.3):** the section heading reads `CONSENT_SECTION_HEADING` = **"What each
+    application can reach"** and the intro reads `CONSENT_SECTION_INTRO` = **"Every application declares
+    what it needs. It can only reach what it declared for itself. Anything that can change data or run
+    programs is refused until you allow it, for that application only."** The constant **names** and the
+    element id `installed-apps-consent-heading` are RETAINED; `CONSENT_SCOPE_LINE` is **kept verbatim**
+    ("Allowing or revoking here never removes an application or its data."). Quote the heading/intro
+    text actually rendered. A surviving `'Extra permissions'` heading, or the old high-risk-only intro,
+    is a FAIL — and so is a heading read from the wrong element (assert against
+    `aria-labelledby="installed-apps-consent-heading"`'s target).
+  - **EXPECT (`data-consent-state` values are the ADJUDICATED three — Adjudication 10.2):** every
+    `installed-apps-consent-row` carries `data-consent-state` ∈ {`allowed`,`not-allowed`,`none`}; an app
+    declaring **no** high-risk capability reads **`none`** (never `allowed`). Quote each row's value.
+  - **FAILABILITY:** the pane's existing component/unit tests redden on any of the above changing.
+
+- [ ] **R-10.5 — the launcher's untouched parts.**
+  Read `apps/ui/src/applications/home/components/launcher/LauncherInstalledAppsSection.tsx`.
+  - **EXPECT:** the section is still a **sibling of the app grid** with no verb, no place and no stroke;
+    it still renders **nothing** when its filtered list is empty; the absence rule and the "own window"
+    line are unchanged. The ONLY change is `filterInstalledApps` dropping `state === 'disabled'`;
+    a **`failing`** app is still listed and openable.
+  - **FAILABILITY:** the launcher's own unit test (`LauncherInstalledAppsSection.test.tsx`) reddens if
+    the section gains a control or a keyboard-navigation surface.
+
+- [ ] **R-10.6 — the capability / manifest / config boundary is untouched.**
+  `Read` `apps/tauri/src-tauri/capabilities/installed-app-commands.json`, `permissions/app/default.toml`,
+  `src/runtime/command_manifest.rs`, `src/runtime/capability_guard.rs` and `tauri.conf.json`.
+  - **EXPECT:** `installed-app-commands.json` is exactly `allow-installed-app-invoke` (no `core:*`, no
+    new grant); `command_manifest.rs`'s three guards are green (registered ⊆ manifest; every registered
+    command granted; the installed tier's one capability); `tauri.conf.json`'s `app.security.csp`,
+    `devCsp`, `withGlobalTauri:false` are unmodified. Quote the JSON and run
+    `cargo test --lib --locked command_manifest` (quote the test names).
+  - **EDGE:** a per-application capability or a command added outside the three named ones is a FAIL.
+
+- [ ] **R-10.7 — build hygiene.**
+  Run and quote exit codes with `run-exitcode.ps1`:
+  - `pnpm --filter @fredo/ui build` ⇒ `EXITCODE=0` (no TypeScript errors);
+  - `cargo check --locked` (from `apps/tauri/src-tauri`) ⇒ `EXITCODE=0` with **zero** `warning:` lines.
+  - **EDGE:** a suppressed warning (`#[allow(...)]`) to reach zero is a FAIL of the engineering rules.
+
+- [ ] **R-10.8 — the lifecycle state is NOT read at startup.**
+  `Read` `apps/tauri/src-tauri/src/lib.rs`'s setup closure; grep it for
+  `lifecycle|installed-apps-state|read_state|is_disabled`.
+  - **EXPECT:** **zero** hits — nothing is added to the setup closure; the state file is read only per
+    listing (`installed_apps_list`) and per `installed_app_open` (R-5.5 of #3147 holds). Quote the
+    grep's zero line count together with the resolved path it scanned (a zero over the wrong file is
+    not a pass).
+  - **CONTROL:** the same grep over `commands_install.rs` / `commands_window.rs` MUST return hits — the
+    absence above is real, not an instrument aimed at the wrong file (G-408/G-469).
+
+- [ ] **R-10.9 — the superseded pin is re-cut, in BOTH directions (G-374).**
+  - **EXPECT A (the old assertion is gone):** grep `functional.md` and
+    `apps/ui/src/applications/settings-app/components/__tests__/InstalledAppsSettings.test.tsx` for
+    `querySelectorAll('button').length === 0` — **zero** surviving occurrences (the three re-cuts in
+    `RECUTS.md` applied). Quote the zero line count **and** the scanned paths.
+  - **EXPECT B (the replacement is TRUE against the shipped component):** the entry row renders
+    **exactly** its state's management controls (`installed-apps-disable`/`-enable` + `-remove`) and no
+    other button; the consent `grant`/`revoke` controls are **outside** every entry row (assert their
+    nearest `[data-testid="installed-apps-entry"]` ancestor is `null`). Quote the component's rendered
+    control set.
+  - **FAILABILITY:** a row weakened to "≥1 button" reddens EXPECT B's exactly-set clause; a surviving
+    `length === 0` reddens EXPECT A.
+  - **EDGE:** a test that deletes the pin outright (rather than re-cutting it) also fails this row —
+    the guarantee (no grant/revoke control inside a row) must remain asserted.
+
+- [ ] **R-10.10 — the install-time refusal copy never renders in the INVENTORY context (an ABSENCE
+  assertion — it fails loudly on reinstatement).**
+  Read the inventory surfaces — `InstalledAppsSettings.tsx`, the NEW
+  `apps/ui/src/shared/installed-apps/failureReasons.ts` (Adjudication 10.4, add to ST-3's owner files),
+  and `apps/ui/src/shared/installed-apps/refusals.ts` — and drive the failing inventory row live.
+  - **EXPECT (absence, with the exact install-time text quoted):** neither of these two
+    `INSTALL_REFUSAL_COPY` sentences is **rendered** in the inventory context:
+    - `INSTALL_REFUSAL_COPY[io_error]` = **"Fredo couldn't finish that install."**
+    - `INSTALL_REFUSAL_COPY[id_not_installed]` = **"That application isn't installed any more."**
+    Neither may appear in `installed-apps-entry-failure` (for a damaged-but-installed app), in
+    `installed-apps-action-refusal`, or anywhere else in the pane / the launcher.
+  - **EXPECT (the positive control — a vacuous absence is not a pass, G-408/G-469):** the SAME round
+    shows `installed-apps-entry-failure` rendering a **non-empty** sentence from
+    `installedAppFailureReason(entry.failureCode)` for a `failing` row — so the absence of the two
+    install-time sentences is a real reading, not a blank pane. Quote both the absent-string check
+    (zero hits, with the scanned paths) and the present sentence.
+  - **WHY (the honest-module property):** the two contexts assert **different claims** — an install/open
+    refusal claims *"the package was refused"*; an inventory failure claims *"the installed
+    application's record is unreadable"* — so this is **one source per claim**, not a second source of
+    truth for one claim. The mapping is `code → copy` **per context**, so neither can silently borrow
+    the other's text. A future "unification" of the two modules that reintroduces the install-time
+    sentence for an installed application **fails at this row**, at that moment.
+  - **FAILABILITY:** a unification that points the inventory row back at `INSTALL_REFUSAL_COPY`
+    reddens this row (the two sentences render again).
+  - **EDGE:** a `failing` row whose reason is the *install* sentence is exactly the defect; a row whose
+    reason is a paraphrase is a **copy** finding to route to UI/UX, not a PASS by substitution.
