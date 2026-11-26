@@ -306,9 +306,10 @@ retry implementation, not the fixture.
 
 Owned by **ST-2**. It emits the install-validation packages and its own committed
 expected-output manifest, **`fixtures/package-fixtures.expected.json`**. Like the behaviour
-generator it is Node-built-ins only (`node:crypto`, `node:fs`, `node:path`, `node:url`), needs no
-network and no npm package, and is byte-deterministic across runs (fixed entry order, stored
-entries, the same fixed 1980-01-01 DOS timestamp).
+generator it is Node-built-ins only (`node:crypto`, `node:fs`, `node:path`, `node:url`) plus
+the kit's **published-schema** validator (`packages/fredo-authoring/lib/validate.mjs`, a pure
+module), needs no network and no npm package, and is byte-deterministic across runs (fixed
+entry order, stored entries, the same fixed 1980-01-01 DOS timestamp).
 
 ```powershell
 node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs
@@ -318,7 +319,7 @@ node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --writ
 node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs --help
 ```
 
-### The seven packages
+### The eight packages
 
 Read `id`, `expects`, `expectsStage` and the sha256 from
 **`fixtures/package-fixtures.expected.json`**, never from this table. `expectsStage` matters:
@@ -327,17 +328,35 @@ Read `id`, `expects`, `expectsStage` and the sha256 from
 |---|---|---|---|
 | `qa3147-valid` | _(none — installs)_ | `none (installs cleanly)` | none; the happy path (AC-1 / R-1.1) |
 | `qa3147-no-manifest` | `no_manifest` | install | a valid zip with **no** `fredo-app.json` at its root |
-| `qa3147-bad-manifest` | `manifest_unknown_field` | install | an **unknown top-level key** `capabilities` (shape recorded as `badManifestShape`) |
+| `qa3147-bad-manifest` | `manifest_unknown_field` | install | an **unknown top-level key** `sandbox` (shape recorded as `badManifestShape`) |
 | `qa3147-zip-slip` | `unsafe_path` | install | an entry `../../qa3147-escaped.txt` (shape recorded as `unsafeShape`) |
 | `qa3147-hash-tamper` | `integrity_mismatch` | **load** | none at install — the tester mutates one installed byte first |
 | `qa3147-incompatible-engines` | `host_incompatible` | install | `engines.fredo: ">=999.0.0"` — well-formed but excludes every real build |
 | `qa3147-reserved-path` | `reserved_path` | install | an entry `__fredo/bootstrap.js` claiming the host-reserved segment |
+| `qa3145-missing-field` | `manifest_invalid_field` | install | the required top-level field **`displayName` is absent** (field recorded as `missingField`) |
 
-**The bad-manifest shape is a choice, and the manifest records it.** An unparseable document, an
-unknown top-level key and a non-`1` `manifestVersion` drive **three different codes**
-(`manifest_malformed`, `manifest_unknown_field`, `unsupported_manifest_version`). This generator
-ships the **unknown-top-level-key** shape, and `badManifestShape` in the committed manifest says so.
-Do not assume a fixture drove a code other than the one recorded.
+**The bad-manifest shape is a choice, and the manifest records it — and it was WRONG until
+#3145.** An unparseable document, an unknown top-level key and a non-`1` `manifestVersion`
+drive **three different codes** (`manifest_malformed`, `manifest_unknown_field`,
+`unsupported_manifest_version`). This generator ships the **unknown-top-level-key** shape, and
+`badManifestShape` in the committed manifest says so.
+
+**Drift correction D1 (Spec #3145 ST-2).** This fixture used to drive
+`manifest_unknown_field` with the key **`capabilities`**. Spec #3146 made `capabilities` the
+manifest's **8th legal top-level key**, so the same bytes now classify as
+**`manifest_invalid_field`** ("capabilities must be an object" — the fixture set it to an
+array). The fixture is now built with a genuinely-undefined key (`sandbox`), and the
+hand-written schema copy that let the drift happen is **gone**: the allowed-key set, the
+length caps, the patterns and the reserved-id list are read from
+**`packages/fredo-authoring/schema/fredo-app.schema.json`**, which is generated from the Rust
+parser. That is why the generator's self-check can catch this class again rather than
+repeating it.
+
+**The schema leg of `--verify`.** `--verify` now checks three things: the committed sha256s,
+the recorded codes, **and** that every fixture whose expected code is decided by the manifest
+classifies with the published schema as that exact code (every other fixture's manifest must be
+schema-legal). A corpus that drifts from the parser therefore reddens even when its bytes did
+not change.
 
 **`hash-tamper` INSTALLS.** Its expected code is reached at LOAD time (the verify-at-serve step),
 so a tester must (a) install it, (b) mutate the recorded byte, then (c) attempt to open it. An
@@ -366,9 +385,12 @@ code driven by some fixture). After building it re-opens each archive and assert
 
 - the entry order and names in the archive are exactly what was meant to write;
 - `fredo-app.json`, when present, round-trips to the object written;
-- the **bad-manifest** package carries **exactly** its declared unknown key and no second defect;
-- **every other** fixture's manifest is schema-legal (with the engines range validated separately,
-  because `>=999.0.0` is legal yet excludes the host);
+- the **bad-manifest** package carries **exactly** its declared unknown key — checked against the
+  **published schema's** key set, never a hand-written list (a stale list is exactly how
+  `capabilities` stayed "unknown" after #3146) — and the **missing-field** package really omits
+  `displayName`;
+- **every other** fixture's manifest is schema-legal per the published schema (with the engines
+  range validated separately, because `>=999.0.0` is legal yet excludes the host);
 - each declared extra entry drives the package's expected code, and **every ordinary entry name is
   safe** — so a fixture cannot be "unsafe by accident";
 - `index.html` is a real HTML document and `main.js` exports `mount`;
@@ -377,7 +399,37 @@ code driven by some fixture). After building it re-opens each archive and assert
 Any failure aborts with a non-zero exit code. A generator whose gate has never run is not evidence,
 so these run on the default path.
 
-### What each fixture is NOT here to prove
+### The theme-parity fixtures (`theme-parity/build-theme-fixtures.mjs`, ST-1)
+
+One generator entry emits the **four** theme fixtures, so the three "may not rely on" negatives
+are the positive **plus exactly one host-internal import** and the scan and the load agree by
+construction:
+
+```powershell
+node .opencode/tests/installable-apps/fixtures/theme-parity/build-theme-fixtures.mjs
+node .opencode/tests/installable-apps/fixtures/theme-parity/build-theme-fixtures.mjs --check
+```
+
+| Package | What it is |
+|---|---|
+| `theme-parity/` | the positive: paints **only** published theme token names, mirrors every reading as plain visible text in `[data-testid="authoring-theme-readout"]` |
+| `theme-parity-neg-shared-store/` | the positive + `import '@/shared/installed-apps/store'` |
+| `theme-parity-neg-base-class/` | the positive + `import { FredoApplicationClass } from 'apps/ui/src/applications/FredoApplicationClass'` |
+| `theme-parity-neg-register/` | the positive + `import { registerApplication } from '@/applications/registerApplication'` |
+
+**The vendoring route is the point, not a workaround.** Each package carries
+`vendor/fredo-theme/` — a COPY of `packages/fredo-theme/dist/` — and imports it
+**relatively**. A published artifact is runtime-reachable only by being part of the installed
+package: the `fredoapp` handler's serve whitelist is the install record, so a file outside the
+package has no route, and a bare `@fredo/theme` specifier never resolves in the child document
+(no bundler, no import map, `script-src 'self'`).
+
+`--check` compares all twenty generated files against the committed copies (LF-normalised), so
+the vendored copy cannot silently drift from `dist/`. The generator refuses to build unless the
+readout hook, the mirrored token names, the alias chip painted from `cssVar('accent.subtle')`,
+the relative-only imports and the one-line difference of each negative all hold.
+
+### What the ST-2 install fixtures are NOT here to prove
 
 Runtime behaviour — probe refusal, crash/hang containment, retry, laziness — belongs to the ST-7
 behaviour fixtures (§3). These packages exist only to drive the **install / integrity** decision
@@ -393,6 +445,7 @@ exports; nothing here duplicates a host-owned `installed-app-*` testid.
 | `fixtures/build-behaviour-fixtures.mjs` | **yes** | the generator |
 | `fixtures/behaviour-fixtures.expected.json` | **yes** | the expected-output manifest (ids, displayNames, hashes, what each app asserts, the DOM hooks it renders) |
 | `fixtures/build-package-fixtures.mjs` + its manifest | **yes** (ST-2) | the sibling generator |
+| `fixtures/theme-parity/**` | **yes** (ST-1) | the theme-parity package and its three negatives, **generated** — including the vendored `vendor/fredo-theme/` copy — by `fixtures/theme-parity/build-theme-fixtures.mjs` |
 | `fixtures/build-capability-fixtures.mjs` | **yes** (QA Expert, #3146) | the capability generator — self-driving fixtures, no hash manifest (§6) |
 | `.opencode/tmp/3147/fixtures/**`, `.opencode/tmp/3146/fixtures/capabilities/**` | no (gitignored) | the generated `.zip` archives and per-run summaries |
 
