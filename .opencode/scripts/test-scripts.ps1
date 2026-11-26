@@ -5547,6 +5547,151 @@ Test-Script "maint-pr exempts EOL-only paths and names a real content-dirty path
   }
 }
 
+# #3145: the checkout-cleanliness rule is BASE-RELATIVE. The serving checkout can be
+# on `spec/<N>` and predate a human commit on `main`, so a path can be dirty against
+# HEAD yet its content EQUALS the PR base `origin/main` — the checkout writes the
+# SAME content, so nothing can be lost and it must NOT block. A path whose content
+# differs from BOTH the base and HEAD still refuses, and the refusal must tell the
+# addressed role to REPORT it (no role holds a repo-root move grant).
+#
+# #3145 second half: the SWITCH. `git checkout -B maint/<N> origin/main` refuses a
+# ` M` path (index at HEAD, worktree at the base) EVEN when its worktree content
+# equals the target, so each provably-lossless path must be RECONCILED to the
+# revision its content already equals before the switch — including paths OUTSIDE the
+# PR's committed set. The mock models that refusal (see the control test below).
+Test-Script "maint-pr reconciles base-equal paths (inside and outside PATHS) before the switch" {
+  $url = Mock-IssueCreate "temp: maint base-equal" "maint base-equal scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $headDiverged = Join-Path $env:FREDO_MOCK_STORE "head-diverged"
+  $dirtyContent = Join-Path $env:FREDO_MOCK_STORE "dirty-content"
+  $baseEqual = Join-Path $env:FREDO_MOCK_STORE "maint-base-equal"
+  $idxHead = Join-Path $env:FREDO_MOCK_STORE "maint-base-idx-head"
+  $reconciled = Join-Path $env:FREDO_MOCK_STORE "maint-reconciled"
+  $target = "opencode.json"
+  # `outside` is NOT in the PR's committed path set (PATHS) — yet it blocks the switch
+  # all the same, so the reconcile must cover it (#3145).
+  $outside = ".gitattributes"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    [System.IO.File]::WriteAllText($headDiverged, $target, [System.Text.UTF8Encoding]::new($false))
+    # Control: content differs from BOTH base and HEAD → REFUSED, named, report-to-human.
+    [System.IO.File]::WriteAllText($dirtyContent, $target, [System.Text.UTF8Encoding]::new($false))
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    $bad = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($LASTEXITCODE -eq 0) { throw "a genuinely divergent path must refuse, got: $badStr" }
+    if ($badStr -notmatch "would overwrite uncommitted changes") { throw "expected the checkout-cleanliness refusal, got: $badStr" }
+    if ($badStr -notmatch "opencode\.json") { throw "the refusal must NAME the path, got: $badStr" }
+    if ($badStr -notmatch "REAL content changes") { throw "the refusal must state the rule, got: $badStr" }
+    if ($badStr -match "Commit, stash, or move") { throw "the refusal must not prescribe the unreachable move, got: $badStr" }
+    if ($badStr -notmatch "REPORT this to the human") { throw "the refusal must tell the role to report the divergence, got: $badStr" }
+    $mergedCount = @(Get-Content ".opencode/state/issues/$issueNum.jsonl" -ErrorAction SilentlyContinue | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.event_name -eq "maint-pr" -and $_.attributes.merged -eq "true" }).Count
+    if ($mergedCount -ne 0) { throw "a refused run must record no merged event" }
+    $global:LASTEXITCODE = 0
+    # Pin: content EQUAL to the PR base on an in-PATHS AND an OUTSIDE path → NOT refused;
+    # each is RECONCILED to the base before the switch (the mock switch model REFUSES an
+    # unreconciled base-equal path with git's exact live error), so the run reaches
+    # MERGED only if the reconcile ran. `$target` (opencode.json) models worktree AND
+    # index equal to the base; `$outside` (.gitattributes) models the EXACT #3145 shape —
+    # worktree equals the base, the INDEX still at HEAD — which must reconcile to the
+    # BASE, never to HEAD.
+    Remove-Item -LiteralPath $dirtyContent -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($headDiverged, "$outside`n$target", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($baseEqual, $target, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($idxHead, $outside, [System.Text.UTF8Encoding]::new($false))
+    $ok = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "base-equal paths must be reconciled, not refused: $okStr" }
+    if ($okStr -notmatch "reconciling 2 base-equal dirty path") { throw "expected the base-equal reconcile note (2 paths), got: $okStr" }
+    if ($okStr -notmatch "SPEC MAINT PR MERGED") { throw "expected the merge to complete, got: $okStr" }
+    if (-not (Test-Path -LiteralPath $reconciled)) { throw "the reconcile never ran (no maint-reconciled record)" }
+    $rec = Get-Content -LiteralPath $reconciled -Raw
+    if ($rec -notmatch [regex]::Escape($target)) { throw "$target was not reconciled: $rec" }
+    if ($rec -notmatch [regex]::Escape($outside)) { throw "$outside (worktree==base, index==HEAD; outside the PR path set) was not reconciled to the BASE: $rec" }
+    return "maint-pr: base-equal paths (both shapes, in + outside PATHS) reconciled to the BASE before the switch + merged (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $headDiverged -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $dirtyContent -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $baseEqual -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $idxHead -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Control for the switch model above: prove it has teeth — an unreconciled base-equal
+# path fails the switch with git's exact live error, and the reconcile clears it.
+Test-Script "switch model: git refuses an unreconciled base-equal path; the reconcile clears it" {
+  $baseEqual = Join-Path $env:FREDO_MOCK_STORE "maint-base-equal"
+  $reconciled = Join-Path $env:FREDO_MOCK_STORE "maint-reconciled"
+  $br = "maint/9001"
+  try {
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($baseEqual, "opencode.json", [System.Text.UTF8Encoding]::new($false))
+    $bad = & rust-script $ps --action mock-git --gitargs "checkout -B $br origin/main" 2>&1
+    $badStr = if ($bad -is [array]) { $bad -join "`n" } else { "$bad" }
+    if ($LASTEXITCODE -eq 0) { throw "the switch must refuse an unreconciled base-equal path, got: $badStr" }
+    if ($badStr -notmatch "would be overwritten by checkout") { throw "expected the live checkout error, got: $badStr" }
+    $global:LASTEXITCODE = 0
+    & rust-script $ps --action mock-git --gitargs "checkout origin/main -- opencode.json" 2>&1 | Out-Null
+    $ok = & rust-script $ps --action mock-git --gitargs "checkout -B $br origin/main" 2>&1
+    $okStr = if ($ok -is [array]) { $ok -join "`n" } else { "$ok" }
+    if ($LASTEXITCODE -ne 0) { throw "after the reconcile the switch must succeed: $okStr" }
+    return "switch model: unreconciled base-equal path refused with git's error; reconcile clears it (#3145)"
+  } finally {
+    Remove-Item -LiteralPath $baseEqual -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\maint\9001") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "checkout-base") -Force -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# Regression for the #3145 ROOT cause: `run_with_timeout` used `.trim()`, which stripped
+# the FIRST `git status --porcelain` line's leading status space (a valid ` M` char) and
+# shifted the first path one byte (`.gitattributes` → `gitattributes`), so a real,
+# blocking path was parsed as a NON-EXISTENT one and silently classified HEAD-equal. The
+# mock reproduces that corruption (`status-trim-first`); a path leading the status output
+# must still parse to its real name, classify base-equal and reconcile to the BASE.
+Test-Script "porcelain parsing: a trimmed first status line still yields the right path" {
+  $url = Mock-IssueCreate "temp: maint trim-first" "trim-first scratch" "post-audit"
+  $issueNum = if ($url -match 'issues/(\d+)') { [int]$Matches[1] } else { throw "no issue from mock: $url" }
+  $marker = Join-Path $env:FREDO_MOCK_STORE "maint-dirty"
+  $headDiverged = Join-Path $env:FREDO_MOCK_STORE "head-diverged"
+  $baseEqual = Join-Path $env:FREDO_MOCK_STORE "maint-base-equal"
+  $trimFirst = Join-Path $env:FREDO_MOCK_STORE "status-trim-first"
+  $reconciled = Join-Path $env:FREDO_MOCK_STORE "maint-reconciled"
+  $first = ".gitattributes"
+  try {
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+    New-Item -ItemType File -Path $trimFirst -Force | Out-Null
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($headDiverged, "$first`nopencode.json", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($baseEqual, "$first`nopencode.json", [System.Text.UTF8Encoding]::new($false))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action maint-pr 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "a trimmed first status line must still parse (exit $LASTEXITCODE): $outStr" }
+    if ($outStr -notmatch "SPEC MAINT PR MERGED") { throw "expected the merge to complete, got: $outStr" }
+    if (-not (Test-Path -LiteralPath $reconciled)) { throw "no reconcile ran" }
+    $rec = Get-Content -LiteralPath $reconciled -Raw
+    if ($rec -notmatch [regex]::Escape($first)) { throw "the first status path was mis-parsed (not reconciled as $first): $rec" }
+    return "porcelain parsing: a trimmed first status line still parsed to $first + reconciled (#$issueNum)"
+  } finally {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $headDiverged -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $baseEqual -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $trimFirst -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $reconciled -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "prs") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # #3192 part 2: fail-closed correctness at the merge step. The merge command's exit
 # status is not the verdict — the PR's STATE is. The exact live shape (the remote
 # merge landed, the command still failed on its local post-merge checkout) must
@@ -7020,6 +7165,44 @@ Test-Script "tests-commit persists the WHOLE feature dir (scripts + fixtures, no
       if (-not (Test-Path (Join-Path $mainTree $rel))) { throw "missing from the persisted main tree: $rel" }
     }
     return "whole feature dir persisted: markdown + scripts/lever.ps1 + fixtures/sample.json"
+  } finally {
+    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# #3145: the Contents-API write bypasses git's clean filter, so `persist_tests` must
+# itself LF-normalize TEXT suite content (CRLF -> LF) or a Windows working tree writes
+# CRLF blobs to `main` while the git-committed spec branch carries LF, and
+# `sync-spec-branch` then conflicts on EOL alone. BINARY content (a NUL byte in the
+# first 8 KiB) must be persisted byte-exact (CR and all).
+Test-Script "tests-commit LF-normalizes text suite content (CRLF working tree -> LF on main)" {
+  $url = Mock-IssueCreate "temp: tests eol" "tests eol scratch" ""
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $issueNum = [int][regex]::Match($urlStr, "issues/(\d+)").Groups[1].Value
+  $feat = "scratcheol-$issueNum"
+  $dir = ".opencode/tests/$feat"
+  try {
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    # A CRLF text file - exactly what a Windows checkout materialises.
+    [System.IO.File]::WriteAllText("$dir/crlf.md", "- [ ] F-1: crlf case`r`n- [ ] F-2: second`r`n", [System.Text.UTF8Encoding]::new($false))
+    # A binary file with a NUL byte in the first 8 KiB (all-UTF-8 bytes, so the mock's
+    # String round-trip is byte-exact) must be persisted byte-exact, its CR kept.
+    [System.IO.File]::WriteAllBytes("$dir/blob.bin", [byte[]](0x00, 0x0D, 0x0A, 0x01, 0x02))
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action tests-commit --feature $feat 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "tests-commit failed (exit $LASTEXITCODE): $outStr" }
+    $mainTree = Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat"
+    $persistedText = [System.IO.File]::ReadAllText((Join-Path $mainTree "crlf.md"))
+    if ($persistedText.Contains("`r")) { throw "persisted text content still carries CR - not LF-normalized" }
+    $binBytes = [System.IO.File]::ReadAllBytes((Join-Path $mainTree "blob.bin"))
+    if ($binBytes.Length -ne 5 -or $binBytes[1] -ne 0x0D -or $binBytes[2] -ne 0x0A) {
+      throw "binary content was not persisted byte-exact: $($binBytes -join ',')"
+    }
+    return "text LF-normalized (no CR on main); binary persisted byte-exact"
   } finally {
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $env:FREDO_MOCK_STORE "contents\main\.opencode\tests\$feat") -Recurse -Force -ErrorAction SilentlyContinue
