@@ -16,6 +16,10 @@ non-goal of #3147 and must read identically on the spec tip.
 > - `settings/functional.md` — the Settings nav surface the new pane is added to.
 > - `launcher/functional.md` — the launcher grid / open-apps row the new sibling section sits beside.
 > - `theme-contract` + `theming` — the token→CSS-var contract the theme transport reads.
+> - **`navigation-prose-retirement/regression.md`** — run it with the **#3145** rows too: its **PR-5**
+>   is re-cut in place by #3145 (`functional.md` F-8.18) because it asserted "no `docs/`-level
+>   authoring document exists", which the authoring documentation falsifies. That ONE row is expected
+>   to change; no other row in it may.
 
 _Evidence convention: quote the `file:line` text, the grep count, the unit-test name, or the exit
 code. "No change" without a quoted artifact is not evidence._
@@ -392,6 +396,75 @@ code. "No change" without a quoted artifact is not evidence._
   - EDGE: a consent record placed inside `<id>/` would be covered by the integrity manifest and could
     never be updated without a mismatch — a FAIL. A consent store with no version field is a FAIL of
     the additive-evolution contract.
+
+## R-9 — The #3145 authoring kit must not become a second source of truth, and must not widen the install tier
+
+> These rows are the "must not change" counterpart of `functional.md`'s **AC-8** group (#3145).
+> The kit is a **projection** of three shipped things — the theme contract, the dispatch table and
+> the manifest/capability validator. Each row below names the widening or the drift it would catch.
+> **One exception to "must not change", stated up front: R-9.4.** `docs/ARCHITECTURE.md` MUST change
+> (its installed-applications limitation table contradicts the shipped schema, `functional.md`
+> F-8.16), so R-9.4 binds the diff's **shape** — confined and justified — never an empty diff.
+
+- [ ] **R-9.1 — the theme is still ONE source, and the transport is untouched.**
+  - EXPECT (the **exact** assertions — a subject is not a check): every `name → varName` pair **and**
+    every derivation weight in `app/theme/contract/**` is **identical to `origin/main`**
+    (`git diff origin/main...HEAD -- apps/ui/src/app/theme/contract/` shows **no** modified pair or
+    weight — quote the diff; an added **named export** is the only permitted change); the contract's
+    token **count grows by 0** (`SEMANTIC_TOKENS.length` before and after, quoted); `app/theme/
+    system.ts`'s emitted Chakra config is unchanged; the kit's generator is a **consumer** of the
+    contract — grep `packages/fredo-theme/` for a second hard-coded token list ⇒ **0**; and the
+    transport files are byte-unchanged: `shared/installed-apps/themeCapture.ts` still reads the live
+    DOM (no `SEMANTIC_TOKENS` import added), `installed_apps_push_theme` is still the one push
+    command, `scheme.rs`'s `theme_style_block` still inlines `:root { … }`, `bootstrap.js`'s
+    `__FREDO_APPLY_THEME__` is still the one apply path. Quote each and its `git diff --stat`.
+  - EDGE: a kit that ships its own resolved **values** (not `var()` expressions) is a FAIL of NFR-5
+    even if every parity row still passes — it would become a second colour source the moment the
+    user changes an accent. A second token enumeration that drifts from the contract is the same
+    FAIL. **A superset-only check is not enough on its own**: the published-var **coverage** inverse
+    is `functional.md` F-8.24, and the two are bound together (a name the host never writes is the
+    one lie a name-contract package can tell). Cross-run `theme-contract` and `theming`.
+
+- [ ] **R-9.2 — the v1 manifest contract is additive-only, so a package authored before #3146 keeps
+  installing.**
+  - EXPECT: `SUPPORTED_MANIFEST_VERSION` and `CAPABILITY_MANIFEST_VERSION` are both still `1`
+    (`mod.rs:97,108`); `MANIFEST_TOP_LEVEL_KEYS` is still the 8-key set with `capabilities` **8th**
+    (`manifest.rs:91-100`); `capabilities` is still **optional** — all seven #3147 package fixtures
+    (none of which declares capabilities) still produce the codes their committed manifest names,
+    and in particular `qa3147-valid` still installs. A package with **no** `capabilities` key still
+    normalizes to a `<id>/manifest.json` where the key is **ABSENT** (not `null`, not `{}`) — quote
+    the file.
+  - EDGE: a schema generation that makes `capabilities` **required**, or that bumps
+    `manifestVersion`, is a FAIL of the additive contract (R-8.4 is the sibling assertion from the
+    #3146 side). **The published schema must not be stricter than the parser**: a `check` that
+    refuses a package the product installs is a FAIL of NFR-6's "one machine-readable schema".
+
+- [ ] **R-9.3 — the kit adds no command, no capability and no window class.**
+  - EXPECT: the installed-app command list in `lib.rs`'s `generate_handler!` is **unchanged** by this
+    spec — quote the `installed_app`-prefixed name list before/after and show it equal (this spec
+    adds **no** backend command; development mode's command belongs to #3241);
+    `DISPATCH_TABLE` is still the eight ordered actions (`dispatch.rs:87-96`); the capability
+    directory still has **exactly one** file matching an `installed-<probe>` label, with
+    `windows: ["installed-*"]` and `permissions: ["allow-installed-app-invoke"]` — the same parsed
+    matcher F-2.5/R-1.3 use (never a raw `installed-` grep, G-430).
+  - EDGE: a per-package capability file, a second permission, or a new label prefix minted by this
+    spec is a FAIL. Quote the per-file matcher result beside each file's `windows` array.
+
+- [ ] **R-9.4 — the docs edit is CONFINED and every hunk is justified (not "empty").**
+  - EXPECT: quote `git diff --stat origin/main...HEAD -- docs/` and `git diff -U3` for each touched
+    doc file. Every hunk must sit inside one of the rows this spec's ST-5 dispositioned: the
+    installed-applications limitation table (`ARCHITECTURE.md` ≈`:1110-1125`), the FAQ's
+    installed-applications answer, the `SECURITY.md` installed-application containment section, the
+    `README.md` product-documents table, and the new `docs/authoring-applications.md`. A hunk
+    touching any **other** doc section is a FAIL — quote it.
+  - EXPECT (both directions): the confined hunks are **also** insufficient if they are merely
+    deletions — `docs/ARCHITECTURE.md`'s stale "no `capabilities[]`" claim must be **replaced with
+    the truth** (F-8.16(ii)), not removed. An empty `docs/` diff is a FAIL too: it means the
+    corrected doc did not land.
+  - EDGE: a "tidy-up" of a historical record (`references.md` G-records, release notes, archived
+    docs) is a FAIL even when the new prose is better — those are append-only. Cross-run the
+    `navigation-prose-retirement` suite: this spec re-cuts its PR-5 in place (`functional.md`
+    F-8.18), so that one row is **expected** to change and no other row in it may.
 
 _Evidence convention: quote the artifact. A build/unit gate quotes `EXITCODE=`; a static case quotes
 the file:line and the assertion; a live case quotes the observed value._
