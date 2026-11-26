@@ -51,3 +51,26 @@
   `ModelMissing`/`modelLoadFailed` surfaced with a remedy, or a raw library string?
 - Probe: two consecutive cold launches with `cpu` persisted — is the hydration wait honoured on BOTH
   (the reported `backendMode`/`backend` never shows the pre-hydration default)?
+
+## Probes added by Spec #3233 (per-turn thinking policy + empty-turn guarantee)
+
+- Probe: on the served model, send a prompt that strongly elicits reasoning ("Think at length, then
+  answer in one word.") with thinking disabled — does any `llm-token` payload carry a stray control
+  marker or a leading channel prefix (the E2B "behaves differently when disabled" shape)? Is the
+  reply visible prose or a bare terminator? (If a bare terminator, the empty-turn guarantee must
+  have fired an `llm-error` first — otherwise it is a defect.)
+- Probe: drive a chat turn and a Doom decision turn back-to-back in one session, then read
+  `telemetry_logs` — do the two `reasoning_mode` records land in order, and does the level make them
+  observable (the G-435 level caveat)? Drop the effective log level so the field is filtered out and
+  record what the instrument does (absence is a reading — G-470).
+- Probe: with thinking disabled, does a tool-call turn that ends `finish_reason:"tool_calls"` but
+  carries no visible content get the **tool-call-without-call** detail (its own copy) rather than
+  `EmptyReply`? (The misfire the guarantee must avoid.)
+- Probe: force a genuine starvation shape live — a tiny `max_tokens` chat turn with thinking ON (a
+  Doom-style turn) — and observe the terminal sequence; is it `[llm-error, llm-done]`? (The
+  deterministic pin in `FR-36` is the ground; this is corroboration only — non-determinism here is
+  not a FAIL.)
+- Probe: a schema-constrained turn with thinking disabled — does the constrained grammar still
+  bind, and is any raw envelope leaked into `llm-token`?
+- Probe: `stop_llama_server` then a chat turn with thinking disabled across the restart — does the
+  per-turn mode survive (no global state leaks across turns/restarts)?
