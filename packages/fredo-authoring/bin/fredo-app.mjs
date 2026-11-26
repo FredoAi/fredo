@@ -1,7 +1,7 @@
 /**
  * `fredo-app` — the publishing kit's two verbs (Spec #3145, ST-2).
  *
- *   fredo-app check <dir> [--fredo <version>] [--json]
+ *   fredo-app check <dir> [--fredo <version>] [--specifiers] [--json]
  *   fredo-app pack  <dir> --out <file> [--json]
  *
  * Both are plain Node: run them as
@@ -23,12 +23,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { ArchiveRefused, buildArchive } from '../lib/pack.mjs';
+import { scanSpecifiers } from '../lib/specifiers.mjs';
 import { checkPackage, refusalCodes } from '../lib/validate.mjs';
 
 const HELP = `fredo-app — check and pack a Fredo application package.
 
 Usage:
-  node <kit>/fredo-authoring/bin/fredo-app.mjs check <dir> [--fredo <version>] [--json]
+  node <kit>/fredo-authoring/bin/fredo-app.mjs check <dir> [--fredo <version>] [--specifiers] [--json]
   node <kit>/fredo-authoring/bin/fredo-app.mjs pack  <dir> --out <file> [--json]
   node <kit>/fredo-authoring/bin/fredo-app.mjs --help
 
@@ -37,7 +38,11 @@ Verbs:
           published schema; print every violation as { code, field?, detail } and exit
           non-zero if there is one. --fredo <version> adds the engines.fredo range check
           against that Fredo version; without it the range check is reported as not
-          performed.
+          performed. --specifiers additionally confirms the package is self-contained:
+          every module specifier must be a relative path resolving to a file in the
+          package, and no host-internal shape may appear. Each specifier problem is
+          printed as specifier_not_relative / specifier_unresolved /
+          specifier_host_internal, and a non-empty set makes check exit non-zero.
   pack    validate, then write a deterministic .zip to --out (stored entries, a fixed
           1980-01-01 DOS timestamp, a fixed entry order) and print its sha256. Pack the
           same directory twice and compare the two digests.
@@ -47,12 +52,13 @@ violation the checker reports is the refusal the product would give.`;
 
 /** Parse `--flag value` pairs plus the verb and its positional. */
 function parseArgs(argv) {
-  const options = { verb: null, target: null, out: null, fredo: null, json: false, help: false };
+  const options = { verb: null, target: null, out: null, fredo: null, json: false, specifiers: false, help: false };
   const positional = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--json') options.json = true;
+    else if (arg === '--specifiers') options.specifiers = true;
     else if (arg === '--out' || arg === '--fredo') {
       const value = argv[++index];
       if (!value) throw new UsageError(`${arg} needs a value`);
@@ -82,18 +88,18 @@ function runCheck(options) {
     fredoVersion: options.fredo ?? undefined,
   });
 
+  // The specifier scan is an ADDITIONAL mode: without --specifiers the output and
+  // exit code are exactly what they were before (no new key, no new failure).
+  const specifiers = options.specifiers ? scanSpecifiers(target) : null;
+
   if (options.json) {
-    console.log(
-      JSON.stringify(
-        {
-          valid: violations.length === 0,
-          violations,
-          notChecked,
-        },
-        null,
-        2,
-      ),
-    );
+    const payload = {
+      valid: violations.length === 0,
+      violations,
+      notChecked,
+    };
+    if (specifiers !== null) payload.specifiers = specifiers;
+    console.log(JSON.stringify(payload, null, 2));
   } else {
     if (violations.length === 0) {
       console.log(`CHECK OK ${target}`);
@@ -101,8 +107,19 @@ function runCheck(options) {
       printViolations(violations);
     }
     for (const note of notChecked) console.log(`not checked: ${note}`);
+    if (specifiers !== null) {
+      if (specifiers.ok) {
+        console.log(`specifiers OK: ${specifiers.imports.length} import(s), 0 problems`);
+      } else {
+        for (const problem of specifiers.problems) {
+          console.error(`${problem.problem}: file=${problem.file} specifier=${problem.specifier}`);
+        }
+      }
+    }
   }
-  return violations.length === 0 ? 0 : 1;
+
+  const specifierProblems = specifiers === null ? 0 : specifiers.problems.length;
+  return violations.length === 0 && specifierProblems === 0 ? 0 : 1;
 }
 
 function runPack(options) {

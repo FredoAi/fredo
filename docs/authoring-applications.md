@@ -12,9 +12,15 @@ guide downloads anything. <!-- claim:C-01 -->
 You need Node.js to run the kit's two commands. They use only Node's built-in modules, so no other
 toolchain and no dependency install is needed. <!-- claim:C-02 -->
 
-> **Where the kit lives.** The kit is the `fredo-theme/` and `fredo-authoring/` package directories
-> plus this guide. Download or copy those three items into one folder and treat that folder as
-> `<kit>` for every command below. <!-- claim:C-59 -->
+> **Where the kit lives.** The kit is three items **in the Fredo repository**,
+> `https://github.com/FredoAi/fredo`: the `packages/fredo-theme/` package directory, the
+> `packages/fredo-authoring/` package directory, and this guide, `docs/authoring-applications.md`.
+> There is no registry, so obtaining the kit means taking those three items from that repository —
+> clone it, or download its archive
+> (`https://github.com/FredoAi/fredo/archive/refs/heads/main.tar.gz`) and extract them — and putting
+> them in one folder, which is `<kit>` for every command below. Acquiring the kit is a one-time copy:
+> it is not running a step against a checkout, and the six steps below still need none.
+> <!-- claim:C-59 -->
 
 ---
 
@@ -71,7 +77,7 @@ export function mount(ctx) {
 ```json
 {
   "manifestVersion": 1,
-  "id": "com.example.my-app",
+  "id": "com-example-my-app",
   "displayName": "My application",
   "version": "1.0.0",
   "engines": { "fredo": ">=0.1.0" },
@@ -89,13 +95,20 @@ and `pack` archives it like any other file. <!-- claim:C-05 -->
 ### S3-check — validate before you package
 
 ```
-node <kit>/fredo-authoring/bin/fredo-app.mjs check my-app --json
+node <kit>/fredo-authoring/bin/fredo-app.mjs check my-app --fredo <your Fredo version> --json
 ```
 
 Expected: exit code `0` and a JSON document whose `violations` array is empty. On a violation the
 command prints one record per problem — `{ "code", "field"?, "detail" }` — using the same refusal
 codes the product uses, and exits non-zero. `field` is the exact dotted path of the manifest value
 that broke a rule. <!-- claim:C-06 -->
+
+The document carries `valid` (a boolean), `violations` (the refusal records) and `notChecked` (the
+rules this run could not perform). <!-- claim:C-63 -->
+
+Without `--fredo`, the `engines.fredo` range is **not** checked — the command says so in
+`notChecked`; a package whose range excludes your Fredo therefore passes `check` unless you pass the
+flag. <!-- claim:C-64 -->
 
 ### S4-pack — produce the package, twice
 
@@ -111,6 +124,9 @@ measured it replaces the artifact you measured. <!-- claim:C-07 -->
 
 ### S5-install — install through the normal path
 
+S5 assumes a **running Fredo** — the build you targeted with `engines.fredo`. There is no
+command-line install; the install path exists only inside the app. <!-- claim:C-65 -->
+
 Open **Settings → Installed applications**, choose **Install application package…**, and pick
 `out/my-app.zip`. A valid package shows the success strip, appears on the launcher's **Installed
 apps** shelf, and opens in its own window with your UI painted inside it. This is the same install
@@ -122,6 +138,19 @@ Every `import` and `export … from` in your application must be a **relative** 
 a file inside the package — including `./vendor/fredo-theme/index.mjs`. Relative imports of files
 you ship are fine; imports of host-internal modules and bare package names are not, and a package
 that uses them fails to load. <!-- claim:C-09 -->
+
+Run the check:
+
+```
+node <kit>/fredo-authoring/bin/fredo-app.mjs check my-app --specifiers --json
+```
+
+Expected: exit code `0` and a JSON document whose `specifiers` object is
+`{ "ok": true, "imports": [ … ], "problems": [] }`. On a problem it exits `1`, and each entry in
+`specifiers.problems` names a `file`, a `specifier`, and one of three kinds —
+`specifier_not_relative` (a bare package name or host-internal alias), `specifier_unresolved` (a
+relative path with no file behind it), or `specifier_host_internal` (the source names a
+host-internal shape). <!-- claim:C-66 -->
 
 ---
 
@@ -143,7 +172,7 @@ value you do not use is an **absent key**, never `null`. <!-- claim:C-11 -->
 | Key | Rule |
 |---|---|
 | `manifestVersion` | the number `1` |
-| `id` | lowercase letters, digits and hyphens, dot-separated segments; at most 96 characters; not one of Fredo's built-in application ids |
+| `id` | lowercase letters, digits and hyphens — **no dots**; at most 96 characters; the id becomes part of your window's label; not one of Fredo's built-in application ids |
 | `displayName` | 1–64 characters |
 | `version` | SemVer 2.0.0, with no `v` prefix |
 | `engines.fredo` | a SemVer **range** string such as `">=0.1.0"`; `"*"` and an empty string are refused |
@@ -151,6 +180,9 @@ value you do not use is an **absent key**, never `null`. <!-- claim:C-11 -->
 | `entry.module` | relative POSIX path ending `.js` |
 | `description` | optional string, at most 280 characters |
 | `capabilities` | optional; see section 3 |
+
+These eight ids belong to Fredo and are refused as `id_reserved`: `wireframe`, `terminal`,
+`mission-monitor`, `database-client`, `theming`, `setup`, `settings`, `dev-mode`. <!-- claim:C-67 -->
 
 ### 1.2 The child document and the mount contract
 
@@ -476,8 +508,8 @@ and a `field` naming the exact dotted manifest path when one field is at fault. 
 | `manifest_unknown_field` | the unknown key's dotted path | remove it, or use one of the eight top-level keys |
 | `manifest_invalid_field` | the failing field's dotted path | follow the rule for that field (type, length, table declaration shape, or an absent optional instead of `null`) |
 | `unsupported_manifest_version` | `manifestVersion` | use `manifestVersion: 1` |
-| `id_invalid` | `id` | use lowercase letters, digits and hyphens in dot-separated segments, at most 96 characters |
-| `id_reserved` | `id` | choose an id that is not one of Fredo's built-in application ids |
+| `id_invalid` | `id` | use lowercase letters, digits and hyphens — no dots — at most 96 characters |
+| `id_reserved` | `id` | choose an id outside Fredo's eight built-in application ids (section 1.1) |
 | `version_invalid` | `version` | use SemVer 2.0.0 with no `v` prefix |
 | `engines_range_invalid` | `engines.fredo` | write a SemVer range such as `">=0.1.0"`; `"*"` and an empty string are refused |
 | `host_incompatible` | `engines.fredo` | widen the range so it includes the running Fredo version (the detail names both the declared range and the running version) |

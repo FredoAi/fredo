@@ -463,8 +463,8 @@ function buildIndexMjs(projected, stylesheet) {
  * ${SCOPE_NOTE.replace(/\u2019/g, "'")}
  *
  * The consumption route is VENDORING: copy this file (and \`theme.css\`) into your
- * package as \`vendor/fredo-theme/\` and import it RELATIVELY
- * (\`import { cssVar } from './vendor/fredo-theme/index.mjs'\`). A bare
+ * package as \`vendor/fredo-theme/\`, then import the vendored file
+ * \`vendor/fredo-theme/index.mjs\` RELATIVELY from your own module. A bare
  * \`${PACKAGE_NAME}\` specifier never resolves in an installed application's document —
  * there is no bundler and no import map — and the host's serve whitelist is the
  * install record, so a file outside the package has no route.

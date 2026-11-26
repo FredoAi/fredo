@@ -164,12 +164,65 @@ function walkFiles(root) {
   return found;
 }
 
-/** Extract module specifiers from JS source, ignoring line comments. */
+/**
+ * Remove COMMENTS from JS source (a comment is not code), preserving newlines so
+ * line structure survives. String- and template-aware: a comment opener inside a
+ * string literal does not start a comment, and the string itself is preserved
+ * (a specifier IS a string literal).
+ *
+ * This is the exam's OWN scanner, deliberately NOT the kit's
+ * (`packages/fredo-authoring/lib/specifiers.mjs`): F-8.3 requires an independent
+ * re-run, and the SPECIFIERS check asserts the two agree.
+ */
+function stripComments(source) {
+  let out = '';
+  let index = 0;
+  const length = source.length;
+  while (index < length) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === '/' && next === '/') {
+      index += 2;
+      while (index < length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      index += 2;
+      while (index < length && !(source[index] === '*' && source[index + 1] === '/')) {
+        if (source[index] === '\n' || source[index] === '\r') out += source[index];
+        index += 1;
+      }
+      index = Math.min(length, index + 2);
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      const quote = char;
+      out += char;
+      index += 1;
+      while (index < length && source[index] !== quote) {
+        if (source[index] === '\\' && index + 1 < length) {
+          out += source[index] + source[index + 1];
+          index += 2;
+          continue;
+        }
+        out += source[index];
+        index += 1;
+      }
+      if (index < length) {
+        out += source[index];
+        index += 1;
+      }
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
+}
+
+/** Extract module specifiers from JS source, ignoring line AND block comments. */
 function specifiersIn(source) {
-  const text = source
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*\/\/.*$/, ''))
-    .join('\n');
+  const text = stripComments(source);
   const specs = [];
   const patterns = [
     /(?:^|[^.\w$])(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g,
@@ -183,6 +236,42 @@ function specifiersIn(source) {
     }
   }
   return specs;
+}
+
+/**
+ * SCANNER SELF-TEST (ST-6 item 3). The extractor must read CODE, not comments: a
+ * specifier-shaped token inside a block comment or a line comment must yield ZERO
+ * specifiers, while a real import MUST still be found (the positive control that
+ * keeps a never-matching scanner from passing the negative cases vacuously).
+ *
+ * Committed here so the round-1 false-positive class cannot return silently: that
+ * failure was the generated theme header's quoted import example inside its block
+ * comment, read as a real import.
+ */
+function scannerSelfTestFailures() {
+  const failures = [];
+  for (const source of [
+    "/* import x from './y.mjs' */\nconst a = 1;\n",
+    "// import x from './y.mjs'\nconst a = 1;\n",
+  ]) {
+    const found = specifiersIn(source);
+    if (found.length !== 0) {
+      failures.push(`a comment-only fixture yielded ${JSON.stringify(found)}`);
+    }
+  }
+  const positive = specifiersIn("import x from './y.mjs'\n");
+  if (positive.length !== 1 || positive[0] !== './y.mjs') {
+    failures.push(`a real import must be found, got ${JSON.stringify(positive)}`);
+  }
+  return failures;
+}
+
+/** True iff two string collections hold the same values (order-independent). */
+function sameStringSet(left, right) {
+  if (left === null || right === null) return false;
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 /** Read the entry names out of a stored zip's central directory. */
@@ -447,24 +536,53 @@ if (existsFile(receiptPath)) {
 }
 
 // ---------------------------------------------------------------------------
-// S6-specifiers — the package is self-contained: relative specifiers only, each
-// resolving to a file the zip carries; zero host-internal tokens.
+// S6-specifiers — the DOCUMENTED step: the kit's own `check --specifiers` over
+// the package, FOLLOWED by the runner's independent walk. The two must agree.
+//
+// The command below is the exact string the guide's S6 shows. The kit cannot
+// assert zip membership (it scans the directory, not the archive), so the runner
+// keeps its own walk; the two problem sets must agree on what they can both see.
 // ---------------------------------------------------------------------------
-const scanCmd = `runner:specifier-scan(${appDir})`;
-const specProblems = [];
+const s6Cmd = `node ${kitApp} check ${appDir} --specifiers --json`;
+const s6 = spawnSync(process.execPath, [kitApp, 'check', appDir, '--specifiers', '--json'], {
+  cwd: args.work,
+  encoding: 'utf8',
+  timeout: 60_000,
+});
+const specifiersPayloadPath = path.join(args.out, 'specifiers.json');
+assertInside(ROOTS.out, specifiersPayloadPath, 'specifiers payload');
+try {
+  fs.writeFileSync(specifiersPayloadPath, s6.stdout ?? '');
+} catch {
+  /* a missing payload is reported by SPECIFIERS, not thrown */
+}
+
+// The KIT's verdict: its `specifiers.problems` and its own import list.
+let kitSpecifiers = null;
+try {
+  kitSpecifiers = JSON.parse(s6.stdout ?? '').specifiers ?? null;
+} catch {
+  kitSpecifiers = null;
+}
+const kitProblems = Array.isArray(kitSpecifiers?.problems) ? kitSpecifiers.problems : null;
+const kitImports = Array.isArray(kitSpecifiers?.imports) ? kitSpecifiers.imports : null;
+const kitOk = kitSpecifiers?.ok === true;
+
+// The RUNNER's OWN independent walk (host-internal tokens + zip membership).
+const runnerProblems = [];
 const importsSeen = [];
 let zipNames = null;
 try {
   zipNames = existsFile(packA) ? zipEntryNames(packA) : null;
 } catch (error) {
-  specProblems.push(`zip entry list unreadable: ${error.message}`);
+  runnerProblems.push(`zip entry list unreadable: ${error.message}`);
 }
 
 const authoredJs = walkFiles(appDir).filter(
   (file) => !file.nodeModules && /\.(mjs|cjs|js|ts|tsx|jsx)$/.test(file.path)
 );
 if (authoredJs.length === 0) {
-  specProblems.push('no application module found — the scan would be vacuous');
+  runnerProblems.push('no application module found — the scan would be vacuous');
 }
 
 for (const file of authoredJs) {
@@ -476,37 +594,55 @@ for (const file of authoredJs) {
   }
   for (const token of HOST_INTERNAL_TOKENS) {
     if (source.includes(token)) {
-      specProblems.push(`host-internal token ${JSON.stringify(token)} in ${file.path}`);
+      runnerProblems.push(`host-internal token ${JSON.stringify(token)} in ${toPosix(path.relative(appDir, file.path))}`);
     }
   }
   for (const specifier of specifiersIn(source)) {
-    importsSeen.push(`${path.relative(appDir, file.path)} -> ${specifier}`);
+    importsSeen.push(`${toPosix(path.relative(appDir, file.path))} -> ${specifier}`);
     if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
-      specProblems.push(`non-relative specifier ${JSON.stringify(specifier)} in ${file.path}`);
+      runnerProblems.push(`non-relative specifier ${JSON.stringify(specifier)} in ${toPosix(path.relative(appDir, file.path))}`);
       continue;
     }
     const target = path.resolve(path.dirname(file.path), specifier);
     const rel = path.relative(appDir, target);
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      specProblems.push(`specifier ${JSON.stringify(specifier)} resolves outside the package`);
+      runnerProblems.push(`specifier ${JSON.stringify(specifier)} resolves outside the package`);
       continue;
     }
     if (!existsFile(target)) {
-      specProblems.push(`specifier ${JSON.stringify(specifier)} resolves to a missing file`);
+      runnerProblems.push(`specifier ${JSON.stringify(specifier)} resolves to a missing file`);
       continue;
     }
-    if (zipNames && !zipNames.includes(rel.split(path.sep).join('/'))) {
-      specProblems.push(`specifier ${JSON.stringify(specifier)} targets a file the zip does not carry`);
+    if (zipNames && !zipNames.includes(toPosix(rel))) {
+      runnerProblems.push(`specifier ${JSON.stringify(specifier)} targets a file the zip does not carry`);
     }
   }
 }
 // A zero-import scan is not evidence: the documented sample imports its vendored
 // theme, so an app with no module specifier at all means nothing was authored (G-469).
-const specifiersOk = specProblems.length === 0 && importsSeen.length > 0;
-if (specProblems.length === 0 && importsSeen.length === 0) {
-  specProblems.push('no module specifier found; the sample imports its vendored theme (vacuous scan)');
+if (runnerProblems.length === 0 && importsSeen.length === 0) {
+  runnerProblems.push('no module specifier found; the sample imports its vendored theme (vacuous scan)');
 }
-recordStep('S6-specifiers', scanCmd, specifiersOk ? 0 : 1, null, null);
+
+// The scanner self-test (ST-6 item 3) and the kit/runner agreement.
+const scannerFailures = scannerSelfTestFailures();
+const importsAgree = sameStringSet(kitImports, importsSeen);
+const specifiersOk =
+  scannerFailures.length === 0 &&
+  s6.status === 0 &&
+  kitOk &&
+  kitProblems !== null &&
+  kitProblems.length === 0 &&
+  runnerProblems.length === 0 &&
+  importsAgree;
+
+recordStep(
+  'S6-specifiers',
+  s6Cmd,
+  specifiersOk ? 0 : 1,
+  existsFile(specifiersPayloadPath) ? specifiersPayloadPath : null,
+  existsFile(specifiersPayloadPath) ? sha256(specifiersPayloadPath) : null
+);
 
 // ---------------------------------------------------------------------------
 // Checks
@@ -558,13 +694,28 @@ recordCheck(
   `my-app.zip=${digestA ?? 'none'}; my-app-b.zip=${digestB ?? 'none'}; equal=${determinismOk}`
 );
 
-// SPECIFIERS — S6's scan.
+// SPECIFIERS — the kit's documented `check --specifiers` AND the runner's own
+// walk, which must agree (the drift guard keeping the one predicate honest).
 recordCheck(
   'SPECIFIERS',
   specifiersOk,
   specifiersOk
-    ? `imports=${importsSeen.length}; all relative and present in the zip; zero host-internal tokens`
-    : specProblems.join('; ')
+    ? `kit problems=0 and runner problems=0 agree; imports=${importsSeen.length}; scanner self-test ok`
+    : [
+        ...scannerFailures.map((failure) => `scanner self-test: ${failure}`),
+        `kit exit=${s6.status}`,
+        kitProblems === null
+          ? 'kit specifiers payload unreadable'
+          : kitProblems.length
+            ? `kit problems: ${kitProblems.map((p) => `${p.problem}(${p.file}->${p.specifier})`).join(', ')}`
+            : null,
+        runnerProblems.length ? `runner problems: ${runnerProblems.join('; ')}` : null,
+        !importsAgree
+          ? `import lists disagree: kit=${JSON.stringify(kitImports)} runner=${JSON.stringify(importsSeen)}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join('; ')
 );
 
 // NO-NODE-MODULES — the kit needs no installed dependency.
