@@ -308,7 +308,9 @@
                 { "action": "shell", "resource": "powershell -NoProfile -File .opencode/scripts/gate-artifact-window.ps1*", "effect": "allow" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
                 { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" }
+                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
+                { "action": "shell", "resource": "git restore*", "effect": "allow" }
             ]
         },
         "tester": {
@@ -423,7 +425,8 @@
                 { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" },
                 { "action": "shell", "resource": "opencode*", "effect": "allow" },
                 { "action": "shell", "resource": "Get-FileHash*", "effect": "allow" },
-                { "action": "shell", "resource": "powershell -File .opencode/tests/*", "effect": "allow" }
+                { "action": "shell", "resource": "powershell -File .opencode/tests/*", "effect": "allow" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" }
             ]
         },
         "machinist": {
@@ -525,7 +528,9 @@
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
                 { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" }
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" }
             ]
         },
         "curator": {
@@ -571,7 +576,8 @@
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
                 { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" }
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/test-scripts.ps1*", "effect": "allow" }
             ]
         },
         "auditor": {
@@ -614,7 +620,9 @@
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
                 { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" }
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" }
             ]
         },
         "orchestrator": {
@@ -738,7 +746,8 @@
                 { "action": "shell", "resource": "powershell -File .opencode/scripts/check-sqlite-retired.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "Remove-Item .git/index.lock*", "effect": "allow" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" }
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "git restore*", "effect": "allow" }
             ]
         }
     },
