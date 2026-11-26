@@ -36,3 +36,48 @@ the G-046/G-067 ladder has been tried and disclosed.
 A failing S-5 blocks the whole round: the remaining functional rows need a working install → open →
 close → re-open cycle. Record the failing step and the console/log evidence, and mark the dependent
 rows `UNVERIFIED (blocked by S-5)` rather than driving them against a broken cycle.
+
+---
+
+## #3144 cases (the lifecycle / management surface)
+
+- [ ] **S-11.1 — the pane renders the three states as words.** On the 5-app boot (A1 `working`,
+  A2 `failing` via `qa3144-damaged-record`, A3 `disabled`, A4 `working`+grant, A5 `working`), open
+  Settings → Installed applications.
+  - EXPECT: five `[data-testid="installed-apps-entry"]` rows; A1/A4/A5 show `Working`, A2 shows
+    `Failing`, A3 shows `Turned off`; each row carries a matching `data-app-state`. No console error.
+  - EDGE: a blank pane with a damaged app present is the pre-change abort — report it as the smoke-level
+    discrimination for `F-9.1`; do not call it an env wedge.
+
+- [ ] **S-11.2 — turn off → turn on round-trip, no restart, console clean.** Click
+  `[data-testid="installed-apps-disable"]` on A1; confirm the row reads `Turned off`; click
+  `[data-testid="installed-apps-enable"]`; confirm it reads `Working`.
+  - EXPECT: both transitions observed without a host restart (PID unchanged); the launcher section
+    drops A1 while off and offers it again when on; `tauri_read_logs(source="console", lines=50)` shows
+    no `Error:`/`Uncaught` after the cycle.
+  - EDGE: enabling a `failing` app must read `Failing`, not `Working`.
+
+- [ ] **S-11.3 — remove → disclosure → confirm → gone.** Click `[data-testid="installed-apps-remove"]`
+  on A4.
+  - EXPECT: `[data-testid="installed-apps-remove-dialog"]` with `installed-apps-remove-disclosure`
+  renders **before** any confirm and states the data is kept; after
+  `[data-testid="installed-apps-remove-confirm"]` the row is gone from the pane and the launcher and
+  `installed_app_open{appId:"qa3146-consent-a"}` is refused with no window.
+  - EDGE: `installed-apps-remove-cancel` leaves everything unchanged.
+
+- [ ] **S-11.4 — both build gates green.** `pnpm --filter @fredo/ui build` ⇒ `EXITCODE=0`;
+  `cargo check --locked` (from `apps/tauri/src-tauri`) ⇒ `EXITCODE=0` with zero `warning:` lines.
+  Use `run-exitcode.ps1 -Command "<cmd>"`.
+
+- [ ] **S-11.5 — a damaged record does not blank the pane (smoke-level of F-9.1).** With the
+  `qa3144-damaged-record` fixture applied to A2, open the pane.
+  - EXPECT: the other four entry rows still render and A2's row reads `Failing`.
+  - EDGE: if the pane shows `installed-apps-list` absent / a `list-load-failed` state, that is the
+    pre-change behaviour (the listing abort) and it **fails the smoke leg** — record it and route it to
+    `F-9.1`, never a silent skip.
+
+## Expected outcome (#3144)
+
+S-11.1…S-11.5 all PASS on the spec tip, in addition to the parent S-1…S-10. A failing S-11.3 blocks the
+AC-3 group; a failing S-11.5 blocks the AC-1/AC-5 group (`F-9.1`) — record the failing step and mark
+the dependent rows `UNVERIFIED (blocked by S-11.x)` rather than driving them against a broken state.
