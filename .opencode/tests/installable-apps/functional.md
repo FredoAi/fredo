@@ -753,7 +753,7 @@ owned nowhere):
   - **EDGE:** a generic `manifest_invalid_field` with a detail that does NOT name the field path is a FAIL of the diagnosability NFR — "names the specific reason, field-scoped" is the AC's own wording. An unknown capability id silently IGNORED (install succeeds with the id dropped) is a FAIL: an ignored declaration reads to the author as accepted consent.
 
 - [ ] **F-7.16 (R-4.1) [live][NEW] — AC-4: the specific high-risk capability is SHOWN for that application only.** Fixtures `qa3146-consent-a` (declares query + reset), `qa3146-consent-b` (declares query only) and `qa3146-no-capabilities`, all installed. Open Settings → **Installed applications** (`[data-testid="settings-nav-installed-apps"]` → `[data-testid="installed-apps-pane"]`).
-  - **SURFACE SHAPE (bound to the landed UI/UX contract, §1/§2 — read it, do not assume a shape):** the consent block is a **pane-level section** placed **after the list and before the v1-limitations footer**, **not** inside an entry row (the shipped pin `InstalledAppsSettings.test.tsx` asserts an entry row has **0** buttons and must stay intact). The section is `[data-testid="installed-apps-consent-section"]`; inside it one `[data-testid="installed-apps-consent-row"]` **per APPLICATION** carrying `data-app-id`; inside a row one control line **per declared high-risk capability**, each control carrying `data-app-id` + `data-capability`.
+  - **SURFACE SHAPE (bound to the landed UI/UX contract, §1/§2 — read it, do not assume a shape):** the consent block is a **pane-level section** placed **after the list and before the v1-limitations footer**, **not** inside an entry row (the shipped `InstalledAppsSettings.test.tsx` pin that asserted an entry row has **0** buttons is RE-CUT by #3144: the row now legitimately carries its own management controls, while the consent controls remain in this pane-level section — never inside an entry row; G-374). The section is `[data-testid="installed-apps-consent-section"]`; inside it one `[data-testid="installed-apps-consent-row"]` **per APPLICATION** carrying `data-app-id`; inside a row one control line **per declared high-risk capability**, each control carrying `data-app-id` + `data-capability`.
   - **EXPECTED (Settings surface):** the section is present (≥1 app declares high-risk); A has **exactly one** `installed-apps-consent-row[data-app-id="qa3146-consent-a"]` and inside it **two** `[data-testid="installed-apps-consent-grant"]` buttons whose `data-capability` values are `high-risk.database-query` and `high-risk.database-reset`; each row line is bound to the shipped copy — the **`consequence` sentence** from `CAPABILITY_CONSENT_COPY[capability]` verbatim, the exact capability id in mono, and the chip word **`Not allowed`**; B has one row with one control (`high-risk.database-query`) and the chip `Not allowed`; `qa3146-no-capabilities` has **no row**; when *no* installed app declares a high-risk capability the whole section is **absent**, not an empty heading. Quote the button's visible text (**`Allow`**) and its accessible name (see F-7.30).
   - **EXPECTED (projection — read `installed_apps_list` from `main`, quote the JSON):** A ⇒ `capabilities: {appId:"qa3146-consent-a", declared:["high-risk.database-query","high-risk.database-reset"], highRisk:[same two], consented:[]}`; B ⇒ `declared:["high-risk.database-query"]`; `qa3146-no-capabilities` ⇒ all three arrays **empty** (but the `capabilities` object present). Arrays sorted.
   - **EXPECTED (accessibility):** each control is a real `<button>` (not a `div` with a click handler) whose accessible name contains the application name **and** the capability's verb — a bare repeated "Allow" is a FAIL (ambiguous control, and it would let a user grant the wrong app's capability).
@@ -875,6 +875,10 @@ owned nowhere):
   > surface shape is the UI/UX contract's: a pane-level section, after the list and before the
   > limitations footer, one row per **application**, one control line per declared **high-risk
   > capability**. Assert the **chip WORD** (`Allowed` / `Not allowed`) as the state; `data-consent-state`
+  > is exactly one of `allowed` (≥1 high-risk declared and ALL consented) / `not-allowed` (≥1 high-risk
+  > declared and ≥1 unconsented) / **`none`** (**no** high-risk declared — an ordinary-only or
+  > zero-capability app MUST read `none`, never `allowed`; Adjudication 10.2). A row that accepts
+  > `allowed` for an app with no high-risk capability asserts a false security claim and is a FAIL.
   > is an **open adjudication request** in `## UI/UX Expert` §2 and is therefore **not** asserted here.
   - **S0 — no declaration.** With no installed app declaring a high-risk capability, `[data-testid="installed-apps-consent-section"]` is **ABSENT** (not an empty heading, not an empty `role="list"`), and it adds **no tab stop** (Tab from the install button must not land on it).
   - **S1/S3 — declared-not-consented / consented.** F-7.16 owns the render; this row owns the pair's **mutual exclusivity**: at any instant a `(app, capability)` pair has **either** `…-consent-grant` **or** `…-consent-revoke`, in the **same DOM slot**, so the layout does not reflow on toggle. Quote both states for one pair across F-7.18's cycle.
@@ -886,7 +890,7 @@ owned nowhere):
 
 - [ ] **F-7.30 (R-4.1 / R-4.2 — the CONSENT COPY + accessible-name contract) [live+static][NEW].**
   > Re-homed from the UI/UX section's proposed `F-7.2`.
-  - **EXPECTED (verbatim copy, per declared capability):** each control line's body sentence equals `CAPABILITY_CONSENT_COPY[capability].consequence` **verbatim** (quote it for both of A's capabilities — they are DIFFERENT sentences); the chip word is `Allowed` / `Not allowed`; the visible button label is `Allow` / `Revoke`; the section heading is `CONSENT_SECTION_HEADING` verbatim and the intro/scope lines are `CONSENT_SECTION_INTRO` / `CONSENT_SCOPE_LINE` verbatim.
+  - **EXPECTED (verbatim copy, per declared capability):** each control line's body sentence equals `CAPABILITY_CONSENT_COPY[capability].consequence` **verbatim** (quote it for both of A's capabilities — they are DIFFERENT sentences); the chip word is `Allowed` / `Not allowed`; the visible button label is `Allow` / `Revoke`; the section heading is the string "What each application can reach" VERBATIM (the constant name `CONSENT_SECTION_HEADING` and the element id `installed-apps-consent-heading` are RETAINED; the shipped value `'Extra permissions'` is SUPERSEDED — a claim about the high-risk half only, false once the section is widened to all `declared` capabilities; Adjudication 10.3), and the intro is "Every application declares what it needs. It can only reach what it declared for itself. Anything that can change data or run programs is refused until you allow it, for that application only." VERBATIM (constant name `CONSENT_SECTION_INTRO` retained). `CONSENT_SCOPE_LINE` is KEPT VERBATIM ("Allowing or revoking here never removes an application or its data."). A surviving `'Extra permissions'` heading is a FAIL of this row.
   - **EXPECTED (accessible names, AC-4's wording):** unconsented ⇒ `` `Allow <displayName> to <verb>` ``; consented ⇒ `` `Revoke permission for <displayName> to <verb>` ``. Quote both. Each **contains its visible label** ("Allow"/"Revoke") so voice control still matches (WCAG 2.5.3) — and each contains the application name **and** the capability's verb, so two apps' controls are never indistinguishable.
   - **EXPECTED (copy rules, grep-checkable — UI/UX §3 rules 1-4):** (a) **no verification or safety vocabulary** anywhere in the section or in either copy map — the exact banned tokens are `verified`, `signed`, `publisher`, `trusted author`, `safe`, `secure`, `sandbox`, `read-only`; (b) no blanket scope — `allow`/`grant`/`revoke` never appear without an application and a capability in the same sentence or accessible name; (c) an in-section sentence is Fredo's (second person to the user) and an app-side sentence is about the application in the third person; (d) the `scope_denied` copy **never names or implies another application**.
   - **SCAN SCOPE (G-430/G-431 — this is where the guard would otherwise lie).** The scan root is the **two changed UI files** (`InstalledAppsSettings.tsx` and the new `capabilityRefusals.ts`), not the repo: the banned token `sandbox` legitimately appears in *this suite* and in product docs where the spec says NO OS sandbox exists, and the token `read-only` appears in the DB-client copy discussion. The allowlist is `.opencode/tests/**` + `docs/**`. Report the **raw-token count** beside the stripped count, and run the non-vacuity control: a seeded one-line hit inside the scan root is caught, and a synthetic hit outside it is not scanned.
@@ -915,7 +919,17 @@ owned nowhere):
   - **EXPECTED (live regions):** the pair's state line carries `role="status" aria-live="polite"`; **only** `[data-testid="installed-apps-consent-refusal"]` is `role="alert"`. `aria-live="assertive"` on the state line is a FAIL (the user caused that change; it is not an emergency).
   - **EXPECTED (landmark + headings):** the section is `<section aria-labelledby>` its own `id`'d `h3`, inside a pane whose heading is `h2` — reachable by heading navigation. Absent section ⇒ **no tab stop** (assert the same way the pane asserts it for the limitations block).
   - **EXPECTED (tokens):** **zero** hex/rgba/hsl literals in the changed files; tints via `tint('var(--status-success)', 12)` / `tint(var, 10)`; **no alpha-append onto a `var()` reference** (`var(--x)22` is invalid CSS and silently drops the declaration). **No new token, no new colour, no contrast floor** — every legible string is `fg.default`/`fg.muted` over `bg.canvas`/`bg.subtle`, the same pairing the pre-change pane ships on the same surfaces (the G-235 control is the untouched limitations block). If a contrast ratio needs computing here, the DESIGN changed — report it, do not adjudicate a floor.
-  - **EXPECTED (the shipped pin survives):** an entry row still contains **0** buttons (`row.querySelectorAll('button').length === 0` in `__tests__/InstalledAppsSettings.test.tsx`). Quote it. That pin is what keeps the consent controls in their own section rather than weakening the "registry view" contract.
+  - **EXPECTED (the pin is RE-CUT — #3144, G-374; the row now carries its OWN controls):** an entry
+    row contains **exactly** the management controls its state warrants and **no other** button — a
+    `working`/`failing` row: `[data-testid="installed-apps-disable"]` + `[data-testid="installed-apps-remove"]`;
+    a `disabled` row: `[data-testid="installed-apps-enable"]` + `[data-testid="installed-apps-remove"]`.
+    Quote the count and each control's `data-testid` from `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx`.
+    The property the OLD pin existed to protect is RETAINED and asserted explicitly: the consent
+    `[data-testid="installed-apps-consent-grant"]` / `-revoke` controls remain **OUTSIDE every entry
+    row** (assert their nearest `[data-testid="installed-apps-entry"]` ancestor is `null`). A row
+    weakened to "≥1 button", or one that lets a grant/revoke control sit inside an entry row, is a
+    FAIL. The product-side pin `InstalledAppsSettings.test.tsx:383` is re-cut in the same change by
+    ST-3/ST-4 — the old `length === 0` assertion MUST be gone (a surviving copy is a FAIL).
   - **EDGE:** `prefers-reduced-motion` has no branch to miss (nothing animates); a fade/slide introduced here is a design change. A new focus trap, dialog, popover or portal is a FAIL.
 
 - [ ] **F-7.34 (component unit — the consent section's refusal and unit-only states) [unit][NEW].**
@@ -925,7 +939,11 @@ owned nowhere):
   - **EXPECTED (S6):** with `status.loading && !status.settled` the section renders **nothing** (no skeleton, no heading).
   - **EXPECTED (S8):** a projection whose `highRisk` carries an id outside the union renders `UNKNOWN_CAPABILITY_LINE` verbatim + the raw id + chip `Not allowed` + **no control**, and is **never omitted** from the list.
   - **REDDEN CONTROL:** pre-change the component has no consent section, so these assertions do not compile.
-  - **EDGE:** a test that deletes or weakens the `row.querySelectorAll('button') === 0` assertion to "make room" for a control inside a row is a **design change**, not a test fix — FAIL the row and report it.
+  - **EDGE (RE-CUT — #3144, G-374):** the old guidance ("a control inside a row is a design change") is
+    SUPERSEDED by this slice: the entry row legitimately carries its own management controls
+    (`installed-apps-disable`/`-enable`/`-remove`). What remains a **design change** is (a) a
+    `grant`/`revoke` control moved INSIDE an entry row (it belongs to the consent section), or (b) a row
+    that adds any button beyond the state's own two management controls. FAIL either and report it.
 
 - [ ] **F-7.35 (instrument control — the rendered mirror really ran) [live]** — install and open **`qa3146-mirror-control`** (`installed_app_open{appId:"qa3146-mirror-control"}`), then read its mirror with the native UIA read (corroborated by a native capture).
   - **EXPECTED (all three clauses, in this order):**
@@ -1302,3 +1320,386 @@ each; none is satisfied by the group passing as a whole.
 
 **E-SPAN is a NAMED BLOCKER on every live row**: this feature runs no OTLP producer of its own, so a
 missing PostgreSQL port is recorded once, up front, and never retried per row.
+
+---
+
+## #3144 — the lifecycle / management surface (AC-1 … AC-5)
+
+> **Verification policy: `live`** (the parent suite's policy). Static/unit rows below are pins that
+> make a live row attributable; they never substitute for a live leg.
+
+### Boot, fixture and required data (read before any row)
+
+**One env boot installs five committed packages** (no new package fixture; the generator is NOT
+edited — the corpus satisfies the Done statement):
+
+| Role | Package | State asserted | Opened? | Serves |
+|---|---|---|---|---|
+| A1 | `qa3147-valid` | `working` | yes | AC-1, AC-2 (turn off / turn on / turn-off-while-open), AC-3 removal |
+| A2 | `qa3146-app-b` | `failing` | **no** | **AC-1 + AC-5 (the union row `F-9.1`)** |
+| A3 | `qa3146-no-capabilities` | `disabled` | once (turned off) | AC-1 third state; AC-4 "shows none"; AC-5 |
+| A4 | `qa3146-consent-a` | `working`, holds `high-risk.database-query` | no | AC-4 high-risk grant; AC-3 removal disclosure |
+| A5 | `qa3146-app-a` | `working` | no | AC-4 ordinary-declared line, no high-risk line |
+
+- **`qa3144-damaged-record` — the ONE named fixture of this slice (a RECIPE, not a package).**
+  Definition: an installed application (carrier **`qa3146-app-b`**) whose
+  `<FREDO_DATA_DIR>/installed-apps/qa3146-app-b/record.json` is **truncated to 0 bytes** after a
+  successful install, with ≥2 other installed applications present and the carrier **never opened**.
+  Produced deterministically with:
+  ```powershell
+  [System.IO.File]::WriteAllText("$env:FREDO_DATA_DIR\installed-apps\qa3146-app-b\record.json", "")
+  ```
+  It re-uses the mutation `F-4.5` already ships; it is **host-observable** (no `tauri_webview_*`
+  reach into the child is needed).
+- **Boot scoping (G-443):** the carrier `qa3146-app-b` is also a #3146 functional target (`F-7.11`,
+  `F-7.13` open it). The #3144 legs run in a boot where the mutation is applied; every receipt names
+  its boot. The two #3146 rows are driven in that spec's own round.
+- **Exceptions (transport / audit):** every row here is observed on a **`main`-window surface**
+  (the settings pane, the launcher) or via host **app-data** commands — so `tauri_webview_dom_snapshot`
+  / `find_element` / `execute_js` reach it. **No #3144 row reads the `installed-*` child.** The
+  verdict still carries **one genuine `tauri_webview_*` receipt from a reachable window** in the same
+  round (the `testing → audit` matcher requires it); a row here is `[live]` and its observable is a
+  DOM read / command result / app-data read, never a native read alone (parent suite §4b).
+
+---
+
+### AC-1 — one complete, truthful inventory
+
+- [ ] **F-9.1 (AC-1 "no installed application missing" + AC-5 "rather than silently absent") [live][NEW] — the damaged-record fixture drives BOTH ACs from the host.**
+  - **DRIVE (one run):** with A1–A5 installed and never opened, apply **`qa3144-damaged-record`** to A2
+    (`[IO.File]::WriteAllText(...record.json,"")`). Then open Settings → **Installed applications**
+    (`[data-testid="settings-nav-installed-apps"]` → `[data-testid="installed-apps-pane"]`).
+  - **EXPECTED — BOTH clauses, in the SAME capture:**
+    (a) **all OTHER entries still render** — `[data-testid="installed-apps-entry"]` present for
+    `qa3147-valid`, `qa3146-no-capabilities`, `qa3146-consent-a`, `qa3146-app-a`, each with its
+    `data-app-state`; this is **AC-1's "no installed application missing"** and it **FAILS on the
+    pre-change tree by construction** — `list_installed` propagates `?` out of
+    `read_record`/`read_manifest_file` (`store.rs:392`/`:395`), so one damaged `record.json` aborts
+    the whole listing (blank pane / `list-load-failed`).
+    (b) **A2's row renders with `data-app-state="failing"`** — **AC-5's "rather than silently absent"** —
+    with `[data-testid="installed-apps-entry-failure"]` present whose visible text **equals**
+    `installedAppFailureReason('integrity_record_corrupt')` = **"Its install record is unreadable, so
+    Fredo can't check its files."** (`apps/ui/src/shared/installed-apps/failureReasons.ts`, the
+    INVENTORY's copy authority — Adjudication 10.4) **and** `data-failure-code="integrity_record_corrupt"`
+    on that node; the `Turned off` word is absent.
+    **A2's identity is asserted to the BOUND fallback (Adjudication 10.6):** `displayName` = the registry
+    `id` (`qa3146-app-b`); the ` @ version` fragment **absent** (`version === ""`); the `· Fredo <range>`
+    fragment **absent** (`enginesFredo === ""`); `description` key absent; `capabilities` = the fail-safe
+    EMPTY projection `{declared:[],highRisk:[],consented:[]}`. Do **not** FAIL A2 for a displayName that
+    is not the manifest's.
+  - **THE ROW ASSERTS THE OBSERVABLE + THE INVENTORY SENTENCE + THE WITNESS CODE — NEVER
+    `INSTALL_REFUSAL_COPY[code]` ON THIS SURFACE (Adjudication 10.4).** `refusals.ts` is the install/open
+    copy authority and is **NO CHANGE**; the inventory's authority is `failureReasons.ts`.
+    `INSTALL_REFUSAL_COPY[id_not_installed]` ("That application isn't installed any more.") rendered for
+    a damaged-but-installed app is a **FAIL of this row** — and it is also what `R-10.10` pins as absent.
+  - **FAILABILITY:** revert the slice — the pane shows no rows (the listing aborts), so clause (a)
+    reddens. A row passing with a blank pane is the pre-change behaviour, not a PASS.
+  - **EDGE:** a `failing`-row reason that reads like *"not installed"* for a **damaged but installed**
+    app is a FAIL of this row (see the copy constraint in the `## QA Expert` section) — record the
+    exact text and the OPEN COPY QUESTION. A second damaged app (`E-21.1`), a damaged `manifest.json`
+    rather than `record.json`, and a damaged carrier that is also turned off (`E-21.3`) are edges
+    probed separately.
+
+- [ ] **F-9.2 (AC-1 / R-1.1) [live][NEW] — exactly one row per installed application, with the declared identity.**
+  - **DRIVE:** on the 5-app boot, `tauri_webview_dom_snapshot` of `main` with the pane open; read every
+    `[data-testid="installed-apps-entry"]`'s `data-app-id` and its visible text.
+  - **EXPECTED:** exactly **five** entry rows; every `data-app-id` matches an `INSTALLED_APPS` manifest
+    id **exactly once** (no duplicate, no extra). Identity text is asserted for the **healthy** rows
+    (A1/A3/A4/A5) as the package's `displayName`, `id` and `version`. **A2 (unreadable record) is
+    asserted to the BOUND fallback (Adjudication 10.6):** `displayName` = the registry `id`
+    (`qa3146-app-b`), the ` @ version` and `· Fredo <range>` fragments **absent**, `description` key
+    absent, `capabilities` = the fail-safe EMPTY projection, `state` = `failing`. Do **not** FAIL A2 for
+    a displayName that is not the manifest's. Cross-check against `installed_apps_list` (host
+    `execute_js`): the two id SETS are equal and ordered by id.
+  - **FAILABILITY:** a listing that omits an app (the pre-change abort) or emits a row for a
+    non-installed id reddens this row.
+  - **EDGE:** zero-app boot → `installed-apps-empty` (`E-21.7`); an install-refused package must
+    never appear.
+
+- [ ] **F-9.3 (AC-1 / R-1.3) [live][NEW] — exactly one state WORD as text, plus `data-app-state`, plus the inventory legend.**
+  - **DRIVE:** read each row's `[data-testid="installed-apps-entry-state"]` text and the row's
+    `data-app-state` attribute; read the inventory region for `[data-testid="installed-apps-state-legend"]`.
+  - **EXPECTED:** each row exposes `data-app-state` ∈ {`working`,`failing`,`disabled`} **and** exactly
+    one visible word ∈ {`Working`,`Failing`,`Turned off`}, and the two agree. State is conveyed by
+    **text**, never colour alone (NFR-a11y). **`installed-apps-state-legend`** renders exactly **one**
+    muted line inside the inventory region, **iff the list is non-empty**, framing the three words as
+    Fredo's *record* (Adjudication §8; owner ST-4 — the G-475 "Working read as running" mitigation).
+    A row with a second state node, a colour-only cue, a missing word, or a missing/duplicated legend is
+    a FAIL.
+  - **FAILABILITY:** pre-change `InstalledAppEntry` carries no `state` at all → `data-app-state`, the
+    word and the legend all redden (the legend does not exist pre-change).
+  - **EDGE:** an empty list renders **no** legend (the legend is not an always-on banner).
+
+- [ ] **F-9.4 (AC-1 / R-1.4) [live][NEW] — precedence `disabled > failing > working`.**
+  - **DRIVE (the order is mandatory):** while A3 is **enabled**, record a host refusal for it — mutate a
+    byte under `<FREDO_DATA_DIR>/installed-apps/qa3146-no-capabilities/files/`, attempt an open from the
+    launcher (refused) — and confirm A3's row reads `Failing`; **then** turn A3 off (`F-9.5`); then
+    re-read the pane.
+  - **EXPECTED:** A3's row reads **`Turned off`** (`data-app-state="disabled"`), NOT `Failing`.
+  - **WHY the order:** a **disabled** application's open records **NO** outcome (the disabled gate
+    returns before `resolve_open_target`), so a failure cannot be recorded while it is off — recording
+    the failure first is the only recipe that reaches the both-states case.
+  - **FAILABILITY:** a `state_for` that keys `failing` above `disabled` reddens this row.
+  - **EDGE:** a failing app turned off then on must read `failing` again (the failure is retained).
+
+---
+
+### AC-2 — turning off works, and is reversible without restarting Fredo
+
+- [ ] **F-9.5 (AC-2 / R-2.1) [live][NEW] — a turned-off application cannot be opened or run, and the launcher stops offering it.**
+  - **DRIVE:** click `[data-testid="installed-apps-disable"]` on A1 (accessible name
+    **"Turn off <displayName>"**); then from `main` call
+    `installed_app_open{appId:"qa3147-valid"}`; then `tauri_manage_window action="list"`; then open the
+    launcher and read `[data-testid="launcher-installed-apps-section"]`.
+  - **EXPECTED (three independent channels — G-500; a code alone is not a diagnosis):**
+    (1) A1's row flips to `Turned off`; (2) `installed_app_open` is **refused** with the **reused**
+    `id_not_installed` (R-8.2 — **no 23rd code**); (3) `tauri_manage_window list` shows **no**
+    `installed-qa3147-valid` window; (4) the host log carries the refusal for that call; (5) the
+    launcher section no longer lists `[data-testid="launcher-installed-app"][data-app-id="qa3147-valid"]`
+    (ST-5's `filterInstalledApps` drops `state==='disabled'`).
+  - **Do NOT assert the refusal's SENTENCE** — only the code + the observable (the plan discloses the
+    reuse; no surface offers Open for a disabled app).
+  - **FAILABILITY:** pre-change there is no disable command — the row cannot run (a `[NEW]` row whose
+    precondition does not exist pre-change is declared, not discovered); with the disable gate absent,
+    the open would create a window and clause (3) reddens.
+  - **EDGE:** a launcher that hides a **`failing`** app is a FAIL of `F-9.14`, not a PASS here.
+
+- [ ] **F-9.6 (AC-2 / R-2.2) [live][NEW] — turning off closes an open window, and the neighbours keep working.**
+  - **DRIVE:** open A1 from the launcher (record its `installed-qa3147-valid` window and the host PID);
+    open a second app; then turn A1 off from the pane.
+  - **EXPECTED:** A1's window is **gone** from `tauri_manage_window list`; the host **PID is unchanged**;
+    the second app still renders and responds; the pane keeps rendering.
+  - **FAILABILITY:** a disable path that only writes state and leaves the window open reddens this.
+  - **EDGE:** turn off while A1 is mid-load; turn off while another app is open (both must not disturb
+    the other app).
+
+- [ ] **F-9.7 (AC-2 / R-2.3) [live][NEW] — turning back on allows it to be opened again, with NO Fredo restart.**
+  - **DRIVE:** continue from `F-9.5`: record the host PID; click
+    `[data-testid="installed-apps-enable"]` ("Turn on <displayName>"); open A1 from the launcher.
+  - **EXPECTED:** the row flips back to `Working`; the launcher offers A1 again; `installed_app_open`
+    **resolves** and the `installed-qa3147-valid` window renders `[data-testid="installed-app-root"]`;
+    the host **PID is unchanged** across the whole off→on leg (no restart).
+  - **FAILABILITY:** a disable that requires a restart, or an enable that neither clears the state nor
+    re-opens, reddens this row.
+  - **EDGE:** enable an app that is also `failing` → must read `failing`, not `working`; enable twice →
+    idempotent `Ok`, no refusal code.
+
+- [ ] **F-9.8 (AC-2 / R-2.5) [live][NEW] — turning off mutates nothing (equality, non-vacuous — G-469).**
+  - **DRIVE:** BEFORE `F-9.5`'s disable, and AFTER it, hash every file under
+    `<FREDO_DATA_DIR>/installed-apps/qa3147-valid/**` (`Get-FileHash -Algorithm SHA256`) and the whole
+    `<FREDO_DATA_DIR>/installed-apps-consent.json`.
+  - **EXPECTED:** the digests are **byte-identical**; the row names the **resolved absolute** registry
+    path it hashed and prints **both** digest readings. The instrument must **hard-fail on an absent
+    input** (a missing path is an error, not a zero), refuse a blank pair, and demand two **non-empty**
+    readings naming the same subject.
+  - **CONTROL:** after the comparison, touch one file under `files/` and re-hash — the digests MUST now
+    differ (proves the instrument can fail).
+  - **FAILABILITY:** a disable that rewrites `record.json`, drops grants, or touches stored data
+    reddens this. A consent file absent on a zero-capability app is recorded as "absent before AND
+    after" — never blank-equals-blank.
+
+---
+
+### AC-3 — removal is explained before it happens, and honoured
+
+- [ ] **F-9.9 (AC-3 / R-3.1, R-3.2) [live][NEW] — the disclosure precedes the confirmation, and the data outcome matches what was shown.**
+  - **DRIVE:** read A4's declared tables from the host with
+    `application_data_read {ref:{applicationId:"qa3146-consent-a", table:"<declared>"}}` (record the
+    row count); click `[data-testid="installed-apps-remove"]` on A4; read the dialog **before**
+    confirming; then click `[data-testid="installed-apps-remove-confirm"]`.
+  - **EXPECTED (the Done statement's comparison — shown statement vs observed data):**
+    (1) `[data-testid="installed-apps-remove-dialog"]` renders (role=`dialog`, `aria-modal="true"`)
+    with `[data-testid="installed-apps-remove-disclosure"]` **and nothing is removed yet**;
+    (2) the disclosure states the stored data is **kept**; (3) the call returns
+    `InstalledAppRemovalOutcome` = `{removed:true, dataKept:true, dataTables:[…]}`; (4) the SAME
+    `application_data_read` still returns the same rows. Quote the disclosure text **and** the two
+    read results.
+  - **Do NOT re-read the sentence's wording as the pass condition** — the comparison (shown vs
+    observed) is the condition (architect §3).
+  - **FAILABILITY:** pre-change there is no remove path; with a destructive implementation,
+    `dataKept===false` and (4) reddens.
+  - **EDGE:** `[data-testid="installed-apps-remove-cancel"]` leaves the app present and every file
+    unchanged; an app declaring zero tables → `dataTables: []` and the disclosure still states keep.
+
+- [ ] **F-9.10 (AC-3 / R-3.3) [live][NEW] — after removal the application is gone from every place it could be opened.**
+  - **DRIVE:** after `F-9.9` confirms, read the pane and the launcher; from `main` call
+    `installed_app_open{appId:"qa3146-consent-a"}`; list the registry dir.
+  - **EXPECTED:** `[data-testid="installed-apps-entry"][data-app-id="qa3146-consent-a"]` **absent**;
+    `[data-testid="launcher-installed-app"][data-app-id="qa3146-consent-a"]` **absent**; the open is
+    refused `id_not_installed` and no `installed-qa3146-consent-a` window exists;
+    `<FREDO_DATA_DIR>/installed-apps/qa3146-consent-a/` no longer exists.
+  - **FAILABILITY:** a removal that only hides the row but leaves the registry dir (so an open still
+    succeeds) reddens this row.
+
+- [ ] **F-9.11 (AC-3 / R-3.4) [live][NEW] — a removal that cannot complete leaves the app present OR absent, never half.**
+  - **DRIVE (induction lever — G-275/G-300):** install A4; hold an exclusive handle on a file under
+    `<FREDO_DATA_DIR>/installed-apps/qa3146-consent-a/files/` from a background PowerShell
+    (`[IO.File]::Open($f,'Open','Read','None')`, kept open), then click Remove and confirm.
+  - **EXPECTED (the disjunction + the half-state prohibition):** afterwards, the pane shows A4 either
+    **fully present and listed** (a pre-rename failure) or **fully absent** (a post-rename failure —
+    the architect's binding recovery, with debris under
+    `<app_data_dir>/installed-apps-removing/`). Never: a row with a broken identity, a duplicate row,
+    or a surviving `installed-qa3146-consent-a` window. The surface reports a **named** refusal
+    reusing `io_error` (frozen vocabulary — **no new code**). Quote the code and the pane's row set.
+  - **FAILABILITY:** a half-removed state (dir partly deleted, row still listed, open still possible)
+    reddens this row.
+  - **EDGE:** release the lock and re-try Remove → it completes and the debris is swept; two removals
+    in sequence sweep the prior debris. **If the file lock does not induce a failure in this build,
+    record the observed outcome and mark the row `UNVERIFIED — lever did not induce`; never a silent
+    PASS.**
+
+---
+
+### AC-4 — grants are visible, including high-risk ones
+
+- [ ] **F-9.12 (AC-4 / R-4.1, R-4.2, R-4.4) [live][NEW] — every declared capability is shown in user-facing terms, and a high-risk grant is distinguishable from ordinary ones.**
+  - **DRIVE:** open the pane; read A4's consent row and A5's consent row. (For A4, ensure
+    `high-risk.database-query` is granted via the shipped `installed-apps-consent-grant` control, then
+    re-read.)
+  - **EXPECTED:** for A4 — one capability line per declared id inside
+    `[data-testid="installed-apps-consent-row"][data-app-id="qa3146-consent-a"]`, each carrying
+    `data-capability="<id>"` + `data-capability-class="high-risk"`, each with a user-facing sentence;
+    the **granted** id is marked **allowed in TEXT** (the chip word `Allowed`). For A5 —
+    its declared `data.tables` line carries `data-capability-class="ordinary"`, has **no**
+    grant/revoke control, and is **not** rendered as a grant. **`data-consent-state`** on A4's row
+    reads `allowed` (all high-risk consented) or `not-allowed` (some unconsented); on **A5's** row it
+    reads **`none`** (no high-risk — the shipped `highRisk.every(consented)` on an empty array yields
+    the misleading `allowed`, so an ordinary-only app reporting `allowed` is a FAIL; Adjudication 10.2).
+    Quote each line's `data-capability`, `data-capability-class`, `data-consent-state` and visible text.
+  - **FAILABILITY:** the pre-change pane filters to `highRisk.length > 0` and renders **only** the
+    high-risk half (`InstalledAppsSettings.tsx:263-266, 493-566`) — A5's ordinary line is absent, so
+    the ordinary half of this row reddens pre-change.
+  - **EDGE:** two high-risk ids where only one is granted; a copy that differs only by chip colour (a
+    FAIL of the NFR-a11y clause).
+
+- [ ] **F-9.13 (AC-4 / R-4.3) [live][NEW] — an application holding no high-risk grant shows none, and a zero-capability app shows the empty line.**
+  - **DRIVE:** open the pane; read A3's and A5's rows/section.
+  - **EXPECTED:** A3 (zero-capability) shows **no** `data-capability-class="high-risk"` line and renders
+    `[data-testid="installed-apps-grants-empty"]` — text **`GRANTS_EMPTY_LINE` = "This application asked
+    for no access."** — **inside its own
+    `[data-testid="installed-apps-consent-row"][data-app-id="qa3146-no-capabilities"]`** (Adjudication
+    10.1: the section renders when the list is **settled and `entries.length > 0`**, every entry gets
+    **one** consent-row, a row whose app declares nothing renders `grants-empty` — assert the line
+    **scoped to A3's row**, never as a bare pane-level node with no anchor); A3's `data-consent-state`
+    reads **`none`**. A5 shows an `ordinary` line, **no** high-risk line, and `data-consent-state="none"`.
+  - **FAILABILITY:** a section that renders a high-risk entry for either reddens this row; so does an
+    ordinary-only app reported as `data-consent-state="allowed"` (Adjudication 10.2).
+  - **EDGE:** when **no** installed app declares high-risk, the whole consent section is absent (not an
+    empty heading) — the shipped `F-7.16` rule.
+
+- [ ] **F-9.19 (NFR a11y — the action-refusal surface) [live][NEW] — a refused management action is reported and never wedges a control.**
+  - **DRIVE:** induce a management-action refusal (e.g. `installed_app_disable{appId:"qa3147-does-not-exist"}`
+    ⇒ `id_not_installed`, or a disable whose write fails), then read the pane.
+  - **EXPECTED:** `[data-testid="installed-apps-action-refusal"]` renders (`role="alert"`) carrying
+    `data-refusal-code`; the sentence comes from the shipped `INSTALL_REFUSAL_COPY` (the ONE refusal
+    slot — Adjudication 10.7); **every control is re-enabled** (no control is left disabled). A surface
+    that disables the Remove/Disable control "while it works" and never re-enables it on failure is a
+    FAIL.
+  - **FAILABILITY:** pre-change there is no management control, hence no refusal surface.
+
+- [ ] **F-9.20 (NFR a11y + theme) [live+static][NEW] — real buttons, accessible names, text-not-colour state, tokens only.**
+  - **DRIVE (live):** on `main`, read the rendered attributes of `[data-testid="installed-apps-disable"]`
+    / `-enable` / `-remove`; tab to each; read the state word and the failure line.
+  - **EXPECTED (live):** each is a real `<button>` (Chakra `Button`), **keyboard-reachable** in DOM
+    order, with the accessible name **"Turn off <displayName>"** / **"Turn on <displayName>"** /
+    **"Remove <displayName>"**; the state word and the failure text are rendered **text** (never a
+    colour-only cue, never a `title`-only cue). The dialog's own controls (`·remove-confirm`,
+    `·remove-cancel`) are real buttons with their visible names ("Remove application" / "Cancel"), the
+    dialog is labelled by `installed-apps-remove-dialog-heading` (element id), and it traps focus and
+    returns it on close.
+  - **EXPECTED (static — `Read`/`Grep`, `run-exitcode.ps1`):** the changed files
+    (`InstalledAppsSettings.tsx`, the NEW `RemoveInstalledAppDialog.tsx`, and ST-3's
+    `capabilityRefusals.ts` additions) contain **zero** hex/rgba/hsl literals; tints go through
+    `tint('var(--…)', n)`; **no alpha-append onto a `var()`** (`var(--x)22` is invalid CSS). Run
+    `pnpm --filter @fredo/ui build` ⇒ exit 0. No new token and no new colour; if a contrast ratio
+    needs computing, the design changed — report it, do not adjudicate a floor (G-235 control = the
+    untouched limitations block).
+  - **FAILABILITY:** a control that is a clickable `<div>` (no name, not focusable) reddens the live
+    clause; a hardcoded colour reddens the static clause.
+
+---
+
+### AC-5 — a bad neighbour stays a bad neighbour
+
+- [ ] **F-9.14 (AC-5 / R-5.1, R-5.2) [live][NEW] — Fredo starts normally with a failing and a turned-off app, and other apps work.**
+  - **DRIVE:** with A2 `failing` (damaged) and A3 `disabled` installed, (re)start Fredo; then open A1
+    from the launcher (or re-open the pane).
+  - **EXPECTED:** Fredo **starts normally** (main window renders; `tauri_read_logs` shows no
+    `Error:`/`Uncaught`/`Maximum update depth exceeded`); A1 opens and renders `installed-app-root`;
+    A2's row reads `Failing` and A3's reads `Turned off` in the inventory.
+  - **FAILABILITY:** a startup that aborts (or blocks) on a damaged/disabled app reddens this row.
+  - **EDGE:** a **`failing`** app must remain **openable** from the launcher (architect note 5: its
+    own window renders the failure + Retry) — the row must NOT assert the launcher hides a failing app.
+
+- [ ] **F-9.18 (AC-5 / R-5.4) [live][NEW] — a host-refused open is visible as `Failing` on the next inventory read.**
+  - **DRIVE:** with A1 installed, mutate one byte under `<FREDO_DATA_DIR>/installed-apps/qa3147-valid/files/`
+    (the `hash-tamper` recipe), attempt to open A1 from the launcher (refused `integrity_mismatch`),
+    then re-open the pane.
+  - **EXPECTED:** A1's row now reads **`Failing`** (`data-app-state="failing"`). Restore the byte and
+    open successfully → the next read clears the failure (`working`).
+  - **FAILABILITY:** a listing that never consults the recorded `lastFailureCode` leaves A1 `working`
+    and reddens this row.
+  - **EDGE:** the refused-open state survives a Fredo restart; two refusals keep the row `Failing`.
+
+---
+
+### Pins (corroboration — never a substitute for a live leg)
+
+- [ ] **F-9.15 (Rust unit) [unit][NEW] — the lifecycle module's pins.**
+  - **DRIVE:** `cargo test --lib --locked lifecycle` from `apps/tauri/src-tauri` (disclose a
+    `cargo test` substitution for `nextest`, G-282); quote each test name.
+  - **EXPECTED:** pins for (a) `state_for` precedence `disabled > failing > working`; (b) the
+    fail-closed read — a missing / corrupt / unknown-version `installed-apps-state.json` reads as
+    "nothing disabled, nothing failed" (it can only ever REMOVE a refusal, never create reach, and can
+    never hide an application); (c) the atomic tmp+rename write. Quote the assertions.
+  - **FAILABILITY:** pre-change the module does not exist → the target does not compile.
+
+- [ ] **F-9.16 (wiring) [static][NEW] — the three commands are registered, manifested and granted; the vocabulary is unchanged.**
+  - **DRIVE (`Read`/`Grep`):** `apps/tauri/src-tauri/src/lib.rs` (`generate_handler`),
+    `src/runtime/command_manifest.rs`, `permissions/app/default.toml`,
+    `src/applications/installed_apps/mod.rs`.
+  - **EXPECTED:** `installed_app_disable`, `installed_app_enable`, `installed_app_remove` each appear in
+    all three wiring points (a missing one reddens the shipped `command_manifest.rs:258-348` guards);
+    `InstalledAppRefusalCode`'s `ALL` is still **exactly 22** (quote the count); the authority
+    vocabulary is still **exactly 6**; `capabilities/installed-app-commands.json` stays exactly
+    `allow-installed-app-invoke`. Run `cargo check --locked` ⇒ exit 0.
+  - **FAILABILITY:** a 23rd refusal code reddens this row **and** `R-8.2` — the pre-change tree carries
+    22, so the count assertion is failable in both directions.
+
+- [ ] **F-9.17 (the listing never aborts) [unit][NEW] — `list_installed_resilient` emits a `Failing` row for an unreadable record/manifest.**
+  - **DRIVE:** `cargo test --lib --locked list_installed_resilient`; quote the test name(s).
+  - **EXPECTED:** a fixture whose `record.json` is truncated (and, in a second case, whose canonical
+    `manifest.json` is unreadable) yields a `Failing` entry row (never an `Err` that aborts the
+    listing); a healthy sibling in the same fixture set is still returned. This is the **unit twin** of
+    the live `F-9.1`.
+  - **FAILABILITY:** the pre-change `list_installed` returns `Err` for the damaged fixture (the `?` at
+    `store.rs:392`) — the test cannot even assert a `Failing` row there.
+
+---
+
+## Pass / fail criteria (ADD to the parent suite's list — do not replace it)
+
+19. **`F-9.1` is scored as ONE row with TWO clauses.** A PASS requires **both** "the other rows still
+    list" (AC-1) **and** "the damaged app shows `failing`" (AC-5) observed in the same capture. Half a
+    pass is a FAIL: a blank pane satisfies neither, and a pane that lists only the healthy apps fails
+    clause (b).
+20. **A reused refusal code is asserted as a CODE, never as a SENTENCE** (`F-9.5`, `F-9.11`). A row
+    that passes by asserting copy that misdescribes the condition (a "not installed" claim about an
+    installed-but-disabled or installed-but-damaged app) is malformed on its face.
+21. **The damaged-record case is NOT the in-document-failure limitation.** A verdict that records
+    "host-observable `failing` not drivable" is wrong — it is drivable and `F-9.1` drives it. The
+    named limitation covers only an in-document `mount()` failure / the 10 s watchdog.
+22. **`F-9.8` is an equality that must not be vacuous** (G-469): two switched-off or two empty readings
+    are not a pass; the row prints both digests, the resolved path, and the touching control's outcome.
+23. **The `F-9.5`/`F-9.7` pair is one leg:** the "no restart" clause is proven by the host **PID**
+    being unchanged across the off→on cycle; two independent boots do not prove it.
+24. **The honest copy module is pinned by ABSENCE, not by a passing read (`R-10.10`).** The inventory
+    context must NOT render `INSTALL_REFUSAL_COPY`'s install-time sentences for `io_error`
+    ("Fredo couldn't finish that install.") or `id_not_installed` ("That application isn't installed
+    any more."). The row fails **loudly** if a later unification reintroduces either — and because the
+    two contexts assert **different claims** (a refused *package* vs an unreadable *installed app*),
+    this is one source per claim, never a second source of truth for one claim.
+25. **`data-consent-state="allowed"` is never accepted for an app with no high-risk capability**
+    (`F-9.12`/`F-9.13`; Adjudication 10.2). The value is `none` iff `highRisk` is empty; a row that
+    passes an ordinary-only app reporting `allowed` asserts a false security claim — the sibling-lie
+    class.
