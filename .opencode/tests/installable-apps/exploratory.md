@@ -231,3 +231,90 @@ fixture — see the note below — do not hand-roll a bespoke one for a single p
 
 _Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooling limit is recorded
 `UNVERIFIED` with a named blocker — never a PASS._
+
+---
+
+## #3144 probes (the lifecycle / management surface)
+
+- [ ] **E-21.1 — a damaged `manifest.json` (the sibling of the `record.json` fixture).** Install A2
+  (`qa3146-app-b`), then truncate `<FREDO_DATA_DIR>/installed-apps/qa3146-app-b/manifest.json` to 0
+  bytes; open the pane.
+  - EXPECT: A2 renders `Failing`, the other rows still list. **Routing note:** `list_installed_resilient`
+  must cover BOTH readers (`store.rs:392` `read_record` **and** `:395` `read_manifest_file`) — an abort
+  from the manifest side is a finding on the fixture's sibling, still a **host-observable** failure.
+  - WHY: the plan's `F-9.1` names the `record.json` case; the manifest case is the same class and must
+    not be a second aborting path.
+
+- [ ] **E-21.2 — a corrupt / unknown-version lifecycle state file.** With A3 turned off, overwrite
+  `<app_data_dir>/installed-apps-state.json` (a) with `{` (unparseable) and, in a second leg, (b) with
+  `{\"version\":999,\"apps\":{}}` — back the file up and restore it after each leg.
+  - EXPECT: the fail-closed read yields **"nothing disabled, nothing failed"** — the app reads
+    `working`/`failing`, never a crash, never a wedge; it can only ever **REMOVE** a refusal and can
+    never hide an application. Record the behaviour for each leg.
+  - WHY: the state file is host-owned JSON on disk; a malformed file must degrade to "no lifecycle
+    state", never to "everything refused" and never to a panic. **Restore the file afterwards — F-9.5/
+    F-9.7 and R-10.8 depend on it.**
+
+- [ ] **E-21.3 — a disabled app that is ALSO failing.** **Order is mandatory:** while A3 is enabled,
+  damage its `record.json` under the registry and confirm its row reads `Failing`; **then** turn A3 off
+  and re-read the pane.
+  - EXPECT: the row reads **`Turned off`** (precedence `disabled > failing`), and A3 remains absent from
+    the launcher. Record both `data-app-state` and the visible word.
+  - **Second leg (the hostile ordering — expect NO new failure record):** with A3 already off, attempt an
+    open. EXPECT: refused with `id_not_installed` and **no** new failure recorded (the disabled gate
+    returns before `resolve_open_target`, so a disabled app accumulates no open outcome) — the row stays
+    `Turned off`. Record the refusal code and the unchanged state.
+  - WHY: `F-9.4` asserts the precedence; this probe also proves the disabled gate records nothing, which
+    is the architect's binding open-path insertion.
+
+- [ ] **E-21.4 — remove while the window is still open (the Windows file-lock question).** Install A4,
+  open it (its own window), then click Remove and confirm.
+  - EXPECT: the window closes **first**, then the registry directory is removed; the app is gone from
+    the pane and the launcher; no error surfaces (or, if `remove_dir_all` cannot free the bytes, the
+    app is still **absent** and debris remains under `installed-apps-removing/` — the architect's
+    recorded recovery). Record whether any `io_error` surfaced and whether debris remains.
+  - WHY: the architect lists "`WebviewWindow::close()` releases the install-directory handles" as an
+    **UNVERIFIED** runtime claim; this probe is its cheapest hostile check. A removal that **fails**
+    while the window is open is a finding worth promoting.
+
+- [ ] **E-21.5 — remove, then re-install the same id.** Remove A4 (`qa3146-consent-a`), then install the
+  same package again through Settings.
+  - EXPECT: the install succeeds (the id is free again); the app's **kept** declared tables are still
+    there (the disclosed keep-data outcome), so the re-installed app sees its old rows. Record the
+    `application_data_read` before removal and after re-install.
+  - WHY: the plan explicitly says removal KEEPS stored data and a re-install under the same id resumes
+    the kept tables (consistent with `registry.rs`'s no-drop rule). This is the disclosed consequence
+    made observable — record it; do not FAIL an AC on it.
+
+- [ ] **E-21.6 — the copy-misdescription probe (the copy question).** Enumerate every
+  user-reachable surface that can render a **reused** refusal code's sentence for a condition it
+  misdescribes: (a) a **turned-off but installed** app, (b) a **damaged but installed** app.
+  - Drive: turn A3 off; check every surface that offers or reports an open (the launcher — A3 is hidden,
+    so nothing; the pane — no Open control; a host-driven `installed_app_open` — a refusal object the
+    user never sees). Then damage A1's `record.json` and check the pane's
+    `installed-apps-entry-failure` text.
+  - EXPECT: **either** no user-reachable surface renders a misdescribing sentence (record which surfaces
+    were checked and that each is empty/absent), **or** a surface does — then quote it verbatim and
+    **promote the finding** (it is a copy defect, not a row failure). Specifically: the pane's failure
+    line for a damaged-but-installed app must NOT read like "not installed" (Adjudication 10.4 resolved
+    this with `failureReasons.ts`; `R-10.10` pins it).
+  - WHY: the human's binding constraint (b). Reusing a frozen code is correct; bending a code's copy to
+    cover a condition it was not written for is a lie of the same class as the `Full text` label and the
+    "read-only" consent copy. Route the finding to UI/UX + PO; never encode a row that passes by
+    asserting false copy.
+
+- [ ] **E-21.7 — the empty inventory (0 installed apps).** Boot a clean env with zero installed apps and
+  open the pane.
+  - EXPECT: `[data-testid="installed-apps-empty"]` renders and `[data-testid="installed-apps-list"]` is
+    absent; no panic; the launcher section renders its empty/absent state without throwing. Record which.
+  - WHY: an empty inventory must be a first-class state, not a crash or a spinner (the `F-6.3` rule);
+    it is also the pre-feature state `G-265` asks a trigger row to start from.
+
+- [ ] **E-21.8 — a disabled app in the launcher vs in the pane.** Turn A3 off, then open the launcher
+  (Ctrl+Space) and the pane in the same round.
+  - EXPECT: A3 is **absent** from `[data-testid="launcher-installed-apps-section"]` (no open affordance),
+    yet **present** in the pane as `Turned off`. Record both; if the launcher section is now empty it
+    renders nothing (the section-absence rule).
+  - WHY: the two surfaces have different contracts (ST-5 excludes only `disabled`; the pane is the
+    inventory). A launcher that still offers a disabled app is a FAIL of `F-9.5`; a pane that omits it
+    is a FAIL of AC-1.
