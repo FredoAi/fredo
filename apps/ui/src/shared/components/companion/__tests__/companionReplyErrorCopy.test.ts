@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   companionReplyErrorCopy,
+  COMPANION_REPLY_EMPTY_COPY,
   COMPANION_REPLY_GENERIC_COPY,
   COMPANION_REPLY_NOT_READY_COPY,
 } from '@/shared/components/companion/companionReadiness';
@@ -50,6 +51,36 @@ describe('#2871 companionReplyErrorCopy — readable reply-failure copy', () => 
     expect(copy).not.toContain('failed to start');
     expect(copy).not.toContain('bad-llama-server');
     expect(copy).not.toBe(raw);
+  });
+
+  // #3233 ST-8 (AC-2, Adjudications #2/#3) — an EmptyReply (starvation) detail
+  // is a DISTINCT condition and must NOT borrow the transport-failure sentence
+  // ("Try again in a moment." is a false retry promise — G-505). The wire
+  // carries no code, so the branch matches a substring; this must quote ST-5's
+  // `EMPTY_REPLY_DETAIL` byte-for-byte (G-419/G-466) — a reworded literal here
+  // would make the case vacuous.
+  it('pins the curated empty-reply sentence', () => {
+    expect(COMPANION_REPLY_EMPTY_COPY).toBe("Fredo didn't answer that one.");
+    expect(COMPANION_REPLY_EMPTY_COPY).not.toContain('Try again');
+  });
+
+  it('maps the ST-5 empty-reply detail to the curated empty copy, NOT the generic', () => {
+    // Byte-for-byte the landed `EMPTY_REPLY_DETAIL` in
+    // apps/tauri/src-tauri/src/applications/llm_server/skills.rs (ST-5 @ 2798b00).
+    const st5EmptyReplyDetail =
+      'the companion produced no visible reply for this turn; the model may have spent its whole budget reasoning.';
+    expect(st5EmptyReplyDetail).toContain('no visible reply');
+    const copy = companionReplyErrorCopy(st5EmptyReplyDetail);
+    expect(copy).toBe(COMPANION_REPLY_EMPTY_COPY);
+    expect(copy).not.toBe(COMPANION_REPLY_GENERIC_COPY);
+    expect(copy).not.toContain('Try again');
+  });
+
+  it('discriminator control: an empty-ish detail without the phrase still falls to generic', () => {
+    // G-509 non-vacuity control — the branch is anchored to ST-5's exact phrase.
+    expect(companionReplyErrorCopy('the reply was empty')).toBe(
+      COMPANION_REPLY_GENERIC_COPY,
+    );
   });
 
   it('falls back to the generic copy for an empty/unknown raw string', () => {

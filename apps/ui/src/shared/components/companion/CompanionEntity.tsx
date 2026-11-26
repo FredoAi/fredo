@@ -429,7 +429,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // updater runs at render/commit time, so the back-to-back `llm-error` →
     // `llm-done` path would read a stale/empty ref when it settles. `onToken`
     // computes `next` from this ref and assigns both refs before `setStreamingMessage`.
-    const streamingTextRef = useRef('💭 Thinking...');
+    const streamingTextRef = useRef('💭 Working...');
     // #2871 ST-1r — set true by the typed error path; `onDone` (the transport's
     // follow-up `finish()`) early-returns on it so an error can NEVER re-play the
     // success `happy` beat. Reset at the start of every generation.
@@ -1093,7 +1093,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       // #2871 a11y — reset the captured reply text and announce the send ONCE
       // (never per token) when this generation came from the bar's `ask` path.
       generationTextRef.current = '';
-      streamingTextRef.current = '💭 Thinking...';
+      streamingTextRef.current = '💭 Working...';
       generationErroredRef.current = false;
       // #2918 ST-5 — a NEW generation owns the turn-scoped model status: drop the
       // previous turn's captured/asserted value (and release a hold whose timer
@@ -1106,7 +1106,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       generationSettledRef.current = false;
       if (announceGenerationRef.current) setA11yAnnouncement('Message sent to Fredo');
       firstTokenRef.current = false;
-      setStreamingMessage('💭 Thinking...');
+      setStreamingMessage('💭 Working...');
       setIsStreaming(true);
       // #2854 R-2a — the joke's LLM wait renders `thinking` (not `talk`). The
       // context state STAYS 'talk' as the presence/busy marker the #2853 `isInUse`
@@ -1138,7 +1138,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           // (before the state set) guarantees `onDone`/`onError` — which may run on
           // the same tick, e.g. `llm-error` → `finish()` — read a populated ref.
           const prev = streamingTextRef.current;
-          const next = prev === '💭 Thinking...' || prev === '⏳ Loading model...'
+          const next = prev === '💭 Working...' || prev === '⏳ Loading model...'
             ? token
             : prev + token;
           streamingTextRef.current = next;

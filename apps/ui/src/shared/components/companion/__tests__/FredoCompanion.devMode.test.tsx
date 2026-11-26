@@ -276,7 +276,7 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
 
     // Placeholder shows while waiting for the first DevAdapter token; the 2×14 px
     // Fredo-cursor-blink cursor renders while streaming.
-    const textEl = screen.getByText('💭 Thinking...');
+    const textEl = screen.getByText('💭 Working...');
     const cursor = textEl.querySelector('span');
     expect(cursor).not.toBeNull();
     const cs = getComputedStyle(cursor as HTMLElement);
@@ -312,7 +312,7 @@ describe('FredoCompanion dev branch (Q-18/M10 jsdom evidence)', () => {
     // streaming cursor are gone.
     expect(avatar(container).getAttribute('data-state')).toBe('happy');
     expect((textEl.textContent ?? '').length).toBeGreaterThan(20);
-    expect(screen.queryByText('💭 Thinking...')).toBeNull();
+    expect(screen.queryByText('💭 Working...')).toBeNull();
     expect(textEl.querySelector('span')).toBeNull();
 
     // After the 5 s hold: idle + bubble closes.
