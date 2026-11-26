@@ -484,18 +484,21 @@
     (fix D1) — `Stop` used to end the engine loop with `break`, killing the ONE thread. Round 1's
     first-turn rows could not see it because none of them stopped and restarted in-process.
 
-- [ ] **F-26 (the hidden reasoning channel never reaches `llm-token`, LIVE).** Drive a small set of
-      **reasoning-eliciting, multi-token** prompts through the shipped chat path (`llm_chat`, the
-      same command `TauriAdapter` invokes) and record the ordered event stream with a listener
-      attached to the five shipped channels **before** each invoke. Use prompts that both make the
-      model open its hidden reasoning channel and then answer over several tokens — e.g. "Think
-      briefly, then explain in one sentence why the sky appears blue." / "Reason in one short
-      sentence, then explain what a compiler does in one sentence." / "Compute 17 times 23. Reason
-      briefly, then give the answer in a sentence." Run each with a distinct turn; then run the
-      paired plain-prompt control. *(A single-word target such as "Reply with the single word:
-      yes." does elicit the span, but cannot satisfy the ≥2-delta clause below — so use it only as
-      an extra span-eliciting trial alongside the multi-token prompts, never as the sole trial.)*
-  - **Expected (per reasoning-eliciting trial):**
+- [ ] **F-26 (the hidden reasoning channel never reaches `llm-token`, LIVE + engine-side pin; RE-CUT
+      round 2 — the reasoning-first generation now OPTS IN).** Two legs.
+
+      **Leg A — the shipped chat path's containment control.** Drive a small set of multi-token
+      prompts through the shipped chat path (`llm_chat`, the same command `TauriAdapter` invokes)
+      and record the ordered event stream with a listener attached to the five shipped channels
+      **before** each invoke (e.g. "Think briefly, then explain in one sentence why the sky appears
+      blue." / "Compute 17 times 23. Reason briefly, then give the answer in a sentence."); then
+      run the paired plain-prompt control. **Spec #3233 note:** `ChatTurn::text` now seeds
+      `ReasoningMode::Disabled`, so the shipped chat path renders the template with its thinking
+      directive **off** (ST-1 probe: no `<|think|>` opener) and **cannot open the reasoning
+      channel** — so this leg is the containment *control* (streaming intact, markers absent), and
+      a run where no shipped-path trial produced a span is the **expected** post-#3233 result, NOT
+      a FAIL. The span observation lives on **Leg B**.
+  - **Expected (per shipped-path trial, Leg A):**
     (a) the visible reply streams as **≥2** `llm-token` deltas (a single withheld blob is the
     pre-fix bug — the whole reply collapsed into ONE token event);
     (b) **no** `llm-token` payload contains `<|channel>` or `<channel|>`, and no payload contains a
@@ -514,21 +517,31 @@
     typed event stream as `EngineEvent::Reasoning` and is deliberately **never forwarded to the
     webview** (`WireEvent`/`AppSink` has no reasoning variant; `stream_skill_turn` consumes only
     `frame.events` and `frame.finish_reason`). There is **no `llm-reasoning` channel** — a grep of
-    the tree for `llm-reasoning` returns nothing. The "surfaced separately, not as a token" clause
-    is therefore satisfied and recorded **on the engine side**, by the committed integration pin
-    `a_reasoning_first_generation_streams_and_never_leaks_the_span`
-    (`apps/tauri/src-tauri/src/applications/llm_server/engine/integration.rs`), whose record is the
-    green CI `rust-validate` run on the tested head SHA. Leg (c) at the webview is an **absence**
-    assertion — the span appears on no channel and no fifth channel exists — and it is proven by an
-    instrument independent of the absent channel: `tauri_webview_execute_js` attaching listeners to
-    the five shipped names plus a probe name, then grepping the committed Rust/TS trees. Writing
-    this row as "expect an `llm-reasoning` event" would be a false FAIL against a channel nobody
-    ships; a NEW fifth channel appearing in the stream is a FAIL (R-26.1 byte-compatibility).
+    the tree for `llm-reasoning` returns nothing. Writing this row as "expect an `llm-reasoning`
+    event" would be a false FAIL against a channel nobody ships; a NEW fifth channel appearing in
+    the stream is a FAIL (R-26.1 byte-compatibility). Leg (c) at the webview is an **absence**
+    assertion, proven by an instrument independent of the absent channel:
+    `tauri_webview_execute_js` attaching listeners to the five shipped names plus a probe name,
+    then grepping the committed Rust/TS trees.
+
+      **Leg B — the engine-side span observation (a reasoning-first generation that OPTS IN).** The
+      containment is proven by the committed integration pin
+      `a_reasoning_first_generation_streams_and_never_leaks_the_span`
+      (`apps/tauri/src-tauri/src/applications/llm_server/engine/integration.rs`), whose trials now
+      **opt in** with `.with_reasoning(ReasoningMode::Enabled)` — a reasoning-enabled turn is
+      required to elicit the span, and the only other thinking-ON turn in the tree is the Doom
+      decision turn.
+    - **Record (G-435):** a **model-present** run of that pin on the tested head SHA, printing its
+      `reasoning_per_trial` with **≥1** on at least one trial. A **model-absent** run prints the
+      named skip and asserts nothing — a skip is NOT the record. A green CI `rust-validate` is
+      **not** this pin's record: CI carries no models, so the pin skips there.
+    - **Failability (round 2's negative control):** reverting ONLY the added `.with_reasoning(...)`
+      builder call reproduces the round-1 failure verbatim — `reasoning per trial: [0, 0, 0]` at the
+      mechanism clause — so the re-point did not weaken the pin; every assertion is byte-identical.
   - **Edge:** whether a *specific* prompt elicits a reasoning span is model sampling, not a product
-    invariant — so require the ≥2-delta and no-marker clauses on **every** trial, and record the
-    span observation (engine-side pin / CI run) separately; a run where no trial produced a span
-    does **not** pass leg (c) by default — re-run with another reason-eliciting prompt and say so in
-    the evidence. A pre-fix reply shows ONE 716-char `llm-token` beginning `<|channel>thought` ⇒
+    invariant — so require the ≥2-delta and no-marker clauses on **every** shipped-path trial, and
+    record the span observation separately on **Leg B** (the opting-in pin run on a model-present
+    host). A pre-fix reply shows ONE 716-char `llm-token` beginning `<|channel>thought` ⇒
     **FAIL** on (a) and (b) together. Do **not** assert the bare word `thought` is absent from a
     `llm-token` payload on the live row (it is legitimate English in a reply; the engine-side pin
     makes the stricter assertion) — assert the markers themselves. A turn that ends with no
