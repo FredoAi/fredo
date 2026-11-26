@@ -38,6 +38,15 @@ committed tree + `git diff` + the two build receipts. **No `tauri_*` call belong
   non-empty `apps/` diff is a FAIL even if "only" a lockfile (a build must not dirty the tree; if it
   does, the receipt names it). (b) An unowned file in the changed list is a FAIL even when harmless.
   (c) `AGENTS.md`/`opencode.json` are PR-3's subject.
+  > **SCOPE NOTE (added by #3145 — read before running this row for any spec other than #3153).**
+  > The "intended change set is **exactly** `.opencode/tests/**`" and "all of `docs/**` must be
+  > ABSENT" clauses are **#3153 round-2's scope fact**, not a standing invariant of the prose
+  > retirement. A later spec that legitimately changes `docs/**` — **#3145 corrects
+  > `docs/ARCHITECTURE.md`'s installed-applications limitation table and adds
+  > `docs/authoring-applications.md`** (its ST-5) — must not be failed by them. For a later spec,
+  > the standing part of PR-1 is: **the `apps/` diff is empty unless that spec's own ACs require a
+  > product change**, no `*.test.*`/`*.spec.*` file is re-tuned to accommodate prose, and every
+  > changed file is named by an owning task's `Files`. Record which reading you applied.
 - [ ] **PR-2 — the build receipts stay green.** `run-exitcode.ps1 -Command "pnpm --filter @fredo/ui build"`;
   `run-exitcode.ps1 -Command "cargo check --manifest-path apps/tauri/src-tauri/Cargo.toml --locked"`.
   **Expected:** `EXITCODE=0` for both; the UI build emits an `assets/index-*.js` and reports
@@ -75,25 +84,45 @@ committed tree + `git diff` + the two build receipts. **No `tauri_*` call belong
   before asserting it** — `Read` the file's last line and state the observed length; if it differs
   from 391, the ledger changed outside this round and that is a finding to report, not a row to
   re-pin.
-- [ ] **PR-5 — the #3145 authoring path is absent, and the product copy is a recorded no-op.** Use the
-  **Grep tool** for `3145` over the repo (the tester's bash is deny-by-default,
-  `opencode.json:380-381`); `Test-Path` any `docs/**/*install*`; `Read`
-  `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx:70-71` and
-  `.opencode/tests/installable-apps/functional.md:329`; `git diff --name-only main...HEAD --
-  apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx
-  .opencode/tests/installable-apps/functional.md`.
-  **Expected:** (a) No `docs/`-level authoring document exists — the only `3145` matches are
-  `Cargo.lock` checksum false positives (architect-verified); no `docs/**/*install*` path resolves.
-  (b) The copy string at `:70-71` (`LIMITATIONS_SENTENCE`) and the quote at
-  `installable-apps/functional.md:329` are **byte-unchanged**; both paths are **absent** from the
-  diff. (c) The no-op is **recorded** — the posted `## Tests Runs` comment (the NON-DRAFT record)
-  states it with evidence and names the human as owner.
-  **Edge:** (a) **This row asserts the recorded no-op — it does NOT require the product-source
-  edit.** Requiring the edit would break the docs-only constraint *and* the installable-apps suite in
-  the same landing. (b) A pipeline edit to either file is a **FAIL** for this slice (PR-1). (c) The
-  three doc touch-points that *are* in scope — `docs/FAQ.md:38`, `docs/ARCHITECTURE.md:1057`,
-  `docs/ARCHITECTURE.md:1074` — are corrected by ST-5/ST-3 and verified in `functional.md`
-  P-9(c)/P-6(e); do not fail PR-5 because the *product* string still exists.
+- [ ] **PR-5 — the #3145 authoring document EXISTS and is discoverable; the two quoted strings stay
+  byte-unchanged. (INVERTED IN PLACE by #3145 — same row id, same subject slot; the expected value
+  flips because the spec this row was waiting on has shipped.)**
+  > **Why it flipped, stated once.** When this row was authored, #3145 had not landed, so "no
+  > `docs/`-level authoring document exists" was the *true* recorded state. **#3145 ships
+  > `docs/authoring-applications.md` as its ST-5 deliverable** (`installable-apps/functional.md`
+  > F-8.13/F-8.19), so absence is now the wrong expectation and this row would redden on a correct
+  > tree. Two further re-cuts, both cures for pre-existing defects:
+  > **(1) the stale line citations** — `InstalledAppsSettings.tsx:70-71` is now a `client.ts` import
+  > (the constant moved to `:100`) and `installable-apps/functional.md:329` is a blank line, so the
+  > row cited positions rather than text and was undrivable **before** #3145; it now cites by
+  > **token**. **(2) "both paths absent from the diff"** — #3145 must extend
+  > `installable-apps/functional.md` (its AC-8 group), so a path-absence clause would fail a correct
+  > build; the property is the **string equality**, which is what the clause was always about
+  > (G-374: a "this surface is unchanged" clause is cut to confined-and-justified, never an empty
+  > diff).
+  Use the **Grep tool** for `3145` over the repo (the tester's bash is deny-by-default,
+  `opencode.json:380-381`); `Test-Path docs/authoring-applications.md`; grep
+  `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx` for
+  `LIMITATIONS_SENTENCE`; grep `.opencode/tests/installable-apps/functional.md` for
+  `**F-4.4 (R-4.4) [live+static]**`.
+  **Expected:** (a) `docs/authoring-applications.md` **exists** and is the only docs-level authoring
+  document; no `docs/**/*install*` path resolves. (b) `LIMITATIONS_SENTENCE` still resolves in
+  `InstalledAppsSettings.tsx` and its sentence is **byte-identical** to
+  *"They open in their own window and can't be placed as in-window panels. They don't take part in
+  Fredo's keyboard navigation, so they have no shortcuts of their own."*; the F-4.4 row still carries
+  its *"reads each requested file ONCE … that SAME buffer"* clause byte-identical. Quote both.
+  (c) The no-op is **recorded** — the posted `## Tests Runs` comment (the NON-DRAFT record) states
+  it with evidence and names the human as owner.
+  **Edge:** (a) Do **not** fail this row because `installable-apps/functional.md` appears in the
+  diff — #3145's AC-8 group legitimately extends it; the row binds the two **strings**, and a change
+  to either string is the FAIL. (b) A pipeline edit to `InstalledAppsSettings.tsx` by #3145 is still
+  a FAIL (the split moved development mode to #3241; #3145 is kit + docs + exam, so that file must
+  stay out of its diff — quote `git diff --name-only main...HEAD --` for it as **empty**). (c) The
+  three doc touch-points that *were* in scope for the earlier slice — `docs/FAQ.md:38`,
+  `docs/ARCHITECTURE.md`'s installed-applications limitation table and the capability-count rows —
+  are now corrected by #3145's ST-5 and verified in `installable-apps/functional.md`
+  F-8.16/F-8.19; do not fail PR-5 because the *product* string still exists. (d) A re-cut that
+  weakens (b) to "nothing to check" is a **FAIL of this row**, not a simplification.
 - [ ] **PR-6 — the already-correct and deliberately-unswept prose is byte-unchanged.** `git diff
   main...HEAD --` on each named region, then `Read` each.
   **Expected:** byte-unchanged: (a) `docs/ARCHITECTURE.md:578` (the surviving companion module-map
