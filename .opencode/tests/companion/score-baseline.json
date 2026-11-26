@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "fixtures": [
+    { "id": "text-chat", "passed": true, "seed": 101 },
+    { "id": "skill-open-app", "passed": true, "seed": 202 },
+    { "id": "schema-doom-plan", "passed": true, "seed": 303 },
+    { "id": "vision-screen-text", "passed": true, "seed": 404 },
+    { "id": "audio-clip", "passed": true, "seed": 505 }
+  ]
+}
