@@ -1,10 +1,10 @@
 # Companion Vision — Smoke
 
-> Standardized smoke checks for the companion vision path (issue **#3234**). Adapt the counts/labels
-> to the app. Evidence: `tauri_webview_dom_snapshot` / `tauri_webview_screenshot` /
-> `tauri_read_logs(source="console")` / a live `get_llama_server_status`. **Verification policy:
-> live** — the live-policy `telemetry_spans` receipt for this feature is the harness's own
-> `companion.score` span set (smoke `S-6`).
+> Standardized smoke checks for the companion vision path (issue **#3234**, re-scoped
+> 2026-11-26). Adapt the counts/labels to the app. Evidence: `tauri_webview_dom_snapshot` /
+> `tauri_webview_screenshot` / `tauri_read_logs(source="console")` / a live `get_llama_server_status`.
+> **Verification policy: live** — the live-policy `telemetry_spans` receipt for this feature is the
+> harness's own `companion.score` span set (smoke `S-6`).
 
 - [ ] **S-1:** App window renders — `tauri_webview_dom_snapshot(type="structure")` returns a
       non-empty `<body>`.
@@ -19,6 +19,8 @@
 - [ ] **S-6:** Vision quick path — one screen-region capture (`capture_screen_region`) fed through
       `llm_chat_with_image` streams ≥1 `llm-token` and settles with exactly one `llm-done`; no
       `llm-error`. Then `fredo companion score --report .opencode/tmp/3234/score.json` runs to a JSON
-      report and persists `companion.score` spans to `telemetry_spans`.
+      report whose **two** committed screen-region fixtures (`vision-screen-text` + `vision-dense-text`)
+      both pass at the pinned budget, records the dense case's prompt-token count (**772**), and
+      persists `companion.score` spans to `telemetry_spans`.
 - [ ] **S-7:** Audio quick path unchanged — a model-audio turn carries exactly one `input_audio` part
       and settles once (no transcript text; cross-ref `companion-embedded-engine` F-9).
