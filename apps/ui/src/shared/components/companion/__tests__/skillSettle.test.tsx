@@ -162,14 +162,14 @@ describe('#2893 ST-7 — companion skill-call settle routing', () => {
     startSkillGeneration(view.ref);
 
     // Raw tool-call JSON is NEVER rendered — the thinking placeholder stays.
-    expect(surfaceText()).toContain('Thinking');
+    expect(surfaceText()).toContain('💭 Working...');
     expect(surfaceText()).not.toContain('open_app');
     expect(surfaceText()).not.toContain('"app"');
 
     // The backend follows with llm-done: the settle is DEFERRED (skill-pending).
     act(() => { (skills as unknown as SkillDriver).onDone(); });
     act(() => { vi.advanceTimersByTime(14_000); });
-    expect(surfaceText()).toContain('Thinking');
+    expect(surfaceText()).toContain('💭 Working...');
     expect(surfaceText()).not.toContain('Opening Mission Monitor');
     expect(avatarState(view.container)).not.toBe('happy');
 
@@ -200,11 +200,11 @@ describe('#2893 ST-7 — companion skill-call settle routing', () => {
 
     // Nothing arrives: still thinking just before the bound…
     act(() => { vi.advanceTimersByTime(14_999); });
-    expect(surfaceText()).toContain('Thinking');
+    expect(surfaceText()).toContain('💭 Working...');
 
     // …and the shipped 15 s watchdog returns the Companion to rest.
     act(() => { vi.advanceTimersByTime(1); });
-    expect(surfaceText()).not.toContain('Thinking');
+    expect(surfaceText()).not.toContain('💭 Working...');
     expect(avatarState(view.container)).not.toBe('happy');
     const avatar = view.container.querySelector('.fredo-companion-avatar');
     expect(avatar?.hasAttribute('data-streaming')).toBe(false);
@@ -336,7 +336,7 @@ describe('#2893 ST-9 — always settle / never stuck (R-1.4)', () => {
     skills = null;
     act(() => { view.ref.current?.ask('hello again'); });
     expect(skills).not.toBeNull();
-    expect(surfaceText()).toContain('Thinking');
+    expect(surfaceText()).toContain('💭 Working...');
   });
 
   it('releases isInFlight/busy after a non-success reply and accepts a later ask', async () => {
@@ -396,11 +396,11 @@ describe('#2893 ST-9 — always settle / never stuck (R-1.4)', () => {
       pushAppOpenReply({ kind: 'success', text: 'Opening Mission Monitor' }),
     ).not.toThrow();
     off();
-    expect(surfaceText()).toContain('Thinking');
+    expect(surfaceText()).toContain('💭 Working...');
 
     // The shipped watchdog is still the backstop: the Companion returns to rest.
     act(() => { vi.advanceTimersByTime(15_000); });
-    expect(surfaceText()).not.toContain('Thinking');
+    expect(surfaceText()).not.toContain('💭 Working...');
     expect(api.state.isInUse).toBe(false);
     expect(streamingMark(view.container)).toBe(false);
   });

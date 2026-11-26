@@ -26,6 +26,14 @@
 //!
 //! The retired renderer is still live (the old transport is deleted by ST-3), so
 //! a parity pin compares this rule against it directly.
+//!
+//! ## The per-turn reasoning policy (Spec #3233)
+//!
+//! [`ChatTurn::reasoning`] is the turn's thinking policy. There is no global
+//! reasoning switch: [`ChatTurn::text`] seeds every chat turn to
+//! [`ReasoningMode::Disabled`] so the completion budget is spent on the visible
+//! reply, and a turn that wants the model's thinking channel opts in explicitly
+//! with [`ChatTurn::with_reasoning`] (the Doom decision turn does).
 
 use serde_json::{json, Value};
 
@@ -101,6 +109,20 @@ pub struct RenderedMessage {
     pub content: RenderedContent,
 }
 
+/// The per-turn reasoning (thinking) policy for one companion turn (Spec #3233).
+///
+/// The engine has no global reasoning switch — the mode belongs to the TURN.
+/// [`ChatTurn::text`] seeds it to [`ReasoningMode::Disabled`] so an ordinary chat
+/// reply never spends its completion budget inside the model's hidden reasoning
+/// channel; a turn opts in explicitly with [`ChatTurn::with_reasoning`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningMode {
+    /// The template's thinking opener is enabled for this turn.
+    Enabled,
+    /// The template's thinking opener is disabled for this turn.
+    Disabled,
+}
+
 /// Everything one engine turn needs (the C-1 `ChatTurn` contract).
 ///
 /// `tools` is the ADDITIVE carrier for `offer_tools`: the skill registry is owned
@@ -126,6 +148,10 @@ pub struct ChatTurn {
     pub json_schema: Option<(String, Value)>,
     /// The completion token budget (mirrors the retired `max_tokens`).
     pub max_tokens: u32,
+    /// The per-turn reasoning (thinking) policy (Spec #3233). Seeded to
+    /// [`ReasoningMode::Disabled`] by [`ChatTurn::text`]; a turn opts in with
+    /// [`ChatTurn::with_reasoning`].
+    pub reasoning: ReasoningMode,
 }
 
 impl ChatTurn {
@@ -140,6 +166,7 @@ impl ChatTurn {
             tool_choice: None,
             json_schema: None,
             max_tokens: MAX_TOKENS,
+            reasoning: ReasoningMode::Disabled,
         }
     }
 
@@ -172,6 +199,15 @@ impl ChatTurn {
     /// Override the completion token budget.
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Set the per-turn reasoning (thinking) policy (Spec #3233).
+    ///
+    /// A turn opts IN to the model's thinking channel; [`ChatTurn::text`] leaves
+    /// every turn [`ReasoningMode::Disabled`].
+    pub fn with_reasoning(mut self, mode: ReasoningMode) -> Self {
+        self.reasoning = mode;
         self
     }
 
@@ -548,6 +584,32 @@ mod tests {
         assert_eq!(
             ChatTurn::text(Vec::new()).with_max_tokens(16).max_tokens,
             16
+        );
+    }
+
+    /// Spec #3233 — the per-turn reasoning default: `ChatTurn::text` seeds every
+    /// chat turn to thinking OFF, and `with_reasoning` opts a turn in. This is the
+    /// re-pointed home of the retired launch-config reasoning-default pin, now
+    /// that the mode is a per-turn property of the turn.
+    #[test]
+    fn the_reasoning_default_is_disabled_for_a_chat_turn() {
+        assert_eq!(
+            ChatTurn::text(Vec::new()).reasoning,
+            ReasoningMode::Disabled
+        );
+        assert_eq!(
+            ChatTurn::text(Vec::new())
+                .with_reasoning(ReasoningMode::Enabled)
+                .reasoning,
+            ReasoningMode::Enabled
+        );
+        // The builder is not a one-way latch: a turn can opt back out.
+        assert_eq!(
+            ChatTurn::text(Vec::new())
+                .with_reasoning(ReasoningMode::Enabled)
+                .with_reasoning(ReasoningMode::Disabled)
+                .reasoning,
+            ReasoningMode::Disabled
         );
     }
 }

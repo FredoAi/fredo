@@ -733,6 +733,15 @@ export const COMPANION_REPLY_GENERIC_COPY =
   "Fredo couldn't reply just now. Try again in a moment.";
 
 /**
+ * The turn produced no visible answer (#3233 AC-2, Adjudication #2). This is a
+ * DISTINCT condition from a transport/generation failure: the model spent its
+ * whole budget reasoning and never wrote a reply. It deliberately makes NO
+ * retry promise (G-505) — re-sending is not guaranteed to help — so it must NOT
+ * borrow `COMPANION_REPLY_GENERIC_COPY`'s "Try again in a moment.".
+ */
+export const COMPANION_REPLY_EMPTY_COPY = "Fredo didn't answer that one.";
+
+/**
  * Not-ready / still-loading signatures (the `⏳ Loading model...` retry path and
  * the managed server's startup states). First match wins; no match → generic.
  */
@@ -740,11 +749,25 @@ const COMPANION_NOT_READY_RE =
   /still loading|not ready|isn'?t ready|loading the model|model .*(not|isn'?t).*(ready|loaded)/i;
 
 /**
+ * Empty-reply (starvation) signature (#3233 AC-2, Adjudication #3). The wire
+ * carries no error code (`WireEvent::Error(String)`), so this branch can only
+ * match a substring of the raw detail — mirroring `COMPANION_NOT_READY_RE`.
+ * Anchored to the stable discriminator phrase ST-5 guarantees inside
+ * `EMPTY_REPLY_DETAIL` (`apps/tauri/src-tauri/src/applications/llm_server/skills.rs`),
+ * itself pinned by an engine-side unit test, so a later reword cannot silently
+ * disable this branch.
+ */
+const EMPTY_REPLY_RE = /no visible reply/i;
+
+/**
  * Map a raw `llm-error` / invoke-rejection string to the readable companion
  * reply sentence. The raw backend/IPC string is never returned.
+ *
+ * Order: not-ready first (the empty phrase cannot match its regex, so the order
+ * is safe), then the empty-reply branch, then the generic fallback.
  */
 export function companionReplyErrorCopy(raw: string): string {
-  return COMPANION_NOT_READY_RE.test(raw)
-    ? COMPANION_REPLY_NOT_READY_COPY
-    : COMPANION_REPLY_GENERIC_COPY;
+  if (COMPANION_NOT_READY_RE.test(raw)) return COMPANION_REPLY_NOT_READY_COPY;
+  if (EMPTY_REPLY_RE.test(raw)) return COMPANION_REPLY_EMPTY_COPY;
+  return COMPANION_REPLY_GENERIC_COPY;
 }

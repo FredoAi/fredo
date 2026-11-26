@@ -504,9 +504,9 @@ async fn stop_then_start_is_reusable_on_the_same_process() {
 // ── REQUIRED ARTIFACT — D2: a reasoning-first generation streams and does not
 
 
-/// THE D2 end-to-end pin: a live, TOOL-OFFERING generation (the shipped shape
-/// every chat turn takes — `commands/chat.rs` always calls `skill_turn`) whose
-/// template opens its hidden reasoning channel must:
+/// THE D2 end-to-end pin: a live, TOOL-OFFERING generation (the shape
+/// `commands/chat.rs` always calls via `skill_turn`) whose template opens its
+/// hidden reasoning channel must:
 ///
 /// * never leak the template's reasoning markers or the chain-of-thought into a
 ///   `Token` (the pre-fix behaviour was ONE 716-char `llm-token` beginning
@@ -517,6 +517,17 @@ async fn stop_then_start_is_reusable_on_the_same_process() {
 ///   never forwarded to the webview — and that route must be OBSERVED at least
 ///   once, so the pin is about the reasoning channel rather than a vacuous
 ///   short answer.
+///
+/// The trials OPT IN with `.with_reasoning(ReasoningMode::Enabled)` because the
+/// containment is about a **reasoning-first** generation: since Spec #3233
+/// [`ChatTurn::text`] seeds every chat turn to thinking OFF, so a default turn
+/// no longer opens the channel this pin exists to exercise (pre-#3233 the
+/// crate's own chat-params default elicited it implicitly, which is how the pin
+/// worked without an explicit opt-in). The only other reasoning-enabled turn in
+/// the tree is the Doom decision turn. This is a RE-POINT, not a weakening:
+/// every assertion below is byte-identical, so a regression that stops routing
+/// the span to [`EngineEvent::Reasoning`] (or re-opens the D2 leak) still
+/// reddens the pin.
 ///
 /// Whether a specific prompt elicits a reasoning block is model sampling, not a
 /// product invariant, so the pin drives SEVERAL reasoning-eliciting prompts and
@@ -588,6 +599,9 @@ async fn a_reasoning_first_generation_streams_and_never_leaks_the_span() {
                 },
             ])
             .with_tools(tools.clone(), "auto")
+            .with_reasoning(
+                crate::applications::llm_server::engine::request::ReasoningMode::Enabled,
+            )
             .with_max_tokens(400)
         };
 

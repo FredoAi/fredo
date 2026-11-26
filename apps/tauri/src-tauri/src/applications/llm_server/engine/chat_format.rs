@@ -45,7 +45,7 @@
 use llama_cpp_4::chat::{ChatApplyParams, ChatTemplates, GrammarTrigger, ToolChoice};
 use llama_cpp_4::model::LlamaModel;
 
-use super::request::{ChatTurn, AUDIO_FORMAT, IMAGE_DATA_URL_PREFIX};
+use super::request::{ChatTurn, ReasoningMode, AUDIO_FORMAT, IMAGE_DATA_URL_PREFIX};
 use super::sampling::SamplingSettings;
 use super::CompanionEngineErrorCode;
 
@@ -288,6 +288,10 @@ impl ChatFormat {
             thinking_start_tag,
             thinking_end_tags,
             max_tokens: turn.max_tokens.min(settings.max_tokens),
+            // The per-turn EFFECTIVE mode, read straight from the turn so the
+            // shaped record reports what was actually rendered (Spec #3233,
+            // R-4) — never a global default.
+            reasoning_mode: turn.reasoning,
         })
     }
 
@@ -365,6 +369,16 @@ impl ChatFormat {
     ) -> Result<ChatApplyParams, (CompanionEngineErrorCode, String)> {
         let mut params =
             ChatApplyParams::new(turn.template_messages_json_with_media(media_marker));
+
+        // The ONE prompt-shaping rule for the per-turn thinking policy (Spec
+        // #3233, R-1). The flag is derived from THIS turn — never a global — and
+        // handed to the template's own lever, which renders the reasoning opener
+        // (the pinned Gemma4 template emits `<|think|>` into the system block)
+        // only when enabled. Because `parse` and `stream_markers` both route
+        // through `params_for`, the render, the reverse parse and the marker scan
+        // can never be handed different options, and NO second rule hand-edits a
+        // rendered prompt.
+        params = params.with_enable_thinking(matches!(turn.reasoning, ReasoningMode::Enabled));
 
         // The skill offer: the registry rendered as OpenAI-style functions plus
         // the shipped tool choice. `parallel_tool_calls:false` has no template
@@ -491,6 +505,13 @@ pub struct AppliedChatFormat {
     pub thinking_end_tags: Vec<String>,
     /// The effective completion budget for this turn.
     pub max_tokens: u32,
+    /// The per-turn EFFECTIVE reasoning (thinking) policy (Spec #3233, R-4).
+    ///
+    /// Copied from the turn's own `reasoning` field at shaping time, so the
+    /// shaped record reports the mode the turn ACTUALLY ran with. This is the
+    /// per-turn observable that proves the policy belongs to the turn and not to
+    /// a global engine switch.
+    pub reasoning_mode: ReasoningMode,
 }
 
 impl AppliedChatFormat {
@@ -634,7 +655,7 @@ mod tests {
     /// A real model load needs the pinned GGUF trio, which is not a repo fixture
     /// (G-172). Absent files SKIP BY NAME with the lever printed — never a silent
     /// pass and never a red suite on a host that has no models.
-    fn load_model_or_skip() -> Option<(llama_cpp_4::llama_backend::LlamaBackend, LlamaModel)> {
+    pub(super) fn load_model_or_skip() -> Option<(llama_cpp_4::llama_backend::LlamaBackend, LlamaModel)> {
         let manifest = default_manifest();
         let engine_paths = match paths::resolve_for_app(&models_dir(), &manifest) {
             Ok(paths) => paths,
@@ -1146,5 +1167,276 @@ mod tests {
                 markers.reserved
             );
         }
+    }
+
+    /// ST-3 (Spec #3233, R-4) — the per-turn policy reaches the ONE shaping rule.
+    ///
+    /// THE DECISIVE PIN: two [`ChatFormat::apply`] calls whose turns differ ONLY in
+    /// [`ChatTurn::reasoning`] yield DIFFERENT [`AppliedChatFormat::reasoning_mode`]
+    /// — the effective mode is read from the TURN, never a global default.
+    ///
+    /// Non-vacuity: the two renders must ALSO produce different prompts. The turns
+    /// carry the same messages and the same sampling settings, so the ONLY input
+    /// that differs is `turn.reasoning`; a differing prompt therefore proves
+    /// `params_for` actually consumed it via `with_enable_thinking` (the flag
+    /// reached the template), rather than the field merely echoing the turn.
+    #[test]
+    fn the_per_turn_reasoning_mode_reaches_the_one_shaping_rule() {
+        let Some((_backend, model)) = load_model_or_skip() else {
+            return;
+        };
+        let format = ChatFormat::from_model(&model).expect("templates");
+        let messages = vec![message("user", "hi")];
+
+        let disabled = format
+            .apply(
+                &ChatTurn::text(messages.clone()).with_reasoning(ReasoningMode::Disabled),
+                &SamplingSettings::default(),
+            )
+            .expect("the thinking-off turn renders");
+        let enabled = format
+            .apply(
+                &ChatTurn::text(messages).with_reasoning(ReasoningMode::Enabled),
+                &SamplingSettings::default(),
+            )
+            .expect("the thinking-on turn renders");
+
+        // The effective mode is per-turn — the R-4 observable.
+        assert_eq!(
+            disabled.reasoning_mode,
+            ReasoningMode::Disabled,
+            "a thinking-off turn must record its own effective mode"
+        );
+        assert_eq!(
+            enabled.reasoning_mode,
+            ReasoningMode::Enabled,
+            "a thinking-on turn must record its own effective mode"
+        );
+        assert_ne!(
+            disabled.reasoning_mode, enabled.reasoning_mode,
+            "two turns with different reasoning policies must record different effective modes"
+        );
+
+        // Non-vacuity: the ONE shaping rule consumed the turn's mode, so the two
+        // renders differ (identical messages + settings ⇒ the only differing input
+        // is `turn.reasoning`). A field that merely echoed the turn would leave the
+        // prompts byte-identical.
+        assert_ne!(
+            disabled.prompt, enabled.prompt,
+            "params_for must apply with_enable_thinking from the turn: the two renders must \
+             differ. off={:?} on={:?}",
+            disabled.prompt, enabled.prompt
+        );
+    }
+}
+
+/// ST-1 (Spec #3233) — the render probe: what the PINNED template ACTUALLY
+/// renders when the thinking flag is off vs on.
+///
+/// The issue forbids guessing the injection shape ST-3 will use, and names the
+/// concrete risk: a template that ALREADY emits a reasoning opener, onto which a
+/// hand-injected `<|think|>` would be DOUBLED. This probe renders a TEXT turn and
+/// a DOOM turn through the pinned GGUF's OWN template with
+/// `ChatApplyParams::enable_thinking` **false** and **true** — the params are
+/// built HERE, so the probe reads the template DIRECTLY and never depends on the
+/// production `params_for` shaping ST-3 owns — and RECORDS in its printed output:
+///
+/// * `supports_enable_thinking()` (whether the template understands the flag);
+/// * the crate's DECLARED opener (`applied.thinking_start_tag`) in each case;
+/// * whether that declared opener is present in the rendered prompt (each flag);
+/// * whether the template's OWN thinking directive (`<|think|>`) is present in
+///   the rendered prompt (each flag) — the ACTUAL off/on toggle;
+/// * both full rendered prompts, so the finding is quotable.
+///
+/// ## What the probe ESTABLISHED (the finding the round needs)
+///
+/// On the pinned Gemma4 GGUF (`supports_enable_thinking() == true`):
+///
+/// * `enable_thinking=false` renders a CLEAN prompt — the template's own
+///   thinking directive `<|think|>` is ABSENT;
+/// * `enable_thinking=true` renders `<|think|>` into the **system block**
+///   (`<|turn>system\n<|think|>\n…`).
+///
+/// So the template's off/on toggle is `<|think|>`, and it is gated by the flag —
+/// the `with_enable_thinking` injection ST-3 will add is the correct lever and
+/// needs NO fallback. The crate's `thinking_start_tag` (`<|channel>thought`) is a
+/// DIFFERENT thing: the ASSISTANT-side runtime channel marker the streaming gate
+/// classifies, which the pinned template never renders into the PROMPT (asserted
+/// below). A flag-OFF render therefore carries no reasoning opener at all — the
+/// duplicate-opener risk does not materialise through this path.
+///
+/// Precondition (G-435): the pinned GGUF trio must be present. The shared
+/// `load_model_or_skip` early return makes a run without the model a VACUOUS pass
+/// — so a skip is reported as a NAMED BLOCKER in this probe's own output, never a
+/// silent PASS.
+#[cfg(test)]
+mod reasoning_probe {
+    use super::tests::load_model_or_skip;
+    use super::*;
+    use crate::applications::llm_server::chat::LlmMessage;
+
+    /// The pinned Gemma4 template's OWN system-block thinking directive.
+    ///
+    /// The template emits this token into the SYSTEM turn when
+    /// `ChatApplyParams::enable_thinking` is true, and omits it when false — the
+    /// ACTUAL toggle this probe records (observed, not assumed). It is
+    /// deliberately distinct from the crate's `thinking_start_tag`
+    /// (`<|channel>thought`), which is the ASSISTANT-side runtime channel marker
+    /// the streaming gate classifies: the pinned template never renders that
+    /// marker into the PROMPT (asserted below).
+    const THINK_DIRECTIVE: &str = "<|think|>";
+
+    fn message(role: &str, content: &str) -> LlmMessage {
+        LlmMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    /// One turn's rendering state, with the flag off and on.
+    struct OpenerProbe {
+        supports: bool,
+        /// The crate's declared `thinking_start_tag` (same in both renders).
+        declared_opener: String,
+        /// Whether the declared opener appears in the flag-false prompt.
+        declared_in_off: bool,
+        /// Whether the declared opener appears in the flag-true prompt.
+        declared_in_on: bool,
+        /// Whether the template's thinking directive appears with the flag false.
+        directive_off: bool,
+        /// Whether the template's thinking directive appears with the flag true.
+        directive_on: bool,
+        off_prompt: String,
+        on_prompt: String,
+    }
+
+    /// Render one turn through the template twice — flag **false**, then **true**.
+    ///
+    /// The `ChatApplyParams` are built HERE, from the turn's own template-message
+    /// projection: the probe reads the template directly and never depends on the
+    /// production `params_for` that ST-3 will change.
+    fn probe_openers(format: &ChatFormat, turn: &ChatTurn) -> OpenerProbe {
+        let messages_json = turn.template_messages_json();
+        let off = format
+            .templates
+            .apply(&ChatApplyParams::new(messages_json.clone()).with_enable_thinking(false))
+            .expect("the pinned template renders with enable_thinking=false");
+        let on = format
+            .templates
+            .apply(&ChatApplyParams::new(messages_json).with_enable_thinking(true))
+            .expect("the pinned template renders with enable_thinking=true");
+        let declared_opener = on.thinking_start_tag.clone();
+        let declared_in_off = !declared_opener.is_empty() && off.prompt.contains(&declared_opener);
+        let declared_in_on = !declared_opener.is_empty() && on.prompt.contains(&declared_opener);
+        OpenerProbe {
+            supports: format.templates.supports_enable_thinking(),
+            directive_off: off.prompt.contains(THINK_DIRECTIVE),
+            directive_on: on.prompt.contains(THINK_DIRECTIVE),
+            declared_opener,
+            declared_in_off,
+            declared_in_on,
+            off_prompt: off.prompt,
+            on_prompt: on.prompt,
+        }
+    }
+
+    /// Print the rendering record for one turn, then assert the facts ST-3 relies
+    /// on: the flag GATES the template's thinking directive, and a flag-off render
+    /// carries NO reasoning opener into the prompt.
+    fn assert_and_record(label: &str, probe: &OpenerProbe) {
+        eprintln!(
+            "ST-1 RENDER PROBE [{label}]: supports_enable_thinking={} \
+             declared_thinking_start_tag={:?} declared_opener_in_prompt_false={} \
+             declared_opener_in_prompt_true={} think_directive_in_prompt_false={} \
+             think_directive_in_prompt_true={}",
+            probe.supports,
+            probe.declared_opener,
+            probe.declared_in_off,
+            probe.declared_in_on,
+            probe.directive_off,
+            probe.directive_on
+        );
+        eprintln!(
+            "ST-1 RENDER PROBE [{label}] flag=false prompt >>>\n{}<<<",
+            probe.off_prompt
+        );
+        eprintln!(
+            "ST-1 RENDER PROBE [{label}] flag=true  prompt >>>\n{}<<<",
+            probe.on_prompt
+        );
+
+        assert!(
+            !probe.declared_opener.is_empty(),
+            "{label}: the pinned template must declare a reasoning span, else this probe is vacuous"
+        );
+        assert!(
+            probe.supports,
+            "{label}: the pinned template must support enable_thinking — ST-3's injection lever. \
+             A template that ignores the flag needs a fallback (surface at convergence)."
+        );
+        // The template's OWN lever: the flag must REACH the render (ST-3's premise).
+        assert!(
+            probe.directive_on,
+            "{label}: enable_thinking=true must render the template's thinking directive \
+             {THINK_DIRECTIVE:?} into the system block — this is the off/on toggle ST-3 relies on. \
+             prompt:\n{}",
+            probe.on_prompt
+        );
+        assert!(
+            !probe.directive_off,
+            "{label}: enable_thinking=false must NOT render the thinking directive \
+             {THINK_DIRECTIVE:?} — a clean, thinking-off prompt is what chat turns need, and a \
+             flag-off directive is exactly the duplicate-opener risk. prompt:\n{}",
+            probe.off_prompt
+        );
+        // THE FINDING: the crate's declared `thinking_start_tag` is NOT the prompt
+        // marker — the pinned template never renders it into the prompt.
+        assert!(
+            !probe.declared_in_off && !probe.declared_in_on,
+            "{label}: the crate's declared thinking_start_tag {:?} is the ASSISTANT-side channel \
+             marker and is NOT rendered into the PROMPT under either flag; the system-block toggle \
+             is {THINK_DIRECTIVE:?}. off prompt:\n{}\non prompt:\n{}",
+            probe.declared_opener,
+            probe.off_prompt,
+            probe.on_prompt
+        );
+    }
+
+    /// ST-1 — the pinned template toggles its thinking directive on
+    /// `enable_thinking` (and renders no channel opener into the prompt), for
+    /// BOTH a text turn and a Doom turn.
+    #[test]
+    fn the_pinned_template_toggles_the_thinking_directive_via_enable_thinking() {
+        let Some((_backend, model)) = load_model_or_skip() else {
+            eprintln!(
+                "ST-1 RENDER PROBE SKIPPED (NAMED BLOCKER: the pinned GGUF trio is absent — see the \
+                 loader line above). This is NOT a PASS; no rendition was recorded."
+            );
+            return;
+        };
+        let format = ChatFormat::from_model(&model).expect("the pinned model publishes a template");
+
+        // A plain TEXT turn (system + user), no tools, no schema.
+        let text_turn = ChatTurn::text(vec![
+            message("system", "You are Fredo."),
+            message("user", "open Mission Monitor"),
+        ]);
+        assert_and_record("text", &probe_openers(&format, &text_turn));
+
+        // A DOOM decision turn — the production schema-constrained shape.
+        let observation = serde_json::json!({
+            "health": 100,
+            "position": { "x": 0, "y": 0 },
+            "exit": { "x": 10, "y": 0 },
+        });
+        let vocabulary = serde_json::json!([
+            { "op": "move" },
+            { "op": "open-door" },
+            { "op": "shoot" },
+            { "op": "wait" },
+        ]);
+        let doom_turn =
+            crate::applications::llm_server::doom_agent::doom_turn(&observation, &vocabulary);
+        assert_and_record("doom", &probe_openers(&format, &doom_turn));
     }
 }

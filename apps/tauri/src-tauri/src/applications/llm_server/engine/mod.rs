@@ -163,6 +163,8 @@ pub enum CompanionEngineErrorCode {
     ContextCreateFailed,
     /// A turn is already running (one generation at a time per process).
     Busy,
+    /// A chat turn produced no visible content and no tool call (Spec #3233).
+    EmptyReply,
     /// Engine start exceeded its wall-clock budget.
     StartTimeout,
 }
@@ -208,6 +210,10 @@ impl CompanionEngineErrorCode {
                 "The model context could not be created. Restart Fredo and try again."
             }
             Self::Busy => "The companion is still finishing the previous turn. Try again in a moment.",
+            // The empty-turn guarantee's own detail (AC-2), owned by the skill
+            // path so the wire text and the code's curated detail share ONE
+            // source (a reword cannot drift them apart).
+            Self::EmptyReply => super::skills::EMPTY_REPLY_DETAIL,
             Self::StartTimeout => {
                 "The companion took too long to start. Try again, or restart Fredo."
             }
@@ -367,6 +373,7 @@ mod tests {
             (CompanionEngineErrorCode::MmprojInitFailed, "\"mmprojInitFailed\""),
             (CompanionEngineErrorCode::ContextCreateFailed, "\"contextCreateFailed\""),
             (CompanionEngineErrorCode::Busy, "\"busy\""),
+            (CompanionEngineErrorCode::EmptyReply, "\"emptyReply\""),
             (CompanionEngineErrorCode::StartTimeout, "\"startTimeout\""),
         ];
         for (code, wire) in codes {

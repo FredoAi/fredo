@@ -592,17 +592,15 @@ async fn run_structured_attempt(
     source
         .stream(turn, &mut |frame| {
             for event in frame.events {
-                match event {
-                    StreamEvent::Delta(delta) => {
-                        let reply = extractor.push(&delta);
-                        if !reply.is_empty() {
-                            settled.token(reply);
-                        }
-                    }
-                    // Tool-call fragments buffer VERBATIM in the shipped
-                    // accumulator.
-                    other => {
-                        let _ = accumulator.push(other);
+                // The accumulator is the ONE carrier of "what the turn produced":
+                // it buffers tool calls AND records visible content, so the
+                // terminal plan can tell an ordinary content turn from a silent
+                // one (Spec #3233, AC-2). The extractor separates the reply from
+                // the `{ reply, status }` envelope.
+                if let Some(delta) = accumulator.push(event) {
+                    let reply = extractor.push(&delta);
+                    if !reply.is_empty() {
+                        settled.token(reply);
                     }
                 }
             }
@@ -616,7 +614,15 @@ async fn run_structured_attempt(
     // A tool-call turn is disjoint from a content turn: it settles through the
     // SHIPPED terminal plan (`llm-skill-call` / readable `llm-error` / one
     // `llm-done`) and NEVER emits `llm-status`.
-    let planned = plan_terminal_events(&registry, &accumulator);
+    //
+    // The empty-turn guarantee is DEFERRED here: a schema-constrained attempt
+    // that produced no content keeps its OWN retry (Risk 6 — it must NOT be
+    // retyped with an empty reply), so the guarantee's own event is dropped and
+    // the bounded plain retry carries it to the terminal path.
+    let planned: Vec<TerminalEvent> = plan_terminal_events(&registry, &accumulator)
+        .into_iter()
+        .filter(|event| !skills::is_empty_reply_event(event))
+        .collect();
     if planned
         .iter()
         .any(|event| !matches!(event, TerminalEvent::Done))
@@ -741,16 +747,14 @@ async fn run_tools_attempt(
     let outcome = source
         .stream(turn, &mut |frame| {
             for event in frame.events {
-                match event {
-                    // The prose streams exactly as the shipped tools path does.
-                    StreamEvent::Delta(delta) => {
-                        prose.push_str(&delta);
-                        settled.token(delta);
-                    }
-                    // Tool-call fragments buffer VERBATIM in the accumulator.
-                    other => {
-                        let _ = accumulator.push(other);
-                    }
+                // The accumulator is the ONE carrier of "what the turn
+                // produced": it buffers tool calls AND records visible content,
+                // so the terminal plan can tell an ordinary content turn from a
+                // silent one (Spec #3233, AC-2). The prose still streams exactly
+                // as the shipped tools path does.
+                if let Some(delta) = accumulator.push(event) {
+                    prose.push_str(&delta);
+                    settled.token(delta);
                 }
             }
             if let Some(reason) = frame.finish_reason {
@@ -1806,6 +1810,30 @@ mod tests {
         assert_eq!(names.iter().filter(|name| *name == "llm-status").count(), 1);
     }
 
+    /// AC-2 / R-2 — the shipped TOOLS attempt (offer_skills) carries the
+    /// empty-turn guarantee: a turn with no content and no call settles
+    /// `[llm-error, llm-done]` with the shipped `EMPTY_REPLY_DETAIL`, never a
+    /// silent bare `llm-done`.
+    #[tokio::test]
+    async fn an_empty_tools_attempt_settles_with_the_empty_reply_error() {
+        let sink = run_status_path(
+            vec![ScriptedResponse::finish_only("length")],
+            settle_context(false, true),
+            true,
+            None,
+        )
+        .await;
+
+        assert_settles_once(&sink, "empty tools attempt");
+        assert_eq!(sink.names(), vec!["llm-error", "llm-done"]);
+        assert_eq!(
+            sink.payloads("llm-error"),
+            vec![skills::EMPTY_REPLY_DETAIL.to_string()],
+            "the tools attempt reports the shipped empty-reply detail"
+        );
+        assert_eq!(sink.count("llm-status"), 0, "an empty turn has no status");
+    }
+
     /// PATH 4 — the structured attempt's tool-call branch (tools-free): no status,
     /// one skill call, one trailing done.
     #[tokio::test]
@@ -1837,6 +1865,11 @@ mod tests {
     /// PATH 5 — the structured attempt is EMPTY, so the orchestrator takes the
     /// bounded plain retry: the retry streams and settles exactly once (never a
     /// terminal event from the abandoned attempt).
+    ///
+    /// Spec #3233 (AC-2 / Risk 6): the empty-turn guarantee is DEFERRED by the
+    /// schema attempt — an empty structured attempt must NOT be retyped with an
+    /// empty reply; it keeps its OWN retry, and the retry's content produces no
+    /// error.
     #[tokio::test]
     async fn an_empty_structured_attempt_retries_the_plain_path_and_settles_once() {
         let sink = run_status_path(
@@ -1860,6 +1893,11 @@ mod tests {
             sink.count("llm-status"),
             0,
             "the plain retry declares no status"
+        );
+        assert_eq!(
+            sink.count("llm-error"),
+            0,
+            "the schema attempt's empty reply is deferred: the retry produced content, so nothing errored"
         );
     }
 

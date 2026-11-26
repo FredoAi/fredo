@@ -432,6 +432,32 @@ fn ensure_started<'s>(
     state
 }
 
+/// Record one turn's per-turn reasoning policy (Spec #3233, ST-6 / R-4).
+///
+/// AC-4's observable is that the thinking policy belongs to the TURN, not a
+/// global switch: two turns in ONE engine session that run with different modes
+/// must be distinguishable in their own records. This emits exactly ONE
+/// `tracing` field, `reasoning_mode`, per turn, so the mode is readable from the
+/// turn's own `telemetry_logs` record (bridged by `LogBridgeLayer`, `lib.rs`).
+///
+/// Emitted at `info!` deliberately: the subscriber's default filter is `INFO`
+/// (`lib.rs`), so a `debug!` field would be filtered OUT of `telemetry_logs` by
+/// default and the observable would be unreadable. The level is named here so a
+/// missing record is diagnosable as a level defect, never a silent PASS.
+///
+/// Called from BOTH generation entries — [`run_chat`] (chat turns, seeded
+/// `Disabled`) and [`run_one_shot`] (the Doom decision turn, `Enabled`) — because
+/// those are the two entries through which a session reaches different modes;
+/// emitting on only one would leave the other mode unobservable and the
+/// distinction impossible to make.
+fn log_reasoning_mode(turn: &ChatTurn) {
+    tracing::info!(
+        target: "fredo::llm_server",
+        reasoning_mode = ?turn.reasoning,
+        "companion turn reasoning policy"
+    );
+}
+
 /// Generate one streaming turn, emitting the engine's events to the caller.
 ///
 /// The content gate is what keeps a tool-call body AND the template's hidden
@@ -446,6 +472,11 @@ fn run_chat(
     request: crate::applications::llm_server::engine::ChatRequest,
 ) {
     use crate::applications::llm_server::engine::stream::{self, ContentGate, EngineEvent};
+
+    // AC-4: record the turn's effective reasoning policy in its own telemetry
+    // record (one field per turn), so a chat turn (Disabled) is distinguishable
+    // from a Doom decision turn (Enabled) in the SAME engine session.
+    log_reasoning_mode(&request.turn);
 
     // Every marker the streaming gate classifies, read from ONE template render:
     // the declared reasoning span (consumed as the hidden channel) and the
@@ -555,6 +586,11 @@ fn run_one_shot(
     request: crate::applications::llm_server::engine::OneShotRequest,
 ) {
     use crate::applications::llm_server::engine::stream::TurnReply;
+
+    // AC-4: the one-shot generation entry (the Doom decision turn) records its
+    // own mode too, so its `Enabled` policy is observable alongside a chat
+    // turn's `Disabled` in the same session.
+    log_reasoning_mode(&request.turn);
 
     let projectors = engine.projector.as_mut();
     let outcome = super::mtp::generate_speculative(
@@ -1103,6 +1139,83 @@ mod tests {
         assert!(
             !detail.contains("panicked"),
             "a raw panic string must never be the primary copy: {detail}"
+        );
+    }
+
+    // ── ST-6 / AC-4: the per-turn `reasoning_mode` telemetry field ───────────
+
+    /// A minimal `tracing` layer capturing each event's target and its
+    /// `(field-name, rendered-value)` pairs, so a test can assert the exact field
+    /// name/value the `LogBridgeLayer` writes into `telemetry_logs`.
+    #[derive(Clone, Default)]
+    struct CaptureLayer {
+        events: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>)>>>,
+    }
+
+    /// Collects every field of one event as `(name, rendered-value)`.
+    struct CaptureVisitor<'a>(&'a mut Vec<(String, String)>);
+
+    impl tracing::field::Visit for CaptureVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            // Mirrors `LogFieldVisitor::record_debug` (`telemetry/log.rs`): a
+            // `?`-sigil field lands as its `Debug` rendering.
+            self.0.push((field.name().to_string(), format!("{value:?}")));
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for CaptureLayer
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            event.record(&mut CaptureVisitor(&mut fields));
+            self.events
+                .lock()
+                .expect("capture mutex poisoned")
+                .push((event.metadata().target().to_string(), fields));
+        }
+    }
+
+    /// ST-6 / AC-4: every generation entry emits ONE `reasoning_mode` field at
+    /// target `fredo::llm_server`, carrying the turn's OWN mode. This is the
+    /// decisive field/value mapping the QA-4 `telemetry_logs` row reads — asserted
+    /// here without a live engine (the emission is the contract; the field name
+    /// and the level are what the row binds to). `Disabled` → `Enabled` in
+    /// emission order proves two turns can carry different modes in one session.
+    #[test]
+    fn each_turn_emits_its_own_reasoning_mode_field() {
+        use super::super::request::ReasoningMode;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = CaptureLayer::default();
+        let events = capture.events.clone();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(capture),
+        );
+
+        log_reasoning_mode(&ChatTurn::text(Vec::new()));
+        log_reasoning_mode(&ChatTurn::text(Vec::new()).with_reasoning(ReasoningMode::Enabled));
+
+        let events = events.lock().expect("capture mutex poisoned");
+        let modes: Vec<String> = events
+            .iter()
+            .filter(|(target, _)| target == "fredo::llm_server")
+            .flat_map(|(_, fields)| fields.iter())
+            .filter(|(name, _)| name == "reasoning_mode")
+            .map(|(_, value)| value.clone())
+            .collect();
+        assert_eq!(
+            modes,
+            vec!["Disabled".to_string(), "Enabled".to_string()],
+            "each turn must emit its own reasoning_mode at fredo::llm_server"
         );
     }
 }
