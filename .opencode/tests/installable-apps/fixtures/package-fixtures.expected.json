@@ -86,16 +86,16 @@
       "version": "1.0.0",
       "enginesFredo": ">=0.0.0",
       "file": "qa3147-bad-manifest-1.0.0.zip",
-      "bytes": 2167,
-      "sha256": "f3c20acef3800a1d4f788f3bbd2b48026ca922c0deb083b6c24eecabc48c5f31",
+      "bytes": 2162,
+      "sha256": "ab3971cb69a6ba4f2e00c3199233b0cd19041a824a5733a979be63b402bae654",
       "expects": "manifest_unknown_field",
       "expectsStage": "install",
-      "defect": "unknown top-level key \"capabilities\" (manifestVersion 1 does not define it)",
-      "badManifestShape": "capabilities",
+      "defect": "unknown top-level key \"sandbox\" (manifestVersion 1 does not define it)",
+      "badManifestShape": "sandbox",
       "entries": [
         {
           "name": "fredo-app.json",
-          "bytes": 407
+          "bytes": 402
         },
         {
           "name": "index.html",
@@ -221,6 +221,33 @@
         {
           "name": "__fredo/bootstrap.js",
           "bytes": 24
+        }
+      ]
+    },
+    {
+      "id": "qa3145-missing-field",
+      "displayName": "QA3145 Missing Field",
+      "version": "1.0.0",
+      "enginesFredo": ">=0.0.0",
+      "file": "qa3145-missing-field-1.0.0.zip",
+      "bytes": 2056,
+      "sha256": "624fbd49bcf0e9e53d14fa4f0eab467d05ac39793c8b74627e856c857b470d70",
+      "expects": "manifest_invalid_field",
+      "expectsStage": "install",
+      "defect": "the required top-level field \"displayName\" is absent",
+      "missingField": "displayName",
+      "entries": [
+        {
+          "name": "fredo-app.json",
+          "bytes": 292
+        },
+        {
+          "name": "index.html",
+          "bytes": 682
+        },
+        {
+          "name": "main.js",
+          "bytes": 770
         }
       ]
     }
