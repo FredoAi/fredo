@@ -689,3 +689,130 @@
     for the whole process (the `modelId` after the lazy start equals the launch-start one).
   - **FAIL:** the lazy turn fails after a manual stop; a `llama-server` process appears; two engine
     instances; the budget changed.
+
+---
+
+## Spec #3233 — a visible answer on every companion chat turn
+
+> Per-turn thinking policy (chat `Disabled`, Doom `Enabled`) + the empty-turn guarantee. Rows map
+> 1:1 to `AC-1 … AC-5` / the plan's `R-1 … R-5`. **Verification policy: live.** Static legs (the
+> render probe, the value pins) are labelled. Receipts: live webview (`tauri_webview_*`) for reply
+> legs; a genuine `telemetry_logs` query for the per-turn mode (the `LogBridgeLayer` at `lib.rs:434`
+> bridges `tracing` → `telemetry_logs`); committed pins + green CI `rust-validate` on the tested head
+> SHA for the deterministic legs. **`telemetry_spans` is NOT this feature's channel** (no OTLP
+> producer of its own). Rows merged from the QA draft fragment (`.opencode/tmp/3233/suite/`).
+
+- [ ] **FR-34 (AC-1 / R-1, STATIC — the render probe's own assertion).** ST-1's committed probe
+      (`engine/chat_format.rs`, `#[cfg(test)] mod reasoning_probe`, **ST-1's Work item**) renders a
+      text turn AND a Doom turn through the pinned GGUF template with `ChatApplyParams.enable_thinking`
+      **true vs false** (via `ChatTemplates::from_model` + `ChatApplyParams`).
+  - **Expected:** with the flag **false** the rendered system block contains **no** declared
+    reasoning opener (`applied.thinking_start_tag`, `chat_format.rs:265`); with the flag **true** it
+    does; the probe prints `supports_enable_thinking()` and both renders. This pins the injection
+    shape ST-3 relies on — the template's ACTUAL rendering with the flag off, not an assumption.
+  - **Data/precondition:** the GGUF is present (the product's own readiness path). **G-435:** a
+    `load_model_or_skip()`-style early return makes the probe PASS vacuously with the model absent —
+    the **model-present precondition is stated**, and a run without the model is a **NAMED
+    BLOCKER**, never a PASS.
+  - **Edge:** a flag-off render STILL carrying the opener ⇒ the ST-3 `with_enable_thinking` injection
+    needs a fallback — surface at convergence, never a silent PASS. This row is `[NEW]` (it fails on
+    the pre-change tree by absence).
+
+- [ ] **FR-35 (AC-1 / R-1, LIVE + STATIC engine-side).** One companion chat turn (thinking
+      **disabled**) on the served engine, listeners on the five `llm-*` channels attached BEFORE the
+      invoke.
+  - **Expected (visible):** **≥1** `llm-token` with **non-empty, user-visible prose**; exactly
+    **one** `llm-done` and it is **LAST**; no `llm-error`.
+  - **Expected (engine-side — the discriminator, `[NEW]`):** the committed pin shows a real
+    generation (`ReasoningMode::Disabled`) emits **zero** `EngineEvent::Reasoning`
+    (`engine/thread.rs:508-510`) and `gate.skipped_reasoning()` is **false**; corroborated by FR-34's
+    flag-off render having produced no opener. Report the engine-side fact on the ENGINE surface —
+    a wire-only assertion is VACUOUS (`llm-token` never carries reasoning; the issue names this).
+  - **Expected (E2B-off caveat — LIVE gate proof):** **no** `llm-token` payload contains the
+    substring `<|` at all — no `<|channel>`, no `<channel|>`, no stray control marker, no leading
+    channel prefix (the vendor "behaves differently when disabled" shape).
+  - **Edge:** a prompt engineered to elicit reasoning FIRST ("Think briefly, then …"); an E2B-off
+    reply that begins with an odd channel prefix ⇒ **FAIL**. A single withheld blob (1 delta) is not
+    a FAIL on its own (the AC asks ≥1 delta) but any `<|`-bearing payload is. A turn that ends with
+    zero `llm-token` and no error ⇒ FR-36's guarantee territory ⇒ **FAIL**.
+
+- [ ] **FR-36 (AC-2 / R-2, DETERMINISTIC PIN — the empty-turn guarantee, `[NEW]`).** Drive the
+      **committed** `stream_skill_turn` (`skills.rs:338`) over `ScriptedTurnSource`
+      (`engine/stream.rs:1234-1278`) fed `ScriptedResponse::finish_only("length")`
+      (`engine/stream.rs:1218-1220`) → zero deltas, `finish_reason "length"`. Read the
+      `RecordingSink` name sequence + the `llm-error` payload.
+  - **Expected:** the sequence is exactly **`["llm-error","llm-done"]`**; the `llm-error` detail is
+    the shipped **`EMPTY_REPLY_DETAIL`** (ST-5's `&str` const — quoted byte-for-byte, never a
+    paraphrase) reached through `CompanionEngineErrorCode::EmptyReply` (`engine/mod.rs`, new variant
+    + `detail()` arm).
+  - **Negative control (the pre-change behaviour this row REJECTS).** Today
+    `an_empty_stream_settles_once` (`skills.rs:649-656`) pins `["llm-done"]` for a zero-frame stream.
+    A bare `["llm-done"]` for the `finish_only("length")` turn is a **FAIL** — that is the exact
+    silence the AC bans.
+  - **Positive controls (must NOT be retyped):** `finish_only("tool_calls")` keeps its OWN
+    `TOOL_CALL_TURN_WITHOUT_CALL_DETAIL` (`skills.rs:253-254`, `:292-294`) and is **never**
+    `EmptyReply`; a content turn emits no terminal error; `ScriptedResponse::failed("boom")`
+    (`:1182`) keeps its own detail via `plan_stream_error_events` (`skills.rs:308-313`).
+    `stream_plain_turn` (`skills.rs:408-426`) carries the SAME guarantee.
+  - **Why it exists:** the AC-2 silence is not reproducible by waiting for a real model starvation;
+    this lever is deterministic. **Record of the pin:** green CI `rust-validate` on the tested head
+    SHA + the non-draft `## Developer ST-5 — verification` comment.
+
+- [ ] **FR-37 (AC-4 / R-4, LIVE telemetry + STATIC pin, `[NEW]`).** In **ONE** engine session, run a
+      chat turn (`Disabled`) and then a Doom decision turn (`Enabled`).
+  - **Expected (live):** `telemetry_logs` (target `fredo::llm_server`) carries **two** records in the
+    round's window whose per-turn `reasoning_mode` attribute is **`Disabled`** and **`Enabled`**
+    respectively (ST-6's field in `engine/thread.rs::run_chat`). This proves the mode is per-turn,
+    **not another global switch**.
+  - **Expected (static):** a committed unit pin shows two `ChatFormat::apply` calls with different
+    `ChatTurn.reasoning` yield different `AppliedChatFormat.reasoning_mode`, and `params_for`
+    (`chat_format.rs:361-388`) sets `with_enable_thinking` from **the turn**.
+  - **Edge (G-435 — level caveat):** ST-6's `tracing` field must be observable at the effective log
+    level; state the level ST-6 emits at and the `telemetry_logs` query. A leg that cannot find the
+    record names the **level** as the cause (a level defect to record), not a PASS. One shared value
+    across both turns ⇒ **FAIL**.
+
+- [ ] **FR-38 (AC-5c / R-5, LIVE, `[NEW]` clause on a retained behaviour).** With thinking
+      **disabled**, drive a tool/skill turn (a real shipped skill) and a schema-constrained turn
+      (the shipped `json_schema` shape).
+  - **Expected:** the skill turn honours `tools` + `tool_choice`, selects a single validated call,
+    emits `llm-skill-call` **only** for a validated selection, and **never** forwards raw tool-call
+    JSON as `llm-token`; the schema turn is constrained to the schema, rides the SAME event contract
+    (no new channel), and leaks no raw `{"reply":…}` envelope into `llm-token`. Parity with
+    `F-17`/`F-18` (unchanged, not weakened).
+  - **Edge:** an invalid/unavailable skill ⇒ no `llm-skill-call`, one terminal `llm-done`.
+
+- [ ] **FR-39 (AC-5a/AC-5b / R-5, STATIC — value-invariance, `[GUARD]`).** A prove-a-value-unchanged
+      AC (G-408/G-273: **no launch, no screenshot**) verified from source + the committed pins.
+  - **Expected (values):** the pin `defaults_match_the_retired_launch_config` (`sampling.rs:301-312`)
+    is green — temp **1.0** / top_p **0.95** / top_k **64** / ctx **131 072** / max_tokens **1024**;
+    the budget clamp `AppliedChatFormat.max_tokens = turn.max_tokens.min(settings.max_tokens)`
+    (`chat_format.rs:290`) is read verbatim and unchanged.
+  - **Expected (gate withholding):** the existing `stream.rs` `#[cfg(test)]` pins are green — the
+    gate's reserved control markers are never forwarded (`strip_control_syntax` `:962`; the
+    `Skipping`/`ToolBody` states).
+  - **Edge (the retired pin — G-444):** ST-2 retires `DEFAULT_REASONING_MODE` (`sampling.rs:102`)
+    and its pin `the_reasoning_default_matches_the_retired_launch_config` (`:322-324`); the pin MUST
+    be re-pointed in the same change. A surviving pin asserting a removed constant, or an **orphan
+    reader** of it, ⇒ **FAIL** (compile-fail or a false pin).
+
+- [ ] **FR-40 (AC-2 presentation — cross-review with UI/UX §2, STATIC unit + LIVE webview).** The
+      empty turn's **presentation** on the companion reply surface.
+  - **Expected (a) STATIC unit (the firm ground):** a committed
+    `companionReplyErrorCopy.test.ts` case asserts `companionReplyErrorCopy(<the ST-5 EmptyReply
+    detail>)` returns the **curated** sentence (UI/UX's `COMPANION_REPLY_EMPTY_COPY` —
+    convergence-adjudicated), **not** `COMPANION_REPLY_GENERIC_COPY` (G-505: an empty reply must not
+    borrow the transport-failure sentence).
+  - **Expected (b) LIVE webview (corroboration):** `[data-testid="fredo-reply-surface"]` carries the
+    curated sentence (**never** the raw detail); `[data-testid="fredo-companion-live-region"]`
+    (`role="status"`, `aria-live="polite"`) holds that sentence **exactly once**; the avatar shows
+    the error expression.
+  - **Induction lever (G-300):** the shipped chat path has no seam to force an empty turn; drive the
+    LIVE leg by a **synthetic `llm-error` emit on the shipped channel**
+    (`tauri_webview_execute_js` → the shipped `llm-error` event name, payload = the ST-5
+    discriminator phrase) read against the adapter's listener. If that emit does not reach the
+    adapter's listener, the LIVE leg is a **NAMED BLOCKER** with (a) as the ground — never a PASS by
+    guessing.
+  - **Edge:** a `EMPTY_REPLY_DETAIL` lacking a stable discriminator phrase ⇒ the branch falls through
+    to the generic sentence ⇒ **FAIL** (ST-5 and UI/UX §2 must be named together at convergence).
+    Cross-ref `.opencode/tests/companion/` (the overlay/bubble suite).
