@@ -285,9 +285,6 @@ fredo companion score [--baseline <PATH>] [--pg-port <N> | --manifest <PATH>] [-
 ```json
 {
   "status": "skipped",
-  "fixtures": [],
-  "regressions": [],
-  "newlyPassing": [],
   "missingFiles": [
     "gemma-4-e2b-it-qat/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf",
     "gemma-4-e2b-it-qat/mmproj-BF16.gguf",
@@ -297,6 +294,8 @@ fredo companion score [--baseline <PATH>] [--pg-port <N> | --manifest <PATH>] [-
   "detail": "missing model file(s): … — set FREDO_COMPANION_MODELS_DIR to a manifest-shaped models dir."
 }
 ```
+
+The skip shape carries **only** `status`, `missingFiles`, `modelsDirLever` and `detail` — it has no `fixtures`/`regressions`/`newlyPassing`/`total` field at all, so a skip can never be mistaken for a scored run.
 
 **Exit codes**
 
@@ -309,7 +308,7 @@ fredo companion score [--baseline <PATH>] [--pg-port <N> | --manifest <PATH>] [-
 
 > **A skip is not a failure, and a skip never reports a total.** With the models absent (every CI runner), `fredo companion score` reports the named skip and exits `3`; a run that printed a total it did not measure is the defect the harness exists to prevent.
 
-> **The baseline.** The committed baseline (`.opencode/tests/companion/score-baseline.json`) is a machine-readable record keyed by fixture id — `{ "version": 1, "fixtures": [ { "id": "…", "passed": true, "seed": 1002 } ] }`. To (re)record it after a deliberate engine change, run the harness and derive each fixture's `id`/`passed`/`seed` from the scored report.
+> **The baseline.** The committed baseline (`.opencode/tests/companion/score-baseline.json`) is a machine-readable record keyed by fixture id — `{ "version": 2, "provenance": { "measured": true, "tool": "fredo companion score", "commit": "<git-sha>" }, "fixtures": [ { "id": "…", "passed": true, "seed": 101 } ] }`. It is produced **by a run**, never hand-authored: run `fredo companion score`, derive each fixture's `id`/`passed`/`seed` from the scored report, and record the producing tool and the measured git commit. The `provenance` block is required and read **fail-closed** — a baseline that does not declare a measured run (`measured: true` with a 7–40 hex `commit`) will not load, so a reference set no run produced cannot be committed.
 
 > **The store (persistence).** Each fixture's record is written as one span namespaced `event_type = 'companion.score'` (`span_name = 'companion.score.fixture'`, `session_id = 'companion-score'`, `status_code = 'OK'`/`'ERROR'`) into the existing telemetry store through the shared span store, so it is readable **after the process exits**. The embedded cluster's port is published in memory only, so the harness takes an **explicitly supplied endpoint** — `--pg-port`, or `--manifest` carrying `ports.pg` — never a probed port (the password comes from `FREDO_PG_PASSWORD_FILE`, then `PGPASSWORD`). With neither lever the run still scores and reports, and the report's `detail` names that persistence was skipped. Read the rows back with the `telemetry-query` skill:
 >

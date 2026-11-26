@@ -73,8 +73,12 @@ pub struct ScoreFixture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expectation {
     /// The turn must produce a tool call with this name and these required
-    /// argument key/value pairs. `required_args` values are compared as exact
-    /// strings (the JSON argument value must be that string).
+    /// argument key/value pairs. A `required_args` VALUE is an identity the
+    /// product resolves case-insensitively, so the observed JSON argument value
+    /// is compared after trimming and Unicode-lowercasing — never as a
+    /// byte-exact string. A DIFFERENT value still fails; case and surrounding
+    /// whitespace are the only relaxation. The `name` (a structural tool id) is
+    /// compared exactly.
     Call {
         /// The tool name the turn must call.
         name: &'static str,

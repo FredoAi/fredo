@@ -54,8 +54,11 @@ const SCREEN_SMALL_TEXT_PNG: &[u8] = include_bytes!("fixtures/screen-small-text.
 /// The committed audio clip (a copy of the feed WAV).
 const AUDIO_CLIP_WAV: &[u8] = include_bytes!("fixtures/audio-clip.wav");
 
-/// The application name the committed image renders (the vision fixture's
-/// expected `open_app` argument).
+/// The application the committed image names (the vision fixture's expected
+/// `open_app` argument). This is the app's canonical DISPLAY name; the image
+/// renders it in upper case, and the harness compares an app identity
+/// case-insensitively exactly like the product (`launcherEnterAction.ts`,
+/// `open_app.rs`), so the two spellings are the same application.
 pub const SCREEN_TEXT_APP_NAME: &str = "Mission Monitor";
 
 /// Fixture id: a plain text turn.

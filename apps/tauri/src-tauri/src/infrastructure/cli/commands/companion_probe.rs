@@ -100,9 +100,11 @@ pub enum CompanionCommand {
     /// against its OWN structural expectation, compares the pass set against a
     /// committed baseline, and prints one JSON object on stdout.
     ///
-    /// Precondition: the three GGUF model files are present (the SAME rule as
-    /// `probe`: `FREDO_COMPANION_MODELS_DIR` when set, else `<home>/fredo-models`).
-    /// With them absent the command takes a NAMED skip and prints NO total.
+    /// Precondition: the three GGUF model files are present. The `score` command
+    /// resolves the models dir from `FREDO_COMPANION_MODELS_DIR` (non-blank) else
+    /// `<home>/fredo-models`; the `probe` resolves `<home>/fredo-models` and
+    /// IGNORES that lever. With them absent the command takes a NAMED skip and
+    /// prints NO total.
     ///
     /// Exit codes:
     ///   0  every fixture passed and no regression was detected

@@ -4,6 +4,19 @@
 //! never prose — so a run's pass set is diffable against it and a delta is a
 //! measured fact rather than a recollection.
 //!
+//! ## Measured provenance (ST-7; the record must be a record of a RUN)
+//!
+//! A baseline is the pass set an ACTUAL run produced, never a hand-authored
+//! reference (the v1 failure: an all-`true` file no run reproduces). The schema
+//! therefore carries a **required** [`BaselineProvenance`] block
+//! (`measured`/`tool`/`commit`) and [`CompanionScoreBaseline::from_json`] reads a
+//! baseline FAIL-CLOSED when it does not declare a measured run. This is a
+//! **declaration, not cryptographic proof** — a determined author could forge
+//! `measured: true`; the guarantee against a fabricated pass set is the tester's
+//! live reproduction of the pass set each round (AC-3's unchanged-tree clause).
+//! The block's job is to make an unmeasured reference impossible to commit
+//! **unseen** (the old v1 file no longer deserializes at all).
+//!
 //! ## The comparison rule (recorded, not assumed)
 //!
 //! A fixture regresses **iff it is present in BOTH the baseline and the run and
@@ -28,7 +41,11 @@ use super::CompanionScoreResult;
 /// The baseline schema version this loader understands. A baseline declaring any
 /// other version is read FAIL-CLOSED (a wrong-version record must never be
 /// silently treated as current).
-pub const BASELINE_VERSION: u32 = 1;
+///
+/// **v2 (ST-7)** adds the required `provenance` block, so a v1 (unmeasured)
+/// baseline no longer deserializes — the schema change itself forces a
+/// regeneration by a run.
+pub const BASELINE_VERSION: u32 = 2;
 
 /// The default committed baseline path, relative to the repository root.
 ///
@@ -48,12 +65,33 @@ pub struct BaselineEntry {
     pub seed: u32,
 }
 
-/// The committed baseline: a version plus one entry per fixture, keyed by id.
+/// The provenance of a MEASURED baseline (ST-7). REQUIRED on the schema and
+/// read fail-closed: a baseline must declare it was produced by a real run.
+///
+/// This is a **declaration, not cryptographic proof** — the guarantee against a
+/// fabricated pass set is the tester's live reproduction each round, not this
+/// block. Its job is to make an unmeasured reference impossible to commit unseen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineProvenance {
+    /// True when the fixture set below was produced by an actual run.
+    pub measured: bool,
+    /// The tool that produced the run (e.g. `fredo companion score`).
+    pub tool: String,
+    /// The 7–40 hex git commit the run measured.
+    pub commit: String,
+}
+
+/// The committed baseline: a version, the provenance of the measured run, and one
+/// entry per fixture, keyed by id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanionScoreBaseline {
     /// The schema version ([`BASELINE_VERSION`]).
     pub version: u32,
+    /// The provenance of the recorded run (ST-7). REQUIRED — see
+    /// [`BaselineProvenance`]; there is deliberately no `#[serde(default)]`.
+    pub provenance: BaselineProvenance,
     /// The recorded entries, in report order.
     pub fixtures: Vec<BaselineEntry>,
 }
@@ -76,8 +114,9 @@ impl BaselineDelta {
 
 impl CompanionScoreBaseline {
     /// Parse and validate a baseline JSON document. Fail-closed on a version
-    /// mismatch and on a duplicate fixture id (a duplicate would alias two
-    /// records).
+    /// mismatch, on a duplicate fixture id (a duplicate would alias two records),
+    /// and on unmeasured provenance (ST-7: a baseline must be the record of a
+    /// real run, with the 7–40 hex commit it measured).
     pub fn from_json(json: &str) -> Result<Self> {
         let baseline: CompanionScoreBaseline =
             serde_json::from_str(json).context("invalid baseline JSON")?;
@@ -85,6 +124,18 @@ impl CompanionScoreBaseline {
             return Err(anyhow!(
                 "unsupported baseline version {} (expected {BASELINE_VERSION})",
                 baseline.version
+            ));
+        }
+        if !baseline.provenance.measured {
+            return Err(anyhow!(
+                "the baseline `provenance.measured` is not true — a baseline must be the record \
+                 of an actual `fredo companion score` run, never a hand-authored reference"
+            ));
+        }
+        if !is_hex_sha(&baseline.provenance.commit) {
+            return Err(anyhow!(
+                "the baseline `provenance.commit` is not a 7-40 hex git sha: {:?}",
+                baseline.provenance.commit
             ));
         }
         let mut seen: Vec<&str> = baseline.fixtures.iter().map(|entry| entry.id.as_str()).collect();
@@ -108,6 +159,15 @@ impl CompanionScoreBaseline {
     pub fn get(&self, id: &str) -> Option<&BaselineEntry> {
         self.fixtures.iter().find(|entry| entry.id == id)
     }
+}
+
+/// Whether `value` is a 7–40 character hex git sha (the ONLY shape
+/// `provenance.commit` accepts).
+///
+/// The lower bound is git's shortest abbreviated sha; the upper bound is a full
+/// SHA-1. A commit that is not hex, or of the wrong length, is refused.
+fn is_hex_sha(value: &str) -> bool {
+    (7..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Compute the delta of `results` against `baseline` under the recorded rule.
@@ -146,6 +206,11 @@ mod tests {
     fn baseline_with(entries: &[(&str, bool, u32)]) -> CompanionScoreBaseline {
         CompanionScoreBaseline {
             version: BASELINE_VERSION,
+            provenance: BaselineProvenance {
+                measured: true,
+                tool: "fredo companion score".to_string(),
+                commit: "674b320".to_string(),
+            },
             fixtures: entries
                 .iter()
                 .map(|(id, passed, seed)| BaselineEntry {
@@ -171,13 +236,53 @@ mod tests {
     /// A version mismatch is read FAIL-CLOSED — never silently accepted.
     #[test]
     fn a_wrong_version_is_refused() {
-        let json = r#"{"version": 2, "fixtures": []}"#;
+        let json = r#"{"version": 1, "provenance": {"measured": true, "tool": "fredo companion score", "commit": "674b320"}, "fixtures": []}"#;
         assert!(CompanionScoreBaseline::from_json(json).is_err());
-        let duplicate = r#"{"version": 1, "fixtures": [
+        let duplicate = r#"{"version": 2, "provenance": {"measured": true, "tool": "fredo companion score", "commit": "674b320"}, "fixtures": [
             {"id": "a", "passed": true, "seed": 1},
             {"id": "a", "passed": false, "seed": 2}
         ]}"#;
         assert!(CompanionScoreBaseline::from_json(duplicate).is_err());
+    }
+
+    /// ST-7: a baseline that does not declare a MEASURED run is refused — the v1
+    /// hand-authored reference can no longer load, so an unmeasured record cannot
+    /// be committed unseen.
+    #[test]
+    fn an_unmeasured_baseline_is_refused() {
+        let json = r#"{"version": 2, "provenance": {"measured": false, "tool": "fredo companion score", "commit": "674b320"}, "fixtures": []}"#;
+        let error =
+            CompanionScoreBaseline::from_json(json).expect_err("an unmeasured baseline must be refused");
+        assert!(
+            error.to_string().contains("provenance.measured"),
+            "the error must name the field: {error}"
+        );
+    }
+
+    /// ST-7: a baseline whose `provenance.commit` is not a 7–40 hex sha is refused,
+    /// and the error NAMES the field; a short (7) sha and a full (40) SHA-1 both
+    /// load.
+    #[test]
+    fn a_baseline_with_an_invalid_commit_is_refused() {
+        // Each bad value is refused, and the error NAMES the field.
+        for bad in ["", "abc", "not-a-sha", "z123456", "0123456789abcdef0123456789abcdef0123456789g"] {
+            let json = format!(
+                r#"{{"version": 2, "provenance": {{"measured": true, "tool": "fredo companion score", "commit": "{bad}"}}, "fixtures": []}}"#
+            );
+            let error = CompanionScoreBaseline::from_json(&json)
+                .expect_err("an invalid provenance commit must be refused");
+            assert!(
+                error.to_string().contains("provenance.commit"),
+                "{bad:?}: the error must name the field: {error}"
+            );
+        }
+        // Both a short and a full hex sha load.
+        for good in ["674b320", "674b32027529686bbac0cd98430db6885e6cc385"] {
+            let json = format!(
+                r#"{{"version": 2, "provenance": {{"measured": true, "tool": "fredo companion score", "commit": "{good}"}}, "fixtures": []}}"#
+            );
+            assert!(CompanionScoreBaseline::from_json(&json).is_ok(), "{good}");
+        }
     }
 
     /// AC-3: a newly-FAILING fixture is named as a regression and the delta says
@@ -238,6 +343,23 @@ mod tests {
         let path = repo_root.join(DEFAULT_BASELINE_PATH);
         let baseline = CompanionScoreBaseline::load(&path)
             .unwrap_or_else(|error| panic!("load the committed baseline {}: {error}", path.display()));
+        // ST-7: the committed baseline must declare a MEASURED run (a real tool +
+        // a 7-40 hex commit). `load` already fail-closes on unmeasured provenance,
+        // so reaching here proves it; the asserts below pin the intent explicitly.
+        assert!(
+            baseline.provenance.measured,
+            "the committed baseline must declare a MEASURED run (ST-7)"
+        );
+        assert!(
+            baseline.provenance.tool.contains("companion score"),
+            "the committed baseline provenance must name the producing tool: {}",
+            baseline.provenance.tool
+        );
+        assert!(
+            is_hex_sha(&baseline.provenance.commit),
+            "the committed baseline provenance.commit must be a 7-40 hex sha: {}",
+            baseline.provenance.commit
+        );
         let fixture_set = fixtures::fixtures();
         assert_eq!(
             baseline.fixtures.len(),

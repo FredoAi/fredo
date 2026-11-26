@@ -80,7 +80,16 @@ pub fn evaluate(expectation: &Expectation, observed: &ObservedTurn) -> Expectati
 }
 
 /// A `Call` expectation: a call with `name` carrying every `required_args` pair
-/// (as an exact string value) must be present.
+/// must be present.
+///
+/// A required argument VALUE is an **identity** the product resolves
+/// case-insensitively (`launcherEnterAction.ts`'s `appNameMatches` lowercases
+/// both sides; the CLI's `open_app` states "matching is case-insensitive"), so
+/// the observed JSON string is `trim`med and Unicode-lowercased before
+/// comparison — mirroring the product's `toLowerCase()` (and
+/// `normalizeAppQuery`'s trim). Case and surrounding whitespace are the ONLY
+/// relaxation: a DIFFERENT argument value still fails. The call NAME is
+/// structural (an exact tool id), so it is compared exactly.
 fn evaluate_call(
     name: &str,
     required_args: &[(&str, &str)],
@@ -109,7 +118,12 @@ fn evaluate_call(
             continue;
         };
         let satisfied = required_args.iter().all(|(key, value)| {
-            arguments.get(*key).and_then(serde_json::Value::as_str) == Some(*value)
+            arguments
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .map(str::to_lowercase)
+                == Some(value.to_lowercase())
         });
         if satisfied {
             return ExpectationOutcome::pass();
@@ -253,6 +267,50 @@ mod tests {
                 &doom
             )
             .passed
+        );
+    }
+
+    /// ST-6: a `Call` argument VALUE is an identity the product resolves
+    /// case-insensitively, so the observed value is matched after trimming and
+    /// Unicode-lowercasing — the instrument fix that stops the harness measuring
+    /// string case. The comparison can still FAIL (a different app name fails).
+    #[test]
+    fn a_call_argument_is_matched_case_insensitively_like_the_product() {
+        let expected = Expectation::Call {
+            name: "open_app",
+            required_args: &[("app", "Mission Monitor")],
+        };
+
+        // The committed image renders upper case; the expectation is title case.
+        // The product resolves them to the SAME application, so the harness must.
+        let upper = ObservedTurn {
+            calls: vec![call("open_app", r#"{"app":"MISSION MONITOR"}"#)],
+            ..ObservedTurn::default()
+        };
+        assert!(
+            evaluate(&expected, &upper).passed,
+            "an upper-case identity must match the title-case expectation"
+        );
+
+        // Surrounding whitespace is ignored too (mirrors `normalizeAppQuery`'s trim).
+        let spaced = ObservedTurn {
+            calls: vec![call("open_app", r#"{"app":"  mission monitor  "}"#)],
+            ..ObservedTurn::default()
+        };
+        assert!(
+            evaluate(&expected, &spaced).passed,
+            "a trimmed, differently-cased identity must match"
+        );
+
+        // A DIFFERENT application still FAILS — the case-insensitivity is the
+        // ONLY relaxation, so the assertion is not made unfalsifiable.
+        let other = ObservedTurn {
+            calls: vec![call("open_app", r#"{"app":"Settings"}"#)],
+            ..ObservedTurn::default()
+        };
+        assert!(
+            !evaluate(&expected, &other).passed,
+            "a different app name must still fail"
         );
     }
 
