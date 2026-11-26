@@ -26,7 +26,8 @@
 //! * [`sampling`] — the relocated sampling defaults (values preserved byte for
 //!   byte from the retired launch config) and the sampler chain built from them.
 //! * [`request`] — the request model: [`request::ChatTurn`] and the ONE media
-//!   shaping rule (audio = one `input_audio` part, image = text + image_url).
+//!   shaping rule (audio = one `input_audio` part, image = image_url + text —
+//!   image BEFORE text, per the vendor's own guidance).
 //! * [`chat_format`] — chat templating through the GGUF's own template, the
 //!   tool-call grammar, and the `response_format` schema grammar.
 //! * [`detokenize`] — incremental UTF-8 detokenisation so no multi-byte

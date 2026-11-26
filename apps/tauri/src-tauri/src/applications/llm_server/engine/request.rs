@@ -14,8 +14,10 @@
 //!   content with exactly ONE [`ContentPart::InputAudio`] part — model audio IS
 //!   the turn's input, so the message's string content is discarded and **no
 //!   `text` part is ever fabricated** (#2897 REQ-3);
-//! * **image** turns the last user message into `[text, image_url]`, where the
-//!   URL is the shipped `data:image/png;base64,<image>` data URL (R-3.2);
+//! * **image** turns the last user message into `[image_url, text]` — the image
+//!   part BEFORE the text, because the vendor's own guidance is to "place Image
+//!   content before the text in your prompt" — where the URL is the shipped
+//!   `data:image/png;base64,<image>` data URL (R-3.2);
 //! * every other message keeps its plain string content.
 //!
 //! The rule is what ST-5 (`engine/multimodal.rs`) consumes: the part list says
@@ -239,12 +241,15 @@ impl ChatTurn {
 
         if let Some(image) = self.image.as_deref() {
             if let Some(index) = last_user_index(&self.messages) {
+                // The vendor's own guidance is to "place Image content before the
+                // text in your prompt", so the image part LEADS and the message's
+                // text follows it (R-1a).
                 rendered[index].content = RenderedContent::Parts(vec![
-                    ContentPart::Text {
-                        text: self.messages[index].content.clone(),
-                    },
                     ContentPart::ImageUrl {
                         url: format!("{IMAGE_DATA_URL_PREFIX}{image}"),
+                    },
+                    ContentPart::Text {
+                        text: self.messages[index].content.clone(),
                     },
                 ]);
             }
@@ -449,8 +454,10 @@ mod tests {
         assert!(matches!(parts[0], ContentPart::InputAudio { .. }));
     }
 
-    /// The image turn is `[text, image_url]` with the shipped PNG data URL, on the
-    /// LAST user message only — earlier messages keep plain content.
+    /// The image turn is `[image_url, text]` — the image BEFORE the text, per the
+    /// vendor's "place Image content before the text in your prompt" — with the
+    /// shipped PNG data URL, on the LAST user message only; earlier messages keep
+    /// plain content.
     #[test]
     fn an_image_turn_attaches_text_and_image_url_to_the_last_user_message() {
         let turn = ChatTurn::text(conversation()).with_image("QUJD");
@@ -462,14 +469,14 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(
             parts[0],
-            ContentPart::Text {
-                text: "look at this".to_string()
+            ContentPart::ImageUrl {
+                url: "data:image/png;base64,QUJD".to_string()
             }
         );
         assert_eq!(
             parts[1],
-            ContentPart::ImageUrl {
-                url: "data:image/png;base64,QUJD".to_string()
+            ContentPart::Text {
+                text: "look at this".to_string()
             }
         );
         assert_eq!(IMAGE_DATA_URL_PREFIX, "data:image/png;base64,");
@@ -519,8 +526,9 @@ mod tests {
     }
 
     /// ST-5's media projection places the projector marker EXACTLY where the media
-    /// part sits: the image turn is `text + marker` on the last user message, and
-    /// the empty marker reproduces the text-only projection byte for byte.
+    /// part sits: the image turn is `marker + text` on the last user message (the
+    /// image part leads, so its marker leads), and the empty marker reproduces the
+    /// text-only projection byte for byte.
     #[test]
     fn the_media_projection_places_the_marker_where_the_part_sits() {
         let marker = "<__media__>";
@@ -528,8 +536,9 @@ mod tests {
         let json = turn.template_messages_json_with_media(marker);
         let parsed: Value = serde_json::from_str(&json).expect("valid messages JSON");
 
-        // The image turn is `[text, image_url]` ⇒ `text\nmarker`.
-        assert_eq!(parsed[3]["content"], "look at this<__media__>");
+        // The image turn is `[image_url, text]` ⇒ `marker` + text (the
+        // `!last_was_media` guard suppresses a newline after the media marker).
+        assert_eq!(parsed[3]["content"], "<__media__>look at this");
         // The markers appear in the PROMPT, never the media bytes.
         assert!(!json.contains("QUJD"));
         assert_eq!(json.matches(marker).count(), 1);

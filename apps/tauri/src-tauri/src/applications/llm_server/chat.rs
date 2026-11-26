@@ -14,7 +14,7 @@
 //!
 //! The engine's own request model ([`super::engine::request::ChatTurn`]) is the
 //! production path; its media rule (audio = one `input_audio` part, image =
-//! `text` + `image_url`) lives there and nowhere else (NFR-6).
+//! `image_url` + `text`) lives there and nowhere else (NFR-6).
 //!
 //! ## The frozen wire shape (TEST ONLY)
 //!
@@ -64,7 +64,8 @@ pub fn audio_content_part(audio_base64: &str) -> serde_json::Value {
 /// * **audio** — the LAST user message's `content` becomes
 ///   `[{ "type": "input_audio", … }]`; no transcript text part is ever emitted.
 /// * **image** — the LAST user message's `content` becomes
-///   `[{"type":"text",…},{"type":"image_url",…}]`.
+///   `[{"type":"image_url",…},{"type":"text",…}]` (image BEFORE text, per the
+///   vendor's "place Image content before the text in your prompt").
 #[cfg(test)]
 pub fn render_messages(
     messages: &[LlmMessage],
@@ -88,14 +89,16 @@ pub fn render_messages(
 
     if let Some(image) = image_base64 {
         if let Some(index) = messages.iter().rposition(|message| message.role == "user") {
+            // Image FIRST, then the text: the vendor's own guidance is to "place
+            // Image content before the text in your prompt" (R-1a).
             rendered[index] = serde_json::json!({
                 "role": messages[index].role,
                 "content": [
-                    { "type": "text", "text": messages[index].content },
                     {
                         "type": "image_url",
                         "image_url": { "url": format!("data:image/png;base64,{image}") }
-                    }
+                    },
+                    { "type": "text", "text": messages[index].content },
                 ],
             });
         }
@@ -221,10 +224,11 @@ mod tests {
 
         let last = &body["messages"][3]["content"];
         assert!(last.is_array(), "last user content must be the multimodal array");
-        assert_eq!(last[0]["type"], "text");
-        assert_eq!(last[0]["text"], "look at this");
-        assert_eq!(last[1]["type"], "image_url");
-        assert_eq!(last[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        // Image BEFORE text (the vendor's "place Image content before the text").
+        assert_eq!(last[0]["type"], "image_url");
+        assert_eq!(last[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(last[1]["type"], "text");
+        assert_eq!(last[1]["text"], "look at this");
 
         // Earlier user/system messages keep their plain string content.
         assert_eq!(body["messages"][0]["content"], "be terse");
@@ -437,7 +441,7 @@ mod tests {
             })
         );
 
-        // The image body keeps the shipped `text` + `image_url` array.
+        // The image body keeps the shipped `image_url` + `text` array (image first).
         let image_body = build_request_body(&messages, Some("QUJD"));
         assert_eq!(
             image_body,
@@ -447,11 +451,11 @@ mod tests {
                     {
                         "role": "user",
                         "content": [
-                            { "type": "text", "text": "hello" },
                             {
                                 "type": "image_url",
                                 "image_url": { "url": "data:image/png;base64,QUJD" },
                             },
+                            { "type": "text", "text": "hello" },
                         ],
                     },
                 ],
