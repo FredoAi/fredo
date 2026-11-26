@@ -192,6 +192,8 @@ The refusal set is **closed** — exactly those five codes — and each crosses 
 
 An installed application is third-party code the user chose to add. It is contained by **four separate mechanisms**, each of which fails closed on its own: origin separation, a single declared command surface with per-capability consent, integrity pinned at install and re-verified at load, and install-time archive hardening. The isolation does **not** rest on the package behaving well.
 
+> **Author-facing view.** The same boundary is stated for the people writing packages — as limits they cannot rely on — in [Building a Fredo application](authoring-applications.md), together with the capability vocabulary and the refusal codes.
+
 **Protections:**
 
 - **Origin separation.** An installed app is a document at the `fredoapp` scheme, which Tauri maps to `http://fredoapp.localhost` (Windows/Android) / `fredoapp://localhost` (elsewhere) — distinct from the host's `tauri://localhost` / `http://tauri.localhost` and from the dev server. A separate native window whose document has a separate origin, not an iframe in the host document, is what makes "cannot reach the host's context" structural rather than advisory.
