@@ -3,6 +3,10 @@
 > Unscripted edge/failure probes for the companion overlay feature domain (Spec #2850). The
 > Tester adds findings here; a confirmed finding PROMOTES to `functional.md` as a new `F-` row
 > (keep the origin note). A confirmed regression-free probe is recorded here (no promotion).
+>
+> **#3232 extension:** the appended probes E-81..E-86 probe the SCORING HARNESS's failure modes
+> (timeouts, baseline drift, a corrupt baseline, an unreachable store, media errors, concurrent
+> runs) — a finding there is a harness/plan defect, never a product defect.
 
 ## Prompt lines
 
@@ -554,3 +558,38 @@
 > - `E-77` timeout vs slow app — there is no host-side timeout settle; the surviving settle discipline
 >   is F-161 (exactly one `llm-done` per turn).
 > - `E-78` empty publish mid-session — no publish path, so no clear/no-op question exists.
+
+---
+
+## #3232 extension — scoring-harness failure probes
+
+> Unscripted harness-failure probes for #3232 (`fredo companion score`). A confirmed finding
+> PROMOTES to `functional.md` as a new `F-` row (keep the origin note); these probe the HARNESS's
+> failure modes, not the companion's. **Verification policy: live;** an undrivable lever is a named
+> blocker (G-053) with a static/unit pin — never fabricated.
+
+- [ ] E-81: **A turn that never settles (watchdog).** Force a fixture whose turn hangs (a scratch
+      fixture via the seam, or an engine that stutters): does the harness BOUND the turn and record
+      the fixture `passed:false` with a `detail` naming the timeout, or does it hang forever? A
+      harness that can hang forever on one fixture is a finding (promotes to F-181/F-183).
+- [ ] E-82: **Baseline drift — set mismatch (both directions).** (a) Remove a fixture the baseline
+      still lists (baseline has an id the run does not). (b) Add a fixture the baseline lacks (the run
+      has an id the baseline does not). Record the EXACT semantics: is the change named (newly-failing
+      / newly-passing), ignored, or an error? The resolved rule must be deliberate, not accidental
+      (promotes to F-184/F-185).
+- [ ] E-83: **Corrupt / absent baseline file.** Point `--baseline` at a non-existent, unreadable, or
+      malformed JSON file: does the run fail with a DISTINCT usage error (exit `2`), never a silent
+      green or a false "no regression"? A baseline that parses to an empty set and then silently
+      passes everything is a finding (promotes to F-184/F-189).
+- [ ] E-84: **Store unreachable mid-run.** With `--pg-port` pointed at a refused port, run the
+      harness: does it still emit the per-fixture pass/fail report and the exit code, DISCLOSING the
+      persistence leg as failed — or does it crash / lose the score? Records whether AC-4 is a
+      separable leg or a hard dependency of scoring (promotes to F-187).
+- [ ] E-85: **The media path errors.** Run the `audio-clip` / `vision-screen-text` fixtures with a
+      broken media file (a truncated WAV/PNG): does the fixture record `passed:false` with a `detail`,
+      while the OTHER fixtures still score, or does one bad media file abort the whole run? (promotes
+      to F-181.)
+- [ ] E-86: **Two concurrent runs (one-per-resource).** Start a second `fredo companion score` while
+      the first is mid-run: the process-once `LlamaBackend` and the shared `telemetry_spans` store
+      are one-per-resource. Does the second fail closed with a named error, or do the two runs
+      interleave rows / corrupt the span set? Record the resolved discipline (promotes to F-187/R-78).
