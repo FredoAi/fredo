@@ -45,7 +45,7 @@
 use llama_cpp_4::chat::{ChatApplyParams, ChatTemplates, GrammarTrigger, ToolChoice};
 use llama_cpp_4::model::LlamaModel;
 
-use super::request::{ChatTurn, AUDIO_FORMAT, IMAGE_DATA_URL_PREFIX};
+use super::request::{ChatTurn, ReasoningMode, AUDIO_FORMAT, IMAGE_DATA_URL_PREFIX};
 use super::sampling::SamplingSettings;
 use super::CompanionEngineErrorCode;
 
@@ -288,6 +288,10 @@ impl ChatFormat {
             thinking_start_tag,
             thinking_end_tags,
             max_tokens: turn.max_tokens.min(settings.max_tokens),
+            // The per-turn EFFECTIVE mode, read straight from the turn so the
+            // shaped record reports what was actually rendered (Spec #3233,
+            // R-4) — never a global default.
+            reasoning_mode: turn.reasoning,
         })
     }
 
@@ -365,6 +369,16 @@ impl ChatFormat {
     ) -> Result<ChatApplyParams, (CompanionEngineErrorCode, String)> {
         let mut params =
             ChatApplyParams::new(turn.template_messages_json_with_media(media_marker));
+
+        // The ONE prompt-shaping rule for the per-turn thinking policy (Spec
+        // #3233, R-1). The flag is derived from THIS turn — never a global — and
+        // handed to the template's own lever, which renders the reasoning opener
+        // (the pinned Gemma4 template emits `<|think|>` into the system block)
+        // only when enabled. Because `parse` and `stream_markers` both route
+        // through `params_for`, the render, the reverse parse and the marker scan
+        // can never be handed different options, and NO second rule hand-edits a
+        // rendered prompt.
+        params = params.with_enable_thinking(matches!(turn.reasoning, ReasoningMode::Enabled));
 
         // The skill offer: the registry rendered as OpenAI-style functions plus
         // the shipped tool choice. `parallel_tool_calls:false` has no template
@@ -491,6 +505,13 @@ pub struct AppliedChatFormat {
     pub thinking_end_tags: Vec<String>,
     /// The effective completion budget for this turn.
     pub max_tokens: u32,
+    /// The per-turn EFFECTIVE reasoning (thinking) policy (Spec #3233, R-4).
+    ///
+    /// Copied from the turn's own `reasoning` field at shaping time, so the
+    /// shaped record reports the mode the turn ACTUALLY ran with. This is the
+    /// per-turn observable that proves the policy belongs to the turn and not to
+    /// a global engine switch.
+    pub reasoning_mode: ReasoningMode,
 }
 
 impl AppliedChatFormat {
@@ -1146,6 +1167,66 @@ mod tests {
                 markers.reserved
             );
         }
+    }
+
+    /// ST-3 (Spec #3233, R-4) — the per-turn policy reaches the ONE shaping rule.
+    ///
+    /// THE DECISIVE PIN: two [`ChatFormat::apply`] calls whose turns differ ONLY in
+    /// [`ChatTurn::reasoning`] yield DIFFERENT [`AppliedChatFormat::reasoning_mode`]
+    /// — the effective mode is read from the TURN, never a global default.
+    ///
+    /// Non-vacuity: the two renders must ALSO produce different prompts. The turns
+    /// carry the same messages and the same sampling settings, so the ONLY input
+    /// that differs is `turn.reasoning`; a differing prompt therefore proves
+    /// `params_for` actually consumed it via `with_enable_thinking` (the flag
+    /// reached the template), rather than the field merely echoing the turn.
+    #[test]
+    fn the_per_turn_reasoning_mode_reaches_the_one_shaping_rule() {
+        let Some((_backend, model)) = load_model_or_skip() else {
+            return;
+        };
+        let format = ChatFormat::from_model(&model).expect("templates");
+        let messages = vec![message("user", "hi")];
+
+        let disabled = format
+            .apply(
+                &ChatTurn::text(messages.clone()).with_reasoning(ReasoningMode::Disabled),
+                &SamplingSettings::default(),
+            )
+            .expect("the thinking-off turn renders");
+        let enabled = format
+            .apply(
+                &ChatTurn::text(messages).with_reasoning(ReasoningMode::Enabled),
+                &SamplingSettings::default(),
+            )
+            .expect("the thinking-on turn renders");
+
+        // The effective mode is per-turn — the R-4 observable.
+        assert_eq!(
+            disabled.reasoning_mode,
+            ReasoningMode::Disabled,
+            "a thinking-off turn must record its own effective mode"
+        );
+        assert_eq!(
+            enabled.reasoning_mode,
+            ReasoningMode::Enabled,
+            "a thinking-on turn must record its own effective mode"
+        );
+        assert_ne!(
+            disabled.reasoning_mode, enabled.reasoning_mode,
+            "two turns with different reasoning policies must record different effective modes"
+        );
+
+        // Non-vacuity: the ONE shaping rule consumed the turn's mode, so the two
+        // renders differ (identical messages + settings ⇒ the only differing input
+        // is `turn.reasoning`). A field that merely echoed the turn would leave the
+        // prompts byte-identical.
+        assert_ne!(
+            disabled.prompt, enabled.prompt,
+            "params_for must apply with_enable_thinking from the turn: the two renders must \
+             differ. off={:?} on={:?}",
+            disabled.prompt, enabled.prompt
+        );
     }
 }
 
