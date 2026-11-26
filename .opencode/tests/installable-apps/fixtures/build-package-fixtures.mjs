@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * build-package-fixtures.mjs -- install-validation packages for Spec #3147 (ST-2).
+ * build-package-fixtures.mjs -- install-validation packages for Spec #3147 (ST-2),
+ * repaired for Spec #3145 (ST-2, drift correction D1).
  *
- * Emits the seven packages the QA suite drives the install refusal matrix with:
+ * Emits the install-validation packages the QA suite drives the refusal matrix
+ * with:
  *
  *   qa3147-valid                 -- installs cleanly (the happy path, AC-1/R-1.1)
  *   qa3147-no-manifest           -- a valid zip with no fredo-app.json  => no_manifest
  *   qa3147-bad-manifest          -- a manifest with an unknown top-level key
- *                                   ("capabilities")                    => manifest_unknown_field
+ *                                   ("sandbox")                         => manifest_unknown_field
  *   qa3147-zip-slip              -- an entry that escapes the app root   => unsafe_path
  *   qa3147-hash-tamper           -- structurally valid; its bytes are mutated AFTER
  *                                   install to drive                    => integrity_mismatch
@@ -15,10 +17,23 @@
  *                                                                       => host_incompatible
  *   qa3147-reserved-path         -- an entry claiming the host-reserved
  *                                   "__fredo/" segment                  => reserved_path
+ *   qa3145-missing-field         -- a manifest whose required displayName is ABSENT
+ *                                                                       => manifest_invalid_field
+ *
+ * DRIFT CORRECTION D1 (Spec #3145 ST-2). This generator used to drive
+ * `manifest_unknown_field` with the top-level key **`capabilities`** — which
+ * #3146 made the manifest's 8th LEGAL key. The same bytes now classify as
+ * `manifest_invalid_field` ("capabilities must be an object"), so a row bound to
+ * the old expectation would have scored the product's correct behaviour as a
+ * defect. The unknown key is now a genuinely-undefined one (`sandbox`), the
+ * allowed-key set is read from the PUBLISHED SCHEMA (never a hand-written list,
+ * which is how the drift happened), and the generator's own manifest validation
+ * is the published schema's rather than a third hand-written copy.
  *
  * DETERMINISM CONTRACT (the same discipline as ST-7's behaviour generator)
- *   - Node built-ins only (node:fs, node:path, node:crypto, node:url). No
- *     network, no npm package, no toolchain, no shell-out.
+ *   - Node built-ins only (node:fs, node:path, node:crypto, node:url) plus the
+ *     kit's schema validator (a pure module; it changes VALIDATION, never the
+ *     archive bytes). No network, no npm package, no toolchain, no shell-out.
  *   - Zip entries are written in a fixed order with the fixed DOS timestamp
  *     1980-01-01 00:00:00 (dosTime 0x0000, dosDate 0x0021) and method 0
  *     (stored), so two runs produce byte-identical archives. The script prints
@@ -44,7 +59,9 @@
  *   node .opencode/tests/installable-apps/fixtures/build-package-fixtures.mjs
  *   node ... --out <dir>            override the output directory
  *   node ... --verify               exit 1 unless the committed expected
- *                                   manifest matches the bytes just produced
+ *                                   manifest matches the bytes just produced,
+ *                                   AND every manifest classifies with the
+ *                                   published schema as its recorded code
  *   node ... --write-expected       (re)write package-fixtures.expected.json
  *   node ... --help
  */
@@ -53,6 +70,11 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  topLevelKeys,
+  validateManifest as validateManifestAgainstSchema,
+} from '../../../../packages/fredo-authoring/lib/validate.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..', '..');
@@ -63,8 +85,15 @@ const DEFAULT_OUT = path.join(REPO_ROOT, '.opencode', 'tmp', '3147', 'fixtures',
  * Manifest schema -- fixed by the plan. Consumed here, never invented.
  * ========================================================================== */
 
-const ID_RE = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$/;
-const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+/* ==========================================================================
+ * Manifest validation -- the PUBLISHED SCHEMA, never a hand-written copy.
+ *
+ * Spec #3145 ST-2 removed this file's third hand-written copy of the schema.
+ * The allowed key sets, length caps, patterns and the reserved-id list come from
+ * `packages/fredo-authoring/schema/fredo-app.schema.json`, which is generated
+ * from the Rust parser's own constants, so a key the parser accepts can never be
+ * refused here again (the D1 drift class).
+ * ========================================================================== */
 
 /** The frozen 22 refusal codes (the Rust enum mirrors this exactly). */
 const REFUSAL_CODES = [
@@ -95,40 +124,17 @@ const REFUSAL_CODES = [
 /** The host-reserved path segment (`RESERVED_PATH_SEGMENT` in Rust). */
 const RESERVED_SEGMENT = '__fredo';
 
-/** Validate a manifest against the plan's schema rules; returns error strings. */
-function validateManifest(m) {
-  const errors = [];
-  if (m.manifestVersion !== 1) errors.push('manifestVersion must be the number 1');
-  if (typeof m.id !== 'string' || m.id.length > 96 || !ID_RE.test(m.id)) {
-    errors.push('id must match ' + ID_RE + ' and be at most 96 chars');
-  }
-  if (typeof m.displayName !== 'string' || m.displayName.length < 1 || m.displayName.length > 64) {
-    errors.push('displayName must be a string of 1..64 chars');
-  }
-  if (typeof m.version !== 'string' || !SEMVER_RE.test(m.version)) {
-    errors.push('version must be SemVer 2.0.0 with no "v" prefix');
-  }
-  if (!m.engines || typeof m.engines.fredo !== 'string' || m.engines.fredo.length === 0) {
-    errors.push('engines.fredo must be a non-empty semver RANGE string');
-  }
-  if (!m.entry || typeof m.entry.document !== 'string' || typeof m.entry.module !== 'string') {
-    errors.push('entry.document and entry.module must be strings');
-  } else {
-    const unsafe = (p) =>
-      p.length === 0 || p.includes('..') || p.startsWith('/') || p.includes('\\');
-    if (unsafe(m.entry.document) || !m.entry.document.endsWith('.html')) {
-      errors.push('entry.document must be a relative POSIX .html path without ".."');
-    }
-    if (unsafe(m.entry.module) || !m.entry.module.endsWith('.js')) {
-      errors.push('entry.module must be a relative POSIX .js path without ".."');
-    }
-  }
-  if (m.description !== undefined) {
-    if (typeof m.description !== 'string' || m.description.length > 280) {
-      errors.push('description must be a string of at most 280 chars when present');
-    }
-  }
-  return errors;
+/**
+ * Validate a manifest with the published schema; returns the FIRST violation or
+ * null.
+ *
+ * The kit performs the semver-RANGE shape check; it is not asked to decide host
+ * compatibility here (the fixture set is host-independent by design — see the
+ * incompatible-engines rationale in the header), which is why no `--fredo`
+ * version is supplied.
+ */
+function firstManifestViolation(manifest) {
+  return validateManifestAgainstSchema(manifest, {})[0] ?? null;
 }
 
 /**
@@ -449,9 +455,13 @@ const FIXTURES = [
     //   unparseable JSON        -> manifest_malformed
     //   unknown top-level field -> manifest_unknown_field   <-- this fixture
     //   non-1 manifestVersion   -> unsupported_manifest_version
+    //
+    // DRIFT CORRECTION D1 (Spec #3145): this key used to be `capabilities`,
+    // which #3146 made the manifest's 8th LEGAL key. `sandbox` is genuinely
+    // undefined at every manifestVersion this build reads.
     expects: 'manifest_unknown_field',
-    defect: 'unknown top-level key "capabilities" (manifestVersion 1 does not define it)',
-    unknownField: 'capabilities',
+    defect: 'unknown top-level key "sandbox" (manifestVersion 1 does not define it)',
+    unknownField: 'sandbox',
     extraEntries: [],
     tamper: null,
   },
@@ -511,6 +521,20 @@ const FIXTURES = [
     extraEntries: [{ name: RESERVED_ENTRY, data: '// host-owned bootstrap\n' }],
     tamper: null,
   },
+  {
+    // Spec #3145 ST-2 (AC5's required-field leg; QA's F-8.21(c) reads it).
+    id: 'qa3145-missing-field',
+    displayName: 'QA3145 Missing Field',
+    version: '1.0.0',
+    enginesFredo: '>=0.0.0',
+    description:
+      'ST-2 refusal fixture: a manifest that OMITS the required displayName field.',
+    expects: 'manifest_invalid_field',
+    defect: 'the required top-level field "displayName" is absent',
+    missingField: 'displayName',
+    extraEntries: [],
+    tamper: null,
+  },
 ];
 
 /** The manifest object for one fixture (mutated per `defect`). */
@@ -526,8 +550,12 @@ function manifestFor(fixture) {
   };
   if (fixture.unknownField) {
     // The deliberate defect: a top-level key manifestVersion 1 does not define.
-    // `capabilities` is the realistic author mistake (it is what #3146 adds).
     manifest[fixture.unknownField] = ['read:settings'];
+  }
+  if (fixture.missingField) {
+    // The deliberate defect: a REQUIRED key is absent (never null — an unset
+    // optional is an absent key, and a required one is simply missing).
+    delete manifest[fixture.missingField];
   }
   return manifest;
 }
@@ -598,29 +626,60 @@ function selfCheck(item) {
           problems.push('manifest field drifted inside the archive: ' + key);
         }
       }
+      if (fixture.missingField && Object.prototype.hasOwnProperty.call(parsed, fixture.missingField)) {
+        problems.push('this fixture must OMIT "' + fixture.missingField + '"');
+      }
 
-      if (fixture.expects === 'manifest_unknown_field') {
-        // The defect must be PRESENT and must be exactly the declared key.
-        const defined = ['manifestVersion', 'id', 'displayName', 'version', 'engines', 'entry', 'description'];
-        const unknown = Object.keys(parsed).filter((key) => !defined.includes(key));
-        if (JSON.stringify(unknown) !== JSON.stringify([fixture.unknownField])) {
-          problems.push(
-            'expected exactly the unknown key "' + fixture.unknownField + '", found ' + JSON.stringify(unknown)
-          );
-        }
-        // And the DEFECT must be the only defect: the rest of the manifest is legal.
-        for (const key of Object.keys(parsed)) {
-          if (unknown.includes(key)) continue;
-          if (JSON.stringify(parsed[key]) !== JSON.stringify(expected[key])) {
-            problems.push('a refusal fixture must carry ONLY its declared defect; ' + key + ' also drifted');
+      const violation = firstManifestViolation(parsed);
+      if (
+        fixture.expects === 'manifest_unknown_field' ||
+        fixture.expects === 'manifest_invalid_field'
+      ) {
+        // The defect must be PRESENT, must classify as the recorded code, and
+        // must name the recorded field.
+        const declaredField = fixture.unknownField ?? fixture.missingField;
+        if (violation === null) {
+          problems.push('the published schema accepts this manifest, but it must drive ' + fixture.expects);
+        } else {
+          if (violation.code !== fixture.expects) {
+            problems.push('the manifest classifies as ' + violation.code + ', not ' + fixture.expects);
           }
+          if (violation.field !== declaredField) {
+            problems.push(
+              'the refusal names field "' + violation.field + '", expected "' + declaredField + '"',
+            );
+          }
+        }
+        // The allowed-key set is the PUBLISHED SCHEMA's (never a hand-typed list:
+        // a stale list is exactly how `capabilities` stayed "unknown" after #3146).
+        const defined = topLevelKeys();
+        if (!defined.includes('capabilities')) {
+          problems.push('the published schema must define "capabilities" (the D1 drift class)');
+        }
+        const unknown = Object.keys(parsed).filter((key) => !defined.includes(key));
+        const declaredUnknown = fixture.unknownField ? [fixture.unknownField] : [];
+        if (JSON.stringify(unknown) !== JSON.stringify(declaredUnknown)) {
+          problems.push(
+            'expected exactly the unknown key(s) ' +
+              JSON.stringify(declaredUnknown) +
+              ', found ' +
+              JSON.stringify(unknown),
+          );
         }
       } else {
         // Every other fixture's manifest must be schema-legal (the engines RANGE
         // is validated separately below because `>=999.0.0` is a legal range
         // that simply excludes the host).
-        const schemaErrors = validateManifest(parsed);
-        for (const error of schemaErrors) problems.push('archived manifest: ' + error);
+        if (violation !== null) {
+          problems.push(
+            'archived manifest: ' +
+              violation.code +
+              ' ' +
+              (violation.field ?? '') +
+              ' ' +
+              violation.detail,
+          );
+        }
       }
     }
   }
@@ -702,14 +761,19 @@ Usage:
 
 Options:
   --out <dir>       output directory (default: .opencode/tmp/3147/fixtures/packages)
-  --verify          exit 1 unless the committed expected manifest matches these bytes
+  --verify          exit 1 unless the committed expected manifest matches these bytes AND
+                    every manifest classifies with the published schema as its recorded code
   --write-expected  (re)write package-fixtures.expected.json beside this script
   --help            this text
 
 Output is deterministic: two runs write byte-identical archives (fixed entry order,
 fixed 1980-01-01 DOS timestamp, stored entries). Compare the sha256 column across
 runs. Every refusal package's code is recorded in the committed expected manifest
-(package-fixtures.expected.json) -- read it from there, never from an assumption.`;
+(package-fixtures.expected.json) -- read it from there, never from an assumption.
+
+Manifest validation uses the PUBLISHED schema
+(packages/fredo-authoring/schema/fredo-app.schema.json, generated from the Rust
+parser), never a hand-written copy: that replacement is drift correction D1.`;
 
 function parseArgs(argv) {
   const options = { out: DEFAULT_OUT, verify: false, writeExpected: false, help: false };
@@ -798,11 +862,29 @@ function expectedManifest(built) {
       defect: item.fixture.defect,
       ...(item.fixture.unsafeShape ? { unsafeShape: item.fixture.unsafeShape } : {}),
       ...(item.fixture.unknownField ? { badManifestShape: item.fixture.unknownField } : {}),
+      ...(item.fixture.missingField ? { missingField: item.fixture.missingField } : {}),
       ...(item.fixture.tamper ? { tamper: item.fixture.tamper } : {}),
       entries: item.listed.map((entry) => ({ name: entry.name, bytes: entry.bytes })),
     })),
   };
 }
+
+/**
+ * Which fixtures' expected code is decided by the MANIFEST (and therefore must
+ * match the published schema's classification). The rest are decided by the
+ * archive rules (`unsafe_path`, `reserved_path`), by the zip's absence of a
+ * manifest (`no_manifest`), or at load time (`integrity_mismatch`).
+ */
+const MANIFEST_CLASSIFIABLE_CODES = new Set([
+  'manifest_malformed',
+  'manifest_unknown_field',
+  'manifest_invalid_field',
+  'unsupported_manifest_version',
+  'id_invalid',
+  'id_reserved',
+  'version_invalid',
+  'engines_range_invalid',
+]);
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -824,7 +906,7 @@ function main() {
     }
   }
   const codesExpecting = FIXTURES.map((fixture) => fixture.expects).filter((code) => code !== null);
-  for (const required of ['no_manifest', 'manifest_unknown_field', 'unsafe_path', 'host_incompatible', 'reserved_path', 'integrity_mismatch']) {
+  for (const required of ['no_manifest', 'manifest_unknown_field', 'manifest_invalid_field', 'unsafe_path', 'host_incompatible', 'reserved_path', 'integrity_mismatch']) {
     if (!codesExpecting.includes(required)) {
       catalogProblems.push('no fixture drives the required code ' + required);
     }
@@ -863,6 +945,37 @@ function main() {
       if (known.expects !== item.expects) {
         problems.push(
           'expected-code drift for ' + item.id + ': ' + known.expects + ' -> ' + item.expects
+        );
+      }
+    }
+    // The SCHEMA-DRIFT leg (Spec #3145 ST-2): every fixture whose expected code
+    // is decided by the MANIFEST must classify with the published schema as that
+    // exact code, and every other fixture's manifest must be schema-legal. This
+    // is the leg that could not have passed before D1's repair: `capabilities`
+    // classified as manifest_invalid_field while the corpus recorded
+    // manifest_unknown_field.
+    for (const builtItem of built) {
+      const fixture = builtItem.fixture;
+      const violation = firstManifestViolation(manifestFor(fixture));
+      if (MANIFEST_CLASSIFIABLE_CODES.has(fixture.expects)) {
+        if (violation === null || violation.code !== fixture.expects) {
+          problems.push(
+            'schema-classification drift for ' +
+              fixture.id +
+              ': the corpus records ' +
+              fixture.expects +
+              ', the published schema says ' +
+              (violation === null ? 'no violation' : violation.code + ' (field ' + (violation.field ?? 'none') + ')')
+          );
+        }
+      } else if (violation !== null) {
+        problems.push(
+          'schema drift for ' +
+            fixture.id +
+            ": its manifest must be schema-legal, the published schema says " +
+            violation.code +
+            ' ' +
+            (violation.field ?? '')
         );
       }
     }
@@ -934,7 +1047,7 @@ function main() {
     }
   }
   console.log('');
-  console.log('built ' + built.length + ' archives (7 required)');
+  console.log('built ' + built.length + ' archives (' + FIXTURES.length + ' required)');
   console.log(
     'codes driven: ' +
       built
@@ -943,4 +1056,13 @@ function main() {
   );
 }
 
-main();
+/** The catalog + manifest projection, exported for the kit's conformance test. */
+export { FIXTURES, MANIFEST_CLASSIFIABLE_CODES, REFUSAL_CODES, firstManifestViolation, manifestFor };
+
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  main();
+}
