@@ -10,9 +10,10 @@
  *
  * # Absence, not an empty container (§5)
  *
- * With nothing installed (or when the query filters everything out) the section
- * renders **nothing** — no heading, no box. A user with no installed apps is not
- * taught about a shelf that has nothing on it.
+ * With nothing installed (or when the query filters everything out, or when every
+ * installed application is turned off — Spec #3144) the section renders
+ * **nothing** — no heading, no box. A user with no openable installed apps is
+ * not taught about a shelf that has nothing on it.
  *
  * # "own window" (§8(iii))
  *
@@ -49,14 +50,22 @@ export const INSTALLED_APPS_HEADING = '| INSTALLED APPS';
 /** The non-colour carrier of the v1 "not an in-window panel" limitation. */
 export const OWN_WINDOW_LABEL = 'own window';
 
-/** The query filter — `displayName` only, case-insensitive substring (the grid's own rule). */
+/**
+ * The query filter — drops turned-off applications (Spec #3144), then matches
+ * `displayName` only, case-insensitive substring (the grid's own rule).
+ *
+ * A `disabled` application cannot be opened, so offering it here would be a
+ * dead button. A `failing` application STAYS listed (its own window renders the
+ * failure + Retry — architect §5: hiding it would be "silently absent").
+ */
 export function filterInstalledApps(
   entries: readonly InstalledAppEntry[],
   query: string,
 ): readonly InstalledAppEntry[] {
+  const openable = entries.filter((entry) => entry.state !== 'disabled');
   const needle = query.trim().toLowerCase();
-  if (!needle) return entries;
-  return entries.filter((entry) => entry.displayName.toLowerCase().includes(needle));
+  if (!needle) return openable;
+  return openable.filter((entry) => entry.displayName.toLowerCase().includes(needle));
 }
 
 export interface LauncherInstalledAppsSectionProps {

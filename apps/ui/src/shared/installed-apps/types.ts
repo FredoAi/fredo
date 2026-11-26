@@ -87,6 +87,34 @@ export interface InstalledAppError {
 }
 
 /**
+ * The three lifecycle states a listed application can be in (Spec #3144).
+ *
+ * The array is the ONE runtime source; the union is derived from it, so the
+ * client can narrow a wire value without a second hand-kept list. These strings
+ * are the wire form of the Rust `InstalledAppState` (`snake_case`) and are part
+ * of the shipped contract — never rename one.
+ *
+ * Precedence is the backend's, not this module's: `disabled` > `failing` >
+ * `working`. The UI reads the single resolved `state` off the entry; it never
+ * re-derives the precedence (a second derivation would be a second source of
+ * truth for one claim).
+ */
+export const INSTALLED_APP_STATES = ['working', 'failing', 'disabled'] as const;
+
+/** A listed application's lifecycle state. */
+export type InstalledAppLifecycleState = (typeof INSTALLED_APP_STATES)[number];
+
+/** Runtime guard: is this value one of the three lifecycle states? */
+export function isInstalledAppLifecycleState(
+  value: unknown,
+): value is InstalledAppLifecycleState {
+  return (
+    typeof value === 'string' &&
+    (INSTALLED_APP_STATES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * The list projection — what the settings pane and the launcher render.
  *
  * `enginesFredo` is the declared range **verbatim**, never resolved to a
@@ -105,11 +133,42 @@ export interface InstalledAppEntry {
   /** ABSENT KEY when the manifest omitted a description — never `null`. */
   description?: string;
   /**
+   * The application's lifecycle state (Spec #3144). ALWAYS present. `working` is
+   * a claim about the HOST'S RECORD ("no recorded failure"), never a claim that
+   * the application is running (G-475) — the surface must word it as a record.
+   */
+  state: InstalledAppLifecycleState;
+  /**
+   * The host's witness code for a `failing` state (Spec #3144). An **ABSENT KEY**
+   * when the state is not `failing` (Adjudication 10.6), never `null`.
+   *
+   * The landable domain is `integrity_mismatch | integrity_record_corrupt |
+   * io_error`: `id_not_installed` is deliberately NOT landable here, because an
+   * application with no install directory cannot be listed at all (Adjudication
+   * 10.4). Render the reason through `installedAppFailureReason` (the inventory's
+   * own copy authority) — never through the install/open `refusalCopy`.
+   */
+  failureCode?: InstalledAppRefusalCode;
+  /**
    * The declared/granted backend reach (Spec #3146). ALWAYS present — the
    * backend always emits the three arrays (empty when the package declared
    * nothing), so read it directly: no `?.`, no `?? []`.
    */
   capabilities: InstalledAppCapabilityStatus;
+}
+
+/**
+ * What a completed removal did (Spec #3144). Mirrors `commands_manage.rs` —
+ * `InstalledAppRemovalOutcome`, `camelCase`.
+ *
+ * `dataKept` is the MEANING the pre-confirmation disclosure must match; the
+ * design keeps stored data (`true`), so no destructive primitive is introduced.
+ */
+export interface InstalledAppRemovalOutcome {
+  appId: string;
+  removed: boolean;
+  dataKept: boolean;
+  dataTables: string[];
 }
 
 /**

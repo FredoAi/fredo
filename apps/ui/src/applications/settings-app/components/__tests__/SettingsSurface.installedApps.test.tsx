@@ -39,6 +39,8 @@ vi.mock('@/shared/installed-apps/useInstalledApps', () => ({
 vi.mock('@/shared/installed-apps/store', () => ({
   refreshInstalledApps: vi.fn(async () => {}),
   recordInstalledApp: vi.fn(),
+  replaceInstalledApp: vi.fn(),
+  forgetInstalledApp: vi.fn(),
 }));
 
 import { SettingsSurface } from '../SettingsSurface';

@@ -39,6 +39,7 @@ use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use super::archive;use super::manifest::{self, AppManifest, InstalledAppCapabilities};
+use super::lifecycle::InstalledAppState;
 use super::{
     InstalledAppError, InstalledAppRefusalCode, InstalledAppResult, INSTALLED_APP_WINDOW_LABEL_PREFIX,
     INSTALLED_APPS_ROOT_SUBDIR, INSTALLED_FILES_SUBDIR, INSTALLED_MANIFEST_FILENAME,
@@ -168,6 +169,15 @@ pub struct InstalledAppEntry {
     pub description: Option<String>,
     /// The declared/granted reach. Always present (Spec #3146).
     pub capabilities: InstalledAppCapabilityStatus,
+    /// The lifecycle state (Spec #3144). Always present. `working` is a claim
+    /// about the host's RECORD ("no recorded failure"), never a claim that the
+    /// application is running.
+    pub state: InstalledAppState,
+    /// The host's witness code for a `failing` state (Spec #3144). ABSENT KEY
+    /// when the state is not `failing`; `id_not_installed` is deliberately NOT
+    /// landable here (an application with no install directory cannot be listed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<InstalledAppRefusalCode>,
 }
 
 impl InstalledAppEntry {
@@ -186,6 +196,8 @@ impl InstalledAppEntry {
                 &manifest.id,
                 manifest.capabilities.as_ref(),
             ),
+            state: InstalledAppState::Working,
+            failure_code: None,
         }
     }
 
@@ -210,7 +222,69 @@ impl InstalledAppEntry {
                 &record.id,
                 manifest.capabilities.as_ref(),
             ),
+            state: InstalledAppState::Working,
+            failure_code: None,
         }
+    }
+
+    /// A `Failing` row for a directory whose `record.json` is unreadable.
+    ///
+    /// The id (the registry directory name) is the ONLY identity we can trust, so
+    /// every other field falls back to its empty form, never invented
+    /// (Adjudication 10.6): `displayName` = the id, `version`/`enginesFredo`/
+    /// `installedAt` = `""`, `description` absent, `capabilities` = the fail-safe
+    /// EMPTY projection. The reach fails closed because an unreadable install
+    /// grants nothing.
+    fn failing_from_id(id: &str, failure_code: InstalledAppRefusalCode) -> Self {
+        Self {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            version: String::new(),
+            engines_fredo: String::new(),
+            installed_at: String::new(),
+            window_label: window_label_for(id),
+            description: None,
+            capabilities: InstalledAppCapabilityStatus::undeclared(id),
+            state: InstalledAppState::Failing,
+            failure_code: Some(failure_code),
+        }
+    }
+
+    /// A `Failing` row for a directory whose canonical `manifest.json` is
+    /// unreadable but whose record is intact.
+    ///
+    /// The identity survives (it is in the record), but the declaration does not:
+    /// `capabilities` falls back to the fail-safe EMPTY projection, exactly as an
+    /// unreadable declaration must (never a stale or invented reach).
+    fn failing_from_record(record: &InstalledAppRecord, failure_code: InstalledAppRefusalCode) -> Self {
+        Self {
+            id: record.id.clone(),
+            display_name: record
+                .display_name
+                .clone()
+                .unwrap_or_else(|| record.id.clone()),
+            version: record.version.clone(),
+            engines_fredo: record.engines_fredo.clone(),
+            installed_at: record.installed_at.clone(),
+            window_label: window_label_for(&record.id),
+            description: record.description.clone(),
+            capabilities: InstalledAppCapabilityStatus::undeclared(&record.id),
+            state: InstalledAppState::Failing,
+            failure_code: Some(failure_code),
+        }
+    }
+
+    /// Apply a resolved lifecycle state (Spec #3144): the `disabled > failing >
+    /// working` precedence is computed by [`super::lifecycle::state_for`]; this
+    /// just writes the result onto the projection.
+    pub fn with_lifecycle(
+        mut self,
+        state: InstalledAppState,
+        failure_code: Option<InstalledAppRefusalCode>,
+    ) -> Self {
+        self.state = state;
+        self.failure_code = failure_code;
+        self
     }
 
     /// Apply this application's consent record to the projection.
@@ -347,13 +421,25 @@ pub fn read_manifest_file(app_dir: &Path) -> InstalledAppResult<AppManifest> {
 ///
 /// This is the ONLY reader of the registry, and nothing calls it at startup
 /// (R-5.5). A directory whose name cannot be an app id (a leftover staging
-/// directory, an OS artifact) is skipped rather than reported — but a directory
-/// that DOES look like an install with a damaged record is a hard
-/// [`IntegrityRecordCorrupt`], so the settings pane can render a verdict instead
-/// of a misleading empty state (T-6.4).
+/// directory, an OS artifact) is skipped.
 ///
-/// [`IntegrityRecordCorrupt`]: InstalledAppRefusalCode::IntegrityRecordCorrupt
+/// **Per-directory resilient (Spec #3144, the shipped defect):** a directory that
+/// DOES look like an install but whose `record.json` / `manifest.json` cannot be
+/// read is surfaced as a `Failing` row, never dropped and never allowed to abort
+/// the whole listing — one damaged install must not hide every other one (AC-1's
+/// "no installed application missing", AC-5's "rather than silently absent").
 pub fn list_installed(root: &Path) -> InstalledAppResult<Vec<InstalledAppEntry>> {
+    list_installed_resilient(root)
+}
+
+/// List every installed application, with a damaged install surfaced as a
+/// `Failing` row (Spec #3144, R-1.2 / R-5.3).
+///
+/// A directory whose `record.json` or canonical `manifest.json` cannot be read
+/// yields a `Failing` row carrying the observed witness code, and every OTHER
+/// application still lists. Only a root-level read failure (the registry itself
+/// is unreadable) is an error.
+pub fn list_installed_resilient(root: &Path) -> InstalledAppResult<Vec<InstalledAppEntry>> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -387,17 +473,94 @@ pub fn list_installed(root: &Path) -> InstalledAppResult<Vec<InstalledAppEntry>>
             continue;
         }
 
-        // An install directory without a record is a damaged install, not an
-        // empty one: surface it so the pane can say so.
-        let record = read_record(&entry.path())?;
-        // The declaration lives in the canonical manifest, which is the ONE
-        // host-side copy of what the package declared (Spec #3146).
-        let manifest = read_manifest_file(&entry.path())?;
-        entries_found.push(InstalledAppEntry::from_installed(&record, &manifest));
+        // A damaged record or manifest is a FACT about one application, not a
+        // failure of the listing: it becomes a `Failing` row and the loop
+        // continues so every other application still lists.
+        let dir = entry.path();
+        let listed = match read_record(&dir) {
+            Ok(record) => match read_manifest_file(&dir) {
+                Ok(manifest) => InstalledAppEntry::from_installed(&record, &manifest),
+                Err(error) => InstalledAppEntry::failing_from_record(&record, error.code),
+            },
+            Err(error) => InstalledAppEntry::failing_from_id(&name, error.code),
+        };
+        entries_found.push(listed);
     }
 
     entries_found.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(entries_found)
+}
+
+/// `<app_data_dir>/installed-apps-removing` — where a removal renames a package
+/// directory aside before deleting it (Spec #3144).
+///
+/// Deliberately a SIBLING of the registry root, never inside it: after the rename
+/// the application is already absent from the inventory, and any leftover bytes
+/// are debris under a non-registry directory, swept on the next removal.
+pub fn removal_root(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(format!("{INSTALLED_APPS_ROOT_SUBDIR}-removing"))
+}
+
+/// Remove an installed application's directory (Spec #3144).
+///
+/// The registry stays consistent even when the bytes cannot be freed: the
+/// `<registry>/<id>` directory is first RENAMED aside into [`removal_root`]
+/// (a same-volume atomic move, so the application is absent from the inventory
+/// the instant it succeeds), and only then deleted. A failure after the rename
+/// leaves the application fully ABSENT (never half); the debris is swept the next
+/// time a removal runs.
+pub fn remove_install(data_dir: &Path, id: &str) -> InstalledAppResult<()> {
+    let root = install_root(data_dir);
+    let dir = app_dir(&root, id);
+    if !dir.is_dir() {
+        return Err(InstalledAppError::field(
+            InstalledAppRefusalCode::IdNotInstalled,
+            "appId",
+            format!("\"{id}\" is not installed, so there is nothing to remove"),
+        ));
+    }
+
+    let removal = removal_root(data_dir);
+    std::fs::create_dir_all(&removal).map_err(|error| {
+        InstalledAppError::io(&format!("creating {}", removal.display()), &error)
+    })?;
+
+    // Sweep debris from any previous removal that could not free its bytes.
+    sweep_removal_debris(data_dir);
+
+    let target = removal.join(format!("{id}-{}", unique_suffix()));
+    std::fs::rename(&dir, &target).map_err(|error| {
+        InstalledAppError::io(
+            &format!("removing {} (renaming it aside)", dir.display()),
+            &error,
+        )
+    })?;
+
+    // Past the rename the application is ABSENT from the registry: a failure here
+    // leaves it absent (the desired never-half property) and reports the IO error.
+    if let Err(error) = std::fs::remove_dir_all(&target) {
+        return Err(InstalledAppError::io(
+            &format!("clearing {}", target.display()),
+            &error,
+        ));
+    }
+
+    Ok(())
+}
+
+/// Best-effort sweep of leftover removal debris under [`removal_root`].
+///
+/// A directory that could not be freed during an earlier removal (a Windows file
+/// lock) is retried here; a failure is swallowed because the debris is outside
+/// the registry and never appears in the inventory.
+fn sweep_removal_debris(data_dir: &Path) {
+    let removal = removal_root(data_dir);
+    let Ok(entries) = std::fs::read_dir(&removal) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
 }
 
 /// Install one package archive into the registry.
@@ -1520,16 +1683,138 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_install_makes_the_listing_a_refusal_not_an_empty_state() {
+    fn a_damaged_install_is_a_failing_row_and_the_others_still_list() {
         let data = data_dir();
-        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3147-damaged"));
+        for id in ["qa3144-good-a", "qa3144-good-b"] {
+            let (_zip_dir, zip_path) = staged_zip(&valid_package(id));
+            install_archive(data.path(), &zip_path).expect("install");
+        }
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3144-damaged"));
         install_archive(data.path(), &zip_path).expect("install");
 
-        let dir = app_dir(&install_root(data.path()), "qa3147-damaged");
-        std::fs::remove_file(dir.join(INSTALLED_RECORD_FILENAME)).expect("remove record");
+        let dir = app_dir(&install_root(data.path()), "qa3144-damaged");
+        std::fs::write(dir.join(INSTALLED_RECORD_FILENAME), b"").expect("truncate record");
 
-        let error = list_installed(&install_root(data.path())).expect_err("damaged record");
-        assert_eq!(error.code, InstalledAppRefusalCode::IntegrityRecordCorrupt);
+        // The listing does NOT abort: every application is present, and the
+        // damaged one is a Failing row (Spec #3144 — the shipped defect fix).
+        let listed = list_installed(&install_root(data.path())).expect("listing survives damage");
+        let ids: Vec<&str> = listed.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["qa3144-damaged", "qa3144-good-a", "qa3144-good-b"],
+            "one damaged record must not hide the others"
+        );
+
+        let damaged = listed
+            .iter()
+            .find(|entry| entry.id == "qa3144-damaged")
+            .expect("the damaged app is still listed");
+        assert_eq!(damaged.state, InstalledAppState::Failing);
+        assert_eq!(
+            damaged.failure_code,
+            Some(InstalledAppRefusalCode::IntegrityRecordCorrupt)
+        );
+        // Identity falls back to the registry id, and the reach fails closed.
+        assert_eq!(damaged.display_name, "qa3144-damaged");
+        assert_eq!(damaged.version, "");
+        assert_eq!(damaged.engines_fredo, "");
+        assert_eq!(damaged.installed_at, "");
+        assert!(damaged.description.is_none());
+        assert!(damaged.capabilities.declared.is_empty());
+
+        for good in ["qa3144-good-a", "qa3144-good-b"] {
+            let entry = listed.iter().find(|entry| entry.id == good).expect(good);
+            assert_eq!(entry.state, InstalledAppState::Working);
+            assert!(entry.failure_code.is_none());
+            assert_eq!(entry.display_name, "QA3147 Sample");
+        }
+    }
+
+    #[test]
+    fn a_damaged_manifest_is_also_a_failing_row_with_empty_capabilities() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3144-manifest-damaged"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        let dir = app_dir(&install_root(data.path()), "qa3144-manifest-damaged");
+        std::fs::write(dir.join(INSTALLED_MANIFEST_FILENAME), b"{ not a manifest")
+            .expect("corrupt manifest");
+
+        let listed = list_installed_resilient(&install_root(data.path())).expect("listing");
+        assert_eq!(listed.len(), 1);
+        let entry = &listed[0];
+        assert_eq!(entry.state, InstalledAppState::Failing);
+        assert_eq!(
+            entry.failure_code,
+            Some(InstalledAppRefusalCode::IntegrityRecordCorrupt)
+        );
+        // The identity survives (it is in the record); the reach fails closed.
+        assert_eq!(entry.display_name, "QA3147 Sample");
+        assert_eq!(entry.version, "1.2.3");
+        assert!(entry.capabilities.declared.is_empty());
+    }
+
+    #[test]
+    fn the_entry_wire_shape_carries_state_and_omits_failure_code_when_not_failing() {
+        let manifest =
+            manifest::parse_manifest(manifest_json("qa3147-sample").as_bytes()).expect("manifest");
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let value = serde_json::to_value(&entry).expect("serialize");
+        assert_eq!(value.get("state").and_then(|v| v.as_str()), Some("working"));
+        assert!(
+            !value.as_object().expect("object").contains_key("failureCode"),
+            "a non-failing entry has an ABSENT failureCode key: {value}"
+        );
+
+        let failing =
+            entry.with_lifecycle(InstalledAppState::Failing, Some(InstalledAppRefusalCode::IntegrityMismatch));
+        let value = serde_json::to_value(&failing).expect("serialize");
+        assert_eq!(value.get("state").and_then(|v| v.as_str()), Some("failing"));
+        assert_eq!(
+            value.get("failureCode").and_then(|v| v.as_str()),
+            Some("integrity_mismatch")
+        );
+    }
+
+    // ── Removal primitives (Spec #3144) ────────────────────────────────────
+
+    #[test]
+    fn the_removal_root_is_a_sibling_of_the_registry_not_a_child() {
+        let data = Path::new("C:/data");
+        let registry = install_root(data);
+        let removal = removal_root(data);
+        assert!(!removal.starts_with(&registry));
+        assert_eq!(removal.parent(), registry.parent());
+        assert!(removal.ends_with("installed-apps-removing"));
+    }
+
+    #[test]
+    fn remove_install_drops_the_directory_and_leaves_no_debris() {
+        let data = data_dir();
+        let (_zip_dir, zip_path) = staged_zip(&valid_package("qa3144-remove"));
+        install_archive(data.path(), &zip_path).expect("install");
+
+        remove_install(data.path(), "qa3144-remove").expect("remove");
+        assert!(
+            !app_dir(&install_root(data.path()), "qa3144-remove").exists(),
+            "the install directory is gone"
+        );
+        assert!(
+            list_installed(&install_root(data.path())).expect("list").is_empty(),
+            "nothing is listed"
+        );
+        let debris: Vec<_> = std::fs::read_dir(removal_root(data.path()))
+            .map(|entries| entries.filter_map(std::result::Result::ok).collect())
+            .unwrap_or_default();
+        assert!(debris.is_empty(), "no debris remains");
+    }
+
+    #[test]
+    fn remove_install_of_an_unknown_id_is_id_not_installed() {
+        let data = data_dir();
+        let error = remove_install(data.path(), "qa3144-ghost").expect_err("nothing to remove");
+        assert_eq!(error.code, InstalledAppRefusalCode::IdNotInstalled);
+        assert_eq!(error.field.as_deref(), Some("appId"));
     }
 
     #[test]

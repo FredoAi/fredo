@@ -36,6 +36,7 @@ import type {
   CapabilityRefusalCode,
   HighRiskCapabilityId,
 } from './types';
+import { CAPABILITY_IDS, type CapabilityId } from './types';
 
 /**
  * The six authority refusal sentences — the app-side display copy.
@@ -127,5 +128,53 @@ export const CAPABILITY_CONSENT_COPY: Record<HighRiskCapabilityId, CapabilityCon
 export function consentCopyFor(capability: string): CapabilityConsentCopy | null {
   return Object.prototype.hasOwnProperty.call(CAPABILITY_CONSENT_COPY, capability)
     ? CAPABILITY_CONSENT_COPY[capability as HighRiskCapabilityId]
+    : null;
+}
+
+// ── Spec #3144 — the declared-capability view (widened, NOT duplicated) ──────
+
+/**
+ * The high-risk capability ids, derived by FILTERING the closed union on the
+ * `high-risk.` prefix (Spec #3144).
+ *
+ * The filter is load-bearing: a new `high-risk.*` id joined to `CapabilityId`
+ * becomes a member automatically, so the `high-risk`/`ordinary` split in the
+ * widened grants section can never silently mislabel it. The type predicate
+ * keeps this in step with the `HighRiskCapabilityId` union `CAPABILITY_CONSENT_COPY`
+ * is keyed by.
+ */
+export const HIGH_RISK_CAPABILITY_IDS: readonly HighRiskCapabilityId[] = CAPABILITY_IDS.filter(
+  (id): id is HighRiskCapabilityId => id.startsWith('high-risk.'),
+);
+
+/**
+ * The consequence copy for EVERY declared capability id (Spec #3144,
+ * Adjudication 10.1/10.4) — the widened grants section shows all of them, not
+ * just the high-risk half.
+ *
+ * `data.tables` is the ordinary case: it is always held if declared, is never
+ * consentable, and gets a sentence but no control. Its `verb` is unused (no
+ * accessible name is built from an ordinary line) but is kept non-empty so the
+ * shape stays a `CapabilityConsentCopy`.
+ *
+ * Built from `CAPABILITY_CONSENT_COPY` so the three high-risk sentences have
+ * ONE source — widening the VIEW must never fork the COPY.
+ */
+export const CAPABILITY_DECLARED_COPY: Record<CapabilityId, CapabilityConsentCopy> = {
+  ...CAPABILITY_CONSENT_COPY,
+  'data.tables': {
+    consequence: 'Store and read its own data in tables Fredo sets aside for it.',
+    verb: 'store and read its own data in tables Fredo sets aside for it',
+  },
+};
+
+/**
+ * The consequence copy for a declared capability id, or `null` when this build
+ * cannot name it (an id a newer package declared). `null` is NOT a filter: the
+ * caller must still SHOW the raw id (never silently drop a declared capability).
+ */
+export function declaredCapabilityCopy(capability: string): CapabilityConsentCopy | null {
+  return Object.prototype.hasOwnProperty.call(CAPABILITY_DECLARED_COPY, capability)
+    ? CAPABILITY_DECLARED_COPY[capability as CapabilityId]
     : null;
 }

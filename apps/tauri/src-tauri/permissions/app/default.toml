@@ -156,6 +156,15 @@ permissions = [
   # an installed document can never consent for itself.
   "allow-installed-app-consent-grant",
   "allow-installed-app-consent-revoke",
+  # Spec #3144 — the installed-application management commands, called by the
+  # settings pane's Turn off / Turn on / Remove controls (a BUILT-IN window). They
+  # must also be granted here because every registered command needs an
+  # allow-<command> entry; the `installed-<id>` window does NOT match this
+  # capability, and its own one grants only `allow-installed-app-invoke`, so an
+  # installed document can never disable, enable or remove itself.
+  "allow-installed-app-disable",
+  "allow-installed-app-enable",
+  "allow-installed-app-remove",
   # Spec #3192 ST-1 — the resident shell. Granted to the built-in window class
   # only (`open_main_window` is also the tray/second-launch seam; `quit_app` is
   # the IPC seam and is never rendered in any UI).

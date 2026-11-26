@@ -195,6 +195,12 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // installed document can never consent for itself.
     "installed_app_consent_grant",
     "installed_app_consent_revoke",
+    // Spec #3144 — the installed-application management commands. Built-in
+    // windows only: the settings pane calls them, and the installed tier's one
+    // capability grants none, so an installed document can never manage itself.
+    "installed_app_disable",
+    "installed_app_enable",
+    "installed_app_remove",
 ];
 
 #[cfg(test)]

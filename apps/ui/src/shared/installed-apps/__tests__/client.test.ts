@@ -16,12 +16,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   closeInstalledApp,
+  disableInstalledApp,
+  enableInstalledApp,
   installPackage,
   installedAppErrorFrom,
   InstalledAppsCommandError,
   listInstalledApps,
   openInstalledApp,
   pushTheme,
+  removeInstalledApp,
 } from '@/shared/installed-apps/client';
 
 const invokeMock = vi.hoisted(() => ({ current: vi.fn() }));
@@ -39,6 +42,7 @@ const ENTRY = {
   enginesFredo: '^0.1.0',
   installedAt: '2026-01-01T00:00:00Z',
   windowLabel: 'installed-dev.example.tools',
+  state: 'working',
 };
 
 beforeEach(() => {
@@ -101,6 +105,45 @@ describe('#3147 ST-6 — client command wrappers', () => {
     const payload = { tokens: [{ name: '--body-bg', value: '#fff' }], colorScheme: 'light' as const };
     await pushTheme(payload);
     expect(invokeMock.current).toHaveBeenCalledWith('installed_apps_push_theme', { payload });
+  });
+
+  // ── Spec #3144 — the three management wrappers ─────────────────────────────
+
+  it('disableInstalledApp invokes installed_app_disable with appId and returns the entry', async () => {
+    const disabled = { ...ENTRY, state: 'disabled' };
+    invokeMock.current.mockResolvedValue(disabled);
+    await expect(disableInstalledApp('dev.example.tools')).resolves.toEqual(disabled);
+    expect(invokeMock.current).toHaveBeenCalledWith('installed_app_disable', {
+      appId: 'dev.example.tools',
+    });
+  });
+
+  it('enableInstalledApp invokes installed_app_enable with appId and returns the entry', async () => {
+    invokeMock.current.mockResolvedValue(ENTRY);
+    await expect(enableInstalledApp('dev.example.tools')).resolves.toEqual(ENTRY);
+    expect(invokeMock.current).toHaveBeenCalledWith('installed_app_enable', {
+      appId: 'dev.example.tools',
+    });
+  });
+
+  it('removeInstalledApp invokes installed_app_remove with appId and returns the outcome', async () => {
+    const outcome = { appId: 'dev.example.tools', removed: true, dataKept: true, dataTables: [] };
+    invokeMock.current.mockResolvedValue(outcome);
+    await expect(removeInstalledApp('dev.example.tools')).resolves.toEqual(outcome);
+    expect(invokeMock.current).toHaveBeenCalledWith('installed_app_remove', {
+      appId: 'dev.example.tools',
+    });
+  });
+
+  it('a management command re-throws a wire refusal as a typed error carrying the frozen code', async () => {
+    invokeMock.current.mockRejectedValue({ code: 'io_error', detail: 'the write failed' });
+    await expect(disableInstalledApp('x')).rejects.toMatchObject({ code: 'io_error' });
+  });
+
+  it('an undefined management result becomes a typed io_error, never a crash', async () => {
+    invokeMock.current.mockResolvedValue(undefined);
+    await expect(enableInstalledApp('x')).rejects.toMatchObject({ code: 'io_error' });
+    await expect(removeInstalledApp('x')).rejects.toMatchObject({ code: 'io_error' });
   });
 
   it('re-throws a wire refusal as a typed error carrying the frozen code', async () => {

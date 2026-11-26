@@ -63,9 +63,21 @@ interface RefusalBlockProps {
   testId: string;
   /** The reason sentence's `data-testid`, when the host exposes one. */
   reasonTestId?: string;
+  /**
+   * Override the reason sentence (default: `refusalCopy(code)`).
+   *
+   * A host that reuses a frozen code in a DIFFERENT context may need an honest
+   * sentence without changing the frozen install/open copy — e.g. the settings
+   * pane's management-action refusal reuses `io_error`/`id_not_installed`, whose
+   * install/open sentences are false about an installed application (#3144, the
+   * copy-honesty ruling; `refusals.ts` is NO CHANGE). The override never changes
+   * the CATEGORY vocabulary: `code` still flows to `data-refusal-code` and still
+   * selects the family treatment.
+   */
+  reasonText?: string;
 }
 
-function RefusalBlock({ code, detail, field, testId, reasonTestId }: RefusalBlockProps) {
+function RefusalBlock({ code, detail, field, testId, reasonTestId, reasonText }: RefusalBlockProps) {
   const style = refusalStyle(code);
   const Glyph = FAMILY_GLYPH[style.glyph];
   const iconColor = style.severity === 'error' ? 'status.errorStrong' : 'var(--status-warning)';
@@ -88,7 +100,7 @@ function RefusalBlock({ code, detail, field, testId, reasonTestId }: RefusalBloc
         <Icon as={Glyph} boxSize="4" color={iconColor} aria-hidden="true" flexShrink={0} mt="0.5" />
         <Box minW={0} flex="1">
           <Text data-testid={reasonTestId} fontSize="sm" color="fg.default" lineHeight="short">
-            {refusalCopy(code)}
+            {reasonText ?? refusalCopy(code)}
           </Text>
           {detail ? (
             <Text fontSize="xs" color="fg.muted" mt={1} wordBreak="break-word">
@@ -118,6 +130,8 @@ export interface InstalledAppRefusalProps {
   testId?: string;
   /** The reason sentence's `data-testid`, when the host exposes one. */
   reasonTestId?: string;
+  /** An honest reason sentence for this context (see [`RefusalBlockProps.reasonText`]). */
+  reasonText?: string;
 }
 
 /**
@@ -131,6 +145,7 @@ export function InstalledAppRefusal({
   field,
   testId = 'installed-apps-refusal',
   reasonTestId = 'installed-apps-refusal-reason',
+  reasonText,
 }: InstalledAppRefusalProps) {
   return (
     <RefusalBlock
@@ -139,6 +154,7 @@ export function InstalledAppRefusal({
       field={field}
       testId={testId}
       reasonTestId={reasonTestId}
+      reasonText={reasonText}
     />
   );
 }

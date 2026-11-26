@@ -23,24 +23,36 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CAPABILITY_CONSENT_COPY,
+  CAPABILITY_DECLARED_COPY,
   CAPABILITY_REFUSAL_COPY,
   CAPABILITY_REFUSAL_FALLBACK,
+  HIGH_RISK_CAPABILITY_IDS,
   capabilityRefusalCopy,
   consentCopyFor,
+  declaredCapabilityCopy,
 } from '../capabilityRefusals';
+import {
+  INSTALLED_APP_FAILURE_REASON,
+  INSTALLED_APP_FAILURE_REASON_FALLBACK,
+  installedAppFailureReason,
+} from '../failureReasons';
+import { INSTALL_REFUSAL_COPY } from '../refusals';
 import { INSTALLED_APP_REFUSAL_CODES } from '../types';
 import type {
   CapabilityRefusal,
   CapabilityRefusalCode,
   HighRiskCapabilityId,
   InstalledAppEntry,
+  InstalledAppLifecycleState,
 } from '../types';
 import {
   CAPABILITY_IDS,
   CAPABILITY_REFUSAL_CODES,
   CAPABILITY_PROJECTION_KEY_PIN,
+  INSTALLED_APP_STATES,
   isCapabilityId,
   isCapabilityRefusalCode,
+  isInstalledAppLifecycleState,
 } from '../types';
 
 const HIGH_RISK_IDS = CAPABILITY_IDS.filter((id) => id.startsWith('high-risk.'));
@@ -213,6 +225,7 @@ describe('#3146 — the projection member\u2019s wire name', () => {
         enginesFredo: '>=0.0.0',
         installedAt: '2026-01-01T00:00:00Z',
         windowLabel: 'installed-qa3146-app-a',
+        state: 'working',
         capabilities: {
           appId: 'qa3146-app-a',
           declared: ['high-risk.database-query'],
@@ -234,5 +247,139 @@ describe('#3146 — the projection member\u2019s wire name', () => {
     // Always present, arrays even when empty — the renderer reads it directly.
     expect(wire.capabilities.declared).toEqual(['high-risk.database-query']);
     expect(wire.capabilities.consented).toEqual([]);
+  });
+});
+
+// ── Spec #3144 — the lifecycle state, the widened declared copy, the inventory copy ──
+
+describe('#3144 — the lifecycle state vocabulary', () => {
+  it('is exactly the three wire values, in the documented order', () => {
+    expect(INSTALLED_APP_STATES).toEqual(['working', 'failing', 'disabled']);
+    expect(isInstalledAppLifecycleState('working')).toBe(true);
+    expect(isInstalledAppLifecycleState('failing')).toBe(true);
+    expect(isInstalledAppLifecycleState('disabled')).toBe(true);
+    expect(isInstalledAppLifecycleState('Running')).toBe(false);
+    expect(isInstalledAppLifecycleState('')).toBe(false);
+    expect(isInstalledAppLifecycleState(null)).toBe(false);
+    expect(isInstalledAppLifecycleState(3)).toBe(false);
+  });
+});
+
+describe('#3144 — CAPABILITY_DECLARED_COPY (the widened, complete declared view)', () => {
+  it('is exhaustive over ALL four capability ids (incl. the ordinary data.tables)', () => {
+    const keys = Object.keys(CAPABILITY_DECLARED_COPY) as CapabilityId[];
+    expect([...keys].sort()).toEqual([...CAPABILITY_IDS].sort());
+    expect(Object.prototype.hasOwnProperty.call(CAPABILITY_DECLARED_COPY, 'data.tables')).toBe(true);
+  });
+
+  it('keeps the three high-risk sentences IDENTICAL to CAPABILITY_CONSENT_COPY (one copy source)', () => {
+    for (const id of HIGH_RISK_CAPABILITY_IDS) {
+      expect(CAPABILITY_DECLARED_COPY[id]).toEqual(CAPABILITY_CONSENT_COPY[id]);
+    }
+  });
+
+  it('gives every declared capability a DISTINCT, non-empty consequence sentence', () => {
+    const sentences = Object.values(CAPABILITY_DECLARED_COPY).map((copy) => copy.consequence);
+    expect(sentences.every((sentence) => sentence.trim().length > 0)).toBe(true);
+    expect(new Set(sentences).size).toBe(sentences.length);
+  });
+
+  it('derives HIGH_RISK_CAPABILITY_IDS from the prefix filter (data.tables excluded)', () => {
+    expect(HIGH_RISK_CAPABILITY_IDS).toEqual([
+      'high-risk.database-query',
+      'high-risk.database-reset',
+      'high-risk.process-spawn',
+    ]);
+    expect(HIGH_RISK_CAPABILITY_IDS).not.toContain('data.tables');
+  });
+
+  it('resolves copy for a declared id and NULL for one this build cannot name', () => {
+    expect(declaredCapabilityCopy('data.tables')).toBe(CAPABILITY_DECLARED_COPY['data.tables']);
+    expect(declaredCapabilityCopy('high-risk.database-reset')).toBe(
+      CAPABILITY_DECLARED_COPY['high-risk.database-reset'],
+    );
+    expect(declaredCapabilityCopy('high-risk.everything')).toBeNull();
+    expect(declaredCapabilityCopy('toString')).toBeNull();
+  });
+});
+
+describe('#3144 — INSTALLED_APP_FAILURE_REASON (the inventory copy authority)', () => {
+  it('has EXACTLY the three landable codes (id_not_installed is deliberately absent)', () => {
+    expect(Object.keys(INSTALLED_APP_FAILURE_REASON).sort()).toEqual([
+      'integrity_mismatch',
+      'integrity_record_corrupt',
+      'io_error',
+    ]);
+    expect(
+      Object.prototype.hasOwnProperty.call(INSTALLED_APP_FAILURE_REASON, 'id_not_installed'),
+    ).toBe(false);
+  });
+
+  it('carries the binding sentences verbatim', () => {
+    expect(installedAppFailureReason('integrity_record_corrupt')).toBe(
+      "Its install record is unreadable, so Fredo can't check its files.",
+    );
+    expect(installedAppFailureReason('integrity_mismatch')).toBe(
+      "Its files changed after it was installed, so Fredo won't run it.",
+    );
+    expect(installedAppFailureReason('io_error')).toBe(
+      "Fredo couldn't read this application's files, so it can't be started.",
+    );
+  });
+
+  it('never returns blank, and NEVER an install-time claim for an installed app', () => {
+    expect(installedAppFailureReason(undefined)).toBe(INSTALLED_APP_FAILURE_REASON_FALLBACK);
+    expect(installedAppFailureReason('id_not_installed')).toBe(
+      INSTALLED_APP_FAILURE_REASON_FALLBACK,
+    );
+    expect(installedAppFailureReason('no_such_code')).toBe(INSTALLED_APP_FAILURE_REASON_FALLBACK);
+    expect(installedAppFailureReason(7)).toBe(INSTALLED_APP_FAILURE_REASON_FALLBACK);
+
+    // The lie this module exists to prevent: the INSTALL-time sentence for a
+    // reused code must never be the inventory's answer.
+    const corpus = Object.values(INSTALLED_APP_FAILURE_REASON).join('\n');
+    expect(corpus).not.toContain(INSTALL_REFUSAL_COPY.id_not_installed);
+    expect(corpus).not.toContain(INSTALL_REFUSAL_COPY.io_error);
+    expect(INSTALLED_APP_FAILURE_REASON_FALLBACK).not.toContain(
+      INSTALL_REFUSAL_COPY.id_not_installed,
+    );
+    expect(INSTALLED_APP_FAILURE_REASON_FALLBACK.trim().length).toBeGreaterThan(0);
+  });
+
+  it('the fallback covers id_not_installed without the phrase "not installed"', () => {
+    expect(installedAppFailureReason('id_not_installed').toLowerCase()).not.toContain(
+      'not installed',
+    );
+  });
+});
+
+describe('#3144 — the wire state/failureCode shape (G-413)', () => {
+  it('carries `state` always, and omits `failureCode` unless failing', () => {
+    const healthy = JSON.parse(
+      JSON.stringify({
+        id: 'qa3147-valid',
+        displayName: 'QA3147 Valid',
+        version: '1.0.0',
+        enginesFredo: '>=0.0.0',
+        installedAt: '2026-01-01T00:00:00Z',
+        windowLabel: 'installed-qa3147-valid',
+        state: 'working',
+        capabilities: { appId: 'qa3147-valid', declared: [], highRisk: [], consented: [] },
+      }),
+    ) as InstalledAppEntry;
+    expect(isInstalledAppLifecycleState(healthy.state)).toBe(true);
+    expect('failureCode' in healthy).toBe(false);
+
+    const failing = JSON.parse(
+      JSON.stringify({
+        ...healthy,
+        state: 'failing',
+        failureCode: 'integrity_record_corrupt',
+      }),
+    ) as InstalledAppEntry;
+    expect(failing.state).toBe('failing');
+    expect(failing.failureCode).toBe('integrity_record_corrupt');
+    const state: InstalledAppLifecycleState = failing.state;
+    expect(state).toBe('failing');
   });
 });
