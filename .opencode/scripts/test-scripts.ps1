@@ -6200,6 +6200,219 @@ Test-Script "post-audit->implementation post-merge reseeds the stale ref onto ma
   }
 }
 
+# == FAILURE-vs-ZERO (#3241): a semantic triage may not read "couldn't measure"
+# as "measured zero" ============================================================
+#
+# THE DEFECT, in two siblings, both confirmed by the human in source:
+#   * `spec_branch_ahead` collapsed four distinct failures (two fetches, a
+#     rev-list, a parse) into `Option::None`, and the call site did
+#     `.unwrap_or(0)` -> the gate emitted a CONFIDENT, ROLE-ACCUSING diagnosis
+#     ("the developer must push before implementation -> testing") for a state
+#     whose measurement never completed. Live on #3241: that refusal fired while
+#     the same context block printed "Spec branch ahead: 3", and an immediate
+#     retry of the identical command succeeded (SPEC PR CREATED).
+#   * `merged_spec_pr_count` swallowed a `gh` PARSE failure the same way (`.ok()`
+#     then `unwrap_or(0)`), so an unreadable response read as "no merged PR".
+#
+# Each pin below has TWO mandatory halves (the human called this the best idea in
+# the exchange and asked that it be kept verbatim):
+#
+#   1. assert the PROPERTY  - the UNKNOWN outcome and the genuine-zero outcome are
+#      DISTINGUISHABLE (they must not produce the same result), and
+#   2. assert the LITERAL STRINGS - so a future re-word makes the pin red instead
+#      of silently re-conflating the two.
+#
+# That is G-520 applied to the fix OF a G-520 defect: the property is guarded, not
+# today's wording, while the wording is pinned so drift cannot pass unnoticed.
+#
+# RED-BEFORE-GREEN, literally, not by assertion: each pin below fails against the
+# PRE-FIX code, and the red run is quoted verbatim in the report. The pre-fix
+# behaviour is reproduced by the armed marker alone, because the marker drives the
+# SAME functions the old code called:
+#   (a) `fetch-fail-main` + a branch that genuinely has 3 commits ->
+#       pre-fix: ahead = None.unwrap_or(0) = 0 -> "the developer must push".
+#       Pin asserts the UNKNOWN string is present AND the push string is absent,
+#       so the pre-fix output fails BOTH halves.
+#   (b) genuine zero -> pre-fix and post-fix BOTH take the push arm. This is the
+#       CONTROL: it must stay green across the fix, proving (a) discriminates the
+#       measurement failure rather than the branch state.
+#   (c) `gh-list-garbage` -> pre-fix: parse Err -> .ok() -> None -> unwrap_or(0) = 0
+#       -> the "no commits beyond main and no merged spec PR" semantic arm, exit 0.
+#       Pin asserts non-zero exit + the "could not read the merged spec PR list"
+#       string, so the pre-fix output fails both.
+#   (d) genuine no-merged-PR (real empty array) -> the same semantic arm, exit 0.
+#       CONTROL for (c): must stay green across the fix.
+Write-Host "Failure-vs-zero measurement integrity (#3241):" -ForegroundColor Cyan
+
+# The two message strings this family must never confound, named ONCE so every pin
+# quotes the same literals (a re-word elsewhere reddens here first).
+$unknownTok = "could not measure the delivery state of"
+$pushTok = "the developer must push"
+
+# (a) A FETCH FAILURE must yield the UNKNOWN / measurement-error arm, NOT the
+#     "developer must push" accusation. PRE-FIX: heads-up, `fetch origin main`
+#     fails -> None -> unwrap_or(0) -> ahead == 0 -> "the developer must push".
+Test-Script "measurement: a fetch failure is UNKNOWN, never the 'developer must push' arm (#3241a)" {
+  $url = Mock-IssueCreate "temp: measurement fetch-fail" "measurement scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match(($url -join ""), "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $flag = Mock-StorePath "fetch-fail-main"
+  try {
+    # The branch genuinely carries work — the ONLY thing wrong is the measurement.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 3 2>&1 | Out-Null
+    New-Item -ItemType File -Path $flag -Force | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    # PROPERTY: the two worlds must differ — this refusal is a MEASUREMENT error.
+    if ($outStr -notmatch [regex]::Escape($unknownTok)) {
+      throw "a fetch failure must take the UNKNOWN arm; got: $outStr"
+    }
+    # LITERAL: and it must NOT wear the semantic accusation.
+    if ($outStr -match [regex]::Escape($pushTok)) {
+      throw "a fetch failure must NOT report '$pushTok' (that is the failure-vs-zero conflation this pin exists for): $outStr"
+    }
+    # The failed STEP is named (distinct from "0 commits ahead").
+    if ($outStr -notmatch "could not fetch") { throw "the UNKNOWN arm must name the failed step; got: $outStr" }
+    # And it must say what it is not, so an operator does not re-dispatch a developer.
+    if ($outStr -notmatch "MEASUREMENT failure") { throw "the UNKNOWN arm must label itself a measurement failure; got: $outStr" }
+    $st = Mock-IssueState $issueNum
+    if ($st.Labels -contains "testing") { throw "the transition must NOT have moved on an unmeasured gate" }
+    return "fetch failure -> UNKNOWN (names the step), never '$pushTok'"
+  } finally {
+    Remove-Item $flag -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# (b) A GENUINE ZERO still takes the semantic "nothing to deliver" arm — the fix
+#     must not turn every empty branch into a measurement error (that would be the
+#     over-correction: a real, actionable developer-side gap must stay actionable).
+#     This is the CONTROL that keeps (a) meaningful: same two strings, opposite
+#     outcome, decided by the measurement SUCCEEDING with a real zero.
+Test-Script "measurement: a genuine zero still takes the 'nothing to deliver' arm (#3241b)" {
+  $url = Mock-IssueCreate "temp: measurement genuine-zero" "measurement scratch" "ready-for-dev"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match(($url -join ""), "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Branch PRESENT, measurement SUCCEEDS, and the count is a real 0.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 0 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    # PROPERTY: the genuine zero must be DISTINGUISHABLE from the unknown above.
+    if ($outStr -match [regex]::Escape($unknownTok)) {
+      throw "a successful measurement returning 0 must NOT take the UNKNOWN arm (over-correction): $outStr"
+    }
+    if ($outStr -match "MEASUREMENT failure") { throw "a real zero is not a measurement failure: $outStr" }
+    # LITERAL: it wears the semantic arm, which is the CORRECT diagnosis here.
+    if ($outStr -notmatch [regex]::Escape($pushTok)) {
+      throw "a genuine zero must keep the actionable '$pushTok' diagnosis; got: $outStr"
+    }
+    return "genuine zero -> the semantic 'nothing to deliver' arm (control for (a))"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# (c) A `gh` PARSE FAILURE in `merged_spec_pr_count` is an ERROR, not "no merged
+#     PR" — the sibling defect. PRE-FIX: `.ok().and_then(...).unwrap_or(0)` read
+#     the bad payload as a confident 0, so the caller took the not-merged arm.
+#
+#     LEG CHOICE (learned by running it): this decision lives in `ensure_spec_pr`,
+#     a `→ testing` SIDE-EFFECT. On `implementation → testing` the EXIT GUARD runs
+#     first and blocks on ahead==0 with "the developer must push" — so the merged
+#     read is never consulted and a pin written against that leg would be testing
+#     the exit guard, not this predicate. `post-audit → testing` is the leg whose
+#     exit guard always passes, so the side-effect (and this decision) actually runs.
+Test-Script "measurement: a gh parse failure is an ERROR, not 'no merged PR' (#3241c)" {
+  $url = Mock-IssueCreate "temp: measurement gh-garbage" "measurement scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match(($url -join ""), "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  $flag = Mock-StorePath "gh-list-garbage"
+  try {
+    # Branch PRESENT with a real 0 commits ahead: the measurement itself succeeds,
+    # so the only unreadable input is the merged-PR payload.
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 0 2>&1 | Out-Null
+    # Scope the corruption to the MERGED read so the open-PR probe stays sane.
+    [System.IO.File]::WriteAllText($flag, "merged", [System.Text.Encoding]::ASCII)
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    # PROPERTY: the run must FAIL LOUDLY (non-zero), never silently pick an arm.
+    if ($LASTEXITCODE -eq 0) { throw "an unreadable merged-PR list must not complete a transition, got exit 0: $outStr" }
+    # LITERAL: and it must name the parse failure, in the measurement vocabulary.
+    if ($outStr -notmatch "could not read the merged spec PR list") {
+      throw "a gh parse failure must be reported as a measurement error; got: $outStr"
+    }
+    if ($outStr -notmatch "unparseable") { throw "the error must say the payload was unparseable; got: $outStr" }
+    # It must NOT be reported as the semantic "no merged PR / nothing to deliver".
+    if ($outStr -match "no merged spec PR") {
+      throw "an unreadable payload must NOT read as 'no merged spec PR' (the sibling conflation): $outStr"
+    }
+    return "gh parse failure -> measurement error (named), never 'no merged PR'"
+  } finally {
+    Remove-Item $flag -Force -ErrorAction SilentlyContinue
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# (d) A GENUINE no-merged-PR result still reads as zero — the control for (c).
+#     Same predicate, same leg, real empty array: the semantic arm it belongs to
+#     must still be reachable. Without this, (c) could be satisfied by a "fix" that
+#     errors on every read.
+Test-Script "measurement: a genuine no-merged-PR still reads as zero (#3241d)" {
+  $url = Mock-IssueCreate "temp: measurement no-merged" "measurement scratch" "post-audit"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $m = [regex]::Match(($url -join ""), "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $url" }
+  $issueNum = [int]$m.Groups[1].Value
+  try {
+    # Present branch, real 0 commits, and NO merged PR (an empty array from gh).
+    & rust-script $ps --action mock-git --gitargs "push -u origin spec/$issueNum" 2>&1 | Out-Null
+    & rust-script $ps --action mock-commit --branch "spec/$issueNum" --commits 0 2>&1 | Out-Null
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action transition --to-phase testing 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    # PROPERTY: a readable empty list is KNOWN zero, not UNKNOWN — the arms differ.
+    if ($outStr -match "could not read the merged spec PR list") {
+      throw "a readable empty merged-PR list must NOT be a measurement error: $outStr"
+    }
+    # LITERAL: and it lands on the semantic no-work arm, which names the branch state.
+    if ($outStr -notmatch "no commits beyond main and no merged spec PR") {
+      throw "a genuine no-merged-PR result must read as zero in the semantic arm; got: $outStr"
+    }
+    return "genuine no-merged-PR -> zero (control for (c))"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "local-refs\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Mock-StorePath "commits\spec\$issueNum") -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
 # --- Remaining PowerShell scripts (syntax check) ---
 Write-Host "Other scripts:" -ForegroundColor Cyan
 $scripts = @(
@@ -6331,6 +6544,100 @@ Test-Script "product-subtree-diff: -SelfTest passes both controls" {
   $text = if ($out -is [array]) { $out -join "`n" } else { "$out" }
   if ($code -ne 0) { throw "product-subtree-diff self-test failed (exit $code): $text" }
   return "product-subtree-diff self-test passes"
+}
+# C1 generated-artefact exemption (the schema-staleness gate's necessary partner).
+#
+# WHY EXECUTED, NOT A SOURCE PIN: `check_env_evidence` returns `absent` in mock
+# mode, so the C1 predicate never runs offline. A source-token pin would pass in
+# both the exempted and the un-exempted world (G-520). So this leg PARSES the real
+# named-path list out of `GENERATED_SCHEMA_ARTEFACTS` and runs the REAL pathspec
+# against a throwaway git repo built for the case. Three discriminating controls:
+#   1. schemas-only delta      -> UNCHANGED (accepted, no re-serve owed)
+#   2. a real `apps/**` change -> CHANGED   (re-serve still owed - the property C1 exists for)
+#   3. the SAME schemas-only delta WITHOUT the exemption -> CHANGED
+#      (proves the exemption is load-bearing, not decorative: if the list were
+#       dropped from the script, control 1 flips red here first)
+Test-Script "C1 generated-artefact exemption: schemas-only accepted, real product change rejected" {
+  $psSrc = Get-Content ".opencode/scripts/pipeline-state.rs" -Raw
+  $block = [regex]::Match($psSrc, '(?s)const GENERATED_SCHEMA_ARTEFACTS: \[&str; \d+\] = \[(.*?)\];')
+  if (-not $block.Success) { throw "GENERATED_SCHEMA_ARTEFACTS is missing from pipeline-state.rs (the C1 exemption was removed)" }
+  $exempt = @([regex]::Matches($block.Groups[1].Value, '"(:\(exclude\)[^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+  if ($exempt.Count -ne 3) { throw "expected exactly 3 exempt paths, parsed $($exempt.Count): $($exempt -join ', ')" }
+  # Named-path, not a glob/pattern: each entry must be a literal :(exclude) of a
+  # .json file. A wildcard would re-open the "any generated file" widening the
+  # exemption must never become.
+  foreach ($e in $exempt) {
+    if ($e -match '[*?]') { throw "exempt entry '$e' contains a wildcard - the C1 exemption is a NAMED-PATH list" }
+    if ($e -notmatch '\.json$') { throw "exempt entry '$e' is not a .json artefact" }
+  }
+  foreach ($required in @("acl-manifests", "desktop-schema", "windows-schema")) {
+    if (-not ($exempt -match [regex]::Escape($required))) { throw "the exemption is missing the '$required' schema path" }
+  }
+  # `capabilities.json` is NOT gate-validated, so it must stay re-serve-owing.
+  if ($exempt -match 'capabilities\.json') { throw "capabilities.json must NOT be exempt (it is not one of the three gate-validated files)" }
+  $base = @("apps", "package.json", "pnpm-lock.yaml", "apps/tauri/src-tauri/Cargo.toml", "Cargo.lock")
+
+  $repo = Join-Path $env:TEMP ("fredo-c1-" + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $repo | Out-Null
+  Push-Location $repo
+  try {
+    & git init -q 2>&1 | Out-Null
+    & git config user.email "harness@local" 2>&1 | Out-Null
+    & git config user.name "harness" 2>&1 | Out-Null
+    & git config core.autocrlf false 2>&1 | Out-Null
+    $schemaDir = Join-Path $repo "apps/tauri/src-tauri/gen/schemas"
+    New-Item -ItemType Directory -Force -Path $schemaDir | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $repo "apps/tauri/src-tauri/src") | Out-Null
+    foreach ($f in @("acl-manifests", "desktop-schema", "windows-schema")) {
+      Set-Content -LiteralPath (Join-Path $schemaDir "$f.json") -Value '{"v":1}' -NoNewline
+    }
+    Set-Content -LiteralPath (Join-Path $repo "apps/tauri/src-tauri/src/lib.rs") -Value "fn a() {}" -NoNewline
+    Set-Content -LiteralPath (Join-Path $repo "docs.md") -Value "docs" -NoNewline
+    & git add -A 2>&1 | Out-Null
+    & git commit -qm base 2>&1 | Out-Null
+    $served = (& git rev-parse HEAD).Trim()
+
+    # FIXTURE A (control 1): regenerate ONLY the three schema files - exactly what
+    # a command-adding build produces, plus an unrelated docs edit (the serving
+    # checkout is legitimately dirty for reasons the gate must ignore).
+    foreach ($f in @("acl-manifests", "desktop-schema", "windows-schema")) {
+      Set-Content -LiteralPath (Join-Path $schemaDir "$f.json") -Value '{"v":2,"cmd":"installed_app_install_development"}' -NoNewline
+    }
+    Set-Content -LiteralPath (Join-Path $repo "docs.md") -Value "docs v2" -NoNewline
+    & git add -A 2>&1 | Out-Null
+    & git commit -qm schemas-only 2>&1 | Out-Null
+    $intendedA = (& git rev-parse HEAD).Trim()
+    $pathsA = @("diff", "--quiet", $served, $intendedA, "--") + $base + $exempt
+    & git @pathsA 2>&1 | Out-Null
+    $codeA = $LASTEXITCODE
+    # The UN-EXEMPTED predicate over the SAME delta: proves the exemption carries it.
+    $pathsNo = @("diff", "--quiet", $served, $intendedA, "--") + $base
+    & git @pathsNo 2>&1 | Out-Null
+    $codeNo = $LASTEXITCODE
+
+    # FIXTURE B (control 2): a genuine product change alongside the regeneration.
+    Set-Content -LiteralPath (Join-Path $repo "apps/tauri/src-tauri/src/lib.rs") -Value "fn a() { let _ = 1; }" -NoNewline
+    & git add -A 2>&1 | Out-Null
+    & git commit -qm real-product 2>&1 | Out-Null
+    $intendedB = (& git rev-parse HEAD).Trim()
+    $pathsB = @("diff", "--quiet", $served, $intendedB, "--") + $base + $exempt
+    & git @pathsB 2>&1 | Out-Null
+    $codeB = $LASTEXITCODE
+  } finally {
+    Pop-Location
+    Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  # WRONG-WORLD discipline: a control that passes in both worlds is not a control.
+  if ($codeNo -eq 0) { throw "WITHOUT the exemption the schemas-only delta reported UNCHANGED - the fixture does not discriminate" }
+  if ($codeNo -ne 1) { throw "un-exempted probe exited $codeNo (expected 1 = CHANGED)" }
+  if ($codeA -ne 0) { throw "schemas-only delta was REJECTED (exit $codeA) - the exemption does not accept the artefact-only commit the staleness gate makes routine" }
+  if ($codeB -ne 1) { throw "a real apps/** change was ACCEPTED (exit $codeB) - C1 no longer protects the product re-serve" }
+  # The legs above leave $LASTEXITCODE at 1 (that IS the expected verdict of the
+  # last probe); Test-Script judges the leg by the trailing exit code, so reset it
+  # explicitly and let the assertions above be the verdict.
+  $global:LASTEXITCODE = 0
+  return "schemas-only UNCHANGED (0); un-exempted CHANGED (1); real product change CHANGED (1); 3 named .json paths, capabilities.json excluded"
 }
 Test-Script "guard-universe: -SelfTest passes all three controls" {
   $out = & powershell -NoProfile -File ".opencode/scripts/guard-universe.ps1" -SelfTest 2>&1

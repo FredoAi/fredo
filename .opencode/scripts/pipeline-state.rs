@@ -977,6 +977,35 @@ fn mock_gh_pr(args: &[&str]) -> anyhow::Result<String> {
             // gh pr list --head spec/N --state open|merged --json number
             let head = args.windows(2).find(|w| w[0] == "--head").and_then(|w| w.get(1)).copied().unwrap_or("");
             let state = args.windows(2).find(|w| w[0] == "--state").and_then(|w| w.get(1)).copied().unwrap_or("open");
+            // MEASUREMENT-FAILURE MODEL (#3241) — the sibling defect lives HERE, in
+            // how an unreadable response is turned into a count:
+            //   `gh-list-garbage`   → a 2xx with an unparseable payload (a truncated/
+            //                         garbled response). MUST become a measurement
+            //                         error, never "no merged PR".
+            //   `gh-list-not-array` → valid JSON of the wrong shape (an object where
+            //                         an array was promised).
+            //   `gh-list-fail`      → a hard `gh` failure (non-zero exit).
+            // State-scoped so a test can break ONE read without breaking the other.
+            let marker = |name: &str| -> bool {
+                let base = mock_file(&[name]);
+                if !base.exists() {
+                    return false;
+                }
+                // Content (optional) narrows the marker to one --state value.
+                match mock_read(&base) {
+                    Some(c) if !c.trim().is_empty() => c.trim() == state,
+                    _ => true,
+                }
+            };
+            if marker("gh-list-fail") {
+                anyhow::bail!("gh pr list failed: HTTP 502: Bad Gateway");
+            }
+            if marker("gh-list-garbage") {
+                return Ok("<<< not json: the connection was reset mid-response".to_string());
+            }
+            if marker("gh-list-not-array") {
+                return Ok("{\"message\":\"Bad credentials\"}".to_string());
+            }
             let mut nums = Vec::new();
             let dir = mock_file(&["prs"]);
             if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -1399,7 +1428,29 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // holds the freshly-pushed tip; a fetch copies it into
             // `remote-tracking-sha`, so the machine can prove its resolve happened
             // AFTER the fetch (the stale-base harness leg).
+            //
+            // MEASUREMENT-FAILURE MODEL (#3241). A transient fetch failure is the
+            // exact live trigger of the failure-vs-zero defect, so the harness must
+            // be able to produce one:
+            //   `fetch-fail-main`  → `git fetch origin main` fails with a TRANSPORT
+            //                        error (non-empty stderr), modelling a network blip.
+            //   `fetch-fail-spec`  → `git fetch origin spec/<N>` fails likewise.
+            //   `fetch-fail-bare`  → `git fetch origin` (the broad refresh) fails.
+            // The stderr is non-empty on purpose: a real transport failure always
+            // prints something, and the machine's absence-vs-failure split keys on
+            // that (a genuine "no matching ref" is silent).
             let target = args.iter().skip(2).find(|a| !a.starts_with('-')).copied().unwrap_or("origin");
+            let failed = match target {
+                "main" => mock_file(&["fetch-fail-main"]).exists(),
+                "origin" => mock_file(&["fetch-fail-bare"]).exists(),
+                other => mock_file(&["fetch-fail-spec"]).exists() && other.starts_with("spec/"),
+            };
+            if failed {
+                anyhow::bail!(
+                    "git fetch origin {} failed: fatal: unable to access 'https://github.com/fredo/mock.git/': Could not resolve host: github.com",
+                    target
+                );
+            }
             mock_write(&mock_file(&["last-fetch"]), target)?;
             if let Some(fresh) = mock_read(&mock_file(&["remote-tip-sha"])) {
                 let fresh = fresh.trim().to_string();
@@ -1412,6 +1463,16 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
         "rev-list" => {
             // git rev-list --count origin/main..FETCH_HEAD
             if args.iter().any(|a| *a == "--count") {
+                // MEASUREMENT-FAILURE MODEL (#3241): `rev-list-fail` makes the count
+                // itself fail (a corrupt object store / a ref that will not resolve),
+                // and `rev-list-garbage` makes it succeed with an unparseable value —
+                // the two ways step 3 of `spec_branch_ahead` can be unmeasurable.
+                if mock_file(&["rev-list-fail"]).exists() {
+                    anyhow::bail!("git rev-list --count failed: fatal: bad object origin/main");
+                }
+                if mock_file(&["rev-list-garbage"]).exists() {
+                    return Ok("not-a-number".to_string());
+                }
                 let branch = mock_read(&mock_file(&["last-fetch"])).unwrap_or_default();
                 let branch = branch.trim().trim_start_matches("origin/");
                 return Ok(mock_commits_ahead(branch).to_string());
@@ -1496,7 +1557,18 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
         }
         "add" | "commit" => Ok(String::new()),
         "ls-remote" => {
-            // git ls-remote --exit-code origin refs/heads/<branch>
+            // MEASUREMENT-FAILURE MODEL (#3241): `ls-remote-fail` makes the READ
+            // itself fail (a transport/auth error) — the fact that used to be
+            // indistinguishable from "the ref is absent". The presence probe below
+            // must report that as UNKNOWN, never as "gone".
+            if mock_file(&["ls-remote-fail"]).exists() {
+                anyhow::bail!(
+                    "git ls-remote origin failed: fatal: unable to access 'https://github.com/fredo/mock.git/': Could not resolve host: github.com"
+                );
+            }
+            // git ls-remote --exit-code origin refs/heads/<branch> — a legacy form
+            // kept for any caller still using it: absent FAILS (that is the
+            // conflating shape, and nothing in the machine may rely on it).
             if args.iter().any(|a| *a == "--exit-code") {
                 let branch = args.last().map(|s| s.to_string()).unwrap_or_default();
                 let branch = branch.strip_prefix("refs/heads/").map(|s| s.to_string()).unwrap_or(branch);
@@ -1505,6 +1577,18 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
                     return Ok(String::new());
                 }
                 anyhow::bail!("git ls-remote --exit-code: branch `{}` not found", branch);
+            }
+            // git ls-remote origin refs/heads/<branch> — the UNAMBIGUOUS presence
+            // probe `remote_branch_state` uses: one line when present, EMPTY output
+            // when absent, error only when the read itself failed. An explicit
+            // `refs/heads/...` refspec is what distinguishes it from the `--heads`
+            // listing below.
+            if let Some(refspec) = args.iter().skip(1).find(|a| a.starts_with("refs/heads/")) {
+                let branch = refspec.strip_prefix("refs/heads/").unwrap_or(refspec);
+                if mock_ref_exists(branch) {
+                    return Ok(format!("{}\t{}", "0".repeat(40), refspec));
+                }
+                return Ok(String::new());
             }
             // git ls-remote --heads origin — every remote head, one line each:
             // `<40-hex-sha>\trefs/heads/<branch>`.
@@ -1727,6 +1811,14 @@ fn mock_git_in(cwd: &str, args: &[&str]) -> anyhow::Result<String> {
             // git diff --quiet <branch> origin/main — the G-421 squash signature
             // check. Success (exit 0) means the trees are identical. Modelled from
             // the branch's ahead-count: a branch with round work on it differs.
+            //
+            // NOTE: the C1 product-subtree probe also lands here in production, but
+            // `check_env_evidence` returns `absent` in mock mode, so C1 never runs
+            // offline. It is pinned where it CAN be executed — the harness builds a
+            // throwaway real-repo fixture and runs the REAL pathspec parsed out of
+            // `GENERATED_SCHEMA_ARTEFACTS` (test-scripts.ps1, "C1 generated-artefact
+            // exemption"). Do not model it here: a mock branch no production call
+            // reaches is dead code that cannot fail.
             if args.iter().any(|a| *a == "--quiet") {
                 let branch = args.iter().skip(1)
                     .find(|a| a.starts_with("spec/") || a.starts_with("feat/"))
@@ -2676,9 +2768,74 @@ fn post_final_status(issue: u32, body_file: Option<&str>) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Does `branch` exist on `origin`? (`git ls-remote --exit-code` fails when absent.)
-fn remote_branch_exists(branch: &str) -> bool {
-    run_cmd("git", &["ls-remote", "--exit-code", "origin", &format!("refs/heads/{}", branch)]).is_ok()
+// ── Measured: a measurement a gate DECIDES on ────────────────────────────────
+//
+// "Could not measure" and "measured zero" are DIFFERENT facts, and a semantic
+// triage that reads them identically reaches an arm it never evaluated (#3241).
+// `Option` cannot help: `x.unwrap_or(0)` collapses the third state into the
+// second, which is exactly how a transient `git fetch` blip was reported as
+// "the developer must push" — a confident, role-accusing diagnosis for a state
+// whose measurement never completed. The type keeps the third state
+// unrepresentable-as-a-default: every DECIDING caller must say what an unknown
+// means, so the meaning is visible at the site instead of implied by a default.
+//
+// `Unknown` carries a message that NAMES the failed step and its stderr
+// ("could not fetch `origin/spec/N`: <git stderr>") — never a bare `None`, so
+// the operator can tell "nothing to deliver" from "could not check".
+#[derive(Debug, Clone)]
+enum Measured<T> {
+    Known(T),
+    Unknown(String),
+}
+
+impl<T> Measured<T> {
+    /// The value, else the measurement error VERBATIM behind `context`. For a site
+    /// whose only correct response to "could not measure" is to fail closed with
+    /// the reason named (never to fall into a semantic arm).
+    fn or_fail(self, context: &str) -> anyhow::Result<T> {
+        match self {
+            Measured::Known(v) => Ok(v),
+            Measured::Unknown(why) => anyhow::bail!("{} — {}", context, why),
+        }
+    }
+}
+
+/// A short, single-line, quote-safe rendering of an external payload for an error
+/// message: `<empty>` when blank, truncated to 120 chars. Never the whole blob.
+fn summarise_payload(s: &str) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.is_empty() {
+        return "<empty>".to_string();
+    }
+    if one.chars().count() > 120 {
+        let cut: String = one.chars().take(120).collect();
+        return format!("`{}…`", cut);
+    }
+    format!("`{}`", one)
+}
+
+/// Does `branch` exist on `origin`? — TRI-STATE (#3241).
+///
+/// **Why not `git ls-remote --exit-code`:** its exit status conflates the two
+/// facts this function exists to separate. It exits non-zero BOTH when the ref is
+/// absent AND when the transport/credentials fail, so a bare bool reported a
+/// transient outage as "the branch is gone" — and inside `ensure_spec_pr` "gone"
+/// is the LOST-branch arm that tells the operator to restart to implementation.
+/// Absence and unreadability are different facts.
+///
+/// The unambiguous probe is plain `git ls-remote origin <refspec>`, which prints
+/// one `<sha>\t<ref>` line when the ref exists, prints NOTHING when it does not,
+/// and fails (Err) when the read itself fails. Presence is therefore a non-empty
+/// stdout, and a failure can never be mistaken for an absence.
+fn remote_branch_state(branch: &str) -> Measured<bool> {
+    let refspec = format!("refs/heads/{}", branch);
+    match run_cmd("git", &["ls-remote", "origin", &refspec]) {
+        Ok(out) => Measured::Known(!out.trim().is_empty()),
+        Err(e) => Measured::Unknown(format!(
+            "could not check whether `{}` exists on origin (`git ls-remote` failed): {}",
+            branch, e
+        )),
+    }
 }
 
 /// Count the MERGED spec PRs whose head is `spec/<issue>`. A non-zero count is the
@@ -2687,13 +2844,33 @@ fn remote_branch_exists(branch: &str) -> bool {
 /// then removes the head branch. It distinguishes a legitimate POST-MERGE restart
 /// (the branch is gone because the merge deleted it) from a genuinely LOST branch
 /// (no branch AND no merged PR — the work is nowhere).
-fn merged_spec_pr_count(issue: u32) -> anyhow::Result<usize> {
+///
+/// **TRI-STATE (#3241).** An unreadable `gh` payload is NOT "no merged PR": it is
+/// the same failure-vs-zero conflation one layer in. `serde_json` returning `Err`
+/// was routed through `.ok()` → `.unwrap_or(0)`, so a garbled/truncated response
+/// read as a confident zero and every caller took the not-merged arm. A parse
+/// failure is a measurement failure and is reported as `Unknown`, naming what was
+/// unparseable. A hard `gh` failure (non-zero exit, no output) propagates as `Err`
+/// — it was never swallowed here and must stay loud.
+fn merged_spec_pr_count(issue: u32) -> anyhow::Result<Measured<usize>> {
     let head = format!("spec/{}", issue);
     let out = run_gh(&["pr", "list", "--head", &head, "--state", "merged", "--json", "number"])?;
-    Ok(serde_json::from_str::<serde_json::Value>(&out)
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(0))
+    let parsed = serde_json::from_str::<serde_json::Value>(&out);
+    let Ok(v) = parsed else {
+        return Ok(Measured::Unknown(format!(
+            "could not read the merged spec PR list for `{}` (`gh pr list` returned an unparseable payload): {}",
+            head,
+            summarise_payload(&out)
+        )));
+    };
+    match v.as_array() {
+        Some(a) => Ok(Measured::Known(a.len())),
+        None => Ok(Measured::Unknown(format!(
+            "could not read the merged spec PR list for `{}` (`gh pr list` returned JSON that is not an array): {}",
+            head,
+            summarise_payload(&out)
+        ))),
+    }
 }
 
 /// The head commit (`headRefOid`) of the MERGED spec PR whose head is
@@ -2716,17 +2893,86 @@ fn merged_spec_pr_head(issue: u32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Commits reachable from `spec/<issue>` but not from `main` (`None` when the
-/// lookup fails — the branch is missing, or a fetch failed). Shared by the
-/// implementation exit guard and the spec-PR side-effect so both read one signal.
-fn spec_branch_ahead(issue: u32) -> Option<u64> {
+/// Commits reachable from `spec/<issue>` but not from `main` — TRI-STATE (#3241).
+///
+/// Shared by the implementation exit guard, the `→ testing` spec-PR side-effect and
+/// the orchestrator snapshot, so all three read ONE signal.
+///
+/// Each of the four steps can fail for a DIFFERENT reason and the operator must be
+/// told which: a transient fetch blip, a branch that does not exist, and a
+/// `rev-list` that could not run are not the same fact, and none of them is
+/// "0 commits ahead". The closure below therefore names the step in the message
+/// instead of collapsing every failure to `None` — which `unwrap_or(0)` then read
+/// as the confident "the developer must push" arm (observed live on #3241: the same
+/// context block printed `Spec branch ahead: 3`, an immediate retry succeeded, and
+/// the remedy the refusal named would have burned a whole round on a finished
+/// branch).
+fn spec_branch_ahead(issue: u32) -> Measured<u64> {
     let branch = format!("spec/{}", issue);
-    (|| {
-        run_cmd("git", &["fetch", "origin", "main"]).ok()?;
-        run_cmd("git", &["fetch", "origin", &branch]).ok()?;
-        run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?
-            .trim().parse::<u64>().ok()
-    })()
+    // A fetch whose failure stderr says the REF DOES NOT EXIST is a COMPLETE
+    // measurement, not a failed one: "zero commits on a branch that does not exist"
+    // is a true fact, and BOTH the pre-creation state (`git fetch origin spec/N`
+    // before `ensure_spec_branch` has ever run) and a deleted head report it this
+    // way. Treating it as Unknown would answer a definite absence with "could not
+    // measure — retry", which is the same class of misdiagnosis this fix removes,
+    // only in the other direction. Only a TRANSIENT failure (transport, auth,
+    // timeout) stays Unknown.
+    enum FetchStep {
+        Ok,
+        /// The ref genuinely does not exist on origin — a known absence.
+        Absent,
+        /// The read itself failed — the measurement is unknown.
+        Failed(String),
+    }
+    let fetch_step = |what: &str| -> FetchStep {
+        match run_cmd("git", &["fetch", "origin", what]) {
+            Ok(_) => FetchStep::Ok,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("couldn't find remote ref") || msg.contains("could not find remote ref") {
+                    FetchStep::Absent
+                } else {
+                    FetchStep::Failed(format!(
+                        "could not fetch `origin/{}` (a `git fetch` failed): {}", what, msg
+                    ))
+                }
+            }
+        }
+    };
+    match fetch_step("main") {
+        FetchStep::Ok => {}
+        // `origin/main` should always exist; if it does not, the trunk itself is
+        // unreadable — that is never "0 commits ahead" of it.
+        FetchStep::Absent => {
+            return Measured::Unknown(
+                "could not fetch `origin/main` (it does not exist on origin — the trunk is unreadable)".to_string(),
+            )
+        }
+        FetchStep::Failed(why) => return Measured::Unknown(why),
+    }
+    match fetch_step(&branch) {
+        // DEFINITE ABSENCE: the branch carries no commits beyond main. Known, not unknown.
+        FetchStep::Absent => return Measured::Known(0),
+        FetchStep::Failed(why) => return Measured::Unknown(why),
+        FetchStep::Ok => {}
+    }
+    let out = match run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]) {
+        Ok(o) => o,
+        Err(e) => {
+            return Measured::Unknown(format!(
+                "could not count the commits on `{}` beyond `main` (`git rev-list` failed): {}",
+                branch, e
+            ))
+        }
+    };
+    match out.trim().parse::<u64>() {
+        Ok(n) => Measured::Known(n),
+        Err(_) => Measured::Unknown(format!(
+            "could not read the commit count for `{}` (`git rev-list --count` returned {})",
+            branch,
+            summarise_payload(&out)
+        )),
+    }
 }
 
 /// Recreate `spec/<issue>` AT `origin/main` for a POST-MERGE restart. The spec PR
@@ -2753,8 +2999,8 @@ fn recreate_spec_branch_from_main(issue: u32) -> anyhow::Result<()> {
         run_cmd("git", &["branch", &branch, "origin/main"])?;
     }
     // The remote head is known ABSENT on this path (`maybe_recreate_merged_spec_branch`
-    // only calls us when `remote_branch_exists` is false), so this is a plain create —
-    // no force-push is needed on a delivery branch.
+    // only calls us when `remote_branch_state` reported it absent), so this is a
+    // plain create — no force-push is needed on a delivery branch.
     run_cmd("git", &["push", "-u", "origin", &branch])?;
     // Refresh the remote-tracking ref so `origin/spec/<N>` (the base every
     // worktree/`resolve_base` reads) points at the recreated tip immediately.
@@ -2775,10 +3021,20 @@ fn recreate_spec_branch_from_main(issue: u32) -> anyhow::Result<()> {
 /// the Auditor can see the round is PR-less.
 fn maybe_recreate_merged_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
-    if remote_branch_exists(&head) {
+    // Both shown predicates are MEASURED, not booleans (#3241). Neither may fall
+    // into a semantic arm on an unreadable value: this function's `None` return
+    // means "nothing to do — keep the caller's normal behaviour", so an unknown
+    // read as `false` here would silently assert "the branch is present" and
+    // "no merged PR", which is the LOST-branch arm asserted from no measurement.
+    // Fail CLOSED with the failed step named.
+    let branch_present = remote_branch_state(&head).or_fail(&format!(
+        "cannot decide the post-merge recreate for `{}`", head))?;
+    if branch_present {
         return Ok(None);
     }
-    if merged_spec_pr_count(issue)? == 0 {
+    let merged = merged_spec_pr_count(issue)?.or_fail(&format!(
+        "cannot decide whether `{}` was already merged", head))?;
+    if merged == 0 {
         return Ok(None);
     }
     recreate_spec_branch_from_main(issue)?;
@@ -2802,7 +3058,12 @@ fn maybe_recreate_merged_spec_branch(issue: u32) -> anyhow::Result<Option<String
 /// on origin (created from `main`). Idempotent. Returns a note if it created it.
 fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
     let branch = format!("spec/{}", issue);
-    if remote_branch_exists(&branch) {
+    // MEASURED (#3241): "absent" here means the machine CREATES the branch and
+    // pushes it. A read failure reported as "absent" would re-create a branch that
+    // already exists and carries the round's work — so name the unknown and stop.
+    let exists = remote_branch_state(&branch)
+        .or_fail(&format!("cannot decide whether `{}` exists on origin", branch))?;
+    if exists {
         return Ok(None);
     }
     let local_exists = run_cmd("git", &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", branch)]).is_ok();
@@ -2817,7 +3078,15 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
         // is merely contained in / tree-equal to `origin/main` is equally safe to
         // reseed. Only a branch whose round NEVER merged keeps its local commits —
         // that is genuine unpushed work and the pre-fix behaviour is preserved.
-        let merged_pr = merged_spec_pr_count(issue).unwrap_or(0) > 0;
+        // The merged-PR fact is MEASURED (#3241). It is a term of a decision that
+        // chooses what gets PUSHED, so an unknown read as "not merged" is not safe
+        // in either direction: it keeps commits that may be an already-merged
+        // round (the G-421 non-descendant push below) while the git checks that
+        // would catch it can themselves fail on the same transient. Name the
+        // unknown and fail closed — the operator retries, no wrong ref lands.
+        let merged_pr = merged_spec_pr_count(issue)?
+            .or_fail(&format!("cannot decide how to reseed the stale local `{}`", branch))?
+            > 0;
         let _ = run_cmd("git", &["fetch", "origin", "main"]);
         let already_in_main = merged_pr
             || run_cmd("git", &["merge-base", "--is-ancestor", &branch, "origin/main"]).is_ok()
@@ -2868,10 +3137,22 @@ fn ensure_spec_branch(issue: u32) -> anyhow::Result<Option<String>> {
 fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
-    let open_count = serde_json::from_str::<serde_json::Value>(&open_out)
-        .ok()
-        .and_then(|v| v.as_array().map(|a| a.len()))
-        .unwrap_or(0);
+    // MEASURED (#3241): an unreadable open-PR list read as 0 asserts "no open spec
+    // PR" and makes the machine open a SECOND one — the duplicate-delivery artefact
+    // `ensure_spec_pr_merged` refuses to merge. Fail closed, naming the payload.
+    let open_count = match serde_json::from_str::<serde_json::Value>(&open_out) {
+        Ok(v) => match v.as_array() {
+            Some(a) => a.len(),
+            None => anyhow::bail!(
+                "cannot read the open spec PR list for `{}` (`gh pr list` returned JSON that is not an array): {} — refusing to open a spec PR on an unreadable state",
+                head, summarise_payload(&open_out)
+            ),
+        },
+        Err(_) => anyhow::bail!(
+            "cannot read the open spec PR list for `{}` (`gh pr list` returned an unparseable payload): {} — refusing to open a spec PR on an unreadable state",
+            head, summarise_payload(&open_out)
+        ),
+    };
     if open_count > 0 {
         return Ok(None);
     }
@@ -2880,21 +3161,39 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
     if let Some(note) = maybe_recreate_merged_spec_branch(issue)? {
         return Ok(Some(note));
     }
-    // The branch did not exist before that call, so it exists now only if the merge
-    // recreate just ran (which returned early) — i.e. it is still absent here unless
-    // an unrelated push landed meanwhile. Distinguish the two failure shapes:
-    //   absent + no merged PR  → genuinely LOST branch (fail CLOSED)
-    //   present + no commits   → nothing to deliver (fail CLOSED unless merged)
-    let ahead = spec_branch_ahead(issue).unwrap_or(0);
+    // FOUR-ARM decision (#3241). The branch did not exist before that call, so it
+    // exists now only if the merge recreate just ran (which returned early) — i.e.
+    // it is still absent here unless an unrelated push landed meanwhile.
+    //
+    //   ahead > 0                      → open the spec PR
+    //   ahead == 0 + merged PR         → NO-PR round (already merged)
+    //   ahead == 0 + branch absent     → genuinely LOST branch (fail CLOSED)
+    //   ahead == 0 + branch present    → nothing to deliver (fail CLOSED)
+    //   ahead UNKNOWN, or merged UNKNOWN, or absence UNKNOWN
+    //                                  → MEASUREMENT ERROR (fail CLOSED)
+    //
+    // The fourth arm is the one this fix exists for. Both measured terms feed the
+    // SAME decision, so BOTH must be resolved before any semantic arm is taken: an
+    // unknown joined to an arm it never reached is how a transient `git fetch` blip
+    // was reported as "the developer must push" — a confident, role-accusing
+    // diagnosis whose remedy would have burned a full round on a finished branch.
+    // An unknown is NEVER a semantic state; it is reported as what it is: a failure
+    // to measure, naming the failed step.
+    let ahead = spec_branch_ahead(issue).or_fail(
+        &format!("cannot decide the delivery state of `{}`", head))?;
     if ahead == 0 {
-        if merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+        let merged = merged_spec_pr_count(issue)?.or_fail(
+            &format!("cannot decide whether `{}` was already merged", head))?;
+        if merged > 0 {
             println!(
                 "SPEC PR SKIPPED: {} has no commits beyond main (the spec PR already merged) — this is a NO-PR round; re-serve the root at the branch tip (G-032) before the tester runs",
                 head
             );
             return Ok(Some(format!("spec PR skipped: `{}` carries no commits beyond main (NO-PR round — already merged)", head)));
         }
-        if !remote_branch_exists(&head) {
+        let branch_present = remote_branch_state(&head).or_fail(
+            &format!("cannot decide whether `{}` is missing on origin", head))?;
+        if !branch_present {
             anyhow::bail!(
                 "spec branch `{}` is missing on origin and no merged spec PR records the tested work — refusing to open a spec PR (creating a branch here would make the PR show nothing or replay stale work). Restart to implementation (`transition post-audit → implementation`) so `{}` is recreated from origin/main, or record the spec merge first",
                 head, head
@@ -2921,12 +3220,25 @@ fn ensure_spec_pr(issue: u32) -> anyhow::Result<Option<String>> {
 fn ensure_spec_pr_merged(issue: u32) -> anyhow::Result<Option<String>> {
     let head = format!("spec/{}", issue);
     let open_out = run_gh(&["pr", "list", "--head", &head, "--state", "open", "--json", "number"])?;
-    let numbers: Vec<String> = serde_json::from_str::<serde_json::Value>(&open_out)
-        .ok()
-        .and_then(|v| v.as_array().map(|a| {
-            a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect()
-        }))
-        .unwrap_or_default();
+    // MEASURED (#3241, beyond the brief's five): an unreadable list read as EMPTY
+    // asserts "no open PR", i.e. "already merged", and the `→ audit` leg returns
+    // Ok(None) WITHOUT merging — a round silently reaches audit with its work
+    // unmerged. That is the same failure-vs-zero conflation on a SEMANTIC arm (the
+    // empty list here means "already merged", not "nothing to do"), so the parse
+    // failure is named and fails the leg closed instead of asserting a merge.
+    let numbers: Vec<String> = match serde_json::from_str::<serde_json::Value>(&open_out) {
+        Ok(v) => match v.as_array() {
+            Some(a) => a.iter().filter_map(|e| e["number"].as_u64().map(|n| n.to_string())).collect(),
+            None => anyhow::bail!(
+                "cannot read the open spec PR list for `{}` (`gh pr list` returned JSON that is not an array): {} — refusing to treat an unreadable state as 'already merged'",
+                head, summarise_payload(&open_out)
+            ),
+        },
+        Err(_) => anyhow::bail!(
+            "cannot read the open spec PR list for `{}` (`gh pr list` returned an unparseable payload): {} — refusing to treat an unreadable state as 'already merged'",
+            head, summarise_payload(&open_out)
+        ),
+    };
     if numbers.len() > 1 {
         // No-PR means "already merged", but duplicate PRs are a hard anomaly — the
         // delivery artifact is ambiguous and one would never be merged. Fail the
@@ -2985,7 +3297,13 @@ fn pr_mergeable(pr: &str) -> Option<String> {
 /// pointer to `sync-spec-branch` — the machine action that merges the trunk in.
 fn spec_branch_descends_from_main(issue: u32) -> anyhow::Result<()> {
     let branch = format!("spec/{}", issue);
-    if !remote_branch_exists(&branch) {
+    // MEASURED (#3241): `false` means "no branch — the post-merge recreate path owns
+    // this", which SKIPS the descent check. An unreadable `ls-remote` reported as
+    // "absent" therefore skips the guard silently — the #3198 shape (a stale branch
+    // entering a round with a CONFLICTING PR) asserted from no measurement.
+    let present = remote_branch_state(&branch)
+        .or_fail(&format!("cannot decide whether `{}` exists on origin", branch))?;
+    if !present {
         // No branch on origin: the post-merge restart path (`ensure_spec_pr` →
         // `maybe_recreate_merged_spec_branch`) owns the recreate-or-refuse decision.
         return Ok(());
@@ -3043,7 +3361,12 @@ fn sync_spec_branch(issue: u32) -> anyhow::Result<()> {
             phase.as_str()
         );
     }
-    if !remote_branch_exists(&branch) {
+    // MEASURED (#3241): "absent" here refuses with "nothing to sync". A read
+    // failure reported as absent would tell the operator the branch is gone while
+    // it is present — name the unknown instead of asserting an absence.
+    let present = remote_branch_state(&branch)
+        .or_fail(&format!("cannot decide whether `{}` exists on origin", branch))?;
+    if !present {
         anyhow::bail!(
             "`{}` does not exist on origin — nothing to sync (a post-merge restart recreates it from origin/main)",
             branch
@@ -4828,7 +5151,37 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
     // The tested tree IS main's tree (a squash merge copies the tree), so the
     // precondition holds; the Orchestrator must re-serve the root at the recreated
     // tip (G-032) before the tester runs — the recreate note says so.
-    let merged_pr = || merged_spec_pr_count(issue).unwrap_or(0) > 0;
+    //
+    // BOTH terms of this bypass are MEASURED (#3241), and neither may collapse into
+    // the other. The block is deliberately FAIL-OPEN — its own comment below says
+    // why — and that DIRECTION is correct: unknown must not become a hard error
+    // here, or the post-merge dead-end it exists to remove comes back. What was
+    // wrong is the SILENCE: a bare `a && b` of two unknown-able predicates reads
+    // identically whichever side failed, so the reader cannot tell which term was
+    // unknown. The unknown is therefore NAMED in an emitted line and the strict
+    // check below still runs — outcome unchanged, legibility restored.
+    let branch_absent = || -> Measured<bool> {
+        match remote_branch_state(&format!("spec/{}", issue)) {
+            Measured::Known(present) => Measured::Known(!present),
+            Measured::Unknown(why) => Measured::Unknown(why),
+        }
+    };
+    let merged_pr = || -> Measured<bool> {
+        match merged_spec_pr_count(issue) {
+            Ok(Measured::Known(n)) => Measured::Known(n > 0),
+            Ok(Measured::Unknown(why)) => Measured::Unknown(why),
+            Err(e) => Measured::Unknown(format!("`gh pr list` failed: {}", e)),
+        }
+    };
+    // One reporter for a fail-open unknown: names WHICH term was unreadable, says
+    // the fallback it used, and states the fail-open is intentional so a later
+    // reader does not "fix" the direction.
+    let report_unknown = |term: &str, why: &str| {
+        println!(
+            "SERVING CURRENCY: could not read {} for spec/{} ({}) — treating the post-merge bypass as not-satisfied and continuing to the strict check (fail-open by design: failing closed here would re-create the post-merge dead-end this bypass exists to remove)",
+            term, issue, why
+        );
+    };
     if mock_mode() {
         // Mock harness: the "root" state is simulated by the mock refs — once
         // spec/<N> exists with commits (the implementation exit gate already
@@ -4838,8 +5191,10 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
         if mock_commits_ahead(&branch) > 0 || mock_ref_exists(&branch) || mock_local_ref_exists(&branch) {
             return Ok(());
         }
-        if merged_pr() {
-            return Ok(());
+        match merged_pr() {
+            Measured::Known(true) => return Ok(()),
+            Measured::Known(false) => {}
+            Measured::Unknown(why) => report_unknown("the merged-PR state", &why),
         }
         anyhow::bail!("repo root is not on spec/{} — checkout the spec branch and start the dev instance: dev-env.ps1 -Action Up -Spec {}", issue, issue);
     }
@@ -4850,7 +5205,28 @@ fn serving_currency_ok(issue: u32) -> anyhow::Result<()> {
     // re-serving the root at the recreated tip (G-032) before the tester runs. Fail
     // OPEN here — failing closed would re-create the very dead-end this fix removes,
     // and there is no tip to compare against until the branch exists again.
-    if !remote_branch_exists(&format!("spec/{}", issue)) && merged_spec_pr_count(issue).unwrap_or(0) > 0 {
+    //
+    // The conjunction is resolved ONE TERM AT A TIME so an unknown is attributed:
+    // a bare `absent && merged` hides which side was unmeasured. Evaluation stays
+    // SHORT-CIRCUITING exactly as before — the merged-PR read is only issued when
+    // the branch really is absent — so this legibility fix adds no API call on the
+    // common (branch present) path.
+    let post_merge = match branch_absent() {
+        Measured::Known(false) => false,
+        Measured::Unknown(why) => {
+            report_unknown("whether `spec/<N>` is absent on origin", &why);
+            false
+        }
+        Measured::Known(true) => match merged_pr() {
+            Measured::Known(true) => true,
+            Measured::Known(false) => false,
+            Measured::Unknown(why) => {
+                report_unknown("the merged-PR state", &why);
+                false
+            }
+        },
+    };
+    if post_merge {
         println!(
             "SERVING CURRENCY: spec/{} is absent (merged + branch deleted) — the machine recreates it from origin/main; re-serve the root at the recreated tip (G-032) before the tester runs",
             issue
@@ -4967,6 +5343,37 @@ impl EnvEvidenceCheck {
 fn short_sha(s: &str) -> String {
     s.chars().take(8).collect()
 }
+
+/// Generated-artefact paths EXEMPT from the C1 product-subtree diff.
+///
+/// **This is a NAMED-PATH list, never a glob, never a directory, never a
+/// predicate.** C1 exists to prove the product evidence was genuinely re-proved
+/// against the tree that will ship, so a general "generated files don't count"
+/// rule would let a slice ship real generated product output (a bundled asset, a
+/// compiled manifest carrying behavioural content) and skip the re-serve that
+/// proves it. Only a path whose content **cannot alter runtime behaviour** may
+/// appear here, and each one carries its reason:
+///
+/// - `apps/tauri/src-tauri/gen/schemas/{acl-manifests,desktop-schema,windows-schema}.json`
+///   — **derived from `COMMAND_MANIFEST` by `build.rs` (`tauri_build`), and
+///   `COMMAND_MANIFEST` is what the tree is: behaviour is fixed by the manifest,
+///   not by its own machine-readable self-description.** These files are the
+///   published schema OF the command surface; regenerating them describes a
+///   command-surface change that the manifest (a product path that is NOT exempt)
+///   already forces a re-serve for. Exempting them only removes the re-serve for
+///   the artefact-only commit the schema staleness gate now makes routine.
+///
+/// `gen/schemas/capabilities.json` is deliberately NOT exempt: it is not one of
+/// the three files the gate validates, so it must keep owing a re-serve.
+///
+/// A candidate path passes this list only if it can be added with a reason of the
+/// same shape — "it is derived from X, and X (not this file) determines the
+/// behaviour". Red-then-green pins live in `test-scripts.ps1`.
+const GENERATED_SCHEMA_ARTEFACTS: [&str; 3] = [
+    ":(exclude)apps/tauri/src-tauri/gen/schemas/acl-manifests.json",
+    ":(exclude)apps/tauri/src-tauri/gen/schemas/desktop-schema.json",
+    ":(exclude)apps/tauri/src-tauri/gen/schemas/windows-schema.json",
+];
 
 /// A bare commit sha accepted from a verdict's `Tested commit:` line: 7–40 ASCII
 /// hex characters (git's abbreviated..full range), with nothing else. The offline
@@ -5131,12 +5538,21 @@ fn check_env_evidence(issue: u32) -> EnvEvidenceCheck {
     // C1: a docs/pipeline-only commit after the serve does not invalidate PRODUCT
     // evidence. Accept a served commit whose product subtree (apps + manifests) is
     // byte-identical to the intended tip; a product change still requires a re-serve.
+    //
+    // C1 EXEMPTION (named paths, see GENERATED_SCHEMA_ARTEFACTS): the three
+    // `gen/schemas/*` files are derived from `COMMAND_MANIFEST`, so an
+    // artefact-only regeneration cannot change runtime behaviour and must not
+    // force a re-serve. Any OTHER change under `apps/` (a `.rs`, a capability, a
+    // bundled asset) still fails the diff — that direction is what keeps C1
+    // honest. The commit the staleness gate makes routine is exactly this one.
     let product_unchanged = || -> bool {
         if ev.served_commit.trim().is_empty() || intended_commit.trim().is_empty() { return false; }
-        run_cmd("git", &[
+        let mut args: Vec<&str> = vec![
             "diff", "--quiet", ev.served_commit.as_str(), intended_commit.as_str(), "--",
             "apps", "package.json", "pnpm-lock.yaml", "apps/tauri/src-tauri/Cargo.toml", "Cargo.lock",
-        ]).is_ok()
+        ];
+        args.extend(GENERATED_SCHEMA_ARTEFACTS.iter().copied());
+        run_cmd("git", &args).is_ok()
     };
     if !commit_matches && !product_unchanged() {
         return EnvEvidenceCheck { present: true, valid: false, reason: format!("served commit mismatch: evidence '{}' != intended '{}' (product subtree changed — re-serve)", short_sha(&ev.served_commit), short_sha(&intended_commit)), path: display };
@@ -5600,12 +6016,22 @@ fn exit_guard_passes(phase: Phase, issue: u32) -> (bool, String) {
             // Real gate: the spec integration branch has commits the developer
             // pushed — commits reachable from the branch but not from main.
             // (Sub-issues were removed; all work is tracked on the plan issue +
-            // the spec branch.) Fails CLOSED on any lookup error.
+            // the spec branch.)
+            //
+            // FOUR-ARM (#3241): the three semantic outcomes and — separately — the
+            // failure to MEASURE any of them. Before this fix a failed fetch/rev-list
+            // was `None`, the call site turned it into `0`, and the gate emitted the
+            // "developer must push" diagnosis for a branch that was complete. The
+            // unknown arm says what actually happened and names the failed step, so
+            // "nothing to deliver" and "could not check" are readable apart.
             let branch = format!("spec/{}", issue);
             match spec_branch_ahead(issue) {
-                Some(n) if n > 0 => (true, String::new()),
-                Some(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
-                None => (false, format!("cannot verify {} (does it exist on origin? planning→implementation creates it)", branch)),
+                Measured::Known(n) if n > 0 => (true, String::new()),
+                Measured::Known(_) => (false, format!("{} has no commits beyond main — the developer must push", branch)),
+                Measured::Unknown(why) => (false, format!(
+                    "could not measure the delivery state of {} — this is a MEASUREMENT failure, not an empty branch. Retry the transition; do NOT re-dispatch the developer on this alone (check `git log --oneline origin/{}` first). Cause: {}",
+                    branch, branch, why
+                )),
             }
         }
         Phase::Testing => {
@@ -8523,15 +8949,15 @@ fn format_permission_rule(rule: &serde_json::Value) -> String {
 /// read fails, so the context block always renders.
 fn orchestration_snapshot(issue: u32) -> serde_json::Value {
     let plan = find_impl_plan(issue);
-    // Spec-branch work indicator: commits on the spec branch not on main (0 =
-    // the developer has not pushed; >0 = implementation progress). Fails open to 0.
-    let spec_ahead = (|| {
-        let branch = format!("spec/{}", issue);
-        run_cmd("git", &["fetch", "origin", "main"]).ok()?;
-        run_cmd("git", &["fetch", "origin", &branch]).ok()?;
-        let out = run_cmd("git", &["rev-list", "--count", "origin/main..FETCH_HEAD"]).ok()?;
-        Some(out.trim().parse::<u64>().unwrap_or(0))
-    })().unwrap_or(0);
+    // Spec-branch work indicator: commits on the spec branch not on main (>0 =
+    // implementation progress). This is the field whose VALUE contradicted the
+    // gate live on #3241 (`Spec branch ahead: 3` beside a "developer must push"
+    // refusal), so it must not report an UNMEASURED value as a confident `0`
+    // either — it renders `unknown` instead, which is a read, not a decision.
+    let spec_ahead = match spec_branch_ahead(issue) {
+        Measured::Known(n) => serde_json::json!(n),
+        Measured::Unknown(why) => serde_json::json!(format!("unknown ({})", why)),
+    };
     // Whether the tester has posted an Evidence comment (single-issue model: the
     // evidence lands on the feature issue; the legacy plan issue is a fallback).
     let evidence_on_plan = get_issue_comments(issue)
@@ -8680,7 +9106,14 @@ fn print_context(issue: u32, actor: &str, raw: bool) -> anyhow::Result<()> {
         }
         if let Some(o) = &orch {
             println!("{:<16} {}", "Impl plan:", o["impl_plan"].as_str().unwrap_or("none"));
-            println!("{:<16} {}", "Spec branch ahead:", o["spec_branch_ahead"]);
+            // Render an UNMEASURED value as its plain text, not `"unknown (…)"` with
+            // JSON quotes — this is the human-facing line whose value must visibly
+            // differ from a measured `0`.
+            let ahead = match o["spec_branch_ahead"].as_u64() {
+                Some(n) => n.to_string(),
+                None => o["spec_branch_ahead"].as_str().unwrap_or("unknown").to_string(),
+            };
+            println!("{:<16} {}", "Spec branch ahead:", ahead);
             println!("{:<16} {}", "Evidence on plan:", o["evidence_on_plan"]);
             println!("{:<16} {}", "A2A file:", o["a2a_file"].as_str().unwrap_or("none"));
             println!("{:<16} {}", "Spec branch:", o["spec_branch"].as_str().unwrap_or("absent"));
