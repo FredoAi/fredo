@@ -81,3 +81,58 @@ rows `UNVERIFIED (blocked by S-5)` rather than driving them against a broken cyc
 S-11.1…S-11.5 all PASS on the spec tip, in addition to the parent S-1…S-10. A failing S-11.3 blocks the
 AC-3 group; a failing S-11.5 blocks the AC-1/AC-5 group (`F-9.1`) — record the failing step and mark
 the dependent rows `UNVERIFIED (blocked by S-11.x)` rather than driving them against a broken state.
+
+---
+
+## #3241 cases (development mode — the cheapest boot check for the dev-load path)
+
+> **Policy: `live`** (the parent file's). These are the cheapest boot-level checks for the
+> development-load path; the graded rows are `functional.md`'s `F-10.1` … `F-10.11`. Nothing here
+> substitutes for them. The dev leg is an **existing archive installed through
+> `installed_app_install_development`** — there is no development-package fixture and no mode env var
+> (`F-10.10`'s text carries the declared absence).
+
+- [ ] **S-12.1 — the dev-load path runs end to end, once.** From `main`, call
+  `installed_app_install_development{archivePath:"<absolute path to qa3147-valid-<v>.zip>"}`; then
+  `installed_app_open{appId:"qa3147-valid"}`.
+  - EXPECT: the invoke **resolves** with an entry whose `mode` is `development`;
+    `tauri_manage_window action="list"` shows `installed-qa3147-valid` with the title
+    **`Development — QA3147 Valid`** (the marker **LEADS** — `DEVELOPMENT_TITLE_PREFIX`);
+    `<FREDO_DATA_DIR>/installed-apps/qa3147-valid/development.json` exists; a native capture of the
+    window shows the marker band at the top edge. No console error.
+  - EDGE: a resolve with `mode: "released"` is a total FAIL — the other command was called. A window
+    that opens with the app's own UI but **no** band and **no** title marker is the pre-change
+    behaviour; record it as the smoke-level discrimination for `F-10.1`/`F-10.2`, not an env wedge. A
+    title that carries `Development` as a **suffix** is a FAIL — the constant is a prefix.
+
+- [ ] **S-12.2 — both list surfaces carry the mode on `main`, in one snapshot.** With S-12.1's dev
+  build plus one normally-installed app present, open Settings → Installed applications, then the
+  launcher.
+  - EXPECT: the dev row and the dev entry both carry `data-app-mode="development"` with a `-mode` node
+    reading exactly `Development`; the released row and entry both carry `data-app-mode="released"`
+    with **no** `-mode` node. **The launcher entry's accessible name carries the mark too**
+    (C-1/Architect D-10b — the `aria-label` masks the painted chip): the dev entry's name is
+    `<displayName>, development build`, and the released entry's name is the bare `displayName`. Quote
+    both names. No console error, no `Maximum update depth exceeded`.
+  - EDGE: a missing `data-app-mode` on any row (treated as `released`) reddens `F-10.3`/`F-10.4` —
+    the attribute is **always present**; record it rather than reading the absence as released. A dev
+    entry whose accessible name is the bare `displayName` is the masked-chip defect `F-10.4` reddens —
+    the chip is painted and the mark is never announced.
+
+- [ ] **S-12.3 — the shipped load control is present and named.** On `main`, open the pane and read
+  `[data-testid="installed-apps-install-development-button"]`.
+  - EXPECT: the button renders, is a real `<button>`, is keyboard-reachable, and its **accessible name
+    is exactly `Load development build...`** (text button, never icon-only). Quote the name.
+  - EDGE: an icon-only control, or a name that differs from the shipped label, reddens `F-10.10`'s
+    static half — quote the actual name, do not paraphrase it into a pass.
+
+- [ ] **S-12.4 — both build gates green.** `pnpm --filter @fredo/ui build` ⇒ `EXITCODE=0`;
+  `cargo check --locked` (from `apps/tauri/src-tauri`) ⇒ `EXITCODE=0` with zero `warning:` lines.
+  Use `run-exitcode.ps1 -Command "<cmd>"`.
+
+## Expected outcome (#3241)
+
+S-12.1…S-12.4 all PASS on the spec tip, in addition to the parent S-1…S-10 and the #3144 S-11.x set.
+A failing S-12.1 blocks the whole `## #3241` functional group — the marking rows all need a working
+dev-load path; record the failing step and mark them `UNVERIFIED (blocked by S-12.1)` rather than
+driving them against a broken load.
