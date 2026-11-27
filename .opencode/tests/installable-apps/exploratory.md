@@ -318,3 +318,83 @@ _Confirmed probes promote to `functional.md`; a probe blocked by a sandbox/tooli
   - WHY: the two surfaces have different contracts (ST-5 excludes only `disabled`; the pane is the
     inventory). A launcher that still offers a disabled app is a FAIL of `F-9.5`; a pane that omits it
     is a FAIL of AC-1.
+
+---
+
+## #3241 probes (the development marking's own failure surface)
+
+> **Why these five.** AC 3's risk is not "the marker is missing" — that is a row. It is **"the marker
+> is there and a user still cannot see it"**, and **"the marker exists and the build reaches
+> further"**. Each probe asks one question the plan cannot answer by construction: *does the marking
+> survive the state a user is actually in?* The dev leg is an **existing archive installed through
+> `installed_app_install_development`** — no new fixture, no generator edit. A confirmed finding
+> **promotes** to `functional.md` as a new `F-10.x` row with its origin note.
+
+- [ ] **E-22.1 — the band over a full-bleed, scroll-driving app.** Install `qa3147-valid` in
+  development mode, then in the child scroll its own content to the bottom (the fixture's probe plan
+  renders enough lines to overflow; otherwise use `qa3146-no-capabilities` from
+  `build-capability-fixtures.mjs`, whose mirror is long) and take a native capture at the top **and**
+  after the scroll.
+  - EXPECT: the band is visible at the **top edge of the window in BOTH captures** (a `position: fixed`
+    band does not scroll away). The application's first ~28–32 px of its own content is overlaid — the
+    disclosed cost; record whether it obscures anything the app needs.
+  - WHY: `F-10.2` asserts perceivability at first paint; a band that scrolls out is the placement
+    defect the plan's §C-6 corrects. A confirmed scroll-away promotes immediately.
+  - **NOTE:** if the fixture's document does not overflow, say so and record `UNVERIFIED — fixture does
+    not scroll` — do **not** author a bespoke scrolling fixture for this probe (G-460/G-172).
+
+- [ ] **E-22.2 — the app deletes its own banner.** Install a development build, then — **only if a
+  host-side child inject path exists in this round** (a Toolsmith item, **non-gating**) — remove the
+  band's node from the child's own DOM and re-read S1 and S2.
+  - EXPECT: **S1 (the OS title) still carries the marker** — the title is host-set and the child holds
+    no `core:window:*` grant, so an application cannot unmark its own chrome. Quote the title and show
+    the marker is the **leading** run (`Development — <displayName>`; `DEVELOPMENT_TITLE_PREFIX`), not
+    merely present somewhere in the string. S2 goes unmarked (the app owns its DOM). Record both.
+  - WHY: this is *why* S1 exists, and it is the one claim in the plan that is a **paired-carrier**
+    argument rather than a single observation. **If no host-side inject path exists, record
+    `UNVERIFIED — no host-side child inject path (Toolsmith item, routed and non-gating)`** — this is
+    the pre-authorized limitation, and the plan's structural argument stands on the capability files
+    (R-11.1), not on a probe that could not run. **Never drive it with an improvised one-off script.**
+
+- [ ] **E-22.3 — the marker vs a lifecycle transition and a restart.** Install a development build;
+  read all five surfaces; turn it **off**; re-read the pane (S3) and the launcher (S4); turn it back
+  **on**; re-read; then **restart Fredo** on the same `FREDO_DATA_DIR` and re-read all five.
+  - EXPECT: the mode survives every transition — `data-app-mode="development"` remains on the pane row
+    even while `data-app-state="disabled"`, the launcher entry reappears marked when it is turned back
+    on (painted chip `Development` **and** accessible name `<displayName>, development build` — C-1),
+    and the title (leading prefix), band (leading token) and projection all still carry the marker after
+    the restart.
+  - WHY: `F-10.7` asserts the **released** control's durability across these transitions; this is the
+    dev-side twin, and the disable/enable response replaces the whole entry in the frontend store — a
+    mode-less response would silently unmark a row until the next listing.
+  - **Record which states you could NOT reach** (the launcher hides a disabled app, so S4 is
+    unreadable while off) rather than counting the absence as unmarked.
+
+- [ ] **E-22.4 — a hand-deleted marker file (the residual the plan discloses).** Install a development
+  build, then delete `<FREDO_DATA_DIR>/installed-apps/<id>/development.json` and re-list / re-open.
+  - EXPECT: record the behaviour — after the delete and a fresh listing the app reads (and is marked
+    as) **released**, because presence IS the fact. **This is a DISCLOSURE, not a defect**: the plan
+    states that a user with write access to their own app-data directory can delete the marker, and
+    that the product offers **no unmark path** (no command, no control, no setting). Restore the file
+    afterwards.
+  - WHY: the residual is stated in the plan's Discussion (the Architect's D-2) so the Auditor judges a
+    decision instead of discovering an accident. **Do not FAIL any AC row on this** — a verdict that
+    reports it as a defect is wrong in the other direction. Do **not** test the converse (a hand-
+    CREATED marker on a normal install) as an unmark proof either — the same write access.
+  - **Restore the file** — `F-10.7`'s dev control and `E-22.3` depend on it.
+
+- [ ] **E-22.5 — the load control under a refusal, and a second dev install of an existing id.** On
+  `main`, activate `[data-testid="installed-apps-install-development-button"]` with the **native picker
+  dismissed** (or call the command with a non-existent path), then with an id that is **already
+  installed**.
+  - EXPECT: (a) the dismissal / bad path yields the **reused** frozen code `io_error` and the control
+    is **re-enabled** afterwards (no permanently wedged control — the shipped "controls stay live after
+    a refusal" rule); (b) an already-installed id yields `already_installed`, **no 23rd code**, and the
+    existing install is untouched (the marker state of the existing install is unchanged: a released
+    app stays released, a development app stays development).
+  - WHY: `F-10.10`'s EDGE names the codes; this probe checks the **control's** behaviour and the
+    **"does not silently upgrade/downgrade an existing install"** question, which is where a load path
+    is most likely to mutate state.
+  - **The native picker is not this probe's lever** if it cannot be driven automatically — call the
+    command with an explicit bad path instead and record the substitution; never require a human to
+    dismiss a dialog (G-414).

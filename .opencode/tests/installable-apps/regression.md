@@ -606,3 +606,125 @@ the file:line and the assertion; a live case quotes the observed value._
     reddens this row (the two sentences render again).
   - **EDGE:** a `failing` row whose reason is the *install* sentence is exactly the defect; a row whose
     reason is a paraphrase is a **copy** finding to route to UI/UX, not a PASS by substitution.
+
+---
+
+## R-11 — the #3241 development mode must not widen reach, mark a normal install, or move the two tiers
+
+> These rows are the "must not change" counterpart of `functional.md`'s **`## #3241`** group.
+> Development mode is a **load** decision that adds **one** command granted to the **built-in** window
+> class only; every property below is what it must not disturb. Two exceptions to "must not change",
+> stated up front: **R-11.4** (`store.rs` gains the marker) and **R-11.6** (the two list components
+> gain the badge) — those files MUST change, so those rows bind the diff's **shape** and the
+> **released-arm byte-identity**, never an empty diff.
+
+- [ ] **R-11.1 — the installed tier's grant is still exactly one capability, one permission, no `core:*`.**
+  Read `apps/tauri/src-tauri/capabilities/installed-app-commands.json` and run `F-2.5` / `F-2.6`'s
+  **parsed-JSON matcher** (never a raw `installed-` grep, G-430).
+  - **EXPECT:** the installed-tier capability is **unchanged**: `windows` exactly `["installed-*"]`,
+    `permissions` exactly `["allow-installed-app-invoke"]`, no `core:*`, and still **exactly one**
+    capability file matches an `installed-<probe>` label. **The new
+    `allow-installed-app-install-development` grant must NOT appear in this file** — it belongs to the
+    built-in set (`permissions/app/default.toml`). Its appearance here is a total FAIL of AC 3's second
+    half and of `F-10.9`.
+  - **FAILABILITY:** pre-change the file reads the same, so this row is green both sides — its
+    falsifiability is the **mutation**: adding the new permission to this file must redden it. State
+    the reading and the matcher's per-file result (quote `F-2.5`'s controls, which prove the matcher
+    still returns hits).
+  - **EDGE:** a capability minted per installed id (`installed-qa3146-no-capabilities`) is a FAIL of
+    R-8.3's family rule as well.
+
+- [ ] **R-11.2 — the frozen vocabularies do not grow, and the dispatch table does not move.**
+  Read `apps/tauri/src-tauri/src/applications/installed_apps/mod.rs` (`InstalledAppRefusalCode` + its
+  `ALL`/`as_str` unit pin), `authority.rs`, and `dispatch.rs`'s `DISPATCH_TABLE`.
+  - **EXPECT:** `InstalledAppRefusalCode` is still **exactly 22** (quote the committed pin's assertion
+    **and** its count); the authority vocabulary is still the separate **six**; the two types stay
+    distinct (`INSTALL_REFUSAL_COPY` vs `CAPABILITY_REFUSAL_COPY` stay distinct on the frontend);
+    `DISPATCH_TABLE` is still the shipped **ordered exact set** (cite `F-7.3` — a membership check
+    passes a same-set reorder). **#3241 adds ZERO codes and ZERO dispatch actions** — its refusals
+    reuse `already_installed`, `io_error`, `id_invalid`, `id_is_installed_app`,
+    `integrity_record_corrupt`.
+  - **FAILABILITY:** a 23rd installer code (or a 7th authority code, or a new dispatch row) reddens
+    this row **and** `R-8.2` / `R-10.1`. The **pre-change tree carries 22/6/the same table**, so both
+    directions are failable — the mutation is the discriminator.
+  - **EDGE:** a refusal code renamed or **reordered** reddens the pinned wire-string assertion even
+    with the count intact. Quote the enum's serde attribute as shipped.
+
+- [ ] **R-11.3 — `installed_app_install`'s signature and its exactly-two-command guard are untouched.**
+  Read `apps/tauri/src-tauri/src/applications/installed_apps/commands_install.rs`, its test module, and
+  `src/lib.rs`'s `generate_handler!`.
+  - **EXPECT:** `installed_app_install` still takes `archivePath: Option<String>` and returns
+    `InstalledAppResult<InstalledAppEntry>` (quote the signature); the shipped guard asserting the
+    module owns **exactly two** commands still passes (quote its test name verbatim at the tested
+    commit); **no new `#[tauri::command]` was added to that file** — the development command lives in
+    its own module. Quote the `generate_handler!` region showing `installed_app_install` and
+    `installed_app_install_development` as separate entries.
+  - **FAILABILITY:** adding the mode as an argument on the SHIPPED command would change its signature
+    and redden this row; putting the new command inside `commands_install.rs` reddens the
+    two-command guard.
+  - **EDGE:** `store::install_archive` must still be the public entry point and must delegate with
+    `Released` (`F-10.11` pin 5) — a released install that diverged is a FAIL here too, because the
+    shipped path is the one every existing row depends on.
+
+- [ ] **R-11.4 — a RELEASED install is byte-identical: same record, same manifest, same served
+  document, same title, and NO marker file (shape-of-diff row, never "empty diff").**
+  - **EXPECT (on disk):** for a package installed through the ordinary path,
+    `<FREDO_DATA_DIR>/installed-apps/<id>/` contains `manifest.json`, `record.json`, `files/` and
+    **no** `development.json`; the `record.json` and `manifest.json` bytes are **identical** to the
+    same package installed on the pre-change tree (hash both sides and quote the digests — an
+    equality that must not be vacuous, G-469: **both digests must be non-empty and name the same
+    subject**).
+  - **EXPECT (served document):** the released install's served bytes are **unchanged** — quote the
+    host's served `<style>`/document head from a native read and show the development band's markup is
+    **absent** (`F-10.2`'s control is the live form; this is its on-disk/wire twin). A released
+    document whose bytes differ by the band's CSS rule **is expected** (the rule is in `PANEL_CSS`,
+    which every document carries) — the assertion is that **no band MARKUP** is emitted for a released
+    build, not that the CSS string is identical. Say plainly which you compared.
+  - **EXPECT (title):** `F-10.1`'s released control — title exactly the `displayName`, **byte-identical**:
+    no `Development — ` prefix, no marker token (the constant is `DEVELOPMENT_TITLE_PREFIX`, so a
+    released title that merely lacks a *suffix* is not enough — assert equality).
+  - **FAILABILITY:** a marker written for a normal install reddens; a `record.json` that gained a
+    `mode` field reddens (the record's shape is a frozen contract — the mode is deliberately **not** a
+    record field); a released document that emits the band's markup reddens.
+  - **EDGE:** the marker file's presence is what marks, so a `development.json` present with
+    `{"development": false}` or any other content still reads **development** (`F-10.11` pin 1) —
+    there is no "false" form. A revert of the slice leaves an ordinary install readable as released;
+    a build installed *by* the slice reads released after a revert (quote whether you observed it).
+
+- [ ] **R-11.5 — the authority path gains no mode input (the one change that would grant privilege).**
+  Read `authority.rs`'s `read_authority_grants` and `dispatch.rs`'s `AuthorityInputs`.
+  - **EXPECT:** `read_authority_grants` reads **exactly two** sources — the canonical `manifest.json`
+    and the host-owned consent file — and never opens the development marker. Grep both files for
+    `development.json`, `DEVELOPMENT_FILENAME`, `read_development_marker`, `InstalledAppMode` ⇒
+    **zero hits**, with the resolved paths quoted beside the counts. `AuthorityInputs` carries no mode
+    member (quote the struct). **CONTROL:** the same grep over `store.rs` MUST return hits — the zero
+    above is aimed at the right file (G-408/G-469).
+  - **FAILABILITY:** wiring `mode` into the approval path (e.g. "dev builds skip consent") reddens
+    this row **and** `F-10.8` — the live row is the measurement, this is the structural reason.
+  - **EDGE:** a refactor that renames `read_authority_grants` must re-point this row, not delete it —
+    the property is "the function the dispatcher uses to learn reach reads no marker".
+
+- [ ] **R-11.6 — the two list surfaces' retained structure is intact, and the released row's DOM grows
+  by exactly the mode attribute.**
+  Read `apps/ui/src/applications/settings-app/components/InstalledAppsSettings.tsx`,
+  `apps/ui/src/applications/home/components/launcher/LauncherInstalledAppsSection.tsx` and the
+  **shared badge** `apps/ui/src/shared/installed-apps/InstalledAppModeBadge.tsx`.
+  - **EXPECT:** the state vocabulary is unchanged and separate — `data-app-state` ∈
+    {`working`,`failing`,`disabled`} with its three words, and the mode is a **separate** attribute
+    (`data-app-mode`) plus a separate node (never folded into `STATE_WORDS`). A released row's DOM
+    differs from the pre-change row **only** by the added `data-app-mode="released"` and the absent
+    `-mode` node; **the launcher entry's accessible name for a released app is the bare `displayName`,
+    byte-identical** (`installedAppEntryAccessibleName` returns it unchanged — the composed form is only
+    for `development`), so the shipped `getByRole('button', { name: 'Alpha' })` assertion still passes;
+    the launcher section still renders **nothing** when its filtered list is empty; the suite's
+    `R-10.4`/`R-10.5` assertions still hold. **Both surfaces render the marker through the ONE
+    shared badge** — grep both components for a second inline marker implementation ⇒ 0 matches.
+    **Nothing here asserts a development marking's presence or absence** — this is the released
+    control, and a released app is never marked (`F-10.7`).
+  - **FAILABILITY:** a mode word folded into `STATE_WORDS`, a second badge implementation that can
+    drift, or a released row that renders a `-mode` node reddens this row. The **unit tests**
+    (`InstalledAppsSettings.test.tsx`, `LauncherInstalledAppsSection.test.tsx`,
+    `InstalledAppModeBadge.test.tsx`) redden on any of it — quote the run.
+  - **EDGE:** the description slot (#3244's `installed-apps-entry-no-description`) is **byte-identical**
+    — do not touch it, and do not let the badge displace it (the badge is a sibling). A row that
+    passes by editing this file's retained assertions is a **plan defect** — report it.
