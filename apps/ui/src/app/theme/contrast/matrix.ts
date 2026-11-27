@@ -266,8 +266,10 @@ interface PresetTokens {
   readonly headerBg: Rgb;
   /** `bg.muted` (`--card-hover-bg`) — the slider rail fill (#3086). */
   readonly cardHoverBg: Rgb;
-  /** `status.error` (`--status-error`) — the Discard fill / banner accent (#3086). */
+  /** `status.error` (`--status-error`) — the Discord fill / banner accent (#3086). */
   readonly statusError: Rgb;
+  /** `status.info` (`--status-info`) — the development-mode badge's tint input (#3241). */
+  readonly statusInfo: Rgb;
   /** `status.onSolids` — the WCAG-max on-status foreground (#3086). */
   readonly statusOnSolids: Rgb;
   /** `accent.tint` — the selected-segment indicator fill (#3086). */
@@ -299,6 +301,7 @@ function resolveTokens(colors: Record<string, string>): PresetTokens {
     // status fill/foreground pair and the banner composition inputs.
     cardHoverBg: resolveTokenRgb('bg.muted', colors),
     statusError: resolveTokenRgb('status.error', colors),
+    statusInfo: resolveTokenRgb('status.info', colors),
     statusOnSolids: resolveTokenRgb('status.onSolids', colors),
     accentTint: resolveTokenRgb('accent.tint', colors),
     statusErrorTint: resolveTokenRgb('status.errorTint', colors),
@@ -327,6 +330,17 @@ const SOLID_HOVER_OPACITY = 0.9;
  * (owned by the surface call sites) must mirror this exact value.
  */
 const RADIO_SELECTED_TINT = 0.08;
+
+/**
+ * The development-mode badge's ground tint (Spec #3241) — `tint('var(--status-info)',
+ * 10)` in `InstalledAppModeBadge.tsx`.
+ *
+ * Single-homed here so the gate MEASURES the ground the component actually paints:
+ * the badge's ground is a per-preset `color-mix`, which no contract cell describes,
+ * so a drift between the two values would leave the gated pair green over a ground
+ * nobody paints.
+ */
+export const MODE_BADGE_TINT = 0.1;
 
 /**
  * Spec #3086 — Wireframe control-class compositions (all `tint()`-derived over
@@ -494,6 +508,15 @@ const PAIR_SPECS: readonly PairSpec[] = [
   { surface: 'canvas', state: 'default', pairId: 'fallback-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.subtle', fg: (t) => t.textSecondary, bg: (t) => t.headerBg },
   { surface: 'subtle', state: 'default', pairId: 'chip-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.muted', bgToken: 'bg.surface', fg: (t) => t.textSecondary, bg: (t) => t.cardBg },
   { surface: 'surface', state: 'default', pairId: 'overlay-label', kind: 'body', floor: BODY_FLOOR, composed: false, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => t.cardBg },
+
+  // Spec #3241 (UI/UX D-7) — the development-mode badge. Its ground is
+  // `color-mix(status.info 10%, transparent)` over the row/shelf surface, so the
+  // text pair is COMPOSED (the tint is alpha-derived) and the declared contract
+  // cells are `badge|default|mode-label` / `mode-boundary`. The composition input
+  // is the SAME 10% the component paints via `tint(...)`, single-homed here as
+  // `MODE_BADGE_TINT` so the component and the gate cannot drift.
+  { surface: 'badge', state: 'default', pairId: 'mode-label', kind: 'body', floor: BODY_FLOOR, composed: true, fgToken: 'fg.default', bgToken: 'bg.surface', fg: (t) => t.textPrimary, bg: (t) => composite(t.statusInfo, t.cardBg, MODE_BADGE_TINT) },
+  { surface: 'badge', state: 'default', pairId: 'mode-boundary', kind: 'ui', floor: UI_FLOOR, composed: false, fgToken: 'border.default', bgToken: 'bg.surface', fg: (t) => t.borderColor, bg: (t) => t.cardBg },
 ];
 
 /** The contract `surface|state` cells (the completeness enumeration). */
