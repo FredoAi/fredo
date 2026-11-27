@@ -19,6 +19,7 @@ import {
   disableInstalledApp,
   enableInstalledApp,
   installPackage,
+  installDevelopmentPackage,
   installedAppErrorFrom,
   InstalledAppsCommandError,
   listInstalledApps,
@@ -72,8 +73,41 @@ describe('#3147 ST-6 — client command wrappers', () => {
     expect(invokeMock.current).toHaveBeenCalledWith('installed_app_install', {});
   });
 
-  it('listInstalledApps invokes installed_apps_list', async () => {
-    invokeMock.current.mockResolvedValue([ENTRY]);
+  it('installDevelopmentPackage invokes installed_app_install_development with no args when the path is absent (Spec #3241)', async () => {
+    const DEV_ENTRY = { ...ENTRY, mode: 'development' };
+    invokeMock.current.mockResolvedValue(DEV_ENTRY);
+    await expect(installDevelopmentPackage()).resolves.toEqual(DEV_ENTRY);
+    expect(invokeMock.current).toHaveBeenCalledWith(
+      'installed_app_install_development',
+      {},
+    );
+  });
+
+  it('installDevelopmentPackage forwards a non-blank archivePath, and treats blank as absent (Spec #3241)', async () => {
+    const DEV_ENTRY = { ...ENTRY, mode: 'development' };
+    invokeMock.current.mockResolvedValue(DEV_ENTRY);
+    await installDevelopmentPackage('C:/tmp/pkg.zip');
+    expect(invokeMock.current).toHaveBeenCalledWith(
+      'installed_app_install_development',
+      { archivePath: 'C:/tmp/pkg.zip' },
+    );
+
+    invokeMock.current.mockClear();
+    await installDevelopmentPackage('   ');
+    expect(invokeMock.current).toHaveBeenCalledWith(
+      'installed_app_install_development',
+      {},
+    );
+  });
+
+  it('installDevelopmentPackage rejects with a typed refusal, exactly like installPackage (Spec #3241)', async () => {
+    invokeMock.current.mockRejectedValue({ code: 'already_installed', detail: 'taken' });
+    await expect(installDevelopmentPackage()).rejects.toMatchObject({
+      code: 'already_installed',
+    });
+  });
+
+  it('listInstalledApps invokes installed_apps_list', async () => {    invokeMock.current.mockResolvedValue([ENTRY]);
     await expect(listInstalledApps()).resolves.toEqual([ENTRY]);
     expect(invokeMock.current).toHaveBeenCalledWith('installed_apps_list');
   });

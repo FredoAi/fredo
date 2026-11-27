@@ -153,6 +153,129 @@ impl InstalledAppCapabilityStatus {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The development marker (Spec #3241, ST-1)
+// ---------------------------------------------------------------------------
+
+/// `<id>/development.json` — PRESENT IFF this install is a development build.
+///
+/// The mode is a **HOST-side load decision**, never a package declaration: it is
+/// not a `fredo-app.json` key, so a package can never declare itself released (or
+/// development) and no generator can emit a "development package". The only way
+/// the file comes to exist is [`write_development_marker`], called by the
+/// development install path **inside the staging directory** — so the same rename
+/// that publishes an application also publishes its mark, and a development build
+/// that exists unmarked cannot exist (see `install_archive_with_mode`).
+///
+/// Like `record.json`/`manifest.json` it lives OUTSIDE `<id>/files/`, so it has no
+/// serve route: an installed document can neither read nor fetch it.
+pub const DEVELOPMENT_FILENAME: &str = "development.json";
+
+/// The marker file's schema version. A file declaring another version still reads
+/// [`InstalledAppMode::Development`] — see [`read_development_marker`].
+pub const DEVELOPMENT_FILE_VERSION: u32 = 1;
+
+/// `"Development — "` — the ONE title PREFIX for surface S1.
+///
+/// It **LEADS** the `displayName` (`Development — Example Tools`) because an OS
+/// title bar elides the TAIL. At the window's own declared minimum width
+/// ([`super::window::INSTALLED_APP_WINDOW_MIN_WIDTH`], 560 px) a 64-character
+/// displayName ([`super::manifest::MAX_DISPLAY_NAME_CHARS`]) would push a
+/// *trailing* run off the title bar entirely, while a leading run is never elided.
+/// The prefix form therefore cannot be truncated away at any legal name length —
+/// a correctness property, not a typographic preference.
+pub const DEVELOPMENT_TITLE_PREFIX: &str = "Development — ";
+
+/// How an installed application was loaded (Spec #3241).
+///
+/// Serialised `snake_case` to match the frontend mirror (`INSTALLED_APP_MODES` in
+/// `apps/ui/src/shared/installed-apps/types.ts`). The wire values are
+/// **machine-readable** and are deliberately NOT the painted word: the human
+/// token is `Development` (see `DEVELOPMENT_MARKER_TOKEN` in `types.ts`). A later
+/// "cleanup" that aligned the two would break either the serde contract or the
+/// uniformity rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstalledAppMode {
+    /// An ordinary install — never marked on any surface.
+    Released,
+    /// A work-in-progress build loaded through
+    /// `installed_app_install_development` — marked on every surface where the
+    /// build can be identified.
+    Development,
+}
+
+impl InstalledAppMode {
+    /// Every mode, in wire order. The ONE runtime source for the frontend mirror.
+    pub const ALL: [Self; 2] = [Self::Released, Self::Development];
+
+    /// The wire string (`"released"` | `"development"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Released => "released",
+            Self::Development => "development",
+        }
+    }
+
+    /// Is this a development build?
+    pub fn is_development(self) -> bool {
+        matches!(self, Self::Development)
+    }
+}
+
+/// Serialisable body of `<id>/development.json`.
+///
+/// A named struct (rather than a `serde_json::json!` map) so the emitted key order
+/// is the declaration order and the file is byte-stable: `{"version":1,"development":true}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct DevelopmentMarkerFile {
+    version: u32,
+    development: bool,
+}
+
+/// Read `<id>/development.json` — **presence-authoritative, never errors**.
+///
+/// * absent  ⇒ [`InstalledAppMode::Released`]
+/// * present ⇒ [`InstalledAppMode::Development`], whatever its content
+///
+/// A present-but-unparseable file, or one declaring an unknown `version`, still
+/// reads **Development**: that is the fail-safe direction, because the file can
+/// only exist because a development install created it. A normal install never
+/// writes it, so corruption can never mark a released application.
+pub fn read_development_marker(app_dir: &Path) -> InstalledAppMode {
+    // `exists()` (not `is_file()`): presence is the fact, and reading a corrupted
+    // path as `Released` would fail OPEN. A tampered path still marks.
+    if app_dir.join(DEVELOPMENT_FILENAME).exists() {
+        InstalledAppMode::Development
+    } else {
+        InstalledAppMode::Released
+    }
+}
+
+/// Write the marker into a **staging** directory.
+///
+/// Called only by the development install path, while assembling the staging
+/// directory that the install's rename publishes — so the mark and the
+/// application land atomically, and a development install that fails leaves no
+/// mark behind (the caller removes the whole staging directory).
+pub fn write_development_marker(staging_dir: &Path) -> InstalledAppResult<()> {
+    let path = staging_dir.join(DEVELOPMENT_FILENAME);
+    let body = DevelopmentMarkerFile {
+        version: DEVELOPMENT_FILE_VERSION,
+        development: true,
+    };
+    let bytes = serde_json::to_vec(&body).map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("serializing the development marker: {error}"),
+        )
+    })?;
+    std::fs::write(&path, bytes).map_err(|error| {
+        InstalledAppError::io(&format!("writing {}", path.display()), &error)
+    })?;
+    Ok(())
+}
+
 /// The list projection (plan §API Contracts) — what the launcher/settings show.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,12 +301,22 @@ pub struct InstalledAppEntry {
     /// landable here (an application with no install directory cannot be listed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_code: Option<InstalledAppRefusalCode>,
+    /// How this application was loaded (Spec #3241). **ALWAYS present** — never
+    /// omitted, never `null`, exactly like `state`/`capabilities` (it mirrors
+    /// those, not the optional-key rule). A `replaceInstalledApp` that received an
+    /// entry without it would silently unmark a row until the next listing.
+    pub mode: InstalledAppMode,
 }
 
 impl InstalledAppEntry {
     /// Project a validated manifest into the list entry. `installed_at` is the
-    /// RFC 3339 stamp the caller recorded.
-    pub fn from_manifest(manifest: &AppManifest, installed_at: String) -> Self {
+    /// RFC 3339 stamp the caller recorded; `mode` is how the application was
+    /// loaded (the install path passes the mode it was called with).
+    pub fn from_manifest(
+        manifest: &AppManifest,
+        installed_at: String,
+        mode: InstalledAppMode,
+    ) -> Self {
         Self {
             id: manifest.id.clone(),
             display_name: manifest.display_name.clone(),
@@ -198,6 +331,7 @@ impl InstalledAppEntry {
             ),
             state: InstalledAppState::Working,
             failure_code: None,
+            mode,
         }
     }
 
@@ -206,7 +340,11 @@ impl InstalledAppEntry {
     /// The declaration is read from `<id>/manifest.json` — the canonical copy the
     /// installer wrote — rather than denormalised into `record.json`, so there is
     /// exactly ONE host-side copy of what a package declared.
-    pub fn from_installed(record: &InstalledAppRecord, manifest: &AppManifest) -> Self {
+    pub fn from_installed(
+        record: &InstalledAppRecord,
+        manifest: &AppManifest,
+        mode: InstalledAppMode,
+    ) -> Self {
         Self {
             id: record.id.clone(),
             display_name: record
@@ -224,6 +362,7 @@ impl InstalledAppEntry {
             ),
             state: InstalledAppState::Working,
             failure_code: None,
+            mode,
         }
     }
 
@@ -235,7 +374,14 @@ impl InstalledAppEntry {
     /// `installedAt` = `""`, `description` absent, `capabilities` = the fail-safe
     /// EMPTY projection. The reach fails closed because an unreadable install
     /// grants nothing.
-    fn failing_from_id(id: &str, failure_code: InstalledAppRefusalCode) -> Self {
+    ///
+    /// `mode` is passed in rather than defaulted: a DAMAGED development build must
+    /// still be marked (a broken build is not a released one).
+    fn failing_from_id(
+        id: &str,
+        failure_code: InstalledAppRefusalCode,
+        mode: InstalledAppMode,
+    ) -> Self {
         Self {
             id: id.to_string(),
             display_name: id.to_string(),
@@ -247,6 +393,7 @@ impl InstalledAppEntry {
             capabilities: InstalledAppCapabilityStatus::undeclared(id),
             state: InstalledAppState::Failing,
             failure_code: Some(failure_code),
+            mode,
         }
     }
 
@@ -256,7 +403,11 @@ impl InstalledAppEntry {
     /// The identity survives (it is in the record), but the declaration does not:
     /// `capabilities` falls back to the fail-safe EMPTY projection, exactly as an
     /// unreadable declaration must (never a stale or invented reach).
-    fn failing_from_record(record: &InstalledAppRecord, failure_code: InstalledAppRefusalCode) -> Self {
+    fn failing_from_record(
+        record: &InstalledAppRecord,
+        failure_code: InstalledAppRefusalCode,
+        mode: InstalledAppMode,
+    ) -> Self {
         Self {
             id: record.id.clone(),
             display_name: record
@@ -271,6 +422,7 @@ impl InstalledAppEntry {
             capabilities: InstalledAppCapabilityStatus::undeclared(&record.id),
             state: InstalledAppState::Failing,
             failure_code: Some(failure_code),
+            mode,
         }
     }
 
@@ -476,13 +628,20 @@ pub fn list_installed_resilient(root: &Path) -> InstalledAppResult<Vec<Installed
         // A damaged record or manifest is a FACT about one application, not a
         // failure of the listing: it becomes a `Failing` row and the loop
         // continues so every other application still lists.
+        //
+        // Spec #3241: the mode is read HERE, once per directory, in the pass that
+        // already reads `record.json`/`manifest.json` — so every consumer of an
+        // entry (the listing, `compose_entry` after a disable/enable, the install
+        // response) inherits it with no per-consumer edit. A DAMAGED development
+        // build is still marked: a broken build is not a released one.
         let dir = entry.path();
+        let mode = read_development_marker(&dir);
         let listed = match read_record(&dir) {
             Ok(record) => match read_manifest_file(&dir) {
-                Ok(manifest) => InstalledAppEntry::from_installed(&record, &manifest),
-                Err(error) => InstalledAppEntry::failing_from_record(&record, error.code),
+                Ok(manifest) => InstalledAppEntry::from_installed(&record, &manifest, mode),
+                Err(error) => InstalledAppEntry::failing_from_record(&record, error.code, mode),
             },
-            Err(error) => InstalledAppEntry::failing_from_id(&name, error.code),
+            Err(error) => InstalledAppEntry::failing_from_id(&name, error.code, mode),
         };
         entries_found.push(listed);
     }
@@ -563,12 +722,36 @@ fn sweep_removal_debris(data_dir: &Path) {
     }
 }
 
-/// Install one package archive into the registry.
+/// Install one package archive into the registry as an **ordinary install**.
+///
+/// This is the shipped entry point and its behaviour is unchanged: it is a
+/// one-line delegation to [`install_archive_with_mode`] with
+/// [`InstalledAppMode::Released`], so the released path provably does not move
+/// when the development path is added (and `install_archive_is_the_released_delegation`
+/// reddens if this ever diverges).
+pub fn install_archive(
+    app_data_dir: &Path,
+    archive_path: &Path,
+) -> InstalledAppResult<InstalledAppEntry> {
+    install_archive_with_mode(app_data_dir, archive_path, InstalledAppMode::Released)
+}
+
+/// Install one package archive into the registry in a given **mode**.
 ///
 /// The whole refusal vocabulary for the install path lives here or in the two
 /// helpers above; every failure happens before the rename, so a refusal leaves
 /// the registry byte-identical.
-pub fn install_archive(app_data_dir: &Path, archive_path: &Path) -> InstalledAppResult<InstalledAppEntry> {
+///
+/// In [`InstalledAppMode::Development`] the marker is written **into the staging
+/// directory** before the rename, so the mark is published by the same atomic move
+/// that publishes the application. A development build that exists unmarked is
+/// therefore not constructible, and a failed install leaves no mark behind (the
+/// caller removes the staging directory).
+pub fn install_archive_with_mode(
+    app_data_dir: &Path,
+    archive_path: &Path,
+    mode: InstalledAppMode,
+) -> InstalledAppResult<InstalledAppEntry> {
     let root = install_root(app_data_dir);
 
     // ---- 1. Index the archive (names + budgets, whole-archive, no payload) ----
@@ -618,6 +801,17 @@ pub fn install_archive(app_data_dir: &Path, archive_path: &Path) -> InstalledApp
         }
     };
 
+    // Spec #3241: the development mark lands in the SAME staging directory that
+    // the rename publishes, so the two are atomic. On a marker write failure the
+    // whole staging directory is removed — a development install can never be
+    // published unmarked (NFR-3).
+    if mode.is_development() {
+        if let Err(error) = write_development_marker(&staging) {
+            remove_dir_all_if_present(&staging);
+            return Err(error);
+        }
+    }
+
     // A concurrent install of the same id may have won the race after step 4.
     if target.exists() {
         remove_dir_all_if_present(&staging);
@@ -639,7 +833,7 @@ pub fn install_archive(app_data_dir: &Path, archive_path: &Path) -> InstalledApp
         ));
     }
 
-    Ok(InstalledAppEntry::from_manifest(&manifest, installed_at))
+    Ok(InstalledAppEntry::from_manifest(&manifest, installed_at, mode))
 }
 
 /// The refusal for an id whose directory already exists.
@@ -1053,7 +1247,7 @@ mod tests {
     fn the_entry_projection_carries_every_axis() {
         let manifest = manifest::parse_manifest(manifest_json("qa3147-sample").as_bytes())
             .expect("manifest");
-        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".to_string());
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into(), InstalledAppMode::Released);
         assert_eq!(entry.id, "qa3147-sample");
         assert_eq!(entry.display_name, "QA3147 Sample");
         assert_eq!(entry.version, "1.2.3");
@@ -1077,7 +1271,7 @@ mod tests {
             "entry": { "document": "index.html", "module": "main.js" }
         }"#;
         let manifest = manifest::parse_manifest(json.as_bytes()).expect("manifest");
-        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into(), InstalledAppMode::Released);
         let value = serde_json::to_value(&entry).expect("serialize");
         assert!(
             !value.as_object().expect("object").contains_key("description"),
@@ -1102,7 +1296,7 @@ mod tests {
         };
         let manifest = manifest::parse_manifest(manifest_json("qa3147-fallback").as_bytes())
             .expect("manifest");
-        let entry = InstalledAppEntry::from_installed(&record, &manifest);
+        let entry = InstalledAppEntry::from_installed(&record, &manifest, InstalledAppMode::Released);
         assert_eq!(entry.display_name, "qa3147-fallback");
         assert_eq!(entry.window_label, "installed-qa3147-fallback");
     }
@@ -1131,7 +1325,7 @@ mod tests {
     fn an_undeclared_package_projects_three_empty_arrays_that_are_always_present() {
         let manifest =
             manifest::parse_manifest(manifest_json("qa3146-none").as_bytes()).expect("manifest");
-        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into(), InstalledAppMode::Released);
 
         assert_eq!(entry.capabilities.app_id, "qa3146-none");
         assert!(entry.capabilities.declared.is_empty());
@@ -1160,7 +1354,7 @@ mod tests {
     #[test]
     fn a_declared_package_projects_sorted_declared_and_high_risk_arrays() {
         let manifest = declared_manifest("qa3146-app-a");
-        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into(), InstalledAppMode::Released);
 
         assert_eq!(
             entry.capabilities.declared,
@@ -1179,10 +1373,12 @@ mod tests {
         let app_a = InstalledAppEntry::from_manifest(
             &declared_manifest("qa3146-consent-a"),
             "2026-01-01T00:00:00Z".into(),
+            InstalledAppMode::Released,
         );
         let app_b = InstalledAppEntry::from_manifest(
             &declared_manifest("qa3146-consent-b"),
             "2026-01-01T00:00:01Z".into(),
+            InstalledAppMode::Released,
         );
 
         // The user grants ONE capability to A.
@@ -1207,6 +1403,7 @@ mod tests {
         let entry = InstalledAppEntry::from_manifest(
             &declared_manifest("qa3146-narrow"),
             "2026-01-01T00:00:00Z".into(),
+            InstalledAppMode::Released,
         );
         // A hand-edited consent file naming an undeclared id, a non-high-risk id
         // and a duplicate: only the declared high-risk id survives, once.
@@ -1363,8 +1560,276 @@ mod tests {
         assert_eq!(listed[0].id, "qa3147-verified");
     }
 
-    // ── Integrity detection (the record ST-3 checks against) ───────────────
+    // ── The development marker (Spec #3241) ────────────────────────────────
 
+    #[test]
+    fn the_development_marker_is_presence_authoritative() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_dir = dir.path().join("qa3241-unmarked");
+
+        // Absent ⇒ released. This is the ordinary-install case.
+        assert_eq!(
+            read_development_marker(&app_dir),
+            InstalledAppMode::Released,
+            "a directory with no marker is a normal install"
+        );
+
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        write_development_marker(&app_dir).expect("write marker");
+
+        // Present, well-formed, version 1 ⇒ development.
+        assert_eq!(
+            read_development_marker(&app_dir),
+            InstalledAppMode::Development,
+            "presence IS the fact"
+        );
+        let body = std::fs::read_to_string(app_dir.join(DEVELOPMENT_FILENAME)).expect("read");
+        assert_eq!(
+            body, r#"{"version":1,"development":true}"#,
+            "the marker's exact bytes are part of the on-disk contract"
+        );
+
+        // Present but UNPARSEABLE ⇒ still development (the fail-safe direction):
+        // the file can only exist because a development install created it.
+        std::fs::write(app_dir.join(DEVELOPMENT_FILENAME), b"not json at all").expect("write");
+        assert_eq!(
+            read_development_marker(&app_dir),
+            InstalledAppMode::Development,
+            "an unreadable marker must fail SAFE (mark), never open"
+        );
+
+        // Present with an UNKNOWN VERSION ⇒ still development, same reason.
+        std::fs::write(app_dir.join(DEVELOPMENT_FILENAME), br#"{"version":2,"development":false}"#)
+            .expect("write");
+        assert_eq!(
+            read_development_marker(&app_dir),
+            InstalledAppMode::Development,
+            "an unknown version still marks; there is no `false` form"
+        );
+    }
+
+    /// The marker is written INTO STAGING, so an ordinary install never gets one and
+    /// a development install is published already marked by the same rename.
+    #[test]
+    fn the_development_marker_is_written_only_for_a_development_install() {
+        let data = data_dir();
+
+        // A normally installed package: no marker on disk at all.
+        let (_released_dir, released_zip) = staged_zip(&valid_package("qa3241-released"));
+        let released = install_archive(data.path(), &released_zip).expect("released install");
+        assert_eq!(released.mode, InstalledAppMode::Released);
+        let released_app_dir = app_dir(&install_root(data.path()), "qa3241-released");
+        assert!(
+            !released_app_dir.join(DEVELOPMENT_FILENAME).exists(),
+            "an ordinary install must never write a development marker"
+        );
+
+        // A development install of ANOTHER id: the marker is present, and the
+        // returned entry says so.
+        let (_dev_dir, dev_zip) = staged_zip(&valid_package("qa3241-dev"));
+        let dev = install_archive_with_mode(data.path(), &dev_zip, InstalledAppMode::Development)
+            .expect("development install");
+        assert_eq!(dev.mode, InstalledAppMode::Development);
+        let dev_app_dir = app_dir(&install_root(data.path()), "qa3241-dev");
+        assert!(
+            dev_app_dir.join(DEVELOPMENT_FILENAME).is_file(),
+            "a development install must publish its marker atomically with the install"
+        );
+        assert_eq!(
+            read_development_marker(&dev_app_dir),
+            InstalledAppMode::Development
+        );
+
+        // A failure never leaves the marker (or a staging directory) behind: a
+        // re-install of an existing id is refused BEFORE the staging write.
+        let before = std::fs::read_to_string(dev_app_dir.join(DEVELOPMENT_FILENAME)).expect("read");
+        let error = install_archive_with_mode(data.path(), &dev_zip, InstalledAppMode::Development)
+            .expect_err("already installed");
+        assert_eq!(error.code, InstalledAppRefusalCode::AlreadyInstalled);
+        assert_eq!(
+            std::fs::read_to_string(dev_app_dir.join(DEVELOPMENT_FILENAME)).expect("read"),
+            before,
+            "a refusal must leave the registry byte-identical"
+        );
+    }
+
+    /// INV-6's construction site: `install_archive` is a one-line delegation with
+    /// `Released`. Asserting the DELEGATION (not just "the function exists") is what
+    /// makes a quietly-diverged released path fail this pin.
+    #[test]
+    fn install_archive_is_the_released_delegation() {
+        let source = include_str!("store.rs");
+        let product = source
+            .find("#[cfg(test)]")
+            .map(|split| &source[..split])
+            .unwrap_or(source);
+
+        let delegation =
+            "install_archive_with_mode(app_data_dir, archive_path, InstalledAppMode::Released)";
+        assert_eq!(
+            product.matches(delegation).count(),
+            1,
+            "install_archive must be exactly the Released delegation to install_archive_with_mode"
+        );
+        assert!(
+            product.contains("pub fn install_archive(\n    app_data_dir: &Path,\n    archive_path: &Path,\n) -> InstalledAppResult<InstalledAppEntry> {"),
+            "the shipped entry point keeps its exact signature"
+        );
+    }
+
+    /// Every producer of the projection carries a mode — the four constructors all
+    /// REQUIRE it, so a future producer cannot silently unmark an application.
+    #[test]
+    fn every_entry_projection_carries_a_mode() {
+        let manifest = manifest::parse_manifest(manifest_json("qa3241-projection").as_bytes())
+            .expect("manifest");
+        let record = InstalledAppRecord {
+            id: "qa3241-projection".into(),
+            version: "1.0.0".into(),
+            manifest_version: 1,
+            engines_fredo: ">=0.0.0".into(),
+            entry_document: "index.html".into(),
+            entry_module: "main.js".into(),
+            installed_at: "2026-01-01T00:00:00Z".into(),
+            aggregate_sha256: aggregate_digest(&[]),
+            files: Vec::new(),
+            description: None,
+            display_name: Some("Projection".into()),
+        };
+
+        // The two happy-path constructors.
+        assert_eq!(
+            InstalledAppEntry::from_manifest(
+                &manifest,
+                "2026-01-01T00:00:00Z".into(),
+                InstalledAppMode::Development
+            )
+            .mode,
+            InstalledAppMode::Development
+        );
+        assert_eq!(
+            InstalledAppEntry::from_installed(
+                &record,
+                &manifest,
+                InstalledAppMode::Development
+            )
+            .mode,
+            InstalledAppMode::Development
+        );
+
+        // The two Failing constructors — a damaged development build is still
+        // marked.
+        assert_eq!(
+            InstalledAppEntry::failing_from_id(
+                "qa3241-broken",
+                InstalledAppRefusalCode::IntegrityRecordCorrupt,
+                InstalledAppMode::Development
+            )
+            .mode,
+            InstalledAppMode::Development
+        );
+        assert_eq!(
+            InstalledAppEntry::failing_from_record(
+                &record,
+                InstalledAppRefusalCode::IntegrityRecordCorrupt,
+                InstalledAppMode::Development
+            )
+            .mode,
+            InstalledAppMode::Development
+        );
+    }
+
+    /// `mode` is ALWAYS present on the wire — never omitted, never `null`. That is
+    /// the inverse of the optional-key rule, and the reason the frontend can read
+    /// `entry.mode` with no fallback chain.
+    #[test]
+    fn the_projection_always_carries_the_mode_key() {
+        let manifest = manifest::parse_manifest(manifest_json("qa3241-wire").as_bytes())
+            .expect("manifest");
+        let entry = InstalledAppEntry::from_manifest(
+            &manifest,
+            "2026-01-01T00:00:00Z".into(),
+            InstalledAppMode::Released,
+        );
+        let value = serde_json::to_value(&entry).expect("serialize");
+        let mode = value
+            .get("mode")
+            .expect("`mode` must be present on a RELEASED entry too");
+        assert_eq!(
+            mode,
+            &serde_json::Value::from("released"),
+            "the wire value is the machine-readable snake_case form, not the painted word"
+        );
+        assert!(!mode.is_null(), "an always-present member is never null");
+    }
+
+    /// The listing reads the marker once per directory, so a development build is
+    /// marked straight out of `list_installed_resilient` — the ONE reader every
+    /// consumer (listing, disable/enable response, install response) inherits from.
+    #[test]
+    fn the_listing_marks_a_development_build_and_leaves_a_released_one_unmarked() {
+        let data = data_dir();
+        let (_released_dir, released_zip) = staged_zip(&valid_package("qa3241-listed-released"));
+        install_archive(data.path(), &released_zip).expect("released install");
+        let (_dev_dir, dev_zip) = staged_zip(&valid_package("qa3241-listed-dev"));
+        install_archive_with_mode(data.path(), &dev_zip, InstalledAppMode::Development)
+            .expect("development install");
+
+        let listed = list_installed_resilient(&install_root(data.path())).expect("list");
+        assert_eq!(listed.len(), 2);
+        let by_id = |id: &str| {
+            listed
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap_or_else(|| panic!("{id} must be listed"))
+        };
+        assert_eq!(by_id("qa3241-listed-dev").mode, InstalledAppMode::Development);
+        assert_eq!(
+            by_id("qa3241-listed-released").mode,
+            InstalledAppMode::Released,
+            "a normal install is never marked — no marker file leaked across ids"
+        );
+    }
+
+    /// `mode` never reaches the authority path. This is the structural half of AC
+    /// 3's zero-privilege clause: the function the dispatcher uses to learn reach
+    /// reads the canonical manifest and the consent file, and NOTHING here.
+    #[test]
+    fn the_mode_is_never_read_by_the_authority_path() {
+        let authority = include_str!("authority.rs");
+        let dispatch = include_str!("dispatch.rs");
+
+        // The marker symbols are named by this module and the two surface readers;
+        // they must be absent from the authority and dispatch paths.
+        for symbol in [
+            "development.json",
+            "DEVELOPMENT_FILENAME",
+            "read_development_marker",
+            "InstalledAppMode",
+            "DEVELOPMENT_TITLE_PREFIX",
+        ] {
+            assert!(
+                !authority.contains(symbol),
+                "authority.rs must not name {symbol}: the mode is not an authority input"
+            );
+            assert!(
+                !dispatch.contains(symbol),
+                "dispatch.rs must not name {symbol}: the mode is not a dispatch input"
+            );
+        }
+
+        // POSITIVE CONTROL — the same greps DO hit this module, so the zero above
+        // is a reading rather than an empty equality.
+        let store = include_str!("store.rs");
+        for symbol in ["DEVELOPMENT_FILENAME", "read_development_marker", "InstalledAppMode"] {
+            assert!(
+                store.contains(symbol),
+                "the control grep must hit store.rs for {symbol}, or the zero is vacuous"
+            );
+        }
+    }
+
+    // ── Integrity detection (the record ST-3 checks against) ───────────────
     #[test]
     fn a_mutated_byte_is_integrity_mismatch() {
         let data = data_dir();
@@ -1758,7 +2223,7 @@ mod tests {
     fn the_entry_wire_shape_carries_state_and_omits_failure_code_when_not_failing() {
         let manifest =
             manifest::parse_manifest(manifest_json("qa3147-sample").as_bytes()).expect("manifest");
-        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into());
+        let entry = InstalledAppEntry::from_manifest(&manifest, "2026-01-01T00:00:00Z".into(), InstalledAppMode::Released);
         let value = serde_json::to_value(&entry).expect("serialize");
         assert_eq!(value.get("state").and_then(|v| v.as_str()), Some("working"));
         assert!(

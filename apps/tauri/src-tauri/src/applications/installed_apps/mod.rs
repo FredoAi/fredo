@@ -12,8 +12,9 @@
 //! |---|---|
 //! | [`manifest`] | `fredo-app.json` decoding + every field rule, the reserved-id set, the `engines.fredo` range check against the running Fredo version |
 //! | [`archive`] | ZIP reading, entry-name safety (zip-slip, reserved paths, non-regular entries) and the three archive budgets |
-//! | [`store`] | the on-disk install root, `manifest.json`/`record.json`/`files/`, SHA-256 pinning, the atomic install transaction, and the registry listing |
+//! | [`store`] | the on-disk install root, `manifest.json`/`record.json`/`files/`, SHA-256 pinning, the atomic install transaction, the registry listing, and the development marker (`development.json`, Spec #3241) |
 //! | [`commands_install`] | exactly `installed_app_install` and `installed_apps_list` |
+//! | [`commands_development`] | exactly `installed_app_install_development` (Spec #3241): the ONE way to load a build as a development build |
 //! | [`commands_manage`] | exactly `installed_app_disable`, `installed_app_enable` and `installed_app_remove` (Spec #3144) |
 //! | [`lifecycle`] | the host-owned lifecycle state file (`installed-apps-state.json`): `disabled` + the last recorded open failure, and the `disabled > failing > working` precedence (Spec #3144) |
 //! | [`consent`] | the host-owned per-application consent store (`installed-apps-consent.json`) |
@@ -52,6 +53,7 @@ pub mod archive;
 pub mod authority;
 pub mod beacon;
 pub mod commands_consent;
+pub mod commands_development;
 pub mod commands_install;
 pub mod commands_manage;
 pub mod commands_window;

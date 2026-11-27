@@ -167,6 +167,14 @@ pub fn normalize_app_id(requested: &str) -> InstalledAppResult<String> {
 /// testable without a window. `id` must already be normalised by
 /// [`normalize_app_id`]; `data_dir` is the app-data dir the install root lives
 /// under.
+///
+/// Spec #3241: the OS title is surface **S1** of the development marking. A
+/// development build's title is `Development — <displayName>` — the marker LEADS,
+/// because an OS title bar elides the tail (see
+/// [`store::DEVELOPMENT_TITLE_PREFIX`]). A released install's title is the bare
+/// `displayName`, byte-identical to before. The title is the ONE carrier an
+/// application itself cannot touch: the child holds no `core:*` grant, so its
+/// markup cannot unset its own chrome.
 pub fn resolve_open_target(data_dir: &Path, id: &str) -> InstalledAppResult<OpenTarget> {
     let root = store::install_root(data_dir);
     let app_dir = store::app_dir(&root, id);
@@ -185,16 +193,33 @@ pub fn resolve_open_target(data_dir: &Path, id: &str) -> InstalledAppResult<Open
     let record = store::read_record(&app_dir)?;
     ensure_record_matches(&record, id)?;
 
+    let display_name = record
+        .display_name
+        .clone()
+        .unwrap_or_else(|| record.id.clone());
+    // The ONE marker read: ST-3 never re-implements the presence check.
+    let mode = store::read_development_marker(&app_dir);
+
     Ok(OpenTarget {
         id: record.id.clone(),
         label: installed_app_window_label(&record.id),
-        title: record
-            .display_name
-            .clone()
-            .unwrap_or_else(|| record.id.clone()),
+        title: open_target_title(&display_name, mode),
         url: installed_app_document_url(&record.id),
         app_dir,
     })
+}
+
+/// The OS window title for a given display name and install mode (surface S1).
+///
+/// A development build LEADS with [`store::DEVELOPMENT_TITLE_PREFIX`]; a released
+/// install returns `display_name` **unchanged** (byte-identical to the shipped
+/// behaviour, including the id fallback the caller already applied).
+pub fn open_target_title(display_name: &str, mode: store::InstalledAppMode) -> String {
+    if mode.is_development() {
+        format!("{}{display_name}", store::DEVELOPMENT_TITLE_PREFIX)
+    } else {
+        display_name.to_string()
+    }
 }
 
 /// A record must describe the directory it was read from.
@@ -755,6 +780,114 @@ mod tests {
 
         let target = resolve_open_target(directory.path(), "qa3147-test").expect("resolvable");
         assert_eq!(target.title, "qa3147-test");
+    }
+
+    // ── 4b. S1 — the development marking (Spec #3241) ──────────────────────
+
+    /// A development build's OS title LEADS with the marker prefix, and the whole
+    /// composed title is asserted — so a missing marker, a marker appended as a
+    /// SUFFIX, and a marker with the wrong separator all redden.
+    #[test]
+    fn the_open_target_title_marks_a_development_build() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let app_dir = install_fixture(
+            directory.path(),
+            "qa3146-no-capabilities",
+            &standard_files(),
+            Some("QA3146 No Capabilities"),
+        );
+        // The marker file is PRESENCE-authoritative: writing it is what makes this
+        // install a development build.
+        store::write_development_marker(&app_dir).expect("write marker");
+
+        let target = resolve_open_target(directory.path(), "qa3146-no-capabilities")
+            .expect("resolvable");
+
+        assert_eq!(
+            target.title, "Development — QA3146 No Capabilities",
+            "the marker LEADS the displayName (DEVELOPMENT_TITLE_PREFIX)"
+        );
+        assert!(
+            target.title.starts_with(store::DEVELOPMENT_TITLE_PREFIX),
+            "the marker must be the LEADING run, not a suffix and not merely present"
+        );
+        // The label is what the host keys on and never encodes a mode (INV-5).
+        assert_eq!(target.label, "installed-qa3146-no-capabilities");
+        assert!(!target.label.contains("development"));
+    }
+
+    /// The released control: the title is EXACTLY the displayName — no prefix, no
+    /// marker token, no stray separator or space. Asserting equality (not merely
+    /// "does not contain Development") reddens on a stray space or em dash too.
+    #[test]
+    fn the_open_target_title_leaves_a_released_install_unmarked() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        install_fixture(
+            directory.path(),
+            "qa3147-valid",
+            &standard_files(),
+            Some("QA3147 Valid"),
+        );
+
+        let target = resolve_open_target(directory.path(), "qa3147-valid").expect("resolvable");
+        assert_eq!(
+            target.title, "QA3147 Valid",
+            "a released install's title is byte-identical to its displayName"
+        );
+        assert!(
+            !target.title.contains("Development"),
+            "a normal install is never marked"
+        );
+    }
+
+    /// A DAMAGED development build is still marked: a broken build is not a
+    /// released one, and this is exactly the state a user most needs the mark in.
+    #[test]
+    fn a_damaged_development_build_still_titles_as_development() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let app_dir = install_fixture(
+            directory.path(),
+            "qa3147-crash-on-load",
+            &standard_files(),
+            Some("QA3147 Crash On Load"),
+        );
+        store::write_development_marker(&app_dir).expect("write marker");
+
+        let target =
+            resolve_open_target(directory.path(), "qa3147-crash-on-load").expect("resolvable");
+        assert_eq!(target.title, "Development — QA3147 Crash On Load");
+    }
+
+    /// The composition rule is pinned directly, including the constant's own
+    /// leading token — the property that makes the prefix a POSITION claim rather
+    /// than a containment one.
+    #[test]
+    fn the_development_title_prefix_carries_the_token() {
+        assert_eq!(
+            store::DEVELOPMENT_TITLE_PREFIX, "Development — ",
+            "the constant is `Development`, then an em dash, then a space"
+        );
+        assert!(
+            store::DEVELOPMENT_TITLE_PREFIX.starts_with("Development"),
+            "the constant's own first word is the marker token"
+        );
+        // POSITION, not containment: a bare `contains("Development")` stays green
+        // on the suffix form this decision replaced, which would make such a pin
+        // vacuous against the very change it guards.
+        let marked = open_target_title("Example Tools", store::InstalledAppMode::Development);
+        assert!(
+            marked.starts_with(store::DEVELOPMENT_TITLE_PREFIX),
+            "the marker is the LEADING run: {marked}"
+        );
+        assert_eq!(marked, "Development — Example Tools");
+        // The rejected suffix form must NOT satisfy the position claim.
+        assert!(!format!("Example Tools — Development")
+            .starts_with(store::DEVELOPMENT_TITLE_PREFIX));
+        // The released arm is the bare name.
+        assert_eq!(
+            open_target_title("Example Tools", store::InstalledAppMode::Released),
+            "Example Tools"
+        );
     }
 
     // ── 5. Verify-before-window (AC-4.4) ───────────────────────────────────

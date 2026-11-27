@@ -49,10 +49,14 @@ import {
   CAPABILITY_IDS,
   CAPABILITY_REFUSAL_CODES,
   CAPABILITY_PROJECTION_KEY_PIN,
+  DEVELOPMENT_MARKER_TOKEN,
+  INSTALLED_APP_MODES,
   INSTALLED_APP_STATES,
+  MODE_PROJECTION_KEY_PIN,
   isCapabilityId,
   isCapabilityRefusalCode,
   isInstalledAppLifecycleState,
+  isInstalledAppMode,
 } from '../types';
 
 const HIGH_RISK_IDS = CAPABILITY_IDS.filter((id) => id.startsWith('high-risk.'));
@@ -265,8 +269,57 @@ describe('#3144 — the lifecycle state vocabulary', () => {
   });
 });
 
-describe('#3144 — CAPABILITY_DECLARED_COPY (the widened, complete declared view)', () => {
-  it('is exhaustive over ALL four capability ids (incl. the ordinary data.tables)', () => {
+// ── Spec #3241 — the install mode, the painted token, and the projection member ──
+
+describe('#3241 — the install-mode vocabulary and the ONE painted token', () => {
+  it('is exactly the two wire values, in the documented order', () => {
+    expect(INSTALLED_APP_MODES).toEqual(['released', 'development']);
+  });
+
+  it('the runtime guard accepts only the two members', () => {
+    expect(isInstalledAppMode('released')).toBe(true);
+    expect(isInstalledAppMode('development')).toBe(true);
+    // Non-members, including the PAINTED word (the wire value is lowercase).
+    expect(isInstalledAppMode('Development')).toBe(false);
+    expect(isInstalledAppMode('dev')).toBe(false);
+    expect(isInstalledAppMode('')).toBe(false);
+    expect(isInstalledAppMode(null)).toBe(false);
+    expect(isInstalledAppMode(undefined)).toBe(false);
+    expect(isInstalledAppMode(1)).toBe(false);
+  });
+
+  it('the painted token is capitalised `Development` and is NOT the wire value', () => {
+    expect(DEVELOPMENT_MARKER_TOKEN).toEqual('Development');
+    // The wire value is lowercase; a "cleanup" that unified the two would break
+    // either the serde contract or the uniformity rule.
+    expect(DEVELOPMENT_MARKER_TOKEN).not.toEqual('development');
+    expect(INSTALLED_APP_MODES).toContain('development');
+    // The token is a whole word, and it leads the band sentence S2 paints.
+    expect(DEVELOPMENT_MARKER_TOKEN.split(' ')).toEqual(['Development']);
+    // The spoken form (S4's accessible name) is a DIFFERENT case by design.
+    expect(`Alpha, development build`).toContain('development build');
+  });
+
+  it('pins the projection member name AND its type (a mode-less literal is a compile error)', () => {
+    expect(MODE_PROJECTION_KEY_PIN).toEqual('mode');
+    // The pin's existence is the compile-time half; this is the runtime witness.
+    const entry = { mode: 'released' } as Pick<InstalledAppEntry, 'mode'>;
+    expect(isInstalledAppMode(entry.mode)).toBe(true);
+  });
+
+  it('the mode is a SEPARATE axis from the lifecycle state (never folded together)', () => {
+    // INV-4: the lifecycle vocabulary is untouched by this spec.
+    expect(INSTALLED_APP_STATES).toEqual(['working', 'failing', 'disabled']);
+    for (const state of INSTALLED_APP_STATES) {
+      expect(INSTALLED_APP_MODES as readonly string[]).not.toContain(state);
+    }
+    for (const mode of INSTALLED_APP_MODES) {
+      expect(INSTALLED_APP_STATES as readonly string[]).not.toContain(mode);
+    }
+  });
+});
+
+describe('#3144 — CAPABILITY_DECLARED_COPY (the widened, complete declared view)', () => {  it('is exhaustive over ALL four capability ids (incl. the ordinary data.tables)', () => {
     const keys = Object.keys(CAPABILITY_DECLARED_COPY) as CapabilityId[];
     expect([...keys].sort()).toEqual([...CAPABILITY_IDS].sort());
     expect(Object.prototype.hasOwnProperty.call(CAPABILITY_DECLARED_COPY, 'data.tables')).toBe(true);
