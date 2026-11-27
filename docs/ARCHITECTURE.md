@@ -251,8 +251,9 @@ src-tauri/src/
 |       +-- commands_install.rs — exactly `installed_app_install` (optional `archivePath`; absent ⇒ the native picker via `rfd`) and `installed_apps_list`; the install runs on the blocking pool and the listing is never called at startup
 |       +-- commands_manage.rs — exactly `installed_app_disable`, `installed_app_enable` and `installed_app_remove` (Spec #3144); disable/enable record the host-owned lifecycle state and close the window when turning off, remove closes the window, removes the install directory (rename-aside then delete), drops the grants and the lifecycle record, and KEEPS stored data
 |       +-- lifecycle.rs        — the host-owned lifecycle state (`<app_data_dir>/installed-apps-state.json`, a sibling of the registry): `disabled` + `last_failure_code`, a fail-closed read (missing/corrupt/unknown-version ⇒ nothing disabled, nothing failed) and the `disabled > failing > working` precedence (Spec #3144)
-|       +-- scheme.rs           — the `fredoapp` URI-scheme handler: routing (`/<id>/` ⇒ entry document, `/<id>/<relative>` ⇒ a file inside `<id>/files/`, `/__fredo/bootstrap.js` ⇒ the one host path), verify-at-serve (read once → hash that buffer → compare to the pin → serve THAT buffer), the per-document child CSP, and the served document
-|       +-- bootstrap.js        — host-authored (`include_str!`), Chakra-free loading → usable / loading → failure (with Retry) surface at the app's own origin: 10 s mount watchdog, `window.onerror`/`onunhandledrejection`, and `window.__FREDO_APPLY_THEME__`
+|       +-- scheme.rs           — the `fredoapp` URI-scheme handler: routing (`/<id>/` ⇒ entry document, `/<id>/<relative>` ⇒ a file inside `<id>/files/`, `/__fredo/bootstrap.js` ⇒ the host bootstrap, `/__fredo/beacon` ⇒ the outline uplink), verify-at-serve (read once → hash that buffer → compare to the pin → serve THAT buffer), the per-document child CSP, the served document, and the bounded beacon ingress (Spec #3244 ST-7)
+|       +-- beacon.rs           — the installed-tier outline uplink (Spec #3244 ST-7): the `__fredo/beacon` ingress (size-bounded, nonce-gated, typed failure, an `installed.beacon.ingress` span), the bounded single-use nonce store, the eval statement carrying the shared projector, and the host↔frontend correlation seam — no new command, no new capability
+|       +-- bootstrap.js        — host-authored (`include_str!`), Chakra-free loading → usable / loading → failure (with Retry) surface at the app's own origin: 10 s mount watchdog, `window.onerror`/`onunhandledrejection`, `window.__FREDO_APPLY_THEME__`, and the screen-outline beacon reporter (`window.__FREDO_REPORT_OUTLINE__`, Spec #3244 ST-7)
 |       +-- window.rs           — `installed-<id>` labels, the served document URL (`<origin>/<id>/`, via `WebviewUrl::External` — never `App`, which would resolve against the HOST origin), the verify-before-open gate (`resolve_open_target`), the singleton build/focus, and the close path
 |       +-- commands_window.rs  — exactly `installed_app_open` (`appId` → `()`) and `installed_app_close` (`appId` → `bool`); verification runs on the blocking pool, the window on the async runtime
 |       +-- theme_state.rs      — the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror the handler inlines at serve time, with a system-colour fallback so a first paint is never unstyled
@@ -665,6 +666,54 @@ The payload is `CompanionGrounding`: `version` (`COMPANION_GROUNDING_VERSION = 1
 `null` when nothing is selected) and `dirty` (document-bearing applications only). The consumer bounds
 the serialized payload by `COMPANION_CAPABILITY_LIMITS.maxContextBytes` (16384 UTF-8 bytes). There is no
 place path, no verb list and no journal in the payload.
+
+### App intelligibility — the description contract and the per-turn injected pair (Spec #3244)
+
+An application declares what it is for, and the companion reads its current screen — with **no per-app
+enablement work in Fredo**.
+
+- **The description contract** lives in `shared/app-intelligibility/` (`description.ts`). A built-in
+  declares `FredoApplicationClass.description` (a REQUIRED abstract member, so `tsc` refuses a subclass
+  without one); an installed package declares `description` in its `fredo-app.json` manifest (structurally
+  optional — the `manifestVersion: 1` schema stays closed and the absent-key rule G-413 holds). The ONE
+  resolver `resolveAppDescription(appId)` collapses both declaration sites into a single `AppDescription`
+  (`{appId, name, description}`) or the typed `noDescription` failure. A blank description counts as
+  missing; the failure is the `noDescription` companion reply kind (never the app-open copy, G-505) and
+  emits NO turn.
+- **The per-turn injected pair** is host-driven and origin-agnostic. Its DOM leg is the ONE pure
+  projector `simplifyDom(root, maxNodes)` (`screenOutline.ts`): a bounded, text-only `ScreenOutline`
+  (`ScreenOutlineNode {role, name, tag, testid?, bbox}`) capped by `SCREEN_OUTLINE_MAX_NODES` (120) and
+  `SCREEN_OUTLINE_MAX_BYTES` (8192, enforced by `fitOutlineToBytes`, which trims and declares
+  `truncated`). Only elements with a non-empty accessible name are projected. Its SCREENSHOT leg is
+  ST-3's `captureTargetRegion(appId)` (`captureTarget.ts`), which resolves the target's physical-pixel
+  rectangle (the DOM recipe for an in-window built-in; the host `installed_app_screen_rect` read for a
+  separate installed window — branching on the app's ORIGIN, never its id) and captures it FRESH through
+  `capture_target_region` (which delegates to the shipped `capture_screen_region`). `screenContext.ts`
+  composes the two into a `ScreenPair` and derives the turn's injection facts.
+- **How the pair reaches the turn.** `CompanionAskOptions` carries `screen` (the pair) and `description`
+  (the resolved view). `buildCompanionTurnMessages` emits **exactly ONE** additional `system` message —
+  the app description plus the bounded outline — and the SCREENSHOT rides as the turn's single image
+  attachment (`LlmChatWithStatusOptions.imageBase64`, mutually exclusive with `audioBase64`; absent key
+  when unset). With no pair and no grounding the message list is the byte-identical legacy
+  `[persona, user]` pair. The Rust `llm_chat_with_status` routes the image through the SAME media path
+  the audio leg uses (`skills::skill_turn(…, image)`, which declares
+  `SCREEN_VISUAL_TOKEN_BUDGET`, 1120 — the #3234 budget).
+- **The live receipt.** Every app-targeted turn reports its injection facts (the `taught` /
+  `perAppEntries` witness, `descriptionBytes`, `screenshotBytes`, `simplifiedHtmlBytes`, and a
+  screenshot + outline digest) as the optional `injection` argument of `llm_chat_with_status`;
+  `applications/llm_server/injection.rs` persists them into `telemetry_spans` as
+  `span_name = "companion.injection"` (a FRESH `span_id` per turn), which is how AC-2/AC-3/AC-4 are read
+  back. `telemetry_logs` is not an accepted receipt (gate gap M9).
+- **Typed failure, never a blind turn (R-2c).** When a target's pair cannot be produced (the app is not
+  mounted in the dispatching webview, or the host capture yields nothing), the composer surfaces a typed
+  sentence on the shipped reply surface and does **not** dispatch. **Known limitation, disclosed:** the
+  DOM-outline leg is readable only for a built-in app mounted in the dispatching webview. A SEPARATE
+  webview (an installed app) has no host-readable DOM, and its outline cannot be relayed by a new command
+  because the installed tier is pinned to EXACTLY ONE command
+  (`capabilities/installed-app-commands.json`: `allow-installed-app-invoke` only, pinned by
+  `runtime::capability_guard`). Such a target therefore takes the typed-signal path until that boundary
+  is revisited by a human decision.
+
 
 **Wireframe's pointer surface.** Wireframe is driven by **23 pointer-reachable controls** — 12 arrange +
 4 file + 5 view in their menu groups, plus the separately-testid'd `wireframe-undo` / `wireframe-redo`
@@ -1095,14 +1144,17 @@ No capability grants a shell-plugin command: `shell:allow-open`, `shell:allow-sp
 
 An installed application is a **document at an origin the host does not own**. `lib.rs` registers the custom URI scheme `fredoapp` (`Builder::register_uri_scheme_protocol`), which Tauri exposes as `fredoapp://localhost` on macOS/Linux and `http://fredoapp.localhost` on Windows/Android — distinct from the host's `tauri://localhost` / `http://tauri.localhost` and from the dev server's `http://localhost:5174`. Both spellings arrive at the handler with `<id>/<relative>` in the URL path, so routing is path-based and platform-agnostic.
 
-`applications/installed_apps/scheme.rs` owns four things and nothing else:
+`applications/installed_apps/scheme.rs` owns five things and nothing else:
 
 | Concern | Rule |
 |---|---|
-| Routing | `/<id>/` serves the app's `entry.document`; `/<id>/<relative>` serves a file **only** if it resolves inside `<id>/files/`; `/__fredo/bootstrap.js` is the one host path. `record.json`/`manifest.json` live outside `files/` and have no route, so they are unreachable; nothing is ever listed. |
+| Routing | `/<id>/` serves the app's `entry.document`; `/<id>/<relative>` serves a file **only** if it resolves inside `<id>/files/`; `/__fredo/bootstrap.js` and `/__fredo/beacon` are the two host paths. `record.json`/`manifest.json` live outside `files/` and have no route, so they are unreachable; nothing is ever listed. |
 | Integrity at serve time (AC-4.4, CWE-367) | Each requested file is read **once**, that same buffer is hashed, the hash is compared to the install record, and **that buffer** is served. An unrecorded file has no route (the record is the whitelist). |
 | The child's policy | The handler authors `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'` on every response. `app.security.csp` is injected only for Tauri's own asset protocol, so `tauri.conf.json` needs and gets no edit — the child's policy is per-document. `connect-src` keeps the IPC transport reachable deliberately, so an installed app's command attempt is refused by the **ACL** rather than by the network. |
 | The served document | The app's HTML with the host-authored `<style>` (the theme custom properties + the panel styles) and `__fredo/bootstrap.js` injected. The bootstrap owns the loading → usable / loading → failure (with Retry) lifecycle, in the same document, at the same origin. |
+| **The outline uplink** (Spec #3244 ST-7) | `/__fredo/beacon` is a bounded **child→host ingress**: the host `eval`s a reporter (the `theme_push.rs:83-103` statement shape, carrying the shared projector) into an `installed-*` window, the reporter loads a **same-origin sub-resource** `new Image().src = "/__fredo/beacon?nonce=<n>&d=<base64(json)>"` (already permitted by the child policy's `img-src 'self'` — **no CSP change**), and this handler observes it, validates the per-turn **nonce**, and stores the decoded outline for the companion turn. The ingress treats its payload as **untrusted input**: size-bounded (`BEACON_MAX_BYTES`), nonce-gated with unknown/expired/replayed nonces dropped, a bounded timeout, no unbounded buffering, and a **typed, non-silent** failure — every attempt (accepted or rejected) emits an `installed.beacon.ingress` span into `telemetry_spans`. |
+
+**The fifth concern is a human-approved expansion, not a slip-in.** A second serve under the reserved `__fredo/` segment, and a handler that is now an **uplink** as well as a server, is a security-surface decision **approved by the human on 2026-11-26** (Option A, chosen after a four-option review): the alternative — a host-owned reply **command** — would have added a second command to the installed tier and broken the isolation invariant this section pins. **The ACL/capability surface stays byte-identical:** no file under `capabilities/`, `permissions/`, or `runtime/capability_guard.rs` changes, `capability_guard.rs`'s guards stay green untouched, and the beacon is granted by no capability (the scheme handler is `Builder::register_uri_scheme_protocol`, never a `COMMAND_MANIFEST` entry). The reserved-path unit pin is **re-cut** (not deleted) to admit `/__fredo/beacon` while every other reserved path stays a miss.
 
 Because the child policy's `connect-src` allows only the IPC transport, the bootstrap loads the app's module with `import()` (`script-src 'self'`), never `fetch()` — a fetch of an app file would be blocked by our own policy.
 

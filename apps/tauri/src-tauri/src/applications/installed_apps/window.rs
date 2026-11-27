@@ -2,7 +2,7 @@
 //!
 //! # What this module owns
 //!
-//! Exactly four things, and nothing else:
+//! Exactly five things, and nothing else:
 //!
 //! 1. **The document URL.** An installed application's window is built at the
 //!    URL the `fredoapp` handler ([`super::scheme`]) actually serves —
@@ -22,6 +22,11 @@
 //! 4. **The close path.** Closing destroys the window, which destroys the
 //!    document; that *is* how an installed application stops running (there is
 //!    no `unmount` in the contract). No window → `false`, not an error.
+//! 5. **The window geometry read (Spec #3244, ST-3).** [`installed_app_window_rect`]
+//!    reports a live window's CLIENT area in physical pixels (and
+//!    [`installed_app_screen_rect`] exposes it to the built-in window class), so
+//!    the companion's screen-read seam can capture exactly the rectangle the
+//!    application paints. Read-only: it neither builds nor focuses a window.
 //!
 //! # Nothing happens at startup (R-5.1 / R-5.5)
 //!
@@ -41,6 +46,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use super::manifest;
@@ -335,6 +341,94 @@ pub fn open_installed_app_window(app: &AppHandle, target: &OpenTarget) -> Instal
         "created the installed-app window"
     );
     Ok(())
+}
+
+/// The physical-pixel rectangle a window occupies on the desktop (Spec #3244).
+///
+/// This is the CLIENT-area geometry (`inner_position` + `inner_size`) — the
+/// pixels the application's own document paints into, which is what a screen read
+/// of the app must cover. Already PHYSICAL: Tauri reports window geometry in
+/// physical pixels, so no CSS-to-physical rescale is applied here (unlike the
+/// frontend's in-window DOM recipe, which must scale CSS pixels itself).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl WindowRect {
+    /// Build a rectangle from physical-pixel components.
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+/// Map raw Tauri window geometry (physical pixels) into a [`WindowRect`].
+///
+/// Pure, so the physical-pixel mapping is unit-pinned without a live window: the
+/// integers Tauri reports are widened to `f64` verbatim, never rescaled.
+pub fn window_rect_from(x: i32, y: i32, width: u32, height: u32) -> WindowRect {
+    WindowRect::new(x as f64, y as f64, width as f64, height as f64)
+}
+
+/// The physical rectangle of a live installed application's window (Spec #3244).
+///
+/// `Ok(None)` when the application is not open — a missing window is the caller's
+/// "not on screen" answer, not an error (mirrors [`close_installed_window`]). A
+/// malformed or built-in id is refused by [`normalize_app_id`] before any window
+/// is read. The geometry is the window's CLIENT area in physical pixels, so a
+/// screen read of the rectangle covers exactly what the application paints.
+pub fn installed_app_window_rect(
+    app: &AppHandle,
+    requested_id: &str,
+) -> InstalledAppResult<Option<WindowRect>> {
+    let id = normalize_app_id(requested_id)?;
+    let label = installed_app_window_label(&id);
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(None);
+    };
+    let position = window.inner_position().map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("the {label} window's on-screen position could not be read: {error}"),
+        )
+    })?;
+    let size = window.inner_size().map_err(|error| {
+        InstalledAppError::new(
+            InstalledAppRefusalCode::IoError,
+            format!("the {label} window's on-screen size could not be read: {error}"),
+        )
+    })?;
+    Ok(Some(window_rect_from(
+        position.x,
+        position.y,
+        size.width,
+        size.height,
+    )))
+}
+
+/// Read a live installed application's window rectangle, in physical pixels
+/// (Spec #3244, ST-3).
+///
+/// The host half of the companion's screen-read seam: the frontend cannot read a
+/// SEPARATE window's position (its own `window.screenX/Y` describe the main
+/// webview), so the host resolves it here and the caller captures exactly this
+/// rectangle through the screenshot seam. Returns `null` when the application is
+/// not open. Read-only — it never builds, focuses or mutates a window.
+#[tauri::command]
+pub fn installed_app_screen_rect(
+    app: AppHandle,
+    app_id: String,
+) -> InstalledAppResult<Option<WindowRect>> {
+    installed_app_window_rect(&app, &app_id)
 }
 
 #[cfg(test)]
@@ -813,5 +907,68 @@ mod tests {
         assert!(!product.contains(&host_url_variant));
         let built_in_prefix = ["GENERIC_APP_WINDOW_LABEL", "_PREFIX"].concat();
         assert!(!product.contains(&built_in_prefix));
+    }
+
+    // ── 8. The window-rect accessor (Spec #3244 ST-3) ──────────────────────
+
+    /// The geometry mapping is the raw physical-pixel widening — never a
+    /// CSS/logical rescale, and never a clamp (a monitor left of the primary
+    /// yields a negative origin, a minimised window a zero size).
+    #[test]
+    fn window_rect_from_widens_physical_pixels_verbatim() {
+        assert_eq!(
+            window_rect_from(100, 200, 900, 600),
+            WindowRect {
+                x: 100.0,
+                y: 200.0,
+                width: 900.0,
+                height: 600.0,
+            }
+        );
+        let left_of_primary = window_rect_from(-1920, -50, 900, 600);
+        assert_eq!(left_of_primary.x, -1920.0);
+        assert_eq!(left_of_primary.y, -50.0);
+        assert_eq!(
+            window_rect_from(0, 0, 0, 0),
+            WindowRect::new(0.0, 0.0, 0.0, 0.0)
+        );
+    }
+
+    /// The wire shape the frontend receives: exactly `{x, y, width, height}` in
+    /// camelCase, no optional key (G-413).
+    #[test]
+    fn the_window_rect_is_the_camel_case_physical_shape() {
+        let value = serde_json::to_value(WindowRect::new(1.0, 2.0, 3.0, 4.0)).expect("serialize");
+        let object = value.as_object().expect("object");
+        assert_eq!(object.len(), 4, "exactly {{x,y,width,height}}: {value}");
+        for key in ["x", "y", "width", "height"] {
+            assert!(object.contains_key(key), "missing {key}: {value}");
+        }
+    }
+
+    /// The accessor reads CLIENT-area PHYSICAL geometry and reports a missing
+    /// window as `None` (never an error), and the module carries exactly the ONE
+    /// new capture command.
+    #[test]
+    fn the_rect_accessor_reads_physical_window_geometry_and_never_rescales() {
+        let source = include_str!("window.rs");
+        let product = source.split("#[cfg(test)]").next().unwrap_or(source);
+
+        assert!(product.contains("window.inner_position()"));
+        assert!(product.contains("window.inner_size()"));
+        // The host geometry is already physical: no ratio rescale here (the
+        // frontend recipe owns the one CSS→physical scaling).
+        assert!(!product.contains("device_pixel_ratio"));
+        assert!(!product.contains("devicePixelRatio"));
+        // A missing window is the caller's "not on screen", not an error.
+        assert!(product.contains("return Ok(None)"));
+
+        let attribute = ["#[tauri", "::command]"].concat();
+        assert_eq!(
+            product.matches(&attribute).count(),
+            1,
+            "window.rs owns exactly the ONE new `installed_app_screen_rect` command"
+        );
+        assert!(product.contains("pub fn installed_app_screen_rect("));
     }
 }

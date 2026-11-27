@@ -5,13 +5,23 @@
 > **screenshot + a simplified HTML representation** of the app's current screen; the mechanism is
 > **uniform**, so an installed app Fredo was never taught is the same path as a shipped one.
 >
-> One `- [ ]` case per acceptance-criterion leg (AC-1 … AC-5 + NFR-1).
+> One `- [ ]` case per acceptance-criterion leg (AC-1 … AC-5 + NFR-1), plus the plan's beacon
+> ingress-hardening row (ING-1) — see `fixtures/BEACON-INGRESS-CONTROLS.md`.
 >
 > **Verification policy: live.** AC-2/AC-3 are runtime observables of a running app + companion; AC-4 is
-> a genuine runtime measurement. **AC-1a/AC-1b/AC-2b are STATIC/CI** (labeled per case) — their receipt
-> is the green CI run on the spec PR head SHA + the non-draft `## Developer ST-<id> — verification`
-> comment. **`telemetry_logs` is NOT an accepted live receipt (gate gap M9)** — live cases name a
-> `telemetry_spans` result, a `tauri_webview_*` receipt, or a `user-attachments` URL.
+> a genuine runtime measurement; AC-5 is a driven row (the human bound its subject on 2026-11-26).
+> **AC-1a/AC-1b/AC-2b are STATIC/CI** (labeled per case) — their receipt is the green CI run on the
+> spec PR head SHA + the non-draft `## Developer ST-<id> — verification` comment. **`telemetry_logs` is
+> NOT an accepted live receipt (gate gap M9)** — live cases name a `telemetry_spans` result, a
+> `tauri_webview_*` receipt, or a `user-attachments` URL.
+>
+> **Data:** every fixture these rows drive is produced by the committed deterministic generator
+> `.opencode/tests/app-intelligibility/fixtures/build-intelligibility-fixtures.mjs`; conventions,
+> invocation, the determinism receipt and the child-evidence transport fact are in
+> `.opencode/tests/app-intelligibility/fixtures/README.md`. **No `installed-*` window is reachable by
+> `tauri_webview_*`** — every receipt for an installed window is the host's own `telemetry_spans` row,
+> never an `execute_js` read (and no role holds a native-input instrument, so no row may depend on a
+> post-mount gesture).
 >
 > **Turn-input receipt:** a plan-emitted per-turn **injection span** is the primary live receipt for
 > AC-2/AC-3/AC-4 (`appId`, `taught`, `descriptionBytes`, `screenshotBytes`, `simplifiedHtmlBytes`,
@@ -68,19 +78,29 @@
   - **Edge:** the observable is the **turn-input receipt**, NOT a completed order loop — **no leg
     requires #3243**. An app with no description must take the F-2 typed-failure path, never produce a
     silently description-less pair.
-  - **Data:** fixture `qa3244-untaught`.
+  - **Data:** fixture `qa3244-untaught`, produced by the committed deterministic generator
+    `.opencode/tests/app-intelligibility/fixtures/build-intelligibility-fixtures.mjs`
+    (see `.opencode/tests/app-intelligibility/fixtures/README.md` §1/§5). Never `tauri_webview_*` — the
+    `installed-*` window is unreachable by design, and no post-mount gesture is available to any role;
+    the receipt is the host's own `telemetry_spans` row.
 
 ## AC2B — no per-app enablement, proven by absence
 
-- [ ] **F-4 (AC-2b, STATIC).** Executed grep of `apps/ui/src` + `apps/tauri/src-tauri/src` for the
-      fixture id `qa3244-untaught`; read `buildCompanionTurnMessages`
+- [ ] **F-4 (AC-2b, STATIC).** Executed sweep of the **description+pair path** for the fixture id
+      `qa3244-untaught`; read `buildCompanionTurnMessages`
       (`apps/ui/src/shared/components/companion/companionDispatch.ts`).
-  - **Expected:** **zero** source hits for the fixture app id; the description+pair assembly is **one
-    shared code path** with **no per-app conditional branch**.
-  - **Record:** the executed command + output in the suite / `## Developer ST-n — verification`,
-    corroborated by the F-3 turn span.
-  - **Edge:** a helper special-casing a "known" app id, or a shipped-id lookup table, FAILS this even
-    when F-3 passes.
+  - **Expected:** **zero product-code hits** for the fixture app id in the description+pair modules;
+    the description+pair assembly is **one shared code path** with **no per-app conditional branch**.
+  - **Record:** the committed sweep's quotable last line —
+    `bun .opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs` →
+    `SWEEP RESULT: PASS … hits=0` — quoted in the `## Tests Runs` verdict, corroborated by the F-3
+    turn span. (Not a bare `rg` command: the committed artifact is the record, and the matcher
+    distinguishes a product-code hit from a comment/test mention; see `fixtures/README.md` §7.)
+  - **Edge:** a helper special-casing a "known" app id, or a shipped-id lookup table **in the
+    description+pair modules**, FAILS this even when F-3 passes. A shipped unit test naming the id as
+    a fixture value is **not** a product hit — the sweep reports it as `test` and does not fail.
+    `.opencode/**` is a **false negative** for repo-wide greps (G-024): "the pipeline's grep found
+    nothing" never means the sweep is missing.
 
 ## AC3 — the injected pair is fresh each turn
 
@@ -93,27 +113,97 @@
   - **Edge:** a turn with **no** screen change must still re-read (fresh capture) — checkable via a
     distinct capture-time/generation counter even when content is byte-identical; a stale snapshot
     (identical digest after a visible change) is a **FAIL**.
+  - **Data:** fixture `qa3244-untaught` and its own change levers — a **visible screen change** is
+    either a keyboard activation of `[data-qa3244-mutate]` (advances `QA3244-SCREEN step=<n> token=…`)
+    or the guaranteed `[data-qa3244-live]` tick (every 1000 ms). Both are plain text inside the
+    projected root, so the change lands in the simplified-HTML leg. Generated by
+    `.opencode/tests/app-intelligibility/fixtures/build-intelligibility-fixtures.mjs`; never
+    `tauri_webview_*` (`fixtures/README.md` §1/§5) — the receipt is the host's `telemetry_spans` row.
 
 ## AC4 — the screen-read limit is measured
 
-- [ ] **F-6 (AC-4, LIVE).** Run the plan's recorded screen-read measurement (a scored run over
-      progressive screen fixtures recording the limit at which the small model still acts correctly).
-  - **Expected:** **a NUMBER is recorded** for the pair's screen-read limit, persisted in a committed
-    (NON-DRAFT) artifact and/or a `telemetry_spans` record and re-readable by a separate process.
-  - **Receipt:** the committed report path + the `telemetry_spans` measurement record.
-  - **Edge:** a hard-coded constant presented as a "measurement" FAILS. AC-4's number is the **pair's**
-    limit, NOT #3234's visual-token budget (1120) — do not re-assert that budget here. A probe needing
-    #3234's harness/assets is a **named blocker**, never a PASS by substitution.
+- [ ] **F-6 (AC-4, LIVE).** Record the pair's screen-read limit from a live run over the progressive
+      dense-screen ladder, with the committed writer.
+  - **Expected — the recorded NUMBER is `outline.utf8Bytes` (schema v2), under these five asserts:**
+    1. the committed record **parses** (`parseScreenReadRecord`) — non-placeholder: no `null`, no
+       `"PENDING"` string;
+    2. `0 < outline.utf8Bytes <= capsInForce.maxBytes` **and**
+       `0 < outline.nodeCount <= capsInForce.maxNodes` — a record can never claim an over-cap outline
+       crossed;
+    3. `outline.bytesHeadroom === capsInForce.maxBytes - outline.utf8Bytes`, and `outline.bindingCap`
+       is consistent with (`truncated`, `nodeCount`, `maxNodes`) by the one rule in
+       `measurement.ts` (`none` if not truncated; `nodes` if truncated with the node count at the cap;
+       else `bytes`);
+    4. **the cap is observed**: on the rung the record names, `outline.truncated === true` (the
+       `-120`/`-160` rungs are the ones that must bite), **or** `bindingCap: "none"` is recorded as an
+       explicit finding;
+    5. **the discriminator (the non-vacuity of the new meaning):** across **≥2** rungs captured in the
+       same run, `outline.utf8Bytes` **differs**, while `screenshot.encodedImageTokens` may be — and in
+       practice is — **identical**. **A constant `encodedImageTokens` is EXPECTED and is never a FAIL.**
+  - **Receipt:** the committed `measurement/ac4-screen-read-record.json` (non-draft, filled by
+    `build-ac4-record.mjs --capture <capture.json>` from the run's `companion.injection` span) + that
+    span's `telemetry_spans` row.
+  - **Edge:** a hard-coded constant presented as a "measurement" FAILS. **`screenshot.encodedImageTokens`
+    is NOT the AC-4 number** — it is the engine's fixed cost for one window capture
+    (density-invariant, observed 840 on every turn) and is recorded only as rig context for NFR-1.
+    Do not re-assert #3234's 1120 visual-token **budget** here either. A probe needing #3234's
+    harness/assets is a **named blocker**, never a PASS by substitution. A **v1** record is refused by
+    the parser — do not re-cut a v1 file into place.
+  - **Data:** the `qa3244-dense-*` ladder (`-08`, `-32`, `-72`, `-120`, `-160`, `-url11k`) from
+    `.opencode/tests/app-intelligibility/fixtures/build-intelligibility-fixtures.mjs` — six rungs of
+    declared named-control density (see `fixtures/README.md` §1; rung `-120` sits exactly at
+    `SCREEN_OUTLINE_MAX_NODES = 120` and must report `truncated=true`). The writer
+    `.opencode/tests/app-intelligibility/measurement/build-ac4-record.mjs` fills
+    `measurement/ac4-screen-read-record.json` from the run's `companion.injection` span — including
+    `outline.truncated` from the span's own **`simplifiedHtmlTruncated`** field. The rung declares
+    density; **the bytes/nodes are the run's reading** (G-511) — never a number from this suite. The
+    record carries the **densest rung that bites**; if no rung bites, the densest rung's measured
+    number with `bindingCap: "none"` plus that finding. Do not average rungs.
 
-## AC5 — release-one demonstration (CONDITIONAL)
+## AC5 — release-one demonstrates the claim on one untaught app
 
-- [ ] **F-7 (AC-5, LIVE · CONDITIONAL — gated).** *(Default, pending the human's word — see triage
-      `## Discussion`.)* **If confirmed:** the F-3 journey extended to a full demonstration on one
-      untaught app.
-  - **Expected:** one untaught app is operated end-to-end with **no Fredo code change**, recorded.
-  - **Receipt:** the same live receipts as F-3 + the demonstration outcome.
-  - **Edge:** **do NOT silently accept or drop.** Status = **GATED**: recorded as **DEFERRED with the
-    PO/human decision as its record** unless the human confirms — never a PASS by assumption.
+- [ ] **F-7 (AC-5, LIVE — driven).** Drive **one** companion order turn on the built-in
+      **`mission-monitor`** — a Fredo app Fredo was never taught **for the description+pair path**
+      (the human bound this subject on 2026-11-26) — through the shipped composer submit
+      (`CompanionEntity.handleComposerSubmit`, `CompanionEntity.tsx:1676` → `buildTurnTarget` →
+      `buildTurnScreenContext` → `ask`). Then read the per-turn injection span back from
+      `telemetry_spans` **and** run the committed scoped source-sweep.
+  - **Expected — the observables are the NEGATIVE WITNESS, all three parts on the SAME run:**
+    **(i)** `taught: false` **and** `perAppEntries: 0` on that run's `companion.injection` span
+    (`attributes_json`); **(ii)** the committed sweep
+    (`bun .opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs`, subject
+    `mission-monitor`) reports **zero product-code subject-id hits** in the description+pair modules —
+    its `SWEEP RESULT: PASS … hits=0` line is the quote. The sweep also prints separately every
+    `comment`/`test` mention it did **not** grade (as `not-graded …` lines): a mention in a doc
+    comment or a unit test is a fixture/documentation value, not a per-app runtime branch, and the
+    row's claim is the absence of a **special case** (`--strict` shows the literal any-mention count
+    as a diagnostic). **(iii)** the positive injection receipt on that same run
+    (the span exists, carries the subject's `appId`, and its `descriptionBytes` /
+    `screenshotBytes` / `simplifiedHtmlBytes` are non-zero). A successful operation **alone is not
+    the witness** — "operating a built-in successfully proves little if Fredo has a hand-written path
+    to it; proving there is NOT one is the point."
+  - **The confound this row NAMES (`MissionMonitorPanel.tsx:881`):** MM carries a hand-written per-app
+    **grounding registrar** (`registerCompanionGrounding('mission-monitor', …)`). It supplies
+    **selection metadata only** — no description, no per-turn pair — so it is **NOT enablement** and
+    does not make MM operable without the description+pair path. This row therefore proves the
+    **description+pair path has no per-app entry**; it must **never** be read as, or rewritten to,
+    "MM has zero per-app Fredo code" (it does not). The sweep is scoped to the description+pair
+    modules for exactly this reason.
+  - **Record:** the `telemetry_spans` receipt for the per-turn injection span (PRIMARY, live) +
+    the sweep's `SWEEP RESULT: PASS … hits=0` line — both quoted in the `## Tests Runs` verdict.
+    Neither is a `.opencode/tmp/3244/` draft (G-415).
+  - **Edge:** a per-app resolution turns part (i) red (`taught: true` or `perAppEntries > 0`); a
+    subject-id branch in any description+pair module makes part (ii) exit 1 — **never widen the
+    sweep's scope to green it**; a turn that fails to operate leaves part (iii) absent, which is a
+    FAIL, not a partial PASS. All three parts must be on the SAME run: a span from one turn and a
+    sweep re-run later is not the witness.
+  - **Data:** the built-in id `mission-monitor`; the committed sweep
+    `.opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs`; the per-turn
+    `companion.injection` span, persisted by
+    `apps/tauri/src-tauri/src/applications/llm_server/injection.rs` from the facts the webview
+    derives in `screenTurnExtras` (`CompanionEntity.tsx:287`) and passes as the `injection` argument
+    of `llm_chat_with_status`. The installed fixtures are **not** this row's subject (AC-2's
+    `qa3244-untaught` is).
 
 ## NFR1 — the injected pair fits the context budget
 
@@ -127,3 +217,26 @@
     bytes) and the model-context budget.
   - **Edge:** a pair exactly at the boundary; a dense screen yielding an over-budget pair must degrade
     observably, never truncate silently.
+
+## ING1 — the beacon ingress treats its payload as untrusted input
+
+- [ ] **F-9 (ING-1, LIVE).** Drive every beacon-ingress negative control the committed fixture can
+      produce, and read the host's **typed** outcome for each from `telemetry_spans`.
+  - **Steps:** open `qa3244-beacon-control` (the three mount-time controls fire on their own). Then drive **three** companion turns targeting it, in order: **turn 1** yields the replay pair (`accepted` + `unknown-nonce` ≈2.25 s later); **turn 2** yields `timeout`; **turn 3** is a plain `accepted` control. **Do not arm anything — the fixture self-arms off the report-call index.** **Between turn 1 and turn 2 you MUST wait for turn 1's replay span to land and record it against turn 1** before starting turn 2 (see the attribution bullet below). The full control table, the expected typed reason per control, and the reading instrument are in `.opencode/tests/app-intelligibility/fixtures/BEACON-INGRESS-CONTROLS.md`.
+  - **Expected:** **one `installed.beacon.ingress` span per attempt**, each carrying the typed reason the control plan names — `oversize`, `missing-nonce`, `unknown-nonce` — and, for the two turn-coupled legs, **each by its confound-proof shape**:
+    **(a) `E-TIMEOUT` (turn 2) requires BOTH halves:** a `reason=timeout`, `accepted=false` span with `appId=qa3244-beacon-control` **AND zero `reason=unknown-nonce` / `reason=accepted` spans for that turn.** A bare `timeout` span is **NOT** a PASS: `request_outline` records `timeout` on any abandoned wait (`beacon.rs:602-614`), and a nonce-rejected turn also times out, so a row accepting a bare `timeout` is passable by the very defect it exists to catch.
+    **(b) `D-REPLAY-AFTER-TTL` (turn 1) is read as a PAIR:** the turn's own beacon must read **`accepted`** and the replay ≈2.25 s later must read **`unknown-nonce`**. Every rejection carries `accepted=false`. The typed reason **is** the observable: a beacon that merely does not crash, or a fixture panel that rendered, is **not** a PASS. A rejected beacon must also produce **no turn input**.
+  - **Attribution (order-sensitive — record the timeline, do not infer it):** attribute spans per turn by **span count and `start_time_ns` ordering**. The concrete collision: turn 1's replay fires `BEACON_TIMEOUT_MS + 250` ≈ 2.25 s after turn 1's report — **after** turn 1's own 2.0 s wait has ended — so it lands inside, or just before, turn 2's window. Unless turn 1's replay is recorded against turn 1 first, it reddens turn 2's "zero `unknown-nonce`" clause and the discriminator is itself confounded.
+  - **Receipt:** the `telemetry_spans` rows (`SELECT span_id, status_message, attributes_json FROM telemetry_spans WHERE span_name = 'installed.beacon.ingress' ORDER BY start_time_ns`), quoted in the `## Tests Runs` verdict. `telemetry_logs` is refused (M9). The child's mirrored text is corroboration only, never the gate.
+  - **Edge:** a control that produced no span is a FAIL, not "skipped" — the ingress records a span on
+    every attempt, accepted or not. The `expired` reason is **not fixture-reachable** (the shipped TTL
+    equals the correlation timeout and the nonce is closed when the wait ends); it is pinned by the
+    unit test `an_expired_nonce_is_dropped` in `beacon.rs`, and that limit is stated in the control
+    plan §4 rather than papered over. `chunk-incomplete` is likewise not producible from a child; if
+    GATE-0 concluded no chunking is needed, say so in those words. Never `tauri_webview_*` against the
+    installed window — and never plan a row around a native click or a native/UIA read: no role holds
+    such an instrument, and the fixture self-arms instead.
+  - **Data:** fixture `qa3244-beacon-control` from
+    `.opencode/tests/app-intelligibility/fixtures/build-intelligibility-fixtures.mjs`; the beacon
+    contract (`BEACON_PATH`, `BEACON_MAX_BYTES`, `BEACON_TIMEOUT_MS`, `BEACON_INGRESS_SPAN_NAME`) in
+    `apps/tauri/src-tauri/src/applications/installed_apps/beacon.rs`.

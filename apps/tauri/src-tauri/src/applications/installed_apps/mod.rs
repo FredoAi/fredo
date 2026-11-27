@@ -23,6 +23,7 @@
 //! | [`commands_window`] | exactly `installed_app_open` and `installed_app_close` |
 //! | [`theme_state`] | the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror |
 //! | [`theme_push`] | exactly `installed_apps_push_theme`: validate, write the mirror, and `Webview::eval` the theme into every live `installed-*` window |
+//! | [`beacon`] | the outline uplink (Spec #3244 ST-7): the `__fredo/beacon` ingress (size-bounded, nonce-gated, typed failure, a `telemetry_spans` receipt), the bounded single-use nonce store, the eval statement carrying the shared projector, and the host↔frontend correlation seam — **no new command, no new capability** (human-approved Option A, 2026-11-26) |
 //! | [`authority`] | the installed tier's authority surface (Spec #3146): caller tier + identity from the window label, the closed capability vocabulary and the six-code refusal shape |
 //! | [`dispatch`] | exactly `installed_app_invoke` (Spec #3146): the ONE command an installed window can reach, the ordered action→capability table, and the per-call gate |
 //! | [`scope`] | the pure data-scope chokepoint (Spec #3146): ownership + declaration + canonical-name unambiguity |
@@ -49,6 +50,7 @@
 
 pub mod archive;
 pub mod authority;
+pub mod beacon;
 pub mod commands_consent;
 pub mod commands_install;
 pub mod commands_manage;

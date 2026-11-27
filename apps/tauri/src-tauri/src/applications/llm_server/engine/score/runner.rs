@@ -205,6 +205,9 @@ mod tests {
             // The engine generated 16 tokens; a consumer assembling DELTAS would
             // have counted a different (piece) number, which this pin forbids.
             generated_tokens: 16,
+            // No image in this control's readout — the field exists so a media
+            // turn's encoded count has a carrier (Spec #3244, ST-6; AC-4).
+            image_tokens: 0,
         };
         let measurements = measurements_from(1_500, measurement, (5, 3, 2));
         assert_eq!(measurements.latency_ms, 1_500);

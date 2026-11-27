@@ -8,6 +8,8 @@ import { MissionMonitorPanel } from "./components/MissionMonitorPanel";
 export class MissionMonitorFeature extends FredoApplicationClass {
   readonly id = "mission-monitor";
   readonly name = "Mission Monitor";
+  readonly description =
+    "Watch live AI agent activity as a graph of sessions, subagents and tool calls.";
   readonly icon: IconType = LuActivity;
   readonly isMultiWindow = false;
   readonly showable = true;

@@ -1138,6 +1138,10 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // `llm_chat_with_skills` unchanged.
             applications::llm_server::status::llm_chat_with_status,
             applications::screenshot::commands::capture_screen_region,
+            // Spec #3244 ST-3 — the reusable target-capture seam: capture a
+            // physical-pixel target rectangle FRESH via the shipped monitor
+            // capture (`capture_screen_region` itself is unchanged).
+            applications::screenshot::target::capture_target_region,
             // Embedded-PostgreSQL supervisor (Spec #2974 ST-3): the single
             // read-only observability hook (no state mutation).
             applications::pg_supervisor::state::pg_supervisor_status,
@@ -1252,6 +1256,10 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // opens one, so this registration is inert at startup (R-5.1/R-5.5).
             applications::installed_apps::commands_window::installed_app_open,
             applications::installed_apps::commands_window::installed_app_close,
+            // Spec #3244 ST-3 — the host window-geometry read for the companion's
+            // screen-read seam: a live installed application's physical
+            // client-area rectangle (read-only; `null` when the app is not open).
+            applications::installed_apps::window::installed_app_screen_rect,
             // Spec #3147 ST-5 — the theme transport's live leg
             // (`applications::installed_apps::theme_push`):
             // `installed_apps_push_theme` validates the host's resolved token
@@ -1322,6 +1330,17 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
                     let _ = window.set_title(&window_title);
                 }
                 infrastructure::launch::apply_launch_mode(app, launch);
+
+                // Spec #3244 ST-7 — the installed-tier outline uplink's frontend
+                // correlation seam. The companion turn that targets an installed
+                // app needs that app's screen outline, and there is NO command for
+                // it (the transport is the host's OWN `fredoapp` scheme handler), so
+                // the frontend emits a request event (`core:event:allow-emit` is
+                // already granted to the built-in windows) and this listener answers
+                // with the correlated reply. Registering a listener performs no
+                // installed-app work: no window is built and no install directory is
+                // read.
+                applications::installed_apps::beacon::install_beacon_listener(app);
             }
             // Spec #3192 ST-1 (R-1a/R-2d/R-3) — the resident exit policy. This is
             // the ONE place exit is gated; the DEFAULT close of `main` stays the

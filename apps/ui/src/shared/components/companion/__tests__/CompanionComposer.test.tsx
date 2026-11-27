@@ -116,6 +116,8 @@ function fakeApp(id: string, name: string, showable = true): FredoApplicationCla
   return {
     id,
     name,
+    // Spec #3244 ST-1: a built-in declares its OWN description (required).
+    description: `${name} is a test application.`,
     showable,
     icon: (() => null),
     render: () => null,
@@ -131,7 +133,14 @@ function registerGrounding(appId: string, grounding: CompanionGrounding): void {
 // ── harnesses ────────────────────────────────────────────────────────────────
 
 function AppRoot() {
-  return <div data-testid="app-root" data-fredo-app-id="wireframe" tabIndex={-1} />;
+  return (
+    <>
+      <div data-testid="app-root" data-fredo-app-id="wireframe" tabIndex={-1} />
+      {/* Spec #3244 ST-4 — a companion turn reads the TARGET's screen, so a named
+          override (`mission-monitor`) must be MOUNTED here to be readable. */}
+      <div data-testid="mission-root" data-fredo-app-id="mission-monitor" tabIndex={-1} />
+    </>
+  );
 }
 
 /** The home seat predicate (mirrors LauncherShell): interactive seat while ON + home. */
@@ -187,6 +196,13 @@ beforeEach(() => {
   adapterBridge.setLlmChatWithImage(devAdapter.llmChatWithImage.bind(devAdapter));
   adapterBridge.setLlmChatWithStatus(devAdapter.llmChatWithStatus.bind(devAdapter));
   adapterBridge.setListen(() => Promise.resolve(() => {}));
+  // Spec #3244 ST-4 — a composer submit now reads the target's screen (the
+  // injected pair). jsdom has no capture backend, so the host capture call is
+  // stubbed with a tiny base64 PNG; every other command stays a no-op.
+  vi.spyOn(adapterBridge, 'invoke').mockImplementation(async (command: string) => {
+    if (command === 'capture_target_region') return 'iVBORw0KGgo=';
+    return undefined;
+  });
 });
 
 afterEach(() => {
@@ -450,6 +466,80 @@ describe('CompanionComposer — teleport-attached instruction box', () => {
     await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(1));
     const [messages] = statusSpy.mock.calls[0];
     expect(messages[0]).toEqual({ role: 'system', content: JSON.stringify(MISSION_GROUNDING) });
+  });
+
+  // ── Spec #3244 ST-4 — the per-turn injected pair + the typed R-2c signal ────
+
+  it('#3244 ST-4 — a submit attaches the FRESH pair (image attachment + injection facts)', async () => {
+    const statusSpy = vi
+      .spyOn(adapterBridge, 'llmChatWithStatus')
+      .mockImplementation(() => Promise.resolve());
+    const { getByTestId, queryByTestId } = renderWithChakra(
+      <CompanionProvider>
+        <AppRoot />
+        <OverlayHarness />
+      </CompanionProvider>,
+    );
+    await waitFor(() => expect(document.querySelector('.fredo-companion-avatar')).not.toBeNull());
+    await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('overlay'));
+
+    act(() => {
+      requestCompanionComposerOpen({ source: 'command-bar-ask', appId: 'wireframe', focus: true });
+    });
+    await waitFor(() => expect(queryByTestId(COMPANION_COMPOSER_TESTID)).not.toBeNull());
+
+    const input = getByTestId(COMPANION_COMPOSER_INPUT_TESTID) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'new button' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(statusSpy).toHaveBeenCalledTimes(1));
+    const [messages, options] = statusSpy.mock.calls[0];
+    // The screenshot leg rides as the turn's single image attachment.
+    expect(options.imageBase64).toBe('iVBORw0KGgo=');
+    // The live receipt names the target and carries the AC-5 negative witness.
+    expect(options.injection).toMatchObject({
+      appId: 'wireframe',
+      taught: false,
+      perAppEntries: 0,
+    });
+    expect(options.injection.screenshotBytes).toBeGreaterThan(0);
+    // The outline leg is ONE extra system message carrying the description.
+    expect(messages.some((m: { content: string }) => m.content.includes('OUTLINE:'))).toBe(true);
+    expect(
+      messages.some((m: { content: string }) =>
+        m.content.includes('DESCRIPTION: Wireframe is a test application.'),
+      ),
+    ).toBe(true);
+  });
+
+  it('#3244 ST-4 (R-2c) — an unproducible pair is a typed signal, never a blind turn', async () => {
+    const statusSpy = vi
+      .spyOn(adapterBridge, 'llmChatWithStatus')
+      .mockImplementation(() => Promise.resolve());
+    // The host capture yields nothing: the pair cannot be produced.
+    vi.spyOn(adapterBridge, 'invoke').mockImplementation(async () => undefined);
+    const { getByTestId, queryByTestId, container } = renderWithChakra(
+      <CompanionProvider>
+        <AppRoot />
+        <OverlayHarness />
+      </CompanionProvider>,
+    );
+    await waitFor(() => expect(document.querySelector('.fredo-companion-avatar')).not.toBeNull());
+    await waitFor(() => expect(getActiveCompanionEntity()?.surface).toBe('overlay'));
+
+    act(() => {
+      requestCompanionComposerOpen({ source: 'command-bar-ask', appId: 'wireframe', focus: true });
+    });
+    await waitFor(() => expect(queryByTestId(COMPANION_COMPOSER_TESTID)).not.toBeNull());
+
+    const input = getByTestId(COMPANION_COMPOSER_INPUT_TESTID) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'new button' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(container.textContent).toContain("I can't read Wireframe's screen right now"),
+    );
+    expect(statusSpy).not.toHaveBeenCalled();
   });
 
   it('an empty submit is a no-op and keeps focus in the input', async () => {

@@ -23,6 +23,7 @@ pub mod chat;
 pub mod commands;
 pub mod doom_agent;
 pub mod engine;
+pub mod injection;
 pub mod skills;
 pub mod status;
 pub mod status_keys;

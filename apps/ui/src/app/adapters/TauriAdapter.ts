@@ -389,11 +389,19 @@ export class TauriAdapter implements HostAdapter {
     });
 
     try {
-      await invoke('llm_chat_with_status', {
+      // Spec #3244 ST-4 — `imageBase64` (the injected pair's screenshot leg) and
+      // `injection` (the turn's live receipt) ride the SAME command. Both are
+      // ABSENT KEYS when unset (G-413): a value that is `undefined` is not
+      // serialized, so the Rust side sees exactly the keys the caller supplied.
+      // `audioBase64` and `imageBase64` are mutually exclusive — one attachment.
+      const args: Record<string, unknown> = {
         messages,
         offerSkills: options.offerSkills,
-        audioBase64: options.audioBase64,
-      });
+      };
+      if (options.audioBase64 !== undefined) args.audioBase64 = options.audioBase64;
+      if (options.imageBase64 !== undefined) args.imageBase64 = options.imageBase64;
+      if (options.injection !== undefined) args.injection = options.injection;
+      await invoke('llm_chat_with_status', args);
     } catch (err) {
       const msg = String(err);
       if (msg.includes('still loading')) {

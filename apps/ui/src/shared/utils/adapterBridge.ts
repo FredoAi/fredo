@@ -70,8 +70,10 @@ let _llmChatWithStatus: LlmChatWithStatusFn | undefined;
 
 type UnlistenFn = () => void;
 type ListenFn = <T>(event: string, handler: (payload: T) => void) => Promise<UnlistenFn>;
+type EmitFn = (event: string, payload?: unknown) => Promise<void>;
 
 let _listen: ListenFn | undefined;
+let _emit: EmitFn | undefined;
 
 export const adapterBridge = {
   setInvoke(fn: InvokeFn): void {
@@ -105,6 +107,10 @@ export const adapterBridge = {
     _listen = fn;
   },
 
+  setEmit(fn: EmitFn | undefined): void {
+    _emit = fn;
+  },
+
   async invoke<T = unknown>(
     command: string,
     args?: Record<string, unknown>,
@@ -135,6 +141,30 @@ export const adapterBridge = {
     }
     console.warn('[adapterBridge] listen called outside Tauri environment');
     return () => {};
+  },
+
+  /**
+   * Spec #3244 ST-7 — the host request channel for the installed-tier outline
+   * uplink. There is NO command to fetch an installed app's screen outline (the
+   * transport is the host's OWN `fredoapp` scheme handler), so the webview emits
+   * a request event and the host's listener answers with a correlated reply. The
+   * raw `__TAURI_INTERNALS__` emit is used (never a static `@tauri-apps/api`
+   * import — `core:event:allow-emit` is already granted to the built-in windows).
+   */
+  async emit(event: string, payload?: unknown): Promise<void> {
+    if (_emit) {
+      return _emit(event, payload);
+    }
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__?: { invoke?: (command: string, args?: unknown) => Promise<unknown> };
+      }
+    ).__TAURI_INTERNALS__;
+    if (typeof window !== 'undefined' && internals && typeof internals.invoke === 'function') {
+      await internals.invoke('plugin:event|emit', { event, payload });
+      return;
+    }
+    console.warn('[adapterBridge] emit called outside Tauri environment');
   },
 
   async llmChat(

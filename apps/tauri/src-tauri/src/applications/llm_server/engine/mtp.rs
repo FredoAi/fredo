@@ -418,6 +418,14 @@ pub struct SpeculativeOutcome {
     pub stopped_on_eog: bool,
     /// Whether the prompt had to be truncated to fit the context window.
     pub prompt_truncated: bool,
+    /// The ENCODED token count of the turn's image chunk(s) (Spec #3244, ST-6;
+    /// AC-4) — the projector's own `MediaPlan::image_tokens`, the number the
+    /// screen-read measurement records. `0` when the turn carried no image.
+    ///
+    /// The engine is the ONLY place this number exists (the projector encodes the
+    /// screenshot during `plan_turn`), so it is reported upward here for the
+    /// per-turn receipt — never recomputed, never estimated.
+    pub image_tokens: usize,
     /// The counters measured by THIS loop (R-19.1).
     pub stats: MtpStats,
 }
@@ -658,6 +666,9 @@ pub fn generate_speculative<'model>(
     // position count (M-RoPE media positions are not 1:1 with tokens) — AND the
     // prompt's TOKEN count, which is the cost the turn paid (Spec #3234, ST-5).
     let prefill_started = Instant::now();
+    // The engine's encoded image-token readout (Spec #3244, ST-6; AC-4): taken
+    // from the media plan the projector built, `0` for a text turn.
+    let mut image_tokens_observed = 0usize;
     let (tracked_tokens, prompt_positions, prompt_token_count) = match media_plan.take() {
         Some(plan) => {
             let unavailable = || {
@@ -675,6 +686,8 @@ pub fn generate_speculative<'model>(
             // count (text + the projector's visual/audio tokens) — the number the
             // 1120-budget cost is priced from.
             let token_count = u32::try_from(plan.n_tokens()).unwrap_or(u32::MAX);
+            // The encoded image-token count is the AC-4 measurement (ST-6).
+            image_tokens_observed = plan.image_tokens;
             tracing::debug!(
                 target: "fredo::llm_server",
                 image_parts = plan.image_parts,
@@ -863,6 +876,7 @@ pub fn generate_speculative<'model>(
         decode_micros,
         stopped_on_eog,
         prompt_truncated,
+        image_tokens: image_tokens_observed,
         stats,
     })
 }

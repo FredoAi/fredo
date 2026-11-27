@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "ac": "AC-4",
+  "runIdentity": {
+    "commit": "e7ef02df1b0d8b1d64be613578eb9f2ae5e5d637",
+    "capturedAt": "2026-11-27T02:19:53.000Z",
+    "appId": "qa3244-dense-160",
+    "injectionSpanId": "7dc0e294e-bf34-40b6-94fa-d1948ffe4cf0"
+  },
+  "outline": {
+    "utf8Bytes": 7980,
+    "nodeCount": 74,
+    "truncated": true,
+    "bytesHeadroom": 212,
+    "bindingCap": "bytes"
+  },
+  "screenshot": {
+    "encodedImageTokens": 247
+  },
+  "capsInForce": {
+    "maxNodes": 120,
+    "maxBytes": 8192
+  }
+}

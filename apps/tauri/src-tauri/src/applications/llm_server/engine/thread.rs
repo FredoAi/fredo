@@ -541,6 +541,9 @@ fn run_chat(
         prefill_micros: outcome.prefill_micros,
         decode_micros: outcome.decode_micros,
         generated_tokens: u64::from(outcome.tokens_generated),
+        // Spec #3244, ST-6 (AC-4): the encoded image-token readout the projector
+        // produced for this turn's screenshot leg (`0` for a text turn).
+        image_tokens: u64::try_from(outcome.image_tokens).unwrap_or(u64::MAX),
     };
 
     // Decide what the withheld text was: a decoded tool call, or content.

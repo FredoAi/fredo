@@ -19,7 +19,7 @@ import React, { useLayoutEffect, useRef, useState } from 'react';
 import { Box, Icon, Text, chakra } from '@chakra-ui/react';
 import { LuArrowUp, LuX } from 'react-icons/lu';
 
-import { getApplications } from '../../../applications/applicationRegistry';
+import { readCompanionAppRefs } from '../../installed-apps/companionTargetRefs';
 import { resolveNamedAppMention } from '../../companion/composerTarget';
 import type { CompanionTurnTarget } from '../../companion/composerTarget';
 import type { ReplyAvatarRect, ReplyRect } from './replySurfaceLayout';
@@ -85,11 +85,9 @@ function fallbackAvatar(viewport: { readonly width: number; readonly height: num
 function resolveTarget(target: CompanionTurnTarget, text: string): { appId: string | null; copy: string } {
   // A named app in the instruction overrides the default for the displayed chip
   // exactly as the submit path resolves it (both consume the ONE pure matcher).
-  const apps = getApplications().map((application) => ({
-    id: application.id,
-    name: application.name,
-    showable: application.showable,
-  }));
+  // Spec #3244 ST-5 — the app list spans BOTH registries (built-in + installed)
+  // through the ONE projection, so the chip and the submit path never drift.
+  const apps = readCompanionAppRefs();
   const namedId = resolveNamedAppMention(text, apps);
   const appId = namedId ?? target.appId;
   const appName = namedId

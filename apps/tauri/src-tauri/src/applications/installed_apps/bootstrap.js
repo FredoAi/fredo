@@ -33,6 +33,12 @@
  *     command this tier's capability grants. `action` is an ACTION the host's
  *     own table validates — never a command name — and the transport's promise
  *     (including a structured refusal) is returned unwrapped.
+ * 10. `window.__FREDO_REPORT_OUTLINE__(nonce, maxNodes)` (Spec #3244 ST-7) is the
+ *     host-invoked screen-outline reporter: it projects the live DOM with the
+ *     shared projector (`window.__FREDO_SIMPLIFY_DOM__`, shipped inside the eval
+ *     statement) and delivers the outline to the host's OWN `fredoapp` scheme
+ *     handler as a same-origin sub-resource load on `/__fredo/beacon`. It adds no
+ *     command and no capability: the uplink is the host's own origin server.
  *
  * Colour rules: only `var(--...)` reads with CSS system-colour fallbacks. No
  * hex, no rgb/hsl literals, and never an alpha suffix appended to a `var()`
@@ -213,6 +219,63 @@
       request: { action: action, args: payload }
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // 3c. The screen-outline beacon reporter (Spec #3244 ST-7)
+  // ---------------------------------------------------------------------------
+
+  // The host `eval`s an outline request into THIS document (the `fredoapp` origin)
+  // as `window.__FREDO_REPORT_OUTLINE__(nonce, maxNodes)`, having first defined
+  // `window.__FREDO_SIMPLIFY_DOM__` — the shared projector, shipped INSIDE the
+  // statement. This reporter projects the live DOM and delivers the outline to the
+  // host's OWN scheme handler as a same-origin sub-resource load; the child policy
+  // already permits it (`img-src 'self'`), so there is NO CSP change. It is
+  // fire-and-forget: the host correlates the load by the per-turn nonce and
+  // surfaces a missing/oversized/expired beacon as a typed failure, never a blind
+  // turn. Best-effort here: a failure is a missing turn input, never a crash.
+  function base64Utf8(value) {
+    var bytes = new TextEncoder().encode(value);
+    var binary = "";
+    for (var index = 0; index < bytes.length; index += 1) {
+      binary += String.fromCharCode(bytes[index]);
+    }
+    return btoa(binary);
+  }
+
+  window.__FREDO_REPORT_OUTLINE__ = function (nonce, maxNodes) {
+    try {
+      // The host `eval`s the nonce as JSON text INSIDE a single-quoted JS literal
+      // (the theme-push shape: data at a string position, never source), so the
+      // argument arrives as JSON and must be decoded here -- exactly as
+      // `__FREDO_APPLY_THEME__` decodes its payload. Without this decode the
+      // argument evaluates to the JSON text INCLUDING its quotes, so the uplink
+      // would present a nonce the host never minted and every beacon would be
+      // rejected `unknown-nonce`. A carrier that does not decode is refused
+      // rather than used, so a broken statement is a missing turn input (the
+      // host's typed timeout), never a wrong-nonce beacon.
+      if (typeof nonce === "string") {
+        try {
+          nonce = JSON.parse(nonce);
+        } catch (error) {
+          return;
+        }
+      }
+      if (typeof nonce !== "string" || nonce === "") {
+        return;
+      }
+      var project = window.__FREDO_SIMPLIFY_DOM__;
+      if (typeof project !== "function") {
+        return;
+      }
+      var root = document.querySelector('[data-testid="' + HOOK_ROOT + '"]') || document.body;
+      var outline = project(root, typeof maxNodes === "number" ? maxNodes : 120);
+      var payload = encodeURIComponent(base64Utf8(JSON.stringify(outline)));
+      var image = new Image();
+      image.src = "/__fredo/beacon?nonce=" + encodeURIComponent(nonce) + "&d=" + payload;
+    } catch (error) {
+      // The uplink is best-effort; the host surfaces a timeout as a typed failure.
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Panels

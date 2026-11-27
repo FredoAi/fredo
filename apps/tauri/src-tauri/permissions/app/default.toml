@@ -78,6 +78,12 @@ permissions = [
   "allow-llm-chat-with-skills",
   "allow-llm-chat-with-status",
   "allow-capture-screen-region",
+  # Spec #3244 ST-3 — the reusable target-capture seam (a physical-pixel rect,
+  # delegated to `capture_screen_region`) and the host window-geometry read (an
+  # installed app's physical client-area rectangle). Both reach the built-in
+  # window class only: the installed tier's one capability grants neither.
+  "allow-capture-target-region",
+  "allow-installed-app-screen-rect",
   "allow-pg-supervisor-status",
   "allow-pg-server-log-tail",
   "allow-pg-config-get",

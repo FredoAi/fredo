@@ -19,6 +19,8 @@ import { SettingsSurface } from './components/SettingsSurface';
 export class SettingsFeature extends FredoApplicationClass {
   readonly id = 'settings';
   readonly name = 'Settings';
+  readonly description =
+    'Configure Fredo: the companion, appearance, setup, telemetry and per-app options.';
   readonly icon: IconType = LuSettings;
   readonly showable = true;
   readonly isMultiWindow = false;

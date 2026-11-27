@@ -664,6 +664,7 @@ export const DatabaseClientFeatureView: React.FC = () => {
 export class DatabaseClientFeature extends FredoApplicationClass {
   readonly id = 'database-client';
   readonly name = 'SQL Studio';
+  readonly description = 'Connect to PostgreSQL, browse schemas, and run SQL queries.';
   readonly icon = LuDatabase;
   readonly showable = true;
   readonly hasSettings = true;

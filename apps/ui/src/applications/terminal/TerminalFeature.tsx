@@ -8,6 +8,7 @@ import type { IconType } from 'react-icons';
 export class TerminalFeature extends FredoApplicationClass {
   readonly id = 'terminal';
   readonly name = 'Terminal';
+  readonly description = 'Run shell commands in an in-app terminal with resumable sessions.';
   readonly icon: IconType = LuTerminal;
   readonly isMultiWindow = false;
   readonly showable = true;

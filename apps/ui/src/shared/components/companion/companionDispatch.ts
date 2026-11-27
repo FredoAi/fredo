@@ -27,6 +27,18 @@
 import type { CompanionSendDisposition } from '../../contexts/CompanionContext';
 import { COMPANION_CAPABILITY_LIMITS } from '../../companion/grounding';
 import type { CompanionGrounding } from '../../companion/grounding';
+// Spec #3244 ST-4 — the injected pair's outline leg and its byte bound. The
+// value imports are from the PURE projector module (no registry, no IPC), so this
+// file stays free of runtime side effects; `AppDescription` is a TYPE-only import
+// and is erased at runtime.
+import {
+  SCREEN_OUTLINE_MAX_BYTES,
+  fitOutlineToBytes,
+  serializeOutline,
+  utf8ByteLength,
+} from '../../app-intelligibility/screenOutline';
+import type { ScreenOutline, ScreenPair } from '../../app-intelligibility/screenOutline';
+import type { AppDescription } from '../../app-intelligibility/description';
 import type { LlmMessage } from '../../../app/adapters/HostAdapter';
 
 /** What actually happened to a send. `rejected` is the ONLY non-accepting outcome. */
@@ -45,9 +57,22 @@ export interface CompanionSendResult {
  * hands the target app's current grounding so a plain query is grounded without
  * a transcript or any new prompt architecture. It is TURN-SCOPED: never persisted,
  * never stored as history, and only carried across a FIFO wait.
+ *
+ * Spec #3244 ST-4 — two ADDITIVE turn inputs join it:
+ *   - `screen` — the per-turn injected pair (the screenshot leg rides as the
+ *     turn's single image attachment; the outline leg becomes ONE additional
+ *     `system` message bounded by `SCREEN_OUTLINE_MAX_BYTES`); and
+ *   - `description` — the target app's resolved `AppDescription` (R-2b: the turn
+ *     carries the description AND the pair). It is folded into the SAME one
+ *     screen-context message, so supplying a pair adds EXACTLY ONE system message.
+ *
+ * With NEITHER supplied (and no `context`), the built message list is the
+ * byte-identical legacy `[persona, user]` pair.
  */
 export interface CompanionAskOptions {
   readonly context?: CompanionGrounding;
+  readonly screen?: ScreenPair;
+  readonly description?: AppDescription;
 }
 
 export interface QueuedCompanionSend {
@@ -128,29 +153,6 @@ export function resolveSendOutcome(
 }
 
 /**
- * #3120 ST-3 — the UTF-8 byte length of a string (the unit
- * `COMPANION_CAPABILITY_LIMITS.maxContextBytes` is expressed in). A surrogate pair
- * counts as ONE four-byte code point, never two three-byte units. Mirrors
- * the retired envelope builder's counting without importing it.
- */
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; ) {
-    const codePoint = value.codePointAt(index) ?? 0;
-    bytes +=
-      codePoint <= 0x7f
-        ? 1
-        : codePoint <= 0x7ff
-          ? 2
-          : codePoint <= 0xffff
-            ? 3
-            : 4;
-    index += codePoint > 0xffff ? 2 : 1;
-  }
-  return bytes;
-}
-
-/**
  * #3120 ST-3 — the ONE grounding decision (R-2.2): the `system` message content
  * for an ask, or `null` when there is nothing to inject.
  *
@@ -171,12 +173,61 @@ export function companionGroundingContent(options?: CompanionAskOptions): string
 }
 
 /**
+ * Spec #3244 ST-4 — the human-readable header for the screen-context message:
+ * the app's identity and declared description (R-2b), when known. Always ends
+ * with a newline when non-empty, so the outline line below it is separate.
+ */
+function screenContextHeader(description: AppDescription | undefined): string {
+  if (description === undefined) return '';
+  return `APP: ${description.name} (${description.appId})\nDESCRIPTION: ${description.description}\n`;
+}
+
+/**
+ * Spec #3244 ST-4 — fit the outline so the WHOLE screen-context message (header
+ * + outline JSON) stays within `SCREEN_OUTLINE_MAX_BYTES`. Exported so the caller
+ * measures the SAME outline it hands the turn: the injection facts (the live
+ * receipt) must describe the bytes that actually crossed.
+ */
+export function fitScreenContextOutline(
+  outline: ScreenOutline,
+  description?: AppDescription,
+): ScreenOutline {
+  const header = screenContextHeader(description);
+  const budget = SCREEN_OUTLINE_MAX_BYTES - utf8ByteLength(header);
+  return fitOutlineToBytes(outline, Math.max(0, budget));
+}
+
+/**
+ * Spec #3244 ST-4 — the ONE screen-context decision: the content for the single
+ * additional `system` message carrying the target app's description and its
+ * bounded screen outline, or `null` when no pair was supplied.
+ *
+ * `null` (no `screen`) is the legacy case: the message list is untouched. The
+ * message is bounded by `SCREEN_OUTLINE_MAX_BYTES` OVERALL — the outline is
+ * trimmed (and `truncated` set) until it fits, never sent over-cap.
+ */
+export function companionScreenContextContent(options?: CompanionAskOptions): string | null {
+  const screen = options?.screen;
+  if (screen === undefined) return null;
+  const header = screenContextHeader(options?.description);
+  const fitted = fitScreenContextOutline(screen.outline, options?.description);
+  return `${header}OUTLINE: ${serializeOutline(fitted)}`;
+}
+
+/**
  * #3120 ST-3 — build the ONE fresh turn a companion ask sends. When a bounded
  * `context` is present, exactly ONE grounding `system` message carrying
  * `JSON.stringify(context)` is PREPENDED before the existing `FREDO_CHAT_PERSONA`
  * system message and the user turn. Nothing else is added: no transcript, no
  * history, no assistant turns. Without a context the result is byte-identical to
  * the shipped `[persona, user]` pair.
+ *
+ * Spec #3244 ST-4 — when a `screen` pair is supplied, exactly ONE ADDITIONAL
+ * `system` message (the app description + the bounded screen outline) is inserted
+ * after the grounding message and before the persona. The SCREENSHOT leg is NOT a
+ * message: it rides as the turn's single image attachment
+ * (`LlmChatWithStatusOptions.imageBase64`). With no `screen` supplied, nothing is
+ * added — a supplied pair adds exactly ONE message.
  *
  * `text` is `''` for an audio turn — the captured clip (attached by the backend
  * renderer) remains the turn's input; the seam never fabricates a transcript.
@@ -189,6 +240,8 @@ export function buildCompanionTurnMessages(
   const messages: LlmMessage[] = [];
   const grounding = companionGroundingContent(options);
   if (grounding !== null) messages.push({ role: 'system', content: grounding });
+  const screen = companionScreenContextContent(options);
+  if (screen !== null) messages.push({ role: 'system', content: screen });
   messages.push({ role: 'system', content: persona });
   messages.push({ role: 'user', content: text });
   return messages;

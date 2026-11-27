@@ -7,6 +7,7 @@ import { DevMode } from './components/DevMode';
 export class DevModeFeature extends FredoApplicationClass {
   readonly id = 'dev-mode';
   readonly name = 'Dev Mode';
+  readonly description = "Developer utilities for inspecting and debugging Fredo's internals.";
   readonly icon = LuBug;
   readonly showable = false;
   readonly isMultiWindow = false;

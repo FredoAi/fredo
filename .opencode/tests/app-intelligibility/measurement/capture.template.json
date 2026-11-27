@@ -1,0 +1,20 @@
+{
+  "runIdentity": {
+    "commit": "<the spec-branch tip the tested tree was served at (40-hex)>",
+    "capturedAt": "<ISO 8601, when the pair was captured>",
+    "appId": "<the target app id / ladder rung, e.g. qa3244-dense-160>",
+    "injectionSpanId": "<the companion.injection span_id this was read from>"
+  },
+  "outline": {
+    "utf8Bytes": "<the span's simplifiedHtmlBytes — THE AC-4 NUMBER>",
+    "nodeCount": "<the span's simplifiedHtmlNodes>",
+    "truncated": "<the span's simplifiedHtmlTruncated flag (a boolean on the span itself)>"
+  },
+  "screenshot": {
+    "encodedImageTokens": "<the span's imageTokens — RIG CONTEXT for NFR-1, not the limit>"
+  },
+  "capsInForce": {
+    "maxNodes": 120,
+    "maxBytes": 8192
+  }
+}
