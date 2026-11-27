@@ -49,6 +49,18 @@
  *   NEVER WIDEN IT TO MAKE IT RED EITHER -- if a hit appears inside the declared
  *   scope, that is the finding; do not move the boundary around it.
  *
+ * ONE MORE MODULE SITS ON THE PATH AND IS DELIBERATELY OUT OF SCOPE (verified clean)
+ * ----------------------------------------------------------------------------------
+ * `apps/ui/src/shared/components/companion/CompanionEntity.tsx` is the dispatch SITE:
+ * it derives the turn's facts (`screenTurnExtras`, `CompanionEntity.tsx:287`) and
+ * passes the `injection` argument. The plan's declared sweep list does not name it,
+ * so it is NOT swept here. It was read once by hand while authoring this artifact and
+ * contains ZERO occurrences of either subject id -- recorded as an observation, not as
+ * a sweep result. If the plan is ever amended to widen the scope, add it to SCOPE
+ * above rather than grepping it ad hoc; an unrecorded out-of-scope grep is exactly
+ * the kind of "proven by a command nobody can re-run" claim this artifact exists to
+ * replace.
+ *
  * HIT CLASSES (why "hits" is not one number)
  * ------------------------------------------
  * A subject id can appear on this path in three materially different ways, and the
@@ -631,17 +643,26 @@ function isTestPath(relPath) {
  * sensitive than the product's exact string compare, because a missed hit is the
  * expensive error. The classification then says whether the hit could possibly be
  * an enablement branch.
+ *
+ * The search runs over the ORIGINAL text via a `gi` regex, not over a lowercased
+ * copy: `String.prototype.toLowerCase()` does not preserve length for every code
+ * point (`'İ'` lowercases to two chars), so offsets taken from a lowercased copy can
+ * drift and report a neighbouring line. `match.index` on the original string cannot.
  */
 function scanSubject(text, subject, lang, relPath) {
   const spans = scanSpans(text, lang);
   const testRanges = lang === 'rs' ? rustTestRanges(text, spans) : [];
   const pathIsTest = isTestPath(relPath);
   const starts = lineStartOffsets(text);
-  const haystack = text.toLowerCase();
-  const needle = subject.toLowerCase();
+  const pattern = new RegExp(subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
   const hits = [];
-  let offset = 0;
-  while ((offset = haystack.indexOf(needle, offset)) !== -1) {
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const offset = match.index;
+    if (match[0].length === 0) {
+      pattern.lastIndex += 1;
+      continue;
+    }
     const { line, lineStart } = locate(starts, offset);
     const lineEndRaw = text.indexOf('\n', lineStart);
     const lineEnd = lineEndRaw < 0 ? text.length : lineEndRaw;
@@ -658,7 +679,6 @@ function scanSubject(text, subject, lang, relPath) {
       text: text.slice(lineStart, lineEnd).trim(),
       class: hitClass,
     });
-    offset += needle.length;
   }
   return hits;
 }

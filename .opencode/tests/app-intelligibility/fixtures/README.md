@@ -12,6 +12,7 @@
 | `fixtures/build-intelligibility-fixtures.mjs` | the generator — three fixture families (below) |
 | `fixtures/README.md` | this document — conventions, invocation, determinism |
 | `fixtures/BEACON-INGRESS-CONTROLS.md` | the ING-1 negative-control plan (ids, typed reasons, the one unreachable control) |
+| `scripts/scoped-source-sweep.mjs` | the committed AC-5 part (ii) / AC-2b source sweep (§7) |
 
 The document shape follows `.opencode/tests/installable-apps/README.md` (read it once as the model);
 the package format it consumes is fixed there, §2.
@@ -295,6 +296,12 @@ header and in `--help`), for the subjects `mission-monitor` (AC-5) and `qa3244-u
 and prints `SWEEP RESULT: PASS|FAIL subjects=<n> modules=<n> hits=<n>` as the quotable last line.
 Exit 0 only when no subject-id **code** hit remains; 1 on a graded hit; 2 on a usage/IO error (a
 **missing scope path is an error, never a clean sweep**).
+
+**One path module is deliberately out of scope:** `CompanionEntity.tsx` is the dispatch *site* (it
+derives the turn facts at `:287` and passes the `injection` argument), but the plan's declared sweep
+list does not name it. It was read by hand while authoring the artifact and contains zero subject-id
+occurrences — recorded in the script header as an **observation, not a sweep result**. Widening the
+scope is a plan amendment (add it to `SCOPE`), never an ad-hoc grep.
 
 **The claim is scoped to the description+pair path, and that is not a loophole.** `mission-monitor`
 legitimately carries a hand-written per-app **grounding registrar**

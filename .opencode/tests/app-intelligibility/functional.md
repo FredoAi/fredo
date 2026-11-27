@@ -87,13 +87,13 @@
 - [ ] **F-4 (AC-2b, STATIC).** Executed sweep of the **description+pair path** for the fixture id
       `qa3244-untaught`; read `buildCompanionTurnMessages`
       (`apps/ui/src/shared/components/companion/companionDispatch.ts`).
-  - **Expected:** **zero** source hits for the fixture app id in the description+pair modules; the
-    description+pair assembly is **one shared code path** with **no per-app conditional branch**.
+  - **Expected:** **zero product-code hits** for the fixture app id in the description+pair modules;
+    the description+pair assembly is **one shared code path** with **no per-app conditional branch**.
   - **Record:** the committed sweep's quotable last line —
     `bun .opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs` →
     `SWEEP RESULT: PASS … hits=0` — quoted in the `## Tests Runs` verdict, corroborated by the F-3
     turn span. (Not a bare `rg` command: the committed artifact is the record, and the matcher
-    distinguishes a product hit from a comment/test mention; see `fixtures/README.md` §7.)
+    distinguishes a product-code hit from a comment/test mention; see `fixtures/README.md` §7.)
   - **Edge:** a helper special-casing a "known" app id, or a shipped-id lookup table **in the
     description+pair modules**, FAILS this even when F-3 passes. A shipped unit test naming the id as
     a fixture value is **not** a product hit — the sweep reports it as `test` and does not fail.
@@ -143,15 +143,19 @@
 - [ ] **F-7 (AC-5, LIVE — driven).** Drive **one** companion order turn on the built-in
       **`mission-monitor`** — a Fredo app Fredo was never taught **for the description+pair path**
       (the human bound this subject on 2026-11-26) — through the shipped composer submit
-      (`CompanionEntity.handleComposerSubmit` → `ask`, `CompanionEntity.tsx:1582-1588`). Then read the
-      per-turn injection span back from `telemetry_spans` **and** run the committed scoped
-      source-sweep.
+      (`CompanionEntity.handleComposerSubmit`, `CompanionEntity.tsx:1676` → `buildTurnTarget` →
+      `buildTurnScreenContext` → `ask`). Then read the per-turn injection span back from
+      `telemetry_spans` **and** run the committed scoped source-sweep.
   - **Expected — the observables are the NEGATIVE WITNESS, all three parts on the SAME run:**
     **(i)** `taught: false` **and** `perAppEntries: 0` on that run's `companion.injection` span
     (`attributes_json`); **(ii)** the committed sweep
     (`bun .opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs`, subject
-    `mission-monitor`) reports **zero** subject-id hits in the description+pair modules — its
-    `SWEEP RESULT: PASS` line is the quote; **(iii)** the positive injection receipt on that same run
+    `mission-monitor`) reports **zero product-code subject-id hits** in the description+pair modules —
+    its `SWEEP RESULT: PASS … hits=0` line is the quote. The sweep also prints separately every
+    `comment`/`test` mention it did **not** grade (as `not-graded …` lines): a mention in a doc
+    comment or a unit test is a fixture/documentation value, not a per-app runtime branch, and the
+    row's claim is the absence of a **special case** (`--strict` shows the literal any-mention count
+    as a diagnostic). **(iii)** the positive injection receipt on that same run
     (the span exists, carries the subject's `appId`, and its `descriptionBytes` /
     `screenshotBytes` / `simplifiedHtmlBytes` are non-zero). A successful operation **alone is not
     the witness** — "operating a built-in successfully proves little if Fredo has a hand-written path
@@ -173,8 +177,11 @@
     sweep re-run later is not the witness.
   - **Data:** the built-in id `mission-monitor`; the committed sweep
     `.opencode/tests/app-intelligibility/scripts/scoped-source-sweep.mjs`; the per-turn
-    `companion.injection` span (`apps/tauri/src-tauri/src/applications/llm_server/injection.rs`).
-    The installed fixtures are **not** this row's subject (AC-2's `qa3244-untaught` is).
+    `companion.injection` span, persisted by
+    `apps/tauri/src-tauri/src/applications/llm_server/injection.rs` from the facts the webview
+    derives in `screenTurnExtras` (`CompanionEntity.tsx:287`) and passes as the `injection` argument
+    of `llm_chat_with_status`. The installed fixtures are **not** this row's subject (AC-2's
+    `qa3244-untaught` is).
 
 ## NFR1 — the injected pair fits the context budget
 
@@ -199,10 +206,12 @@
      table, the expected typed reason per control, the attribution recipe and the reading instrument
      are in `.opencode/tests/app-intelligibility/fixtures/BEACON-INGRESS-CONTROLS.md`.
   - **Expected:** **one `installed.beacon.ingress` span per attempt**, each carrying the typed reason
-    the control plan names — `oversize`, `missing-nonce`, `unknown-nonce`, `timeout`, and
-    `unknown-nonce` for the replay leg — with `accepted=false` on every rejection. The typed reason
-    **is** the observable: a beacon that merely does not crash, or a fixture panel that rendered, is
-    **not** a PASS. A rejected beacon must also produce **no turn input**.
+    the control plan names — `oversize`, `missing-nonce`, `unknown-nonce`, and `timeout` for the
+    suppress leg. **The replay leg yields two spans:** the turn's own beacon must read **`accepted`**
+    (the turn working) and the replay ≈2.25 s later must read **`unknown-nonce`** (the control). Every
+    rejection carries `accepted=false`. The typed reason **is** the observable: a beacon that merely
+    does not crash, or a fixture panel that rendered, is **not** a PASS. A rejected beacon must also
+    produce **no turn input**.
   - **Receipt:** the `telemetry_spans` rows (`SELECT span_id, status_message, attributes_json FROM
     telemetry_spans WHERE span_name = 'installed.beacon.ingress'`), quoted in the `## Tests Runs`
     verdict. `telemetry_logs` is refused (M9).
