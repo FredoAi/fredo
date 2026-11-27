@@ -1277,10 +1277,19 @@ owned nowhere):
     `tauri_webview_*` receipt from a reachable window** (`main` / `app-*`) plus the
     `user-attachments` upload of each native capture; with neither, the live legs are **refused for
     an instrument reason** — never upgraded to PASS, never failed as product rows.
-18. **Development mode is NOT in this suite's scope.** `installed_app_install_development` and the
-    four marking surfaces (native title, child banner, launcher badge, settings badge) are
-    **#3241's**, carrying AC 3 verbatim there. A row here that drives, asserts or waits on a
-    development badge/banner/banner band is a **plan violation**: report it, do not score it.
+18. **Development mode was RESERVED by #3145 and is now DISCHARGED IN PLACE by #3241 (SUPERSEDED IN
+    PLACE — the reservation is not deleted, it is fulfilled).** #3145's text read: *"Development mode
+    is NOT in this suite's scope. `installed_app_install_development` and the four marking surfaces
+    (native title, child banner, launcher badge, settings badge) are #3241's, carrying AC 3 verbatim
+    there. A row here that drives, asserts or waits on a development badge/banner/banner band is a
+    plan violation: report it, do not score it."* That reservation is **spent**: AC 3 arrived as
+    #3241 and its rows live in **this file, in the `## #3241` group below** (`F-10.1` … `F-10.11`).
+    So a later row that drives a development badge is no longer a violation — it is either one of
+    `F-10.*` (score it) or a **duplicate** of one (route it). The load-bearing half of the old rule
+    survives intact and still binds every row ABOVE this group: **no #3147 / #3146 / #3145 / #3144 row
+    may depend on a development marking being present or absent** — those rows must read identically
+    whether or not `F-10.*` exists, because a normal install is never marked (`F-10.7`) and every
+    fixture they use is installed through the ordinary path.
 
 ## Required test data
 
@@ -1302,6 +1311,9 @@ owned nowhere):
 | 13 | **`docs/authoring-applications.md` + `.opencode/tests/installable-apps/authoring-claims.md`** (claim → satisfied-by → REQ) | **ST-5** (#3145) | The allowlist is a **durable committed artefact** and is F-8.13's record — never a scratch note. One row per fact; `satisfied-by` cites a `file:line` or a named mechanism |
 | 14 | **`.opencode/tests/installable-apps/authoring-exam.mjs`** + the scratch root `.opencode/tmp/3145/external-author/{kit,work,out}/` | **ST-6** (#3145) | Runner contract (first-greenable): `EXAM <ID> PASS\|FAIL <detail>` per check, then `EXAM SUMMARY checks=<n> failed=<n> verdict=<PASS\|FAIL>`, exit **0 iff** verdict PASS. Check ids: `INPUTS`, `DOCUMENTED-PATH`, `SPECIFIERS`, `CHECK-CLEAN`, `DETERMINISM`, `NO-NODE-MODULES`, `SELF-CHECK` (refuses to run when any input escapes the two roots). The **tester** copies the kit before dispatch (key-holder act) |
 | 15 | the shipped presets `light-default` + `dark` and a **non-default** accent | shipped (`select[aria-label="Theme presets"]`, `input[aria-label="Primary color"]`, `app/types/theme.ts:238,257,…`) | Derive both accent values from `app/types/theme.ts`; never present a hardcoded hex without naming the preset it came from |
+| 16 | **NO new fixture for #3241 — the development leg is an EXISTING archive driven through the other command** (`installed_app_install_development`, or the shipped `installed-apps-install-development-button` control). Reuse `qa3146-no-capabilities` (with its self-driving mirror, needed by `F-10.8`) and `qa3147-valid` (the unmarked control); `qa3147-crash-on-load` / `qa3147-fail-once` cover `F-10.2`'s failure-document and retry legs. | the **already-committed** generators (`build-capability-fixtures.mjs`, `build-package-fixtures.mjs`, `build-behaviour-fixtures.mjs`) — **no generator is edited by #3241** | The mode is **not** a manifest key, so a package cannot declare itself development and no generator can emit one. Run each generator once on the spec tip and record its output directory. `F-10.8` uses the **two-root** form (the same archive installed once normally under `<root-A>` and once in development under `<root-B>`), so **no second fixture id is added to any generator**. |
+| 17 | **two isolated `FREDO_DATA_DIR` roots** under `.opencode/tmp/3241/` (`<root-A>` released, `<root-B>` development) | the **already-shipped** resolver `infrastructure::storage::boot_config::resolve_app_data_dir` / `DATA_DIR_ENV = "FREDO_DATA_DIR"` (`boot_config.rs:30`; verified at `main`) | Needed by `F-10.8` (the reach-equality pair needs the same package under two modes, and the two legs need **different roots**, so they run as **sequential boots** and each reading records its root). **#3241 adds no flag or env var** — this seam ships. There is **no `FREDO_DEV_MODE`-style env var, build flag, config key or setting**; do not search for one (G-402). |
+| 18 | **the one-token equality list** — `DEVELOPMENT_MARKER_TOKEN = 'Development'` (TS) / `DEVELOPMENT_TITLE_PREFIX = "Development — "` (Rust — **re-pointed from `DEVELOPMENT_TITLE_SUFFIX` by Architect D-10a / UI/UX D-1**) / `DEVELOPMENT_BAND_SENTENCE = 'Development build — not a normally installed application.'` (Rust, S2's band text — UI/UX §1b) | product, ST-1 (the constants); rendered by ST-3/ST-4/ST-5/ST-6 | `F-10.6`'s uniformity clause compares the painted **token** across surfaces; quote the constants from source at the tested commit, never from this file. The spellings must **agree on the word**, which is why the row compares the *token*, not the whole string. **The prefix form is a correctness property:** at `INSTALLED_APP_WINDOW_MIN_WIDTH = 560.0` a 64-char `displayName` (`MAX_DISPLAY_NAME_CHARS = 64`) elides a *trailing* run off the title bar; a *leading* run is never elided. `F-10.2` quotes `DEVELOPMENT_BAND_SENTENCE` **verbatim** as its failability guard (Orchestrator C-3). All constants are read from a `spec/3244` tip — **verify against main at implementation time**. |
 
 ## Non-functional checks
 
@@ -1709,3 +1721,516 @@ edited — the corpus satisfies the Done statement):
     (`F-9.12`/`F-9.13`; Adjudication 10.2). The value is `none` iff `highRisk` is empty; a row that
     passes an ordinary-only app reporting `allowed` asserts a false security claim — the sibling-lie
     class.
+
+### #3241 additions (development mode — AC 3)
+
+26. **The aggregate row is not answerable by a per-surface matrix.** `F-10.6` is scored on **one
+    continuous observation** of both builds across all five hooks. Readings gathered across separate
+    boots, or across a close/reopen, are **supplementary** (`F-10.1`…`F-10.5`) and never satisfy
+    `F-10.6`. A verdict that presents five green cells from five boots as the G-424 aggregate proof is
+    malformed on its face.
+27. **An absence over the surface SET needs an instrument per surface and a marked control**
+    (G-469). `F-10.7` states the resolved set (the plan's executed searches), the instrument that
+    reads each, and requires a **development build marked in the same round**. A blank/absent read on
+    any surface is a **FAIL**, never a silent zero-equals-zero; a row with no marked control is
+    **UNVERIFIED**, never PASS.
+28. **`F-10.9` is `[static]`, and driving it is a FAIL in both directions.** A prove-a-negative may
+    not be answered by a launch, and a live row in this group may not be answered by reading source
+    (criterion 2 restated for this group). Its zero-greps carry a positive control so the zero is a
+    reading.
+29. **The reach-equality leg asserts UNIFORMITY, not a cause** (G-501). `F-10.8` compares the refusal
+    **code** and the **`detail`** byte for byte across the two modes and requires them **equal**. A
+    row, or a verdict, that demands a per-cause distinguishing message behind that refusal is wrong in
+    both directions — the product's non-disclosure contract forbids it. Two independent channels
+    (`[data-refusal-code]`/`[data-refusal-json]` and the `[data-call-log]` entry) must agree (G-500):
+    one channel alone cannot diagnose.
+30. **The uniformity clause is TOKEN CONTAINMENT, never cross-surface string equality.** `Development`
+    appears verbatim, with that exact capitalisation, **as a whole word** on every painted surface — the
+    whole text on S3/S4, a **leading run** on S1, the **leading phrase** of the band sentence on S2. S2
+    necessarily paints a fuller sentence than a chip can hold, so a row asserting literal equality across
+    surfaces is **unsatisfiable and fails a correct build**. A *different word* for this fact (`Dev`,
+    `devel`, `WIP`, `Preview`, `unverified`) is a **FAIL**, never a wording nit. **The spoken channel is
+    exempt from the capitalisation rule:** S4's composed accessible name carries `development build` in
+    lower case (a mid-name capital can be spelled out by some readers); the uniformity claim governs
+    **painted** surfaces only. Conversely, **colour-only** marking is a FAIL of every painted row — the
+    token must be readable as text.
+31. **The S5 carrier is a log line, never a span.** No row in this group may be answered by a
+    `telemetry_spans` query for the `installed-app serve` identification (it is `tracing`, not OTLP),
+    and none may substitute a `telemetry_logs` read (the live gate refuses it). S5's admissible
+    live-evidence token is the reachable-window `installed_apps_list` receipt; the serve-line grep is
+    quoted corroboration.
+
+## #3241 — development mode is unmistakably development (AC 3)
+
+> **Verification policy: `live`** (the parent suite's policy). AC 3's marking is a **rendered, runtime
+> observable on five hooks** and its reach-equality leg is a **live refusal**, so the plan's policy is
+> `live` and the live receipts are the suite's live webview / native-capture receipts. **One row is
+> `[static]` by construction and must never be driven live: `F-10.9`.** Its clause is *"development
+> mode adds no NEW reach"* — a prove-a-negative / static-config AC (G-408) — and it is read from
+> source/config plus the committed gate wrapper (`run-exitcode.ps1`), **never** by driving the very
+> surface the AC says does not exist. A verdict that answers `F-10.9` with a launch probe is
+> substituted, not passed.
+>
+> **AC 3 verbatim (immutable — coverage may be added, never narrowed, G-411):**
+>
+> > **3. Development mode is unmistakably development.** WHEN an application is loaded in development
+> > mode, THEN it is continuously marked as a development build everywhere it can be identified, and a
+> > user cannot mistake it for a normally installed application; a normal install is never marked as
+> > development.
+>
+> **The marking surfaces are this product's instantiation of the AC's four identifying categories.**
+> The **SET**, not a count (G-271), and it is **derived** — the Architect's executed searches A
+> (every renderer of the installed registry), B (every host-side identification of a running
+> installed application), C/C′ (every element on the two painted surfaces) and D (every producer of
+> the projection) produced exactly these five hooks, and the sweeps are recorded verbatim in the
+> plan so they can be re-run (G-444). **The five are the surface list `F-10.7` sweeps.**
+>
+> | Hook | Surface | Host-side instrument that reads it | Token carrier |
+> |---|---|---|---|
+> | **S1** | the OS window title of `installed-<id>` | `tauri_manage_window action="list"` entry title **and** a native `GetWindowText` of the `Tauri Window` HWND (two channels, both required) | `Development — ` **leading** the `displayName` |
+> | **S2** | the host-authored **fixed top band** in the served document | **native UIA text read** of the `installed-<id>` window's a11y tree + a native window capture (never `tauri_webview_*` — see **Child evidence transport**) | the word `Development` in the band's own node |
+> | **S3** | the settings row | `tauri_webview_dom_snapshot` / `execute_js` on **`main`** (a REACHABLE window) | `[data-testid="installed-apps-entry-mode"]` + `data-app-mode` |
+> | **S4** | the launcher entry | the same, on **`main`** | `[data-testid="launcher-installed-app-mode"]` + `data-app-mode` |
+> | **S5** | the host's identification of what it serves | `installed_apps_list` from **`main`** (`entry.mode`) **plus** the `installed-app serve` trace line, grepped from the env log | `mode = released \| development` |
+>
+> **⚠️ S5's carrier — read this before authoring or judging any S5 clause.** The `installed-app serve`
+> identification is a **`tracing` LOG line, not a span**. It is neither a `telemetry_spans` row nor a
+> `tauri_webview_*` receipt, and `telemetry_logs` is refused by the live gate. So S5 binds **(a)** a
+> reachable-window receipt (`installed_apps_list` from `main`, which is a `tauri_webview_*` DOM/IPC
+> read of a **built-in** window) — the same instrument `F-1.2` already uses — **plus (b)** the log
+> grep quoted inline as corroboration, read exactly like the suite's existing **Serve-line receipt**
+> (`<env-root>/logs/dev-env-stdout.log`, current boot only). **No row here promises a
+> `telemetry_spans` query for the serve line, and none may substitute one.** `F-10.5` carries this
+> note in its own text.
+>
+> **The induction lever (G-275/G-300/G-402) — there is exactly one, and there is no env var.** A
+> development build is **any committed archive installed through `installed_app_install_development`**
+> (or the shipped `[data-testid="installed-apps-install-development-button"]` control). The mode is
+> **not** a manifest key, so no fixture declares it and **no committed generator emits a "development
+> package"** — the dev leg is the same archive driven through the other command. **`FREDO_DATA_DIR`**
+> (`infrastructure::storage::boot_config::DATA_DIR_ENV`, `boot_config.rs:30`; a non-blank override wins,
+> trimmed) is the shipped root override that makes the isolated legs drivable. **`FREDO_DATA_DIR`,
+> `boot_config.rs:30,40-45` and `commands_install::app_data_dir` (`commands_install.rs:48`) are
+> verified against `main`; the `installed_apps/**` line numbers this group cites are read from a
+> `spec/3244` tip and are marked *verify against main at implementation time*.** **There is NO
+> `FREDO_DEV_MODE`-style env var, build flag, config key or setting** — a tester who starts searching
+> for one must stop searching and use the command's explicit `archivePath` (G-402, declared absent).
+>
+> **E-SPAN.** This feature runs **no OTLP producer of its own**, so the suite's existing
+> `**E-SPAN is a NAMED BLOCKER**` paragraph (at the end of *Required test data*) governs every row in
+> this group exactly as it governs the rest of the file. It is recorded **once**, up front, in the
+> verdict; no row here hunts for, fabricates or substitutes a `telemetry_spans` query, and no row
+> rests on one.
+>
+> **Evidence discipline.** Every artifact a row names is a **NON-DRAFT record** (G-415): the posted
+> `## Tests Runs` comment or a committed / non-consumed path. Native captures are frames saved under
+> `.opencode/tmp/3241/e2e/` and uploaded with `upload-evidence`, which returns a `user-attachments`
+> URL — name frames in prose (**`dev-band-top`**, **`rel-band-top`**) and quote the returned URL
+> wherever the frame is cited (G-104).
+>
+> **Fixtures used here (no new fixture, no generator edit).** `qa3147-valid` and
+> `qa3147-crash-on-load` / `qa3147-fail-once` from the **already-committed** generators, and
+> `qa3146-no-capabilities` from `build-capability-fixtures.mjs`. All of them are installed normally
+> today, so all of them are drivable as development builds with **zero** new test data — the dev leg
+> is the *other command*, not another package. Run each generator once on the spec tip and record its
+> output directory, per *Required test data*.
+
+### Per-surface rows (supplementary evidence — `F-10.6` is the aggregate proof)
+
+- [ ] **F-10.1 (R-3.1) [live][NEW] — S1: the OS window title of a development build carries the marker, and a released build's title is untouched.**
+  - **DRIVE:** install `<out>/qa3146-no-capabilities-<v>.zip` **through the development command**
+    (`installed_app_install_development{archivePath:"<absolute path>"}` from `main`), then
+    `installed_app_open{appId:"qa3146-no-capabilities"}`. Read the title of the `installed-qa3146-no-capabilities`
+    window **twice, by two channels**: (a) the `tauri_manage_window action="list"` entry for that
+    label; (b) a native `GetWindowText` of the `Tauri Window` HWND that hosts the child webview.
+    Then repeat the whole leg on `<out>/qa3147-valid-<v>.zip` installed **normally** (the control).
+  - **EXPECTED:** both title channels agree, and the dev build's title is
+    **`Development — QA3146 No Capabilities`** — the app's `displayName` **PRECEDED BY**
+    `DEVELOPMENT_TITLE_PREFIX = "Development — "` (quote the shipped constant verbatim from source at
+    the tested commit, **including the trailing space after the em dash**). **The marker LEADS** —
+    the Architect re-pointed the constant from `DEVELOPMENT_TITLE_SUFFIX` to
+    `DEVELOPMENT_TITLE_PREFIX` (Architect D-10a, accepting UI/UX D-1) because an OS title bar elides
+    the **tail**: at the window's own declared minimum width (`INSTALLED_APP_WINDOW_MIN_WIDTH = 560.0`,
+    `window.rs:80`) a trailing run on a 64-char `displayName` (`MAX_DISPLAY_NAME_CHARS = 64`,
+    `manifest.rs:77`) is elided off entirely, while a leading run is never elided. A title that carries
+    the token only as a **suffix** is a FAIL of this row. The **released control's** title is exactly
+    **`QA3147 Valid`** — no prefix, no marker token, byte-identical to today. Quote both readings and
+    both channels.
+  - **DATA:** the two archives above + their `displayName`s from the generators' committed
+    expected-output manifests (never from memory).
+  - **FAILABILITY (G-476):** the **released control in the same round** is what makes this row
+    failable — a prefix applied unconditionally passes the dev clause and reddens the control; a
+    prefix never applied reddens the dev clause; a prefix appended as a **suffix** reddens the dev
+    clause (the position is part of the assertion). The two channels can disagree, and either reading
+    being **blank/absent** is a **FAIL** (a native enumeration that returns an empty title is a
+    reading of failure, never an absent read, G-469).
+  - **EDGE:** reopen the SAME app after `installed_app_close` — the title must still carry the
+    marker on the second document (the title is computed per open, not cached from the first). A
+    window whose **label** encodes the mode is a FAIL of INV-5 (the label stays `installed-<id>`).
+
+- [ ] **F-10.2 (R-3.2) [live][NEW] — S2: the fixed in-view band marks a development build, and is ABSENT from a released build's document.**
+  - **DRIVE:** with the development build from `F-10.1` open, **natively** read the whole a11y text
+    tree of `installed-qa3146-no-capabilities` (a UIA text dump, not `tauri_webview_*`) and take a
+    native window capture of the window's full height. Do the same on the released control's window.
+    Then two extra legs, both on the DEV-installed archive: (i) install
+    `<out>/qa3147-crash-on-load-<v>.zip` through the development command and open it — the host's
+    **failure document** must be marked too; (ii) install `<out>/qa3147-fail-once-<v>.zip` through the
+    development command, let it fail, click `[data-testid="installed-app-retry"]` ("Try again"), and
+    re-read the band on the reloaded document.
+  - **EXPECTED:** the dev window's a11y tree contains a `role="note"` node whose text **BEGINS WITH**
+    the marker token `Development` and reads, **verbatim**:
+
+    `Development build — not a normally installed application.`
+
+    — the node the Architect binds as `[data-testid="installed-app-development-banner"]` (a **host-side**
+    DOM read of that testid is not available in the child, so the **UIA node + its text** is the binding
+    observation; if a host-side child read path exists this round, quote the testid too). **The row is
+    CONTAINMENT WITH POSITION, never equality** (Orchestrator C-3, `convergence-adjudications.md`; UI/UX
+    D-17): equality would fail the compliant sentence, and S1/S3/S4 already compare a *token*, so holding
+    S2 to an equality is internally inconsistent. The three guards that make this **stricter in practice**
+    than the equality it replaces: **(1) POSITION** — the token is the **leading phrase**, so a band
+    reading `Released; not Development` fails; **(2) the full sentence is quoted above**, so any drift is
+    visible; **(3) `F-10.6`'s cross-surface token comparison is unchanged**, so a band reading `Dev`
+    still reddens. Also assert the sentence makes **no unproven claim** — it must not say *unverified*,
+    *unsigned*, *unsafe*, *experimental* or *temporary* (the product establishes none of those). The
+    capture shows it as a **band at the TOP EDGE of the window, painted above the application's own
+    content** — quote the node's text and the frame. The released control's tree contains **no** band
+    node and **no** `Development` token anywhere in the tree. Leg (i): the failure document also carries
+    the band (a dev build that cannot load still says it is one). Leg (ii): the band is present on the
+    post-retry document (a re-serve re-emits it). Quote all four readings and state the `mount=` /
+    document instance each was taken on.
+  - **DATA:** the three archives; no bespoke fixture. **The child is read through the native UIA
+    instrument ONLY** — every `tauri_webview_execute_js` / `dom_snapshot` / `screenshot` /
+    `find_element` against `installed-<id>` returns `Request timeout after 2000ms` **against a
+    healthy child too**, so a timeout is neither PASS nor FAIL (see **Child evidence transport**).
+  - **FAILABILITY (G-476):** the **released control read in the same round** fails an
+    unconditional banner; the DEV read fails a missing banner. **The in-flow-vs-fixed placement
+    discrimination is NOT carried by this row's first paint** — a first-paint capture of either form
+    shows the band at the top, so a first-paint string/silhouette assertion cannot separate them. It
+    is carried by (a) `F-10.11`'s `PANEL_CSS` pin that the band rule carries `position: fixed` plus
+    the ST-4 full-bleed unit control (`height:100dvh; overflow:hidden`) that reddens on the in-flow
+    form, and (b) `E-22.1`, which scrolls the document and re-captures. **This row carries the
+    presence/absence fact**, which is what it can fail.
+  - **EDGE:** an `aria-hidden` band, or a focusable band, is a FAIL (it is the point / it is not a
+    control). A band rendered inside `[data-testid="installed-app-root"]` (i.e. inside the
+    application's own flow) is the placement defect — record it as such and redden `F-10.11`'s
+    fixed-rule pin, do not score it here. A `failing` development build showing its failure panel
+    **and** the band is intended, not a contradiction (UI/UX D-13).
+
+- [ ] **F-10.3 (R-3.3) [live][NEW] — S3: every row of the installed list carries `data-app-mode`, and only development rows show the word.**
+  - **DRIVE:** on `main`, open Settings → Installed applications with at least one development build
+    and one released install present; `tauri_webview_dom_snapshot` (or `execute_js`) of the pane.
+    Read, for **each** `[data-testid="installed-apps-entry"]`, its `data-app-id`, its
+    `data-app-mode`, and the presence/text of `[data-testid="installed-apps-entry-mode"]`.
+  - **EXPECTED:** every row carries `data-app-mode` ∈ `released | development` (**always present** —
+    a missing attribute is a FAIL, never treated as `released`); the development build's row is
+    `data-app-mode="development"` **and** its `-mode` node renders exactly `Development`; the
+    released row is `data-app-mode="released"` **and its `-mode` node is absent**, with no
+    `Development` token anywhere in that row's text. Quote every row's triple.
+  - **DATA:** the two builds; `main` is reachable, so no native instrument is needed here.
+  - **FAILABILITY (G-476):** the released row **in the same round** fails a marker rendered for
+    every entry; the dev row fails a marker rendered for none. A `data-app-mode` read from the
+    **scope** rather than the row (i.e. a single pane-level attribute) is a FAIL — the row must carry
+    its own.
+  - **EDGE:** the **lifecycle** word (`Working` / `Failing` / `Turned off`) and `data-app-state` stay
+    unchanged and **separate** — the mode is never folded into `STATE_WORDS` (INV-4). A mode word
+    rendered **instead of** the state word reddens `F-9.3` and this row. Turn the dev build off and
+    re-read: the row keeps `data-app-mode="development"` beside `data-app-state="disabled"`.
+
+- [ ] **F-10.4 (R-3.4) [live][NEW] — S4: the launcher entry carries the marker in BOTH its painted and its spoken channel, and the released entry carries neither.**
+  - **DRIVE:** on `main`, open the launcher (Ctrl+Space) with the same two builds installed;
+    read every `[data-testid="launcher-installed-app"]`'s `data-app-id`, `data-app-mode`, its
+    `[data-testid="launcher-installed-app-mode"]` node, **and its computed accessible name**.
+  - **EXPECTED (one assertion per mode):** the development build's entry is
+    `data-app-mode="development"` with the `-mode` node rendering exactly `Development`, **and** its
+    accessible name is **`<displayName>, development build`** — quote it as the driver reports it. The
+    released entry is `data-app-mode="released"` with **no** `-mode` node, no marker token, **and** its
+    accessible name is the **bare `displayName`, byte-identical** to today. Quote all four. The entry
+    is still one real `<button>`.
+  - **WHY the spoken half is a clause, not a nicety:** the entry carries `aria-label={entry.displayName}`
+    (`LauncherInstalledAppsSection.tsx:141` — **verify against main at implementation time**), and an
+    `aria-label` **replaces** the accessible name computed from the subtree. With the bare name the
+    painted `Development` chip is **never announced**, so the marking would exist on screen and not in
+    the accessibility tree — an AC-3 hole on the one surface a user clicks to start the build. The
+    Architect bound `installedAppEntryAccessibleName(entry)` as a row-carried deliverable (Architect
+    **D-10b**, the `[C-1]` adjudication, accepting UI/UX D-4/D-15):
+    `development` ⇒ `` `${displayName}, development build` ``, `released` ⇒ `displayName` unchanged. The
+    spoken form is **lower case** by design (a mid-name capital can be spelled out by some readers); the
+    **painted** token stays capitalised `Development` and is the only thing R-3.6's uniformity claim
+    governs.
+  - **FAILABILITY (G-476):** the released entry in the same round — a helper that appends for
+    `released` reddens it, and the shipped assertion `getByRole('button', { name: 'Alpha' })`
+    (`LauncherInstalledAppsSection.test.tsx:88`) keeps passing for released entries, so the row cannot
+    be satisfied by breaking that. A helper returning the bare name for `development` reddens the dev
+    clause. **The two list surfaces must not drift:** quote `F-10.3`'s painted token beside this row's —
+    a different word on one surface reddens both.
+  - **EDGE:** a `disabled` (turned-off) app is absent from the launcher (`F-9.5`), so a dev build that
+    is turned off cannot be read here — record it and read the pane instead; do **not** treat the
+    absence as an unmarked dev build (that is an absence of the ENTRY, not of the mark; UI/UX D-10). A
+    `failing` dev build is still listed and must still be marked.
+
+- [ ] **F-10.5 (R-3.5) [live][NEW] — S5: the host's own identification of an installation and of what it is serving carries the mode.**
+  - **DRIVE (two carriers, BOTH required):**
+    (a) from **`main`**, `installed_apps_list` (`execute_js`, a reachable-window receipt) — read each
+    entry's `mode`; then `installed_app_open` the dev build, and re-read `installed_apps_list`;
+    (b) grep `<env-root>/logs/dev-env-stdout.log` for the `installed-app serve` trace lines of the
+    **current boot only**, and quote the line(s) for `qa3146-no-capabilities` and for the released
+    control. Read it exactly like the suite's existing **Serve-line receipt**.
+  - **EXPECTED:** (a) the dev build's entry is `mode: "development"` and the released install's is
+    `mode: "released"` — **`mode` is present on EVERY entry**, never omitted and never `null` (an
+    absent key is a FAIL, the inverse of the optional-key rule); (b) the serve trace line for the dev
+    build's document carries `mode=development` (or the shipped field spelling — quote it verbatim)
+    and the released build's carries `mode=released`. Quote both lines with their `url`/`status`
+    fields.
+  - **⚠️ THE CARRIER IS A LOG LINE, NOT A SPAN.** The serve identification is a `tracing` line on
+    target `fredo::installed_apps`. **No `telemetry_spans` query may be offered for it, and no
+    `telemetry_logs` read may be substituted** — the live gate refuses the latter. Carrier (a) is
+    the admissible live-evidence token (a `tauri_webview_*` IPC/DOM read of the **built-in** `main`
+    window); carrier (b) is quoted **corroboration**.
+  - **FAILABILITY (G-469 — a hard-fail instrument, not an empty-equals-empty):** a serve line that
+    exists but omits the `mode` field is a **FAIL**; **zero** serve lines for a window that
+    demonstrably rendered is an **ARTIFACT defect to report** (never a PASS, never a row downgrade),
+    because the instrument has then proved nothing. The released control read **in the same round**
+    fails a hardcoded `mode=development`, and the dev read fails a hardcoded `mode=released` —
+    quote both.
+  - **EDGE:** if the driver's `installed_apps_list` result shape omits `mode` entirely **while**
+    `F-10.3`/`F-10.4` render a mode in the DOM, that contradiction is the defect to report (the DOM
+    is being fed by something other than the projection). A per-window registry keyed by label is
+    **not** required and must not be demanded (the label never encodes a mode — INV-5).
+
+- [ ] **F-10.6 (R-3.6) [live][NEW] — THE AGGREGATE CASE (G-424): ONE snapshot shows every hook marked on the dev build and none on the released build, and the token is present as a whole word on every surface that paints it.**
+  - **SETUP (one data dir, two different ids, both open at once):** in **one** `FREDO_DATA_DIR`
+    root, install `<out>/qa3146-no-capabilities-<v>.zip` through **`installed_app_install_development`**
+    and `<out>/qa3147-valid-<v>.zip` through the **ordinary** `installed_app_install`. Open **both**;
+    both must be open simultaneously (that is why two different ids are required —
+    `F-10.7` uses a different shape and must not be conflated with this one).
+  - **DRIVE (ONE continuous observation window, no close/reopen between readings):**
+    (1) **one** `tauri_manage_window action="list"` call — read both titles;
+    (2) **one** `tauri_webview_dom_snapshot` of **`main`** with BOTH the settings pane and the
+    launcher section mounted or read back-to-back in that single snapshot pass — read both rows and
+    both entries;
+    (3) **one** `installed_apps_list` from `main` — read both `mode`s;
+    (4) **one** native UIA text read + **one** native capture of each child window — read the band on
+    each;
+    (5) the current-boot `installed-app serve` lines for both ids.
+  - **EXPECTED (all five hooks in ONE reading, then the token uniformity):** for
+    `qa3146-no-capabilities` — S1 title **prefixed** `Development — <displayName>`, S2 band present,
+    S3 `data-app-mode="development"`, S4 `data-app-mode="development"` (+ the composed accessible
+    name), S5 `mode: "development"` + serve line `development`; for `qa3147-valid` — **none** of the
+    five marked (`data-app-mode="released"` on both list surfaces, no band, plain title, serve line
+    `released`). Then the **uniformity clause, asserted as TOKEN CONTAINMENT at a word boundary** —
+    never literal cross-surface equality (S2 necessarily paints a fuller sentence than a chip can
+    hold; UI/UX D-5, accepted): quote the title's **leading run**, the band's **leading phrase**, and
+    both `-mode` node texts side by side, and show that **`Development` appears verbatim, capitalised
+    exactly like that, as a whole word** in every one of them, and that **no surface paints a
+    different word** for this fact.
+  - **FAILABILITY (G-424/G-469):** this row is the **aggregate** proof, so it reddens on the *set*,
+    not on a single cell: a build marked on four of five hooks is a FAIL, and the released control in
+    the same snapshot fails a marking applied uniformly. A per-surface matrix gathered across
+    **separate boots, or across a close/reopen between readings**, is **NOT** this row — record it as
+    supplementary evidence under `F-10.1`…`F-10.5` and score `F-10.6` only on one continuous
+    observation. Any reading that comes back **blank/absent** is a FAIL (never a silent pass).
+  - **EDGE:** a divergent word on one surface (`Dev`, `devel`, `WIP`, `Preview`, `unverified`) reddens
+    the uniformity clause **and** is a product defect, not a wording nit. **A row that demands the
+    SAME STRING on S2 as on S3/S4 is itself a defect** and must not be written — it fails a compliant
+    build (this is the one place the row could be made unsatisfiable). A release build that is
+    marked because the marker file leaked into the shared root is the exact defect this snapshot is
+    shaped to catch.
+
+### The absence leg and the reach-equality leg
+
+- [ ] **F-10.7 (R-3.7) [live][NEW] — a normal install is never marked, on the RESOLVED surface set, with a marker-bearing control in the same round (G-469).**
+  - **THE RESOLVED SURFACE SET** (derived, not counted — G-271/G-444): **S1** window title, **S2**
+    in-document band, **S3** settings row, **S4** launcher entry, **S5** projection `mode` + serve
+    trace line — the exact five hooks the plan's executed searches A/B/C/C′/D produced, tabulated in
+    this group's preamble. Each surface is read **by its own named instrument** (the preamble's
+    table); a surface with **no** instrument is a FAIL of this row, not a skipped cell.
+  - **DRIVE:** install `qa3147-valid` **normally** only. Then (a) read all five surfaces; (b) turn the
+    app **off** and back **on** (`installed-apps-disable` / `-enable`) and re-read S3/S4/S5; (c)
+    restart Fredo (fresh boot, same `FREDO_DATA_DIR`) and re-read all five; (d) `installed_app_close`
+    and re-open, and re-read S1/S2/S5.
+  - **EXPECTED:** **every** surface reads unmarked at every one of (a)/(b)/(c)/(d) — plain title
+    (byte-identical to `displayName`, no prefix), no band node, `data-app-mode="released"` on both
+    list surfaces, no `-mode` node text, the launcher entry's accessible name the bare `displayName`,
+    `mode: "released"`, serve line `released` — and no `Development` token appears anywhere in the
+    readings. **Each clause also asserts its surface RENDERED the released entry** (the row exists, the
+    window exists, the entry exists): an absence observed against an empty list or an unopened window is
+    vacuous and proves nothing (UI/UX D-9(a)).
+  - **THE CONTROL (mandatory, same round — this is what makes an absence failable, G-469):** a
+    **development build installed in the same root and observed in the same round** must read
+    **marked** on all five. Without that control the row is an absence with no discriminator and is
+    **UNVERIFIED, never PASS**. A blank/missing read on ANY surface is a **FAIL** — never a silent
+    zero-equals-zero.
+  - **FAILABILITY (G-476):** the marked dev control fails a product that never marks anything; the
+    released readings fail a product that marks everything. The four states (a)–(d) fail a marking
+    that is correct only on first install and drifts after a lifecycle transition, a restart, or a
+    reopen.
+  - **EDGE:** the marker file must be **absent** from a released install's directory —
+    `<FREDO_DATA_DIR>/installed-apps/qa3147-valid/development.json` does **not** exist (quote the
+    directory listing). A `development.json` present with `development: false`, or with any other
+    content, is a **FAIL of R-3.7's construction** (presence IS the fact — there is no "false" form).
+
+- [ ] **F-10.8 (R-3.8) [live][NEW] — reach equality: a development build is refused a refused action IDENTICALLY to the same package installed normally (G-423/G-501/G-500).**
+  - **FORM USED: the TWO-ROOT form — zero new fixtures** (the plan's recommended form; the
+    one-root/second-id form is **not** used, so no change to any committed generator is required and
+    no fixture id is added by this plan).
+  - **DRIVE:** with two `FREDO_DATA_DIR` roots (`<root-A>`, `<root-B>`) under
+    `.opencode/tmp/3241/`, install **the same archive** `<out>/qa3146-no-capabilities-<v>.zip` twice:
+    normally under `<root-A>`, and through `installed_app_install_development` under `<root-B>`.
+    Boot against each root in turn (**sequential boots — the two legs need different `FREDO_DATA_DIR`
+    values, so they cannot share one boot; record which root each reading came from**). In each boot
+    open `installed-qa3146-no-capabilities` and let the fixture drive its own probes. Read the two
+    SAME two channels per root (G-500 — two channels that can disagree):
+    **(a)** `[data-refusal-code]` **and** `[data-refusal-json]` (the last refusal, verbatim text);
+    **(b)** the `[data-call-log]` entry for the **`application_data_read`** action with `ok:false`,
+    and quote its `refusal.code` **and** `refusal.detail`.
+  - **EXPECTED:** on **both** roots the refusal is **the same code** — `action_not_declared` — and the
+    same `refusal.detail`, **byte for byte**, equal to the shipped constant
+    (`authority.rs:289`: `This application's package did not declare the capability this action
+    needs.` — quote it from source at the tested commit, not from this file). State plainly that the
+    pair differs **only in mode** (same archive ⇒ same id, same declared set, so `refusal.appId` is
+    identical too — quote it).
+  - **THE MODE IS CONFIRMED PER BOOT, NOT IN ONE SNAPSHOT.** Because the two legs are **sequential
+    boots**, the marking cannot be compared across roots in one capture — that is `F-10.6`'s shape and
+    a different setup (`F-10.6` needs two different ids in ONE root, both open). Here, **in each boot**,
+    record that the window being driven is marked (`<root-B>`: S1 title prefixed, S2 band present,
+    S3/S4 `data-app-mode="development"`, S5 `mode: "development"`) or unmarked (`<root-A>`: none of the
+    five) — **five readings per boot, reported per boot**, and cite `F-10.6` as the aggregate proof.
+    A verdict that presents the marking half as one cross-root snapshot has invented a setup this row
+    cannot have.
+  - **THE UNIFORMITY IS THE ASSERTION (G-501) — never demand per-cause disclosure.** Do **not**
+    require a distinct message, a cause name, or any detail that would distinguish "this package
+    declared nothing" from any other cause: the non-disclosure contract forbids it, and a row that
+    demands it would be failed by a *correct* build. A `detail` that **names** the table, the app id,
+    the composed physical name, or an installed count is a **FAIL** in the opposite direction (an
+    enumeration oracle).
+  - **FAILABILITY (G-476/G-500):** the two channels can disagree — a stale `[data-refusal-code]`
+    against a correct log entry — and **either** channel differing reddens the row. A refused code
+    other than `action_not_declared` on either root (`caller_unknown`, `app_not_installed`,
+    `action_not_grantable`, `scope_denied`) means the two roots were **not comparable** (a different
+    branch produced the refusal) and is a **FAIL of this row's premise**, to be reported as such —
+    never averaged away as "both refused".
+  - **EDGE:** the `qa3146-mirror-control` line must be present in each boot's readings (`F-7.35`'s
+    transport gate); if it did not run, both roots' readings are **UNVERIFIED — instrument
+    refused**, never PASS and never a product FAIL. A dev build that gains reach (e.g. the action
+    *resolves*) is a total FAIL of AC 3's second half. Keep `<root-A>` and `<root-B>` distinct and
+    named in the verdict — a leg that installs both into one root is a different (one-root) setup
+    and does not evidence this row.
+
+- [ ] **F-10.9 (R-3.9) [static][NEW] — prove-a-negative: development mode adds NO reach. Read source/config + the committed gate wrapper; NEVER drive.**
+  - **⚠️ THIS ROW IS `[static]` AND MUST NOT BE ANSWERED BY A LAUNCH PROBE (G-408).** Its subject is
+    an **absence of privilege**, which no launch can prove; the four readings below are independent of
+    the capability declared absent.
+  - **DRIVE (`Read`/`Grep` + `run-exitcode.ps1`), quote every artifact:**
+    1. **The installed tier's grant is unchanged.** Parse `apps/tauri/src-tauri/capabilities/installed-app-commands.json`
+    as JSON and quote its `identifier`, `windows` and `permissions` arrays: `windows` is exactly
+    `["installed-*"]`, `permissions` is exactly `["allow-installed-app-invoke"]`, **no `core:*`**.
+    **The new command's `allow-…` grant must NOT appear here** — its presence in this file is the
+    single change that would hand the load path to an untrusted document, and it reddens this row.
+    2. **The new command is granted to the BUILT-IN class only.** `installed_app_install_development`
+    appears in `apps/tauri/src-tauri/src/lib.rs`'s `generate_handler![]`, in
+    `src/runtime/command_manifest.rs`, and as `allow-installed-app-install-development` in
+    `permissions/app/default.toml` (the built-in window class reaches it through
+    `capabilities/app-commands.json`). Quote all three lines. *(The `installed_apps/**` and
+    `lib.rs`/`command_manifest.rs`/`default.toml` line numbers for these three sites are read from a
+    `spec/3244` tip — **verify against `main` at implementation time**; the block-level claim
+    "all three registration sites carry it, and the installed-tier capability does not" is what
+    binds.)*
+    3. **The dispatch table and the vocabularies did not move.** `dispatch.rs`'s `DISPATCH_TABLE` is
+    still the shipped **ordered exact set** (cite `F-7.3`'s ordered assertion — a membership check
+    would pass a same-set reorder); `InstalledAppRefusalCode::ALL` is still **exactly 22** and the
+    authority vocabulary still **exactly six** (cite `R-8.2` / `F-9.16`; quote the counts). **No 23rd
+    code.**
+    4. **`mode` never enters the authority path.** Grep `read_authority_grants`'s body
+    (`authority.rs:361`) and `AuthorityInputs` (`dispatch.rs:100-111`) for the marker symbols
+    (`development.json`, `DEVELOPMENT_FILENAME`, `read_development_marker`, `InstalledAppMode`) —
+    **zero hits in both**, with the **resolved paths** quoted beside the counts (a zero over the
+    wrong file is not a pass). **CONTROL (a positive hit proves the instrument is aimed correctly):**
+    the same grep over `store.rs` MUST return hits.
+    5. **The gate wrapper, run.** `run-exitcode.ps1 -Command "cargo test --lib --locked command_manifest"` (from `apps/tauri/src-tauri`; disclose a `cargo test` vs `nextest`
+    substitution, G-282) ⇒ `EXITCODE=0`, quoting the two shipped guard names
+    (`every_registered_command_is_in_the_manifest`, `every_registered_command_is_granted_to_the_built_in_windows`).
+  - **FAILABILITY (G-476/G-408):** a command granted to the installed tier reddens (1); a new
+    dispatch action, a 23rd refusal code, or a reordered table reddens (3); a marker symbol appearing
+    in the authority path reddens (4) — which is the one change that would let a dev build skip a
+    gate. The **positive control in (4)** is what makes the zero a reading rather than an empty
+    equality (G-469).
+  - **EDGE:** a `mode` field added to `DocumentConfig`'s `config_json` (the child-facing wire) is NOT
+    a reach change and is **not** a FAIL here — but it IS a FAIL if it makes the application able to
+    act on its own stated mode; quote `config_json` and say which you read.
+
+### The way to load (so the feature is reachable) and the unit pins
+
+- [ ] **F-10.10 (R-3.1 / R-3.7) [live+static][NEW] — the shipped way to load a development build exists, works from an explicit path, and reports the entry it created.**
+  - **DRIVE (live):** from **`main`**, call
+    `installed_app_install_development{archivePath:"<absolute path to qa3147-valid-<v>.zip>"}`.
+    Read the returned `InstalledAppEntry`: its `id`, `displayName`, **`mode`**, and the pane's
+    `[data-testid="installed-apps-install-success"]` strip (`role="status"`). Then confirm the on-disk
+    fact: `<FREDO_DATA_DIR>/installed-apps/<id>/development.json` exists and reads
+    `{"version":1,"development":true}` — quote the file; and `record.json` / `manifest.json` are
+    **byte-identical** to the same package installed normally (hash both and quote the digests).
+  - **EXPECTED (static half — the control path):** `InstalledAppsSettings.tsx` renders a text button
+    `[data-testid="installed-apps-install-development-button"]` whose **accessible name is
+    `Load development build...`** (a text button, never icon-only), and the unit pin
+    `InstalledAppsSettings.test.tsx` calls `installDevelopmentPackage` when it is activated
+    (quote the test name from the committed source **at the tested commit**). The client wrapper
+    `installDevelopmentPackage(archivePath?)` in `shared/installed-apps/client.ts` invokes
+    `installed_app_install_development` and **omits the argument when absent/blank** (quote the pin's
+    name). Read the control's presence + accessible name from `main`'s DOM as the live half.
+  - **DATA:** the archive; `main` is reachable. **The native picker is NOT a lever this row uses**
+    (no automated round can drive an OS file dialog, and no row may require evidence only a human can
+    produce — G-414): the explicit `archivePath` is the induction lever, and the picker branch is
+    covered by the shipped unit pin, not by a live leg.
+  - **FAILABILITY (G-476):** pre-change the command does not exist, so the invoke **rejects** and no
+    `development.json` is written — the row cannot pass on the pre-change tree. A returned entry whose
+    `mode` is `released`, or a `development.json` written **outside** the installed directory, reddens
+    it. A control that is icon-only, or whose accessible name is not the shipped label, reddens the
+    static half.
+  - **EDGE:** install a package that is **already installed** → refused with the **reused** frozen
+    code `already_installed` (no 23rd code) and the existing install untouched; a non-existent path →
+    `io_error`; a malformed manifest → its own frozen install code. **Quote the code, never a
+    sentence** (the `#3144` copy-honesty rule). **Declared absence:** there is no `FREDO_DEV_MODE`
+    env var, no build flag, no config key and no setting — do not search for one (G-402).
+
+- [ ] **F-10.11 (pins) [unit+static][NEW] — the marker, the projection, the title prefix, the serve line, the badge, the band's fixed rule and the released delegation are each pinned.**
+  - **DRIVE:** `cargo test --lib --locked` (from `apps/tauri/src-tauri`; disclose a `cargo test` vs
+    `nextest` substitution, G-282) and `pnpm --filter @fredo/ui test:run` for the three named UI
+    modules. Quote **each** test name verbatim from the committed source **at the tested commit**
+    (G-419 — do not paraphrase; the ST pins that carry them are named in the plan's Binding Names):
+    1. **presence-authoritative marker** — absent ⇒ `Released`, present ⇒ `Development`, and
+       present-but-unparseable **and** present-with-an-unknown-version ⇒ `Development` (the fail-safe
+       direction); **written only into the staging directory**;
+    2. **every entry projection carries a mode** — all four constructors, plus a serde test asserting
+       the `mode` **key exists** on a released entry (an always-present member must not be skipped —
+       the inverse of the optional-key rule);
+    3. **`store.rs::the_development_title_prefix_carries_the_token`** — and it must assert **POSITION**,
+       not containment: `title.starts_with(DEVELOPMENT_TITLE_PREFIX)` **and** the constant's own first
+       word is the token. **Why position and not containment: a bare `contains("Development")` stays
+       green on the suffix form (`" — Development"`) this decision replaces, so a contains-only pin is
+       VACUOUS against the very change it guards.** That one sentence is the entire value of this
+       rename (Architect D-10a / UI/UX D-1). Also quote the released-arm control leaving the title
+       unmarked, asserting **equality** with the bare `displayName`;
+    4. **the serve line carries the install mode** on **both** arms of the existing match;
+    5. **`install_archive` is the released delegation** — the shipped entry point still exists AND
+       delegates with `Released` (this is INV-6's construction site);
+    6. **the badge** renders the token for `development` and **no node** for `released`; the
+       `types.ts` token/`INSTALLED_APP_MODES` pins compile and the runtime guard rejects a
+       non-member value;
+    7. **the band's CSS rule carries `position: fixed`** (quote the `PANEL_CSS` rule) **and** the ST-4
+       unit test's full-bleed fixture (`height:100dvh; overflow:hidden`) reddens on an in-flow band.
+       This is where the *fixed-vs-in-flow* discrimination lives — it is a static/unit fact, **not**
+       something `F-10.2`'s live first-paint capture can separate.
+  - **EXPECTED:** all seven green; quote each name and the assertion text. **No `#[allow(...)]`** added
+    to reach zero warnings.
+  - **FAILABILITY (G-476):** (1) fails a marker that treats an unreadable file as released (the
+    fail-safe direction flipped); (2) fails a producer that gained a mode-less constructor; (3) fails a
+    prefix appended as a **suffix**, and the *position* clause is what makes it failable — a
+    `contains`-only pin would pass this spec's own superseded form; (5) fails a `Released` path that
+    quietly diverged — a pin that only asserted "the function exists" would pass a diverge, which is
+    why the delegation is asserted, not just the symbol; (7) fails the in-flow banner form the AC
+    forbids.
+  - **EDGE:** a pin asserting the badge's **colour** instead of its **text** reddens the
+    "text-bearing, never colour-only" clause — the marker must be readable as text (quote the
+    assertion). A pin asserting a fixed element's **document index** is a defect in the other
+    direction (a `position: fixed` element has no meaningful in-flow index) — the placement assertion is
+    the CSS rule plus the full-bleed control, never an index.
