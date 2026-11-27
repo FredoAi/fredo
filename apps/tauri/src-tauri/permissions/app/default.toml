@@ -136,6 +136,13 @@ permissions = [
   # Spec #3147 ST-2 — the installed-application install pipeline (`installed_apps`).
   "allow-installed-app-install",
   "allow-installed-apps-list",
+  # Spec #3241 ST-2 — the ONE way to load a development build. Granted to the
+  # BUILT-IN window class only, exactly as `installed_app_install` already is: the
+  # `installed-<id>` window matches exactly ONE capability
+  # (`installed-app-commands.json`), which grants only `allow-installed-app-invoke`,
+  # so an installed document can never load another application and the development
+  # load path is not a privilege the installed tier can reach.
+  "allow-installed-app-install-development",
   # Spec #3147 ST-4 — the installed-application window lifecycle. Granted to the
   # BUILT-IN window class only: the `installed-<id>` window matches exactly ONE
   # capability (`installed-app-commands.json`), which grants only

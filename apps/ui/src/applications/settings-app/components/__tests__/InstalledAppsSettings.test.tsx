@@ -41,6 +41,7 @@ const storeMock = vi.hoisted(() => ({
 
 const clientMock = vi.hoisted(() => ({
   install: vi.fn(),
+  installDevelopment: vi.fn(),
   grant: vi.fn(),
   revoke: vi.fn(),
   disable: vi.fn(),
@@ -64,6 +65,7 @@ vi.mock('@/shared/installed-apps/client', async (importOriginal) => {
   return {
     ...actual,
     installPackage: (...args: unknown[]) => clientMock.install(...args),
+    installDevelopmentPackage: (...args: unknown[]) => clientMock.installDevelopment(...args),
     grantCapabilityConsent: (...args: unknown[]) => clientMock.grant(...args),
     revokeCapabilityConsent: (...args: unknown[]) => clientMock.revoke(...args),
     disableInstalledApp: (...args: unknown[]) => clientMock.disable(...args),
@@ -88,9 +90,11 @@ import {
   GRANTS_EMPTY_LINE,
   HIGH_RISK_CLASS_TAG,
   INSTALL_BUTTON_LABEL,
+  INSTALL_DEVELOPMENT_BUTTON_LABEL,
   LIMITATIONS_HEADING,
   LIMITATIONS_SENTENCE,
   MANAGEMENT_REFUSAL_COPY_OVERRIDES,
+  NO_DESCRIPTION_MARKER,
   ORDINARY_CLASS_TAG,
   REVOKE_BUTTON_TEXT,
   STATE_LEGEND_LINE,
@@ -127,6 +131,7 @@ const ENTRY: InstalledAppEntry = {
   description: 'A helpful tool.',
   state: 'working',
   capabilities: noCapabilities('dev.example.tools'),
+  mode: 'released',
 };
 
 const CAP_QUERY = 'high-risk.database-query';
@@ -148,6 +153,7 @@ function declaredEntry(id = 'qa3146-app-a', displayName = 'QA3146 App A'): Insta
       highRisk: ['high-risk.database-query', 'high-risk.database-reset'],
       consented: [],
     },
+    mode: 'released',
   };
 }
 
@@ -199,6 +205,7 @@ beforeEach(() => {
   storeMock.forget = vi.fn();
   storeMock.status = { entries: [], loading: false, settled: true, error: null };
   clientMock.install = vi.fn();
+  clientMock.installDevelopment = vi.fn();
   clientMock.grant = vi.fn();
   clientMock.revoke = vi.fn();
   clientMock.disable = vi.fn();
@@ -297,6 +304,7 @@ describe('#3147 ST-6 — InstalledAppsSettings states', () => {
       windowLabel: 'installed-no.desc',
       state: 'working',
       capabilities: noCapabilities('no.desc'),
+      mode: 'released',
     } as InstalledAppEntry;
     expect('description' in wireShape).toBe(false);
 
@@ -719,6 +727,7 @@ function lifecycleEntry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntr
     windowLabel: 'installed-qa3147-valid',
     state: 'working',
     capabilities: noCapabilities('qa3147-valid'),
+    mode: 'released',
     ...over,
   };
 }
@@ -1139,6 +1148,190 @@ describe('#3144 — the widened grants section (all declared capabilities)', () 
     renderWithChakra(<InstalledAppsSettings />);
     expect(screen.queryByTestId('installed-apps-consent-section')).toBeNull();
     expect(screen.getByTestId('installed-apps-empty')).toBeInTheDocument();
+  });
+});
+
+// ── Spec #3241 — S3, the mode badge on the settings row (R-3.3) ────────────
+
+describe('#3241 — S3 the settings row carries the mode', () => {
+  it('a development row carries data-app-mode, the badge, and the token as text', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ mode: 'development' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(row).toHaveAttribute('data-app-mode', 'development');
+
+    // The shared badge — the ONE renderer, so this word cannot drift from S4's.
+    const badge = screen.getByTestId('installed-apps-entry-mode');
+    expect(badge.textContent).toBe('Development');
+
+    // INV-4: the lifecycle vocabulary is untouched and SEPARATE.
+    expect(row).toHaveAttribute('data-app-state', 'working');
+    // Exactly one state chip per row — the badge is an ADJACENT SIBLING, so the
+    // shipped cardinality assertion still holds.
+    expect(screen.getAllByTestId('installed-apps-entry-state')).toHaveLength(1);
+  });
+
+  it('a released row carries data-app-mode="released", NO badge node and no token in its text', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ mode: 'released' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    // The surface exists and shows the released entry — absence against an empty
+    // list would be vacuous (G-469 / UI/UX D-9a).
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(row).toHaveTextContent('QA3147 Valid');
+
+    // The attribute is ALWAYS present, so a missing one can never read as released.
+    expect(row).toHaveAttribute('data-app-mode', 'released');
+    expect(screen.queryByTestId('installed-apps-entry-mode')).toBeNull();
+    expect(row.textContent).not.toContain('Development');
+  });
+
+  it('keeps the mode beside a TURNED-OFF state (two independent facts, not a contradiction)', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ mode: 'development', state: 'disabled' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(row).toHaveAttribute('data-app-state', 'disabled');
+    expect(row).toHaveAttribute('data-app-mode', 'development');
+    expect(screen.getByTestId('installed-apps-entry-mode')).toHaveTextContent('Development');
+    expect(within(row).getByText(STATE_WORDS.disabled)).toBeTruthy();
+  });
+
+  it('keeps the mode beside a FAILING state (broken and development are different facts)', () => {
+    storeMock.status = {
+      entries: [lifecycleEntry({ mode: 'development', state: 'failing', failureCode: 'integrity_mismatch' })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const row = screen.getByTestId('installed-apps-entry');
+    expect(row).toHaveAttribute('data-app-state', 'failing');
+    expect(row).toHaveAttribute('data-app-mode', 'development');
+    expect(screen.getByTestId('installed-apps-entry-mode')).toHaveTextContent('Development');
+  });
+
+  it('leaves the shipped no-description slot byte-identical (Spec #3244 must survive)', () => {
+    // The #3244 contract: an absent description renders the typed muted marker at
+    // its own hook. The badge is added BESIDE the state chip, so it can never
+    // displace this slot.
+    storeMock.status = {
+      entries: [lifecycleEntry({ mode: 'development', description: undefined })],
+      loading: false,
+      settled: true,
+      error: null,
+    };
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const noDescription = screen.getByTestId('installed-apps-entry-no-description');
+    expect(noDescription.textContent).toBe(NO_DESCRIPTION_MARKER);
+    // Both the marker and the mode badge are present — the badge did not replace it.
+    expect(screen.getByTestId('installed-apps-entry-mode')).toBeTruthy();
+  });
+});
+
+// ── Spec #3241 — the shipped way to load a development build (R-3.1 / R-3.7) ──
+
+describe('#3241 — the development load control', () => {
+  it('is a TEXT button whose visible label IS its accessible name', () => {
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const button = screen.getByTestId('installed-apps-install-development-button');
+    // Text button, never icon-only: its text content is the full label.
+    expect(button.textContent).toBe(INSTALL_DEVELOPMENT_BUTTON_LABEL);
+    expect(INSTALL_DEVELOPMENT_BUTTON_LABEL).toBe('Load development build...');
+    // No `aria-label` override — the visible label is the name, so they cannot diverge.
+    expect(button.getAttribute('aria-label')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Load development build...' })).toBe(button);
+  });
+
+  it('calls installDevelopmentPackage and records the returned entry', async () => {
+    const developmentEntry: InstalledAppEntry = {
+      ...ENTRY,
+      id: 'dev.example.wip',
+      displayName: 'Example WIP',
+      mode: 'development',
+    };
+    clientMock.installDevelopment = vi.fn(async () => developmentEntry);
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-install-development-button'));
+
+    await waitFor(() => expect(clientMock.installDevelopment).toHaveBeenCalledTimes(1));
+    // The ordinary install is NOT the one that ran.
+    expect(clientMock.install).not.toHaveBeenCalled();
+    expect(storeMock.record).toHaveBeenCalledWith(developmentEntry);
+
+    // The development sentence — NOT the shipped install sentence, which omits the
+    // one fact the user just chose.
+    const success = await screen.findByTestId('installed-apps-install-success');
+    expect(success).toHaveTextContent(
+      'Example WIP was loaded as a development build. Open it from the launcher, under Installed apps.',
+    );
+    expect(success).not.toHaveTextContent('is installed.');
+  });
+
+  it('controls stay live after a refusal (R-3.5 applied to the new control)', async () => {
+    clientMock.installDevelopment = vi.fn(async () => {
+      throw { code: 'io_error', detail: 'the picker was dismissed' };
+    });
+    renderWithChakra(<InstalledAppsSettings />);
+
+    const button = screen.getByTestId('installed-apps-install-development-button');
+    fireEvent.click(button);
+
+    const refusal = await screen.findByTestId('installed-apps-refusal');
+    expect(refusal).toHaveAttribute('data-refusal-code', 'io_error');
+
+    // The refusal is DATA on screen, never a wedged surface: BOTH install controls
+    // are live again, and the label survived (no spinner replaced it).
+    await waitFor(() => {
+      expect(screen.getByTestId('installed-apps-install-development-button')).not.toBeDisabled();
+      expect(screen.getByTestId('installed-apps-install-button')).not.toBeDisabled();
+    });
+    expect(screen.getByTestId('installed-apps-install-development-button').textContent).toBe(
+      INSTALL_DEVELOPMENT_BUTTON_LABEL,
+    );
+  });
+
+  it('disables BOTH install controls while either load is in flight (one verdict slot)', async () => {
+    let release: (() => void) | undefined;
+    clientMock.installDevelopment = vi.fn(
+      () =>
+        new Promise<InstalledAppEntry>((resolve) => {
+          release = () => resolve({ ...ENTRY, mode: 'development' });
+        }),
+    );
+    renderWithChakra(<InstalledAppsSettings />);
+
+    fireEvent.click(screen.getByTestId('installed-apps-install-development-button'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('installed-apps-install-development-button')).toBeDisabled();
+      expect(screen.getByTestId('installed-apps-install-button')).toBeDisabled();
+    });
+
+    release?.();
+    await waitFor(() => {
+      expect(screen.getByTestId('installed-apps-install-development-button')).not.toBeDisabled();
+    });
   });
 });
 

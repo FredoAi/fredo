@@ -53,6 +53,10 @@ function installedEntry(id: string, displayName: string, description?: string): 
     windowLabel: `installed-${id}`,
     state: 'working',
     capabilities: { appId: id, declared: [], highRisk: [], consented: [] },
+    // Spec #3241: `mode` is an ALWAYS-present projection member, so every
+    // `InstalledAppEntry` literal names it. This surface resolves descriptions,
+    // never markings, so a plain released install is the honest fixture.
+    mode: 'released',
   };
   return description === undefined ? base : { ...base, description };
 }

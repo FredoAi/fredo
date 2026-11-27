@@ -50,7 +50,7 @@ use std::path::{Path, PathBuf};
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::Manager;
 
-use super::store::{self, InstalledAppRecord, InstalledFileRecord};
+use super::store::{self, InstalledAppMode, InstalledAppRecord, InstalledFileRecord};
 use super::theme_state::{InstalledThemeState, ThemePayload};
 use super::{InstalledAppRefusalCode, INSTALLED_FILES_SUBDIR, RESERVED_PATH_SEGMENT};
 
@@ -92,6 +92,19 @@ const CONFIG_ELEMENT_ID: &str = "__fredo-config";
 
 /// The host-owned mount region's test id.
 const ROOT_TESTID: &str = "installed-app-root";
+
+/// S2's DOM hook — the host-authored marking band (Spec #3241).
+pub const DEVELOPMENT_BAND_TESTID: &str = "installed-app-development-banner";
+
+/// S2's band sentence — bound as a constant so the QA row can quote it verbatim.
+///
+/// `F-10.2` asserts **containment with position**: the band's text BEGINS with the
+/// painted token `Development` (`DEVELOPMENT_MARKER_TOKEN` in the frontend mirror),
+/// and this exact sentence is quoted in the row so any drift is visible. The token
+/// is the LEADING phrase on purpose — a band reading `Released; not Development`
+/// would satisfy a bare `contains` and fail the position clause.
+pub const DEVELOPMENT_BAND_SENTENCE: &str =
+    "Development build — not a normally installed application.";
 
 /// The CSP/response header carrying a refusal reason to the bootstrap.
 const REASON_HEADER: &str = "x-fredo-reason";
@@ -328,6 +341,15 @@ pub struct DocumentConfig {
     /// existed (the entry document's bytes no longer match the install record).
     /// The bootstrap renders the failure panel and imports nothing.
     pub startup_failure: Option<&'static str>,
+    /// How this application was loaded (Spec #3241) — read through
+    /// `store::read_development_marker` (the ONE presence check).
+    ///
+    /// It rides in the RUST-side config only: [`config_json`] deliberately does
+    /// **not** project it onto the child's `__fredo-config` block. The child has no
+    /// use for its own mode in this slice, and adding the key would be an
+    /// unrequested wire-contract change that implied the application could act on
+    /// it.
+    pub mode: InstalledAppMode,
 }
 
 /// Escape the three characters that must never appear raw inside an HTML text
@@ -399,6 +421,12 @@ pub fn theme_style_block(theme: &ThemePayload) -> String {
 /// written as `color-mix(...)`. No hex, no `rgb()`/`hsl()`, and never an alpha
 /// suffix appended to a `var()` reference (`var(--accent-primary)22` is invalid
 /// CSS).
+///
+/// **This constant is emitted into EVERY served document, released included**, so
+/// it must never gain a marking rule: a released build's served bytes are
+/// byte-identical to a pre-#3241 document (INV-6), and a declaration added here
+/// would change them. The marking band and the three-layer z-index stack live in
+/// [`MODE_BAND_CSS`], which is appended on the development arm only.
 pub const PANEL_CSS: &str = r#"
 html, body { margin: 0; padding: 0; }
 [data-testid="installed-app-root"] {
@@ -443,6 +471,66 @@ html, body { margin: 0; padding: 0; }
 .fredo-retry:hover { background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
 .fredo-retry:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 "#;
+
+/// S2's stylesheet — appended to the host style block **only for a development
+/// build** (Spec #3241).
+///
+/// Kept out of [`PANEL_CSS`] on purpose: `PANEL_CSS` is emitted into every served
+/// document, so a rule added there would change a **released** build's bytes and
+/// break INV-6. The band and the three-layer stack it needs are therefore scoped
+/// to the one document kind that carries the missing fact.
+///
+/// # The three-layer stack (adjudicated — UI/UX D-3 / Architect D-11)
+///
+///     [data-testid="installed-app-root"]   z-index: 0   the untrusted content
+///     .fredo-panel (loading + failure)     z-index: 2   opaque `inset: 0` grounds
+///     .fredo-mode-band                     z-index: 3   the marking
+///
+/// The band sits **above** the panels by design: `R-3.2` requires the marking to be
+/// perceivable *"including the host's failure document when the build cannot
+/// load"*, and the panels are opaque full-viewport grounds — so "the panel keeps
+/// winning" would make that clause unsatisfiable. Stacking the band above costs the
+/// panel nothing: `.fredo-panel` is a centred grid (`place-items: center`), so its
+/// card never reaches the band at the window's 360 px minimum inner height.
+///
+/// Colour discipline is [`PANEL_CSS`]'s: `var()` reads with system-colour fallbacks,
+/// no hex/rgb()/hsl(), no alpha-append onto a `var()`. Two names the theme fallback
+/// already carries (`--text-primary`, `--body-bg`) keep this file out of
+/// `theme_state.rs`'s fallback token set entirely.
+pub const MODE_BAND_CSS: &str = r#"
+[data-testid="installed-app-root"] { position: relative; z-index: 0; }
+.fredo-panel { position: fixed; inset: 0; z-index: 2; display: grid; place-items: center; padding: 24px; }
+.fredo-mode-band {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 3;
+  box-sizing: border-box;
+  padding: 7px 12px; font-size: 12px; line-height: 16px;
+  font-family: var(--font-base, system-ui, sans-serif);
+  color: var(--body-bg, Canvas);
+  background: var(--text-primary, CanvasText);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fredo-mode-band strong { font-weight: 600; }
+"#;
+
+/// S2's band markup — the host-authored marking strip, emitted as the **first
+/// child of `<body>`** (Spec #3241, R-3.2).
+///
+/// `role="note"` makes it an announcement (never a landmark, never a control): it
+/// is **not** `aria-hidden` (it is the point) and **not** focusable. There is no
+/// whitespace between the tags, so a `textContent` equality pin cannot fail a
+/// correct build on a collapsed-text technicality (UI/UX D-21) — the tag-stripped
+/// text is EXACTLY [`DEVELOPMENT_BAND_SENTENCE`], which
+/// `the_band_sentence_is_the_emitted_text` asserts.
+///
+/// The `<strong>` wraps only the leading phrase. That is a presentation choice, not
+/// a second claim: the emphasis channel (weight) is redundant with the text, and a
+/// reader that ignores markup still reads the whole sentence. The hook comes from
+/// [`DEVELOPMENT_BAND_TESTID`], so the attribute and the pin cannot drift.
+fn mode_band_markup() -> String {
+    format!(
+        "<div data-testid=\"{DEVELOPMENT_BAND_TESTID}\" class=\"fredo-mode-band\" role=\"note\"><strong>Development build</strong> — not a normally installed application.</div>"
+    )
+}
 
 /// Serialize the bootstrap's config block.
 ///
@@ -517,13 +605,14 @@ pub fn inject_into_document(
     root_markup: &str,
     script_markup: &str,
     extra_head: &str,
+    body_lead: &str,
 ) -> String {
     let lowered = html.to_ascii_lowercase();
 
     let style_markup = format!("<style id=\"__fredo-style\">{style}</style>");
     let head_insert = format!("{extra_head}{style_markup}");
 
-    let mut output = String::with_capacity(html.len() + head_insert.len() + config_block.len() + root_markup.len() + script_markup.len() + 64);
+    let mut output = String::with_capacity(html.len() + head_insert.len() + config_block.len() + root_markup.len() + script_markup.len() + body_lead.len() + 64);
 
     if let Some(index) = lowered.find("</head>") {
         output.push_str(&html[..index]);
@@ -538,6 +627,28 @@ pub fn inject_into_document(
         output.push_str(html);
     }
 
+    // `body_lead` (S2's marking band, Spec #3241) is the FIRST CHILD of `<body>`:
+    // it is spliced immediately after the `<body …>` tag's closing `>`, so an
+    // assistive reading meets it BEFORE the application's own markup. The tail form
+    // would be last in reading order — a screen-reader user would hear the whole
+    // application (and, on a long document, might never reach the end) before
+    // learning it is a development build (UI/UX D-2).
+    //
+    // The scan is BOUNDED: the `<body` match is advanced to the next `>` and if
+    // there is none before end-of-input the band is PREPENDED to the document
+    // instead of being spliced at an arbitrary offset (the plan's hazard note). A
+    // document with no `<body` at all takes the same prepend path, mirroring the
+    // head-insert fallback above. The comparison runs on the lowercased copy, whose
+    // `to_ascii_lowercase` preserves byte length, so `html[..index]` slicing stays
+    // valid.
+    if !body_lead.is_empty() {
+        let lowered = output.to_ascii_lowercase();
+        match body_open_end(&lowered) {
+            Some(index) => output.insert_str(index, body_lead),
+            None => output.insert_str(0, body_lead),
+        }
+    }
+
     let tail = format!("{config_block}{root_markup}{script_markup}");
     let lowered = output.to_ascii_lowercase();
     if let Some(index) = lowered.rfind("</body>") {
@@ -549,6 +660,18 @@ pub fn inject_into_document(
     output
 }
 
+/// The byte offset just past the `<body …>` tag's closing `>` — `None` when the
+/// document has no `<body` tag OR the tag never closes before end-of-input.
+///
+/// Bounded by construction: `find('>')` is scoped to the slice that starts at the
+/// `<body` match, so a truncated document can never produce a splice offset beyond
+/// its own length.
+fn body_open_end(lowered: &str) -> Option<usize> {
+    let start = lowered.find("<body")?;
+    let close = lowered[start..].find('>')?;
+    Some(start + close + 1)
+}
+
 /// Build the complete served document for one installed application.
 pub fn render_document(
     html: &str,
@@ -557,7 +680,14 @@ pub fn render_document(
     entry_document: &str,
     has_root: bool,
 ) -> String {
-    let style = format!("{}{}", theme_style_block(theme), PANEL_CSS);
+    let development = config.mode.is_development();
+    // S2's stylesheet rides the DEVELOPMENT arm only: a released document's bytes
+    // stay byte-identical to a pre-#3241 document (INV-6).
+    let style = if development {
+        format!("{}{}{}", theme_style_block(theme), PANEL_CSS, MODE_BAND_CSS)
+    } else {
+        format!("{}{}", theme_style_block(theme), PANEL_CSS)
+    };
     let json = config_json(config, theme);
     let config_block = format!(
         "<script type=\"application/json\" id=\"{CONFIG_ELEMENT_ID}\">{json}</script>"
@@ -582,7 +712,17 @@ pub fn render_document(
         base_tag(config, entry_document)
     };
 
-    inject_into_document(html, &style, &config_block, &root_markup, &script_markup, &extra_head)
+    let body_lead = if development { mode_band_markup() } else { String::new() };
+
+    inject_into_document(
+        html,
+        &style,
+        &config_block,
+        &root_markup,
+        &script_markup,
+        &extra_head,
+        &body_lead,
+    )
 }
 
 /// The host-authored document served when the entry document's bytes no longer
@@ -759,6 +899,8 @@ fn serve_entry_document(
     theme: &ThemePayload,
 ) -> ServedResponse {
     let entry = record.entry_document.as_str();
+    // The ONE presence check (Spec #3241) — never re-implemented here.
+    let mode = store::read_development_marker(app_dir);
     let base_config = || DocumentConfig {
         app_id: record.id.clone(),
         version: record.version.clone(),
@@ -768,6 +910,7 @@ fn serve_entry_document(
             .unwrap_or_else(|| record.id.clone()),
         module: format!("/{}/{}", record.id, record.entry_module),
         startup_failure: None,
+        mode,
     };
 
     let Some(file) = recorded_file(record, entry) else {
@@ -841,12 +984,20 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 /// instrument that can distinguish "opened" from "never served". It logs at
 /// `info` on target [`TRACE_TARGET`] with message `installed-app serve` and a
 /// `url` field carrying the request URI verbatim.
-pub fn serve_line(url: &str, response: &ServedResponse) {
+///
+/// `mode` is S5 (Spec #3241) — the host's own identification of WHAT it is
+/// serving, carried on **every** request for an installed application (the entry
+/// document, its module, an icon, a retry re-serve), because all of them are "the
+/// host identifying what it is running" (UI/UX §6.2). A request that names no
+/// application (`/__fredo/bootstrap.js`, the beacon uplink) carries `none`.
+pub fn serve_line(url: &str, response: &ServedResponse, mode: Option<InstalledAppMode>) {
+    let mode = mode.map(InstalledAppMode::as_str).unwrap_or("none");
     match response.reason {
         Some(reason) => tracing::info!(
             target: TRACE_TARGET,
             url = %url,
             status = response.status,
+            mode = %mode,
             reason = %reason,
             bytes = response.body.len(),
             "installed-app serve"
@@ -855,6 +1006,7 @@ pub fn serve_line(url: &str, response: &ServedResponse) {
             target: TRACE_TARGET,
             url = %url,
             status = response.status,
+            mode = %mode,
             bytes = response.body.len(),
             "installed-app serve"
         ),
@@ -896,21 +1048,43 @@ pub fn handle_uri_request(
     if matches!(route(&path), Ok(Route::Beacon)) {
         let query = request.uri().query().map(str::to_string);
         let response = super::beacon::serve_beacon(app, query.as_deref());
-        serve_line(&url, &response);
+        serve_line(&url, &response, None);
         return to_http_response(response);
     }
 
     let Some(data_dir) = app_data_dir(app) else {
         let response = ServedResponse::not_found("this build cannot resolve its app data directory");
-        serve_line(&url, &response);
+        serve_line(&url, &response, None);
         return to_http_response(response);
     };
 
     let install_root = store::install_root(&data_dir);
     let theme = InstalledThemeState::read();
     let response = serve_request(&install_root, &path, &theme);
-    serve_line(&url, &response);
+    // S5 (Spec #3241) — resolve the mode for the traced line through the SAME ONE
+    // presence check the documents use. A path that names no installed application
+    // (`/__fredo/bootstrap.js`, a routing miss) carries `none`, so the field is
+    // always present and its absence is never ambiguous with `released`.
+    let mode = served_app_mode(&install_root, &path);
+    serve_line(&url, &response, mode);
     to_http_response(response)
+}
+
+/// The install mode behind a request path — `None` when the path names no
+/// installed application.
+///
+/// Resolution goes through [`store::read_development_marker`], the ONE presence
+/// check, so the traced fact is derived exactly like the painted one. The
+/// directory is only probed when routing already resolved an app id, so a
+/// reserved path or a traversal attempt costs no filesystem read.
+fn served_app_mode(install_root: &Path, path: &str) -> Option<InstalledAppMode> {
+    match route(path) {
+        Ok(Route::App { id, .. }) => Some(store::read_development_marker(&store::app_dir(
+            install_root,
+            &id,
+        ))),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1457,6 +1631,7 @@ mod tests {
             display_name: "QA3147 Test".to_string(),
             module: "/qa3147-test/sub/main.js".to_string(),
             startup_failure: None,
+            mode: InstalledAppMode::Released,
         };
 
         let flat = render_document(
@@ -1500,6 +1675,7 @@ mod tests {
             display_name: "QA3147 <Test>".to_string(),
             module: "/qa3147-test/main.js".to_string(),
             startup_failure: None,
+            mode: InstalledAppMode::Released,
         };
         let document = render_document("<p>bare</p>", &theme, &config, "index.html", false);
         assert!(document.contains("<p>bare</p>"));
@@ -1518,6 +1694,7 @@ mod tests {
             display_name: "QA3147 Test".to_string(),
             module: "/qa3147-test/main.js".to_string(),
             startup_failure: None,
+            mode: InstalledAppMode::Released,
         };
         let html = "<html><head></head><body><div data-testid=\"installed-app-root\"></div></body></html>";
         let document = render_document(html, &theme, &config, "index.html", true);
@@ -1550,6 +1727,7 @@ mod tests {
             display_name: "QA3147 Probe".to_string(),
             module: "/qa3147-probe/main.js".to_string(),
             startup_failure: None,
+            mode: InstalledAppMode::Released,
         };
 
         let document = render_document(fixture, &theme, &config, "index.html", false);
@@ -1581,6 +1759,297 @@ mod tests {
         assert_eq!(document.matches("</body>").count(), 1);
     }
 
+    // ── S2: the development band (Spec #3241, R-3.2) ─────────────────────────
+
+    /// A document config for the band pins, with the mode under test.
+    fn band_config(mode: InstalledAppMode) -> DocumentConfig {
+        DocumentConfig {
+            app_id: "qa3147-probe".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "QA3147 Probe".to_string(),
+            module: "/qa3147-probe/main.js".to_string(),
+            startup_failure: None,
+            mode,
+        }
+    }
+
+    /// The document body the band pins drive: a full-bleed application document
+    /// (`height:100dvh; overflow:hidden`) — the fixture the plan names for S2, so
+    /// an in-flow banner would scroll out of view and a fixed band would not.
+    const FULL_BLEED_BODY: &str = "<body><div data-testid=\"installed-app-root\" style=\"height:100dvh;overflow:hidden\"><p>app body</p></div></body>";
+
+    /// The band's text with its host tags stripped — the oracle for the sentence
+    /// pins, so the `<strong>` emphasis can never make a correct build fail.
+    fn mode_band_text(document: &str) -> Option<String> {
+        let start = document.find(&format!("<div data-testid=\"{DEVELOPMENT_BAND_TESTID}\""))?;
+        let open_tag_end = start + document[start..].find('>')? + 1;
+        let close = open_tag_end + document[open_tag_end..].find("</div>")?;
+        Some(
+            document[open_tag_end..close]
+                .replace("<strong>", "")
+                .replace("</strong>", ""),
+        )
+    }
+
+    /// **R-3.2 / F-10.2's anchor — an EMITTED-STRING property.**
+    ///
+    /// The band's index is greater than the `<body …>` tag's closing `>` and less
+    /// than the index of the document's original first body child. That is exactly
+    /// what the tail-insertion form violates: it splices the band next to
+    /// `</body>`, i.e. AFTER the application's markup, so a screen-reader user hears
+    /// the whole application (or never reaches the end of a long document) before
+    /// learning it is a development build.
+    #[test]
+    fn the_band_is_the_first_child_of_body_in_the_emitted_string() {
+        let document = render_document(
+            FULL_BLEED_BODY,
+            &fallback_theme(),
+            &band_config(InstalledAppMode::Development),
+            "index.html",
+            true,
+        );
+
+        let band_at = document
+            .find(&format!("data-testid=\"{DEVELOPMENT_BAND_TESTID}\""))
+            .expect("a development build's document carries the band");
+
+        // The bound is the `<body …>` tag's own closing `>`, not the tag's start.
+        let lowered = document.to_ascii_lowercase();
+        let body_open_end = body_open_end(&lowered).expect("the fixture has a <body tag");
+        assert!(
+            band_at > body_open_end,
+            "the band must come AFTER the <body> tag's closing '>', not inside it"
+        );
+
+        // The other bound: the document's ORIGINAL first body content.
+        let first_child_at = document
+            .find("<div data-testid=\"installed-app-root\"")
+            .expect("the fixture's own first body child");
+        assert!(
+            band_at < first_child_at,
+            "the band must precede the application's own first body child in the \
+             emitted string — the tail-insertion form puts it AFTER, which is what \
+             this pin exists to redden"
+        );
+
+        // And it is not inside the app root either (a sibling, never a child).
+        let app_root_at = first_child_at;
+        let app_root_depth = document[app_root_at..]
+            .find("</div>")
+            .map(|offset| app_root_at + offset)
+            .expect("the app root closes");
+        assert!(
+            band_at < app_root_at || band_at > app_root_depth,
+            "the band must be a SIBLING of the app root, never inside it"
+        );
+    }
+
+    /// The band's own sentence, read from the emitted markup with the tags
+    /// stripped — so a wording drift is visible, and the no-whitespace emission
+    /// rule (UI/UX D-21) is pinned rather than assumed.
+    #[test]
+    fn the_band_sentence_is_the_emitted_text() {
+        let document = render_document(
+            FULL_BLEED_BODY,
+            &fallback_theme(),
+            &band_config(InstalledAppMode::Development),
+            "index.html",
+            true,
+        );
+
+        let start = document
+            .find(&format!("<div data-testid=\"{DEVELOPMENT_BAND_TESTID}\""))
+            .expect("the band");
+        let open_tag_end = start + document[start..].find('>').expect("band open tag") + 1;
+        let close = open_tag_end + document[open_tag_end..].find("</div>").expect("band close");
+        let inner = &document[open_tag_end..close];
+        let text = mode_band_text(&document).expect("the band's stripped text");
+
+        assert_eq!(
+            text, DEVELOPMENT_BAND_SENTENCE,
+            "the band's text must BE the bound sentence, verbatim"
+        );
+        // The sentence BEGINS with the painted token (position, not containment):
+        // a band reading `Released; not Development` fails here.
+        assert!(
+            text.starts_with("Development"),
+            "the token must be the band's LEADING phrase: {text}"
+        );
+        // The full contract surface the QA row reads.
+        assert!(document.contains("role=\"note\""), "the band is an announcement");
+        assert!(
+            !document.contains("data-testid=\"installed-app-development-banner\" aria-hidden"),
+            "the band is never aria-hidden — it is the point"
+        );
+        assert!(
+            !document.contains("tabindex") || !inner.contains("tabindex"),
+            "the band is not focusable: it is not a control"
+        );
+    }
+
+    /// **INV-6 — a released build's served document is BYTE-IDENTICAL.**
+    ///
+    /// The control is the document the pre-#3241 renderer produced: the theme
+    /// block + `PANEL_CSS` + the config block + the root region + the bootstrap
+    /// script, with no band and no band stylesheet. Asserting the WHOLE string
+    /// (not "no band node") is what makes this failable: an implementation that
+    /// also changed the released path's stylesheet or ordering would pass a
+    /// badge-free check and fail this.
+    #[test]
+    fn render_document_leaves_a_released_build_byte_identical() {
+        let theme = fallback_theme();
+        let config = band_config(InstalledAppMode::Released);
+        let html = FULL_BLEED_BODY;
+
+        let actual = render_document(html, &theme, &config, "index.html", true);
+
+        // The pre-#3241 shape, assembled by hand from the same public pieces —
+        // `body_lead` empty is the whole delta under test.
+        let expected = inject_into_document(
+            html,
+            &format!("{}{}", theme_style_block(&theme), PANEL_CSS),
+            &format!(
+                "<script type=\"application/json\" id=\"{CONFIG_ELEMENT_ID}\">{}</script>",
+                config_json(&config, &theme)
+            ),
+            "",
+            &format!("<script src=\"/{BOOTSTRAP_PATH}\" type=\"text/javascript\"></script>"),
+            "",
+            "",
+        );
+
+        assert_eq!(
+            actual, expected,
+            "a released document must be byte-identical to the pre-#3241 render"
+        );
+        // Non-vacuity: the SAME inputs in the development mode DO differ, so the
+        // equality above is a reading rather than an inert comparison.
+        let development = render_document(
+            html,
+            &theme,
+            &band_config(InstalledAppMode::Development),
+            "index.html",
+            true,
+        );
+        assert_ne!(
+            development, actual,
+            "the mode must be what selects the band, or the equality proves nothing"
+        );
+    }
+
+    /// **The three-layer stack — `F-10.11`'s `PANEL_CSS` pin, R-3.2's failure
+    /// clause.**
+    ///
+    /// App root `0` / panels `2` / band `3`. Asserted as three literals TOGETHER,
+    /// so a reversed order reddens. The band must be ABOVE the panels: both panels
+    /// paint an opaque `inset: 0` ground, so "the panel keeps winning" would make a
+    /// development build that fails to load the one development build whose marking
+    /// is invisible.
+    #[test]
+    fn the_band_stacks_above_the_failure_panel() {
+        fn rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
+            let start = css.find(selector).unwrap_or_else(|| panic!("missing rule {selector}"));
+            let open = start + css[start..].find('{').expect("rule opens") + 1;
+            let close = open + css[open..].find('}').expect("rule closes");
+            &css[open..close]
+        }
+        fn z_index(body: &str) -> i32 {
+            let at = body.find("z-index:").expect("the rule declares a z-index");
+            body[at + "z-index:".len()..]
+                .split(';')
+                .next()
+                .expect("a value")
+                .trim()
+                .parse()
+                .expect("an integer z-index")
+        }
+
+        let app_root = z_index(rule_body(MODE_BAND_CSS, "[data-testid=\"installed-app-root\"]"));
+        let panel = z_index(rule_body(MODE_BAND_CSS, ".fredo-panel"));
+        let band = z_index(rule_body(MODE_BAND_CSS, ".fredo-mode-band"));
+
+        assert_eq!((app_root, panel, band), (0, 2, 3));
+        assert!(band > panel, "the band must stack ABOVE the opaque failure panel");
+
+        // The panels really are opaque full-viewport grounds, so the ordering above
+        // is load-bearing rather than cosmetic. Read from the SHIPPED panel CSS.
+        assert!(PANEL_CSS.contains(".fredo-panel { position: fixed; inset: 0;"));
+        assert!(PANEL_CSS.contains("[data-testid=\"installed-app-loading\"] { background: var(--body-bg, Canvas); }"));
+        assert!(PANEL_CSS.contains("[data-testid=\"installed-app-failure\"] {"));
+
+        // The band is a FIXED band, never in-flow: a scrollable banner is not a
+        // marking (the in-flow form's redden signature).
+        let band_rule = rule_body(MODE_BAND_CSS, ".fredo-mode-band");
+        assert!(band_rule.contains("position: fixed"));
+        assert!(band_rule.contains("top: 0"));
+
+        // And `PANEL_CSS` itself carries NO marking rule, so the released path is
+        // untouched by the band's stylesheet (INV-6).
+        assert!(!PANEL_CSS.contains("fredo-mode-band"));
+        assert!(!PANEL_CSS.contains(DEVELOPMENT_BAND_TESTID));
+    }
+
+    /// The band is emitted on the **failure document** too — R-3.2's clause "a
+    /// development build that cannot load is still visibly and audibly a
+    /// development build".
+    #[test]
+    fn the_failure_document_of_a_development_build_carries_the_band() {
+        let mut config = band_config(InstalledAppMode::Development);
+        config.startup_failure = Some(InstalledAppRefusalCode::IntegrityMismatch.as_str());
+
+        let document = render_failure_document(&fallback_theme(), &config);
+        assert!(
+            document.contains(DEVELOPMENT_BAND_TESTID),
+            "the failure document must still say the build is a development build"
+        );
+        // The sentence is read TAG-STRIPPED: the `<strong>` emphasis splits the raw
+        // markup, so a raw `contains` on the full sentence would fail a correct
+        // build. The stripped text must BE the bound sentence.
+        let band_text = mode_band_text(&document).expect("the band's text");
+        assert_eq!(band_text, DEVELOPMENT_BAND_SENTENCE);
+        // The band precedes the host's own panel markup too, since the panel is
+        // mounted by the bootstrap at the body tail.
+        let band_at = document.find(DEVELOPMENT_BAND_TESTID).expect("band");
+        let lowered = document.to_ascii_lowercase();
+        assert!(band_at > body_open_end(&lowered).expect("body tag"));
+        assert!(band_at < document.find(&format!("id=\"{CONFIG_ELEMENT_ID}\"")).expect("config"));
+
+        // The released control: the SAME failure document, unmarked.
+        let released = render_failure_document(&fallback_theme(), &band_config(InstalledAppMode::Released));
+        assert!(!released.contains(DEVELOPMENT_BAND_TESTID));
+        assert!(!released.contains("Development"));
+    }
+
+    /// A document with NO `<body>` tag still gets the band, by the prepend path
+    /// that mirrors the existing no-body fallback — and a `<body` whose tag never
+    /// closes falls through to the same prepend rather than splicing at an
+    /// arbitrary offset.
+    #[test]
+    fn the_band_lands_on_a_document_with_no_body_and_on_a_truncated_body_tag() {
+        let development = band_config(InstalledAppMode::Development);
+
+        let no_body = render_document(
+            "<p>bare</p>",
+            &fallback_theme(),
+            &development,
+            "index.html",
+            false,
+        );
+        assert!(
+            no_body.starts_with(&format!("<div data-testid=\"{DEVELOPMENT_BAND_TESTID}\"")),
+            "with no <body> the band is prepended: {no_body}"
+        );
+
+        // A `<body` tag that never closes within the document.
+        let truncated = "<html><head></head><body";
+        let document = render_document(truncated, &fallback_theme(), &development, "index.html", false);
+        assert!(
+            document.starts_with(&format!("<div data-testid=\"{DEVELOPMENT_BAND_TESTID}\"")),
+            "an unterminated <body tag falls through to the prepend branch, never an \
+             out-of-range splice: {document}"
+        );
+    }
+
     #[test]
     fn an_unreadable_record_serves_nothing() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -1600,7 +2069,157 @@ mod tests {
         // a subscriber and is exercised live).
         assert_eq!(TRACE_TARGET, "fredo::installed_apps");
         let response = ServedResponse::ok(JAVASCRIPT_CONTENT_TYPE, b"x".to_vec());
-        serve_line("http://fredoapp.localhost/qa3147-test/", &response);
+        serve_line(
+            "http://fredoapp.localhost/qa3147-test/",
+            &response,
+            Some(InstalledAppMode::Released),
+        );
+    }
+
+    // ── S5: the serve line's `mode` field (Spec #3241, R-3.5) ────────────────
+
+    /// A minimal `tracing` layer capturing each event's target, message and
+    /// `(field-name, rendered-value)` pairs, so the serve line's FIELD NAME and
+    /// VALUE can be asserted without a subscriber in the process.
+    #[derive(Clone, Default)]
+    struct CaptureLayer {
+        events: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>)>>>,
+    }
+
+    struct CaptureVisitor<'a>(&'a mut Vec<(String, String)>);
+
+    impl tracing::field::Visit for CaptureVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name().to_string(), format!("{value:?}")));
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for CaptureLayer
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            event.record(&mut CaptureVisitor(&mut fields));
+            self.events
+                .lock()
+                .expect("capture mutex poisoned")
+                .push((event.metadata().target().to_string(), fields));
+        }
+    }
+
+    /// Emit the serve line for one response and return its `(name, value)` pairs
+    /// at [`TRACE_TARGET`] — the S5 instrument, read rather than assumed.
+    fn captured_serve_line_fields(response: &ServedResponse, mode: Option<InstalledAppMode>) -> Vec<(String, String)> {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = CaptureLayer::default();
+        let events = capture.events.clone();
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(capture));
+
+        serve_line("http://fredoapp.localhost/qa3147-test/", response, mode);
+
+        let events = events.lock().expect("capture mutex poisoned");
+        let ours: Vec<&(String, Vec<(String, String)>)> = events
+            .iter()
+            .filter(|(target, _)| target == TRACE_TARGET)
+            .collect();
+        assert_eq!(ours.len(), 1, "exactly one serve line per request");
+        // The message is the grep target the tester uses.
+        let has_message = ours[0]
+            .1
+            .iter()
+            .any(|(name, value)| name == "message" && value == "installed-app serve");
+        assert!(has_message, "the serve line's message must be `installed-app serve`");
+        ours[0].1.clone()
+    }
+
+    fn field_value(fields: &[(String, String)], name: &str) -> Option<String> {
+        fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    /// **R-3.5 / F-10.5.** Both match arms carry `mode`, with the mode's own wire
+    /// value — and the field is present on the arms that have a reason and the
+    /// ones that do not.
+    #[test]
+    fn the_serve_line_carries_the_install_mode() {
+        for mode in InstalledAppMode::ALL {
+            // The no-`reason` arm.
+            let ok = ServedResponse::ok(HTML_CONTENT_TYPE, b"<html></html>".to_vec());
+            let fields = captured_serve_line_fields(&ok, Some(mode));
+            assert_eq!(
+                field_value(&fields, "mode"),
+                Some(mode.as_str().to_string()),
+                "the success arm must carry mode={}",
+                mode.as_str()
+            );
+
+            // The `reason` arm.
+            let refused = ServedResponse::refused(
+                InstalledAppRefusalCode::IntegrityMismatch.as_str(),
+                "the file on disk does not match its recorded hash",
+            );
+            let fields = captured_serve_line_fields(&refused, Some(mode));
+            assert_eq!(
+                field_value(&fields, "mode"),
+                Some(mode.as_str().to_string()),
+                "the refusal arm must carry mode={}",
+                mode.as_str()
+            );
+            // Non-vacuity: the refusal arm's own field survived beside it.
+            assert_eq!(
+                field_value(&fields, "reason"),
+                Some("integrity_mismatch".to_string())
+            );
+        }
+
+        // A request that names no installed application says so explicitly, so an
+        // absent `mode` can never be read as `released`.
+        let fields = captured_serve_line_fields(&ServedResponse::ok(HTML_CONTENT_TYPE, Vec::new()), None);
+        assert_eq!(field_value(&fields, "mode"), Some("none".to_string()));
+    }
+
+    /// The traced mode is derived from the install directory, through the ONE
+    /// presence check — the SAME fact the painted surfaces read.
+    #[test]
+    fn the_served_mode_comes_from_the_install_directory() {
+        let (_released, released_root) = record_with(
+            vec![("main.js", b"export function mount() {}")],
+            "index.html",
+        );
+        assert_eq!(
+            served_app_mode(&released_root, "/qa3147-test/"),
+            Some(InstalledAppMode::Released),
+            "an install with no marker is released on the trace line too"
+        );
+
+        // The development marker is the PRESENCE of the file — the same rule
+        // `store::read_development_marker` applies for the documents.
+        let app_dir = store::app_dir(&released_root, "qa3147-test");
+        store::write_development_marker(&app_dir).expect("write marker");
+        assert_eq!(
+            served_app_mode(&released_root, "/qa3147-test/"),
+            Some(InstalledAppMode::Development)
+        );
+        assert_eq!(
+            served_app_mode(&released_root, "/qa3147-test/main.js"),
+            Some(InstalledAppMode::Development),
+            "EVERY request for the application carries the fact, not only the entry document"
+        );
+
+        // A path that names no installed application has no mode at all.
+        assert_eq!(served_app_mode(&released_root, "/__fredo/bootstrap.js"), None);
+        assert_eq!(served_app_mode(&released_root, "/../etc/passwd"), None);
     }
 
     #[test]

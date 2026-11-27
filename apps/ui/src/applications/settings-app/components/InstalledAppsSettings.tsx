@@ -77,10 +77,12 @@ import {
 } from 'react-icons/lu';
 
 import { tint } from '../../../shared/utils/colorTint';
+import { InstalledAppModeBadge } from '../../../shared/installed-apps/InstalledAppModeBadge';
 import {
   disableInstalledApp,
   enableInstalledApp,
   grantCapabilityConsent,
+  installDevelopmentPackage,
   installPackage,
   installedAppErrorFrom,
   removeInstalledApp,
@@ -112,6 +114,15 @@ import { RemoveInstalledAppDialog } from './RemoveInstalledAppDialog';
 /** The install button's visible label — the accessible name, verbatim (three ASCII dots). */
 export const INSTALL_BUTTON_LABEL = 'Install application package...';
 
+/**
+ * The development-load control's visible label — **also its accessible name**,
+ * verbatim (three ASCII dots, mirroring `INSTALL_BUTTON_LABEL`'s convention).
+ *
+ * There is deliberately no `aria-label`: the visible label IS the name, so the two
+ * cannot diverge, and the control is a TEXT button, never icon-only.
+ */
+export const INSTALL_DEVELOPMENT_BUTTON_LABEL = 'Load development build...';
+
 /** The unsigned-package note (UI/UX §8(i)) — verbatim, always visible. */
 export const UNSIGNED_PACKAGE_NOTE =
   "Fredo doesn't verify who built a package. Install only packages you trust.";
@@ -132,6 +143,20 @@ export const LIMITATIONS_SENTENCE =
 /** The success strip's sentence — it names the destination, because this pane is not an open surface. */
 export function installSuccessSentence(displayName: string): string {
   return `${displayName} is installed. Open it from the launcher, under Installed apps.`;
+}
+
+/**
+ * The development load's success sentence (Spec #3241; UI/UX §8).
+ *
+ * Deliberately NOT the shipped install sentence: `"{name} is installed."` omits the
+ * one fact the user just chose (that the build is a DEVELOPMENT build). Two
+ * sentences for two contexts, one source each — never an override chain (G-475).
+ * A refusal keeps the shipped copy unchanged: `already_installed` and `io_error`
+ * are true of a *load* too, and the existing install's mode is visible a few rows
+ * down on this same pane.
+ */
+export function installDevelopmentSuccessSentence(displayName: string): string {
+  return `${displayName} was loaded as a development build. Open it from the launcher, under Installed apps.`;
 }
 
 // ── The lifecycle state (Spec #3144, UI/UX §2.2) ────────────────────────────
@@ -385,6 +410,9 @@ const InstalledAppRow: React.FC<InstalledAppRowProps> = ({
       data-testid="installed-apps-entry"
       data-app-id={entry.id}
       data-app-state={entry.state}
+      // The mode is a SEPARATE fact from the lifecycle state (INV-4): always
+      // present, never folded into `data-app-state` or `STATE_WORDS`.
+      data-app-mode={entry.mode}
       px={5}
       py={3}
       gap={3}
@@ -407,6 +435,12 @@ const InstalledAppRow: React.FC<InstalledAppRowProps> = ({
             {entry.displayName}
           </Text>
           <StateChip state={entry.state} />
+          {/* The mode marker (Spec #3241) — an ADJACENT SIBLING of the state chip,
+              never a replacement for it and never inside it. A shipped assertion
+              pins the `-state` hook's cardinality at exactly 1 per row, so the
+              badge must not share its slot; the `-no-description` slot below stays
+              byte-identical too. */}
+          <InstalledAppModeBadge mode={entry.mode} testId="installed-apps-entry-mode" size="row" />
         </HStack>
         <Text fontFamily="mono" fontSize="xs" color="fg.muted" lineClamp={1}>
           {entry.id} @ {entry.version}
@@ -534,6 +568,29 @@ export const InstalledAppsSettings: React.FC = () => {
       setVerdict({ kind: 'refusal', error: installedAppErrorFrom(rejection) });
     } finally {
       // R-3.5: a refusal is data on screen, never a wedged install surface.
+      setInstalling(false);
+    }
+  }, [installing]);
+
+  /**
+   * Load a work-in-progress build as a development build (Spec #3241).
+   *
+   * Shares `installing` with the ordinary install: both controls are disabled
+   * while EITHER is in flight, so a second native picker cannot open and the one
+   * verdict slot cannot be raced. The verdict carries the returned entry, whose
+   * `mode` is the datum the success sentence is chosen from.
+   */
+  const handleInstallDevelopment = useCallback(async () => {
+    if (installing) return;
+    setInstalling(true);
+    setVerdict(null);
+    try {
+      const entry = await installDevelopmentPackage();
+      recordInstalledApp(entry);
+      setVerdict({ kind: 'success', entry });
+    } catch (rejection) {
+      setVerdict({ kind: 'refusal', error: installedAppErrorFrom(rejection) });
+    } finally {
       setInstalling(false);
     }
   }, [installing]);
@@ -684,6 +741,21 @@ export const InstalledAppsSettings: React.FC = () => {
             <Icon as={LuPackagePlus} aria-hidden="true" boxSize="4" />
             {INSTALL_BUTTON_LABEL}
           </Button>
+          {/* The shipped way to load a work-in-progress build (Spec #3241). A TEXT
+              button whose visible label IS its accessible name — never icon-only.
+              Neutral `outline` chrome: loading a development build is an ordinary
+              author action, and amber chrome would pre-empt the marking by implying
+              the action itself is risky (it has exactly a normal install's reach). */}
+          <Button
+            data-testid="installed-apps-install-development-button"
+            size="sm"
+            variant="outline"
+            loading={installing}
+            disabled={installing}
+            onClick={() => void handleInstallDevelopment()}
+          >
+            {INSTALL_DEVELOPMENT_BUTTON_LABEL}
+          </Button>
         </HStack>
         <Text fontSize="xs" color="fg.muted">
           {UNSIGNED_PACKAGE_NOTE}
@@ -716,7 +788,9 @@ export const InstalledAppsSettings: React.FC = () => {
             >
               <Icon as={LuCircleCheck} boxSize="4" color="var(--status-success)" aria-hidden="true" />
               <Text fontSize="sm" color="fg.default">
-                {installSuccessSentence(verdict.entry.displayName)}
+                {verdict.entry.mode === 'development'
+                  ? installDevelopmentSuccessSentence(verdict.entry.displayName)
+                  : installSuccessSentence(verdict.entry.displayName)}
               </Text>
             </HStack>
           ) : null}

@@ -60,7 +60,11 @@ pub(super) fn app_data_dir(app: &tauri::AppHandle) -> InstalledAppResult<PathBuf
 /// `rfd` is already a direct dependency with a shipped precedent at
 /// `applications/wireframe/commands.rs`. The dialog blocks, so it runs on the
 /// blocking pool; a cancelled dialog is `Ok(None)`.
-async fn pick_archive() -> InstalledAppResult<Option<PathBuf>> {
+///
+/// `pub(super)` so the development install command (Spec #3241) opens the SAME
+/// dialog with the same title and filter rather than a second copy of it — one
+/// picker, one filter, one cancellation rule.
+pub(super) async fn pick_archive() -> InstalledAppResult<Option<PathBuf>> {
     let picked = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
             .set_title(PACKAGE_DIALOG_TITLE)
@@ -81,7 +85,11 @@ async fn pick_archive() -> InstalledAppResult<Option<PathBuf>> {
 ///
 /// A blank `archivePath` is treated as absent (the common "the frontend passed
 /// an empty string" case) rather than as "open the file named ``".
-fn resolve_archive_path(archive_path: Option<&str>, picked: Option<PathBuf>) -> InstalledAppResult<PathBuf> {
+///
+/// `pub(super)` so the development install command (Spec #3241) reuses this exact
+/// rule instead of restating it — the two commands cannot drift on what a blank
+/// argument means.
+pub(super) fn resolve_archive_path(archive_path: Option<&str>, picked: Option<PathBuf>) -> InstalledAppResult<PathBuf> {
     if let Some(given) = archive_path.map(str::trim).filter(|value| !value.is_empty()) {
         let path = Path::new(given).to_path_buf();
         if !path.is_file() {

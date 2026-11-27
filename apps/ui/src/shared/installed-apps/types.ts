@@ -115,6 +115,44 @@ export function isInstalledAppLifecycleState(
 }
 
 /**
+ * How an installed application was loaded (Spec #3241).
+ *
+ * The array is the ONE runtime source; the union is derived from it. These
+ * strings are the wire form of the Rust `InstalledAppMode` (`snake_case`) and are
+ * part of the shipped contract — never rename one.
+ *
+ * Deliberately DIFFERENT from the painted word: the wire value is the
+ * machine-readable `development`, while every painted surface shows the token
+ * `DEVELOPMENT_MARKER_TOKEN` (`Development`). A later "cleanup" that aligned the
+ * two would break either the serde contract or the uniformity rule — do not
+ * attempt it.
+ */
+export const INSTALLED_APP_MODES = ['released', 'development'] as const;
+
+/** How an installed application was loaded. */
+export type InstalledAppMode = (typeof INSTALLED_APP_MODES)[number];
+
+/** Runtime guard: is this value one of the two install modes? */
+export function isInstalledAppMode(value: unknown): value is InstalledAppMode {
+  return (
+    typeof value === 'string' &&
+    (INSTALLED_APP_MODES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The ONE visible token every painted marking surface shows (Spec #3241).
+ *
+ * Painted verbatim, capitalised exactly like this, as a whole word on S1 (the
+ * title's leading run), S2 (the band sentence's leading phrase), S3 (the settings
+ * chip) and S4 (the launcher chip). It is **not** the wire value
+ * (`InstalledAppMode` is `development`), and it is **not** the spoken form
+ * (`installedAppEntryAccessibleName` says `development build` in lower case,
+ * because a mid-name capital can be spelled out by some screen readers).
+ */
+export const DEVELOPMENT_MARKER_TOKEN = 'Development';
+
+/**
  * The list projection — what the settings pane and the launcher render.
  *
  * `enginesFredo` is the declared range **verbatim**, never resolved to a
@@ -155,6 +193,15 @@ export interface InstalledAppEntry {
    * nothing), so read it directly: no `?.`, no `?? []`.
    */
   capabilities: InstalledAppCapabilityStatus;
+  /**
+   * How this application was loaded (Spec #3241). **ALWAYS present** — never
+   * optional, never `null`, exactly like `state` and `capabilities`.
+   *
+   * Read it directly (`entry.mode === 'development'`) with no fallback chain: an
+   * absent member would be a wire-contract break, not an older host, because the
+   * backend constructor cannot omit it (all four take the mode).
+   */
+  mode: InstalledAppMode;
 }
 
 /**
@@ -248,6 +295,27 @@ export const CAPABILITY_PROJECTION_KEY_PIN: [
 ] extends ['capabilities', never]
   ? 'capabilities'
   : never = 'capabilities';
+
+/**
+ * Compile-time pin of the mode projection's member name and type (Spec #3241).
+ *
+ * The wire member is `mode`, and its type is `InstalledAppMode` — NOT an optional
+ * and NOT `string`. If the member is ever dropped, made optional, or widened,
+ * this declaration stops compiling, which `pnpm --filter @fredo/ui build` (a
+ * `tsc` run) turns into a build failure. That is the TS half of the
+ * "always-present projection member" migration gate: a `mode`-less
+ * `InstalledAppEntry` literal anywhere in `apps/ui/src` is a compile error too.
+ */
+type ModeProjectionKey = Extract<keyof InstalledAppEntry, 'mode'>;
+type ModeProjectionType = InstalledAppEntry['mode'];
+export const MODE_PROJECTION_KEY_PIN: [ModeProjectionKey, ModeProjectionType] extends [
+  'mode',
+  InstalledAppMode,
+]
+  ? [InstalledAppMode] extends [ModeProjectionType]
+    ? 'mode'
+    : never
+  : never = 'mode';
 
 /**
  * The six-code AUTHORITY refusal vocabulary (Spec #3146) — a vocabulary

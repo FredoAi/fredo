@@ -231,11 +231,19 @@ seeds.push(
 );
 
 // ── Surface-specific extras (status/accent pills, selected control labels) ────
+// Spec #3241 (UI/UX D-7) — the development-mode badge's text pair and its
+// boundary. The badge's ground is a `color-mix(--status-info 10%, transparent)`
+// over the row/shelf ground, so the pair is UNGATED unless it is declared here:
+// a preset could ship a `status.info` whose 10% mix sits too close to the surface
+// and no automated gate would notice. Two rows close that hole.
 seeds.push(
   ['badge', 'default', 'status-label', 'body', 'status.onSolids', 'status.success', true],
   ['badge', 'default', 'status-warning-label', 'body', 'status.onSolids', 'status.warning', true],
   ['badge', 'default', 'status-error-label', 'body', 'status.onSolids', 'status.error', true],
   ['badge', 'default', 'status-info-label', 'body', 'status.onSolids', 'status.info', true],
+  // #3241 — the mode badge's word on its tinted ground, and its boundary.
+  ['badge', 'default', 'mode-label', 'body', 'fg.default', 'bg.surface', true],
+  ['badge', 'default', 'mode-boundary', 'ui', 'border.default', 'bg.surface', true],
   ['pill', 'default', 'accent-label', 'body', 'fg.onAccent', 'accent.solid'],
   ['control-outline', 'selected', 'label', 'body', 'fg.onAccent', 'accent.strong'],
   ['select', 'selected', 'label', 'body', 'fg.onAccent', 'accent.strong'],

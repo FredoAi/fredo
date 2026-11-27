@@ -36,6 +36,7 @@ import { LuPackageOpen } from 'react-icons/lu';
 
 import { tint } from '../../../../shared/utils/colorTint';
 import { openInstalledApp, installedAppErrorFrom } from '../../../../shared/installed-apps/client';
+import { InstalledAppModeBadge } from '../../../../shared/installed-apps/InstalledAppModeBadge';
 import { InstalledAppOpenRefusal } from '../../../../shared/installed-apps/RefusalBlocks';
 import { refreshInstalledApps } from '../../../../shared/installed-apps/store';
 import { useInstalledApps } from '../../../../shared/installed-apps/useInstalledApps';
@@ -49,6 +50,34 @@ export const INSTALLED_APPS_HEADING = '| INSTALLED APPS';
 
 /** The non-colour carrier of the v1 "not an in-window panel" limitation. */
 export const OWN_WINDOW_LABEL = 'own window';
+
+/**
+ * S4's accessible name for one entry (Spec #3241, R-3.4; Architect D-10b).
+ *
+ * The entry is a `<button>` carrying `aria-label`, and an `aria-label`
+ * **REPLACES the subtree's accessible name** — so the painted chip is never
+ * announced. Without this composition a screen-reader user would hear
+ * "Example Tools, button" and never learn the build is a development build. The
+ * mark must therefore ride in the NAME.
+ *
+ * **The released branch is `displayName` BYTE-IDENTICAL**, so a released entry's
+ * announcement is exactly what it was before this feature (the shipped
+ * `getByRole('button', { name: 'Alpha' })` assertion keeps passing).
+ *
+ * **The case difference is deliberate — do not "fix" it.** The PAINTED chip says
+ * `Development` (capitalised, for R-3.6's cross-surface uniformity) while the
+ * SPOKEN form is `development build` in lower case, because an accessible name is
+ * a spoken sentence and some screen readers spell out a mid-name capital. A comma
+ * separates name and qualifier (a bare `—` is read as "dash" by several engines,
+ * and parentheses are elided), so the user hears "Example Tools, development
+ * build, button" — name first, qualifier second, matching how the rest of the
+ * product speaks (`Loading <displayName>`).
+ */
+export function installedAppEntryAccessibleName(entry: InstalledAppEntry): string {
+  return entry.mode === 'development'
+    ? `${entry.displayName}, development build`
+    : entry.displayName;
+}
 
 /**
  * The query filter — drops turned-off applications (Spec #3144), then matches
@@ -138,7 +167,12 @@ export const LauncherInstalledAppsSection: React.FC<LauncherInstalledAppsSection
             type="button"
             data-testid="launcher-installed-app"
             data-app-id={entry.id}
-            aria-label={entry.displayName}
+            // The mode as its own attribute (separate from the painted chip and
+            // from the lifecycle state).
+            data-app-mode={entry.mode}
+            // The SPOKEN carrier: an `aria-label` masks the subtree, so the mark
+            // must ride in the name as well as the chip. Released is byte-identical.
+            aria-label={installedAppEntryAccessibleName(entry)}
             aria-busy={openingId === entry.id ? 'true' : undefined}
             disabled={openingId !== null}
             onClick={() => void handleOpen(entry)}
@@ -180,6 +214,17 @@ export const LauncherInstalledAppsSection: React.FC<LauncherInstalledAppsSection
               <Text fontSize="10px" color="fg.subtle" textTransform="uppercase" letterSpacing="0.04em">
                 {entry.version} · {OWN_WINDOW_LABEL}
               </Text>
+              {/* The mode chip (Spec #3241) — the SAME renderer as the settings row,
+                  so the word cannot drift between the two surfaces. A released entry
+                  renders NO node here; the third line is reserved on every entry so
+                  the shelf's wrap grid never goes ragged when one entry is taller. */}
+              <Box minHeight="16px" display="flex" alignItems="center">
+                <InstalledAppModeBadge
+                  mode={entry.mode}
+                  testId="launcher-installed-app-mode"
+                  size="shelf"
+                />
+              </Box>
             </Box>
           </chakra.button>
         ))}

@@ -1248,6 +1248,17 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // is only called by the settings pane (R-5.5).
             applications::installed_apps::commands_install::installed_app_install,
             applications::installed_apps::commands_install::installed_apps_list,
+            // Spec #3241 ST-2 — the ONE way to load a build as a DEVELOPMENT
+            // build. A separate command (never an argument on
+            // `installed_app_install`) so the shipped command's signature and
+            // `commands_install.rs`'s exactly-two-command guard both survive
+            // untouched. It is the SHIPPED install pipeline with the marker file
+            // written into the staging directory, so a development build is
+            // published already marked. Granted to the built-in window class only
+            // (`permissions/app/default.toml`); an `installed-<id>` document's one
+            // capability grants only `allow-installed-app-invoke`, so an installed
+            // application cannot load another one. Nothing here runs at startup.
+            applications::installed_apps::commands_development::installed_app_install_development,
             // Spec #3147 ST-4 — the installed-application window lifecycle
             // (`commands_window`): `installed_app_open` builds (or focuses) the
             // singleton `installed-<id>` window at the `fredoapp` document URL

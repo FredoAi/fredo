@@ -37,6 +37,7 @@ import {
   LauncherInstalledAppsSection,
   OWN_WINDOW_LABEL,
   filterInstalledApps,
+  installedAppEntryAccessibleName,
 } from '../LauncherInstalledAppsSection';
 import { INSTALL_REFUSAL_COPY } from '@/shared/installed-apps/refusals';
 
@@ -50,6 +51,7 @@ function entry(over: Partial<InstalledAppEntry> = {}): InstalledAppEntry {
     windowLabel: 'installed-dev.example.tools',
     state: 'working',
     capabilities: { appId: 'dev.example.tools', declared: [], highRisk: [], consented: [] },
+    mode: 'released',
     ...over,
   };
 }
@@ -174,5 +176,85 @@ describe('#3147 ST-6 — LauncherInstalledAppsSection', () => {
     storeMock.entries = [disabled];
     renderWithChakra(<LauncherInstalledAppsSection query="" />);
     expect(screen.queryByTestId('launcher-installed-apps-section')).toBeNull();
+  });
+
+  // ── Spec #3241 — S4, the mode on the launcher entry (R-3.4) ───────────────
+
+  it('marks a development entry on BOTH channels: the painted chip and the accessible name', () => {
+    storeMock.entries = [
+      entry({ id: 'dev', displayName: 'Example Tools', mode: 'development' }),
+    ];
+    renderWithChakra(<LauncherInstalledAppsSection query="" />);
+
+    const button = screen.getByTestId('launcher-installed-app');
+    expect(button).toHaveAttribute('data-app-mode', 'development');
+
+    // The PAINTED channel — the shared badge renders the token for development.
+    const chip = screen.getByTestId('launcher-installed-app-mode');
+    expect(chip.textContent).toBe('Development');
+
+    // The SPOKEN channel — the entry's `aria-label` MASKS the subtree, so without
+    // the composition the painted word would never be announced.
+    expect(button).toHaveAttribute('aria-label', 'Example Tools, development build');
+    // And the composed name is what the role query resolves.
+    expect(
+      screen.getByRole('button', { name: 'Example Tools, development build' }),
+    ).toBe(button);
+  });
+
+  it('leaves a RELEASED entry unmarked, with its accessible name BYTE-IDENTICAL', () => {
+    storeMock.entries = [entry({ id: 'a', displayName: 'Alpha', mode: 'released' })];
+    renderWithChakra(<LauncherInstalledAppsSection query="" />);
+
+    // The surface exists and shows the entry — absence against an empty shelf
+    // would be vacuous (G-469 / UI/UX D-9a).
+    const button = screen.getByTestId('launcher-installed-app');
+    expect(button).toHaveTextContent('Alpha');
+
+    // No chip node and no token in the subtree's text.
+    expect(screen.queryByTestId('launcher-installed-app-mode')).toBeNull();
+    expect(button.textContent).not.toContain('Development');
+
+    // The attribute is ALWAYS present, so a missing one can never be read as
+    // `released`.
+    expect(button).toHaveAttribute('data-app-mode', 'released');
+
+    // Byte-identical accessible name: the shipped assertion still resolves, and
+    // the name carries no qualifier.
+    expect(button).toHaveAttribute('aria-label', 'Alpha');
+    expect(screen.getByRole('button', { name: 'Alpha' })).toBe(button);
+    expect(screen.queryByRole('button', { name: 'Alpha, development build' })).toBeNull();
+  });
+
+  it('installedAppEntryAccessibleName composes per mode — and the two forms differ', () => {
+    // Development composes the qualifier (name first, qualifier second).
+    expect(
+      installedAppEntryAccessibleName(entry({ displayName: 'Example Tools', mode: 'development' })),
+    ).toBe('Example Tools, development build');
+    // Released is the BARE name, byte for byte.
+    expect(installedAppEntryAccessibleName(entry({ displayName: 'Example Tools', mode: 'released' }))).toBe(
+      'Example Tools',
+    );
+
+    // The case difference is DELIBERATE: painted `Development`, spoken
+    // `development build` in lower case (an accessible name is a spoken sentence
+    // where a mid-name capital can be spelled out). Do NOT "fix" it.
+    const development = installedAppEntryAccessibleName(
+      entry({ displayName: 'X', mode: 'development' }),
+    );
+    expect(development).toContain('development build');
+    expect(development).not.toContain('Development build');
+  });
+
+  it('still marks a FAILING development build (broken and development are different facts)', () => {
+    storeMock.entries = [
+      entry({ id: 'bad', displayName: 'Bad App', state: 'failing', mode: 'development' }),
+    ];
+    renderWithChakra(<LauncherInstalledAppsSection query="" />);
+
+    const button = screen.getByTestId('launcher-installed-app');
+    expect(button).toHaveAttribute('data-app-mode', 'development');
+    expect(screen.getByTestId('launcher-installed-app-mode')).toHaveTextContent('Development');
+    expect(screen.getByRole('button', { name: 'Bad App, development build' })).toBe(button);
   });
 });

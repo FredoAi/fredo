@@ -1,9 +1,11 @@
 /**
- * The five installed-application command wrappers (Spec #3147, ST-6).
+ * The installed-application command wrappers (Spec #3147, ST-6; the development
+ * load added by Spec #3241, ST-2).
  *
  * | Wrapper | Rust command | Args | Success |
  * |---|---|---|---|
  * | `installPackage` | `installed_app_install` | `archivePath?` (absent ⇒ native picker) | `InstalledAppEntry` |
+ * | `installDevelopmentPackage` | `installed_app_install_development` | `archivePath?` (absent ⇒ native picker) | `InstalledAppEntry` (`mode: development`) |
  * | `listInstalledApps` | `installed_apps_list` | — | `InstalledAppEntry[]` |
  * | `openInstalledApp` | `installed_app_open` | `appId` | `()` |
  * | `closeInstalledApp` | `installed_app_close` | `appId` | `bool` |
@@ -146,8 +148,35 @@ export async function installPackage(archivePath?: string): Promise<InstalledApp
   }
 }
 
-/** List every installed application. Rejects with a typed refusal error. */
-export async function listInstalledApps(): Promise<InstalledAppEntry[]> {
+/**
+ * Load a work-in-progress build as a **development build** (Spec #3241).
+ *
+ * Same argument rule as [`installPackage`]: `archivePath` omitted (or blank) means
+ * "open the native picker", because the Rust command treats an absent/blank path
+ * that way. The resolved entry carries `mode: 'development'`, and the backend has
+ * written `<id>/development.json` into the install directory, so every marking
+ * surface reads the same fact.
+ *
+ * This is the ONLY way to obtain a development build: the mode is a host-side load
+ * decision and is not a manifest key, so a package cannot declare itself one.
+ */
+export async function installDevelopmentPackage(
+  archivePath?: string,
+): Promise<InstalledAppEntry> {
+  try {
+    const args: Record<string, unknown> =
+      archivePath === undefined || archivePath.trim() === '' ? {} : { archivePath };
+    const entry = await adapterBridge.invoke<InstalledAppEntry>(
+      'installed_app_install_development',
+      args,
+    );
+    return requireResult(entry, 'load that development build');
+  } catch (rejection) {
+    throw asCommandError(rejection);
+  }
+}
+
+/** List every installed application. Rejects with a typed refusal error. */export async function listInstalledApps(): Promise<InstalledAppEntry[]> {
   try {
     const entries = await adapterBridge.invoke<InstalledAppEntry[]>('installed_apps_list');
     const value = requireResult(entries, 'read the installed applications');
@@ -298,9 +327,10 @@ export async function removeInstalledApp(appId: string): Promise<InstalledAppRem
   }
 }
 
-/** The ten wrappers, also available as one object for injection in tests. */
+/** The eleven wrappers, also available as one object for injection in tests. */
 export const installedAppsClient = {
   installPackage,
+  installDevelopmentPackage,
   listInstalledApps,
   openInstalledApp,
   closeInstalledApp,

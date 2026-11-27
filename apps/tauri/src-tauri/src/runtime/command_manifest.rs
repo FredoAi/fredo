@@ -163,6 +163,11 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     // appends `installed_apps_push_theme` after these.
     "installed_app_install",
     "installed_apps_list",
+    // Spec #3241 ST-2 — the ONE way to load a build as a DEVELOPMENT build. The
+    // shipped install pipeline with the `development.json` marker written into the
+    // staging directory; a separate command so the shipped `installed_app_install`
+    // signature and `commands_install.rs`'s two-command guard stay untouched.
+    "installed_app_install_development",
     // Spec #3147 ST-4 — the installed-application window lifecycle: open builds
     // (or focuses) the singleton `installed-<id>` window, close destroys it.
     "installed_app_open",
