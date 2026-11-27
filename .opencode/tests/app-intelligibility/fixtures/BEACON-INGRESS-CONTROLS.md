@@ -70,16 +70,41 @@ for an accepted one; `accepted` in `attributes_json` is the authoritative boolea
 ## 2. The controls
 
 One row per control. **`producible`** is how the beacon is produced: `child` = the fixture issues
-it on `mount` with no host turn; `turn` = the fixture arms a lever from its own visible button and
-the tester drives **one companion turn** targeting `qa3244-beacon-control`.
+it on `mount` with no host turn; `turn` = the fixture **self-arms the lever off the report-call
+index** and the tester drives **one companion turn** targeting `qa3244-beacon-control` (no post-mount
+gesture — see §6).
 
 | id | producible | how it is produced | expected typed reason | the step that drives it |
 |---|---|---|---|---|
 | **A-OVERSIZE** | `child` | On `mount` the module builds a raw query longer than `2 × BEACON_MAX_BYTES` and loads it: `nonce=qa3244-control-oversize&d=<≈32 KB of 'A'>`. There is no base64 decode, no JSON — the raw length alone trips the pre-decode bound. | **`oversize`**, `accepted=false`, `payloadBytes > 16384` | Open the fixture. Nothing else. `serve_beacon` refuses before buffering. |
 | **B-MISSING-NONCE** | `child` | On `mount` it loads a **well-formed** payload with **no `nonce` parameter at all**: `d=<base64 of a valid ScreenOutline>`. | **`missing-nonce`**, `accepted=false` | Open the fixture. The payload is valid, so only the nonce gate can reject it — that is what makes the leg discriminating. |
 | **C-UNKNOWN-NONCE** | `child` | On `mount` it loads a well-formed payload under a nonce the host could never have minted: `nonce=qa3244-control-never-issued&d=…`. | **`unknown-nonce`**, `accepted=false` | Open the fixture. |
-| **E-TIMEOUT** | `turn` | The module **wraps** the host-authored reporter `window.__FREDO_REPORT_OUTLINE__`. Pressing **"Suppress the next beacon (timeout leg)"** arms a one-shot: on the next turn's report call the wrapper returns **without issuing the image load**. The host `eval`s the requested reporter, waits `BEACON_TIMEOUT_MS`, and abandons. | **`timeout`**, `accepted=false`, `appId = qa3244-beacon-control` (this is the one receipt that carries an id) | Arm the button, then drive **one** companion turn targeting `qa3244-beacon-control`. Read the span. |
-| **D-REPLAY-AFTER-TTL** | `turn` | Pressing **"Replay the last nonce after the TTL"** arms the wrapper: after the next report it re-issues the **captured** nonce `BEACON_TIMEOUT_MS + 250 ms` later. The turn's own beacon is delivered normally, and `request_outline` **closes that nonce** as soon as it takes the outline (`close_nonce`, `beacon.rs:598-600`), so the late replay meets a nonce that no longer exists. | **`unknown-nonce`** (see §4 — `expired` is the unit-pinned path, unreachable here) | Arm the button, drive **one** companion turn, wait ≈3 s, then read the spans. **This leg yields TWO ingress spans:** the turn's own beacon is **`accepted`** (inside the 2 s window), and the replay lands ≈2.25 s later as **`unknown-nonce`**. Both belong to that one turn — the `accepted` row is the turn working, the `unknown-nonce` row is the control. |
+| **E-TIMEOUT** | `turn` | The module **wraps** the host-authored reporter `window.__FREDO_REPORT_OUTLINE__`. On the **second** report call (companion **turn 2**) the wrapper returns **without issuing the image load**. The host `eval`s the requested reporter, waits `BEACON_TIMEOUT_MS`, and abandons. | **`timeout`**, `accepted=false`, `appId = qa3244-beacon-control` — **and zero `unknown-nonce` / `accepted` spans for that turn** (see §2.1: a bare `timeout` span is NOT a PASS) | Drive **companion turn 2** targeting `qa3244-beacon-control`. No gesture is needed — the lever is armed off the report-call index. Read the span. |
+| **D-REPLAY-AFTER-TTL** | `turn` | On the **first** report call (companion **turn 1**) the wrapper forwards normally and then re-issues the **same minted** nonce `BEACON_TIMEOUT_MS + 250 ms` later. The turn's own beacon is delivered normally, and `request_outline` **closes that nonce** as soon as it takes the outline (`close_nonce`, `beacon.rs:598-600`), so the late replay meets a nonce that no longer exists. | **`unknown-nonce`** (see §4 — `expired` is the unit-pinned path, unreachable here) | Drive **companion turn 1**, wait for the replay span to land (≈2.25 s after the turn's own report), then read the spans. **This leg yields TWO ingress spans:** the turn's own beacon is **`accepted`** (inside the 2 s window), and the replay lands ≈2.25 s later as **`unknown-nonce`**. Both belong to that one turn — the `accepted` row is the turn working, the `unknown-nonce` row is the control. |
+
+### 2.1 `E-TIMEOUT` needs TWO halves — the confound this row must not repeat
+
+`request_outline` records `reason=timeout` on **any** abandoned wait (`beacon.rs:602-614`), and a
+**nonce-rejected** beacon also never fills the entry, so an ordinary turn with a broken nonce carrier
+*also* emits a `timeout` span. **A bare `timeout` span therefore does not discriminate a suppressed
+reporter from a rejected nonce**, and a row that accepts one is passable by the very defect it is
+meant to catch.
+
+The discriminating fact is structural: **a suppressed turn issues no image load at all**, so it
+produces **no `unknown-nonce` ingress span for that turn**, while a nonce-broken turn produces one and
+*then* times out. `E-TIMEOUT` therefore PASSES only on **both** halves, attributed to the same turn:
+
+1. a `reason=timeout`, `accepted=false` span with `appId=qa3244-beacon-control`, **and**
+2. **zero** `reason=unknown-nonce` (and zero `reason=accepted`) spans for that turn.
+
+**Attribution is order-sensitive and must be recorded, not inferred** (`BEACON_TIMEOUT_MS = 2000`, so
+the window is tight). The concrete collision to anticipate: **turn 1's replay fires ~2.25 s after
+turn 1's report — after turn 1's own 2.0 s wait has ended — which is inside, or just before, turn 2's
+window.** So the tester MUST wait for turn 1's replay span to land and record it against turn 1
+**before** starting turn 2, and quote the observed timeline. Without that, turn 2's "zero
+`unknown-nonce` spans" clause is reddened by turn **1**'s replay and the discriminator is itself
+confounded.
+
 
 ### Why wrapping the host reporter is legitimate
 
@@ -112,8 +137,9 @@ re-reading until the numbers look right.
 
 Corroboration (never a substitute): the fixture mirrors every attempt as rendered text —
 `<p data-beacon-control="A-OVERSIZE">SENT A-OVERSIZE expect=oversize queryChars=…</p>` and the
-`[data-qa3244-beacon-log]` block. Read it with a **native accessibility (UIA) text read** or a
-native window capture. Never with `tauri_webview_*` — see §6.
+`[data-qa3244-beacon-log]` block. The mirrored text is corroboration only; the **authoritative
+receipt is the host's own `telemetry_spans` row** (see §6). Never read an installed-`*` window with
+`tauri_webview_*`.
 
 ---
 
@@ -173,7 +199,9 @@ round can add them without guessing:
 
 - **PASS** — every armed control produced **exactly one** `installed.beacon.ingress` span carrying
   the reason in §2, with `accepted=false` for every rejection, and the mount-time trio is
-  distinguishable by the §3 table.
+  distinguishable by the §3 table. `E-TIMEOUT` additionally requires §2.1's **second half**
+  (zero `unknown-nonce` / `accepted` spans for that turn): a bare `timeout` span is **not** a PASS.
+  `D-REPLAY-AFTER-TTL` requires the pair (`accepted` then `unknown-nonce`) on one turn.
 - **FAIL** — a control produced no span; a span carries a different reason; a rejected beacon
   produced a turn input (the thing the ingress exists to prevent); or an over-cap payload is
   buffered and accepted.
@@ -190,16 +218,23 @@ Every `installed-*` window is **unreachable by `tauri_webview_*`**. `execute_js`
 `installed-<id>` windowId — the result channel is ACL-denied inside the child (the #3147 isolation
 property, reaffirmed by #3244). That is not a bug to work around.
 
-So this fixture **drives itself on mount** and **mirrors everything as visible text**, and the
-tester reads that text with a capability-independent instrument:
+So this fixture **drives itself on mount** and **mirrors every attempt as rendered text**. The
+authoritative receipt for every control is the **host's own `telemetry_spans` row**, never the child's
+rendering; the mirrored text is corroboration a human can eyeball, not a gate.
 
-1. a **native accessibility (UIA) text read** of the installed window's own tree, and
-2. a **native window capture** uploaded via `upload-evidence` as a `user-attachments` URL.
+The two turn-coupled controls are armed **by the fixture itself**: a companion turn evaluates the
+reporter exactly once, so the wrapper counts report calls and arms the legs on **turn 1 (replay)** and
+**turn 2 (suppress)**. **No post-mount gesture is needed, and none is available** — no role holds a
+native-input instrument, so a click-armed lever could not be driven at all. The two buttons remain a
+**manual override** for a human with native input; the generator's always-on self-check aborts the
+build if the schedule vars disappear, so a later edit cannot silently reintroduce a gesture-required
+lever.
 
-The two turn-coupled controls are different: they need a *host* turn, so they are armed from the
-app's **own visible buttons** (a native click on `[data-qa3244-beacon-suppress]` /
-`[data-qa3244-beacon-replay]`) — again no `tauri_webview_*`. The authoritative receipt for every
-control is the **host's own `telemetry_spans` row**, never the child's rendering.
+Read `[data-qa3244-beacon-arms]` to confirm which turn you are on: its first field is
+`schedule=replayOnTurn1,suppressOnTurn2 reports=<n>`, and `reports` is the turn counter.
+
+**Never use `tauri_webview_*` to drive or read an `installed-*` window.** The host's `telemetry_spans`
+rows are the receipt, and they are what the verdict quotes.
 
 ---
 

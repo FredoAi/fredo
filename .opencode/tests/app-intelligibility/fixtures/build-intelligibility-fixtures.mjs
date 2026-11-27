@@ -38,20 +38,21 @@
  *     leg (two turns separated by a visible screen change) can be driven. The
  *     installed child is unreachable by every `tauri_webview_*` tool (the
  *     #3147 isolation property), so the mutation levers are the app's OWN
- *     visible affordances plus a live line: a native click / keyboard
- *     activation of `[data-qa3244-mutate]`, and a `[data-qa3244-live]` line
- *     that advances every second. Its id must appear NOWHERE under `apps/**`
- *     (that absence is AC-2b's proof; the sweep artifact checks it).
+ *     visible affordances plus a live line: a keyboard activation of
+ *     `[data-qa3244-mutate]`, and a `[data-qa3244-live]` line that advances
+ *     every second. Its id must appear NOWHERE under `apps/**` (that absence is
+ *     AC-2b's proof; the sweep artifact checks it).
  *
  *  2. `qa3244-beacon-control` -- ING-1's committed negative-control fixture.
  *     On mount it issues the ingress controls a child CAN issue (oversize
  *     payload, missing nonce, unknown nonce) and mirrors each attempt as
  *     visible text; it also wraps the host-injected reporter so the two
- *     turn-coupled controls (timeout, replay-after-TTL) can be armed from the
- *     app's own visible buttons. See `BEACON-INGRESS-CONTROLS.md` for the plan,
- *     the expected typed reason per control, and the ONE control this fixture
- *     cannot produce (a genuinely expired nonce -- the finding is recorded
- *     there).
+ *     turn-coupled controls (timeout, replay-after-TTL) SELF-ARM off the
+ *     report-call index (turn 1 = replay, turn 2 = suppress), because no role
+ *     holds a native-input instrument. See `BEACON-INGRESS-CONTROLS.md` for the
+ *     plan, the expected typed reason per control, and the ONE control this
+ *     fixture cannot produce (a genuinely expired nonce -- the finding is
+ *     recorded there).
  *
  *  3. The AC-4 progressive dense-screen ladder -- `qa3244-dense-*`, a monotone
  *     ladder of named-node counts (and name lengths) so a live run can find the
@@ -231,8 +232,10 @@ const BEACON_CONTROLS = [
     producible: 'turn',
     expect: 'timeout',
     what:
-      'Arm `Suppress the next beacon`, then drive one turn: the reporter is called but issues no load, ' +
-      'so the host abandons the wait and records a `timeout` ingress receipt.',
+      'Drive companion turn 2: the wrapper suppresses that turn\'s report, so the reporter issues no ' +
+      'load, the host abandons the wait and records a `timeout` ingress receipt. The lever is armed ' +
+      'off the report-call index, so no gesture is needed. PASS requires BOTH a `timeout` span AND ' +
+      'zero `unknown-nonce` / `accepted` spans for that turn (a nonce-rejected turn also times out).',
   },
   {
     id: 'D-REPLAY-AFTER-TTL',
@@ -246,12 +249,13 @@ const BEACON_CONTROLS = [
     // `expired` is a real FINDING, not a tolerated outcome.
     expect: 'unknown-nonce',
     what:
-      'Arm `Replay the last nonce after the TTL`, then drive one turn. The turn\'s own beacon is ' +
-      'ACCEPTED inside the 2 s window; the captured nonce is then re-issued ' +
-      'BEACON_TIMEOUT_MS + 250 ms later, by which point request_outline has closed it -- so the ' +
-      'replay records `unknown-nonce`. The leg therefore yields TWO ingress spans (one accepted, ' +
-      'one unknown-nonce). An `expired` reading would need a nonce still in the store past its TTL ' +
-      'and is the unit-pinned path, not fixture-reachable; see BEACON-INGRESS-CONTROLS.md.',
+      'Drive companion turn 1. That turn\'s beacon is delivered normally and the wrapper re-issues ' +
+      'the SAME minted nonce BEACON_TIMEOUT_MS + 250 ms later, by which point request_outline has ' +
+      'closed it -- so the replay records `unknown-nonce`. The leg therefore yields TWO ingress spans ' +
+      '(one accepted, one unknown-nonce) for the one turn. The lever is armed off the report-call ' +
+      'index, so no gesture is needed. An `expired` reading would need a nonce still in the store ' +
+      'past its TTL and is the unit-pinned path, not fixture-reachable; see ' +
+      'BEACON-INGRESS-CONTROLS.md.',
   },
 ];
 
@@ -272,17 +276,17 @@ const FIXTURES = [
       'AC-2b / F-4: the id appears NOWHERE under apps/** (the sweep artifact checks it).',
     ],
     dom: [
-      '[data-qa3244-panel]            the fixture panel (rendered, native-readable)',
+      '[data-qa3244-panel]            the fixture panel (rendered)',
       '[data-qa3244-header]           ONE deterministic line: app= version= descriptionBytes=',
       '[data-qa3244-description]      the DECLARED description, verbatim (what the turn must carry)',
       '[data-qa3244-screen]           THE MUTABLE SCREEN: "QA3244-SCREEN step=<n> token=<t>"',
       '[data-qa3244-live]             a live line, advanced every 1000 ms ("QA3244-LIVE t=<ms>")',
       '[data-qa3244-step]             the current step as text',
-      '[data-qa3244-mutate]           the visible button that advances the screen (native click /',
-      '                               keyboard activation -- the app\'s OWN affordance)',
+      '[data-qa3244-mutate]           the visible button that advances the screen (keyboard',
+      '                               activation -- the app\'s OWN affordance)',
       '[data-qa3244-screen-log]       one line per mutation, so both states are readable at once',
-      'Read with a native accessibility (UIA) text read / native window capture -- never',
-      'tauri_webview_* (unreachable on installed-<id>, #3147).',
+      'Every receipt for this fixture is the host\'s telemetry_spans row; the rendered text here',
+      'is corroboration only. Never tauri_webview_* (unreachable on installed-<id>, #3147).',
     ],
   },
   {
@@ -297,19 +301,21 @@ const FIXTURES = [
       BEACON_INGRESS_SPAN_NAME + ' span carrying the typed reason. The typed, non-silent',
       'reason IS the observable -- a beacon that merely "does not crash" is not a PASS.',
       'The three child-issued controls fire on mount; the two turn-coupled controls are',
-      'armed from the app\'s own visible buttons and need one companion turn.',
+      'self-arming on the report-call index (turn 1 = replay, turn 2 = suppress) and need',
+      'one companion turn each. The buttons remain a manual override.',
     ],
     dom: [
-      '[data-qa3244-beacon-panel]     the control panel (rendered, native-readable)',
+      '[data-qa3244-beacon-panel]     the control panel (rendered)',
       '[data-qa3244-beacon-header]    ONE deterministic line: app= controls= path= maxBytes=',
       'one <p data-beacon-control="<id>" data-state="pending|sent"> per child-issued control',
       '                               "SENT <id> expect=<reason> query=<first 64 chars>"',
       '[data-qa3244-beacon-log]       every issued URL (oversize one truncated), in order',
-      '[data-qa3244-beacon-arms]      which turn-coupled levers are armed (suppress / replay)',
-      '[data-qa3244-beacon-last-nonce] the last host-issued nonce the wrapper observed',
-      '[data-qa3244-beacon-wrapper]   a mirror of the wrapper\'s activity',
-      '[data-qa3244-beacon-suppress]  button: arm "suppress the next beacon" (the timeout leg)',
-      '[data-qa3244-beacon-replay]    button: arm "replay the last nonce after the TTL"',
+      '[data-qa3244-beacon-arms]      the self-arm schedule + report count + manual overrides:',
+      '                               "schedule=replayOnTurn1,suppressOnTurn2 reports=<n> ..."',
+      '[data-qa3244-beacon-last-nonce] the last host-issued MINTED nonce the wrapper observed',
+      '[data-qa3244-beacon-wrapper]   a mirror of the wrapper\'s activity (per turn)',
+      '[data-qa3244-beacon-suppress]  button: MANUAL override, arm "suppress the next beacon"',
+      '[data-qa3244-beacon-replay]    button: MANUAL override, arm "replay the last nonce after the TTL"',
     ],
   },
 ].concat(
@@ -416,8 +422,8 @@ function untaughtModule(fixture) {
 // time out against installed-* -- the #3147 isolation property), so the mutation
 // levers are the app's OWN visible affordances:
 //
-//   * native click / keyboard activation of [data-qa3244-mutate] advances the
-//     screen (the app changes its own screen, exactly as a real app would); and
+//   * keyboard activation of [data-qa3244-mutate] advances the screen (the app
+//     changes its own screen, exactly as a real app would); and
 //   * [data-qa3244-live] advances every second, so a screen change is
 //     guaranteed between any two turns even with no input at all.
 //
@@ -540,21 +546,29 @@ function beaconControlModule(fixture) {
 // telemetry_spans.
 //
 // The three child-issued controls fire on mount. The two turn-coupled controls
-// are armed from this app's OWN visible buttons (the installed window takes no
-// test-harness input) and need one companion turn targeting this app:
+// SELF-ARM off the report-call index -- a companion turn targeting this app evals
+// the reporter exactly once, so the call index IS the turn counter -- and need one
+// companion turn each. No post-mount gesture is required (no role holds a
+// native-input instrument), and none may be reintroduced: the generator's own
+// self-check aborts the build if TURN_REPLAY / TURN_SUPPRESS ever disappear.
 //
-//   * Suppress the next beacon  -> the reporter is called but issues no load, so
-//     the host abandons the wait and records reason=timeout.
-//   * Replay the last nonce after the TTL -> the captured nonce is re-issued
-//     after BEACON_TIMEOUT_MS + 250 ms. The shipped TTL EQUALS the correlation
-//     timeout, and request_outline CLOSES the nonce once it is served or
-//     abandoned, so the observed reason is unknown-nonce. An expired reading
-//     needs a nonce still in the store past its TTL (the unit-pinned path, not
-//     reachable from a child). See BEACON-INGRESS-CONTROLS.md section 4.
+//   * turn 1 (TURN_REPLAY):  forward normally, then replay the SAME minted nonce
+//     after BEACON_TIMEOUT_MS + 250 ms -> D-REPLAY-AFTER-TTL (accepted + unknown-nonce).
+//   * turn 2 (TURN_SUPPRESS): suppress the report, so the reporter issues no load
+//     and the host abandons the wait -> E-TIMEOUT (timeout + NO unknown-nonce).
+//   * turn 3+: forward normally -> accepted.
+//
+// The shipped TTL EQUALS the correlation timeout, and request_outline CLOSES the
+// nonce once it is served or abandoned, so the replay's reason is unknown-nonce.
+// An expired reading needs a nonce still in the store past its TTL (the
+// unit-pinned path, not reachable from a child). See BEACON-INGRESS-CONTROLS.md §4.
 //
 // Wrapping the host-authored reporter is deliberate: it is exactly the
 // untrusted-child behaviour the ingress must survive, and it is the ONLY way a
-// child can hold a host-issued nonce long enough to replay it.
+// child can hold a host-issued nonce long enough to replay it. The wrapper also
+// JSON.parses the reporter's argument, because the host evals the nonce as JSON
+// text inside a single-quoted JS literal (the theme-push shape) -- replaying the
+// raw argument would replay a nonce the host never minted.
 
 var FIXTURE_ID = __ID_JSON__;
 var VERSION = __VERSION_JSON__;
@@ -630,13 +644,23 @@ export function mount(ctx) {
   var lastNonce = '';
   var wrapperNotes = [];
 
+  // The self-arming schedule (see the wrapper below). A companion turn targeting
+  // this app evaluates the reporter EXACTLY once, so the report-call index is a
+  // deterministic TURN COUNTER. Declared ABOVE publishArms because that function
+  // renders them.
+  var TURN_REPLAY = 1;
+  var TURN_SUPPRESS = 2;
+  var reportCalls = 0;
+
   function publishLog() {
     logEl.textContent = issued.join('\\n');
   }
 
   function publishArms() {
     armsEl.textContent =
-      'suppress=' + (arms.suppress ? 'armed' : 'off') +
+      'schedule=replayOnTurn' + String(TURN_REPLAY) + ',suppressOnTurn' + String(TURN_SUPPRESS) +
+      ' reports=' + String(reportCalls) +
+      ' suppress=' + (arms.suppress ? 'armed' : 'off') +
       ' replayAfterTtl=' + (arms.replay ? 'armed' : 'off');
   }
 
@@ -701,35 +725,75 @@ export function mount(ctx) {
     return text;
   }
 
+  // Self-arming schedule (Spec #3244 ING-1 — the Toolsmith convention for a
+  // turn-coupled lever inside an ACL-isolated child).
+  //
+  // A companion turn targeting this app invokes this reporter EXACTLY once
+  // (screenContext.ts -> requestInstalledOutline -> request_outline evals ONE
+  // report statement per turn; no retry exists on that path), and the host eval
+  // only CALLS this global -- it never re-assigns it (the projector statement
+  // defines __FREDO_SIMPLIFY_DOM__ and calls the reporter). So the report-call
+  // index is a deterministic TURN COUNTER, and neither leg needs a post-mount
+  // gesture a role cannot perform:
+  //
+  //   turn 1 -> forward normally, then replay the consumed nonce after the TTL
+  //             (D-REPLAY-AFTER-TTL: accepted + unknown-nonce)
+  //   turn 2 -> suppress, so the host abandons the wait (E-TIMEOUT: timeout, and
+  //             NO unknown-nonce span for that turn)
+  //   turn 3+ -> forward normally
+  //
+  // The two buttons remain a MANUAL override for a human with native input; they
+  // are NOT required for either leg.
   window.__FREDO_REPORT_OUTLINE__ = function (nonce, maxNodes) {
-    if (typeof nonce !== 'string' || nonce === '') {
-      publishWrapper('report called with no nonce -- forwarded');
+    reportCalls += 1;
+    var turn = reportCalls;
+
+    // The host evals the nonce as JSON TEXT inside a single-quoted JS literal
+    // (the theme-push shape), so the argument arrives as JSON and we must DECODE
+    // it before displaying or replaying. A raw capture would replay the JSON text
+    // (quote-wrapped) -- a nonce the host never minted -- and the leg would pass
+    // for the wrong reason instead of testing the real replay.
+    var mintedNonce = nonce;
+    if (typeof nonce === 'string') {
+      try {
+        mintedNonce = JSON.parse(nonce);
+      } catch (error) {
+        mintedNonce = nonce;
+      }
+    }
+    var hasNonce = typeof mintedNonce === 'string' && mintedNonce !== '';
+
+    if (!hasNonce) {
+      publishWrapper('turn ' + String(turn) + ': report called with no nonce -- forwarded');
     } else {
-      lastNonce = nonce;
-      publishWrapper('observed ' + reportNonce(nonce));
+      lastNonce = mintedNonce;
+      publishWrapper('turn ' + String(turn) + ': observed ' + reportNonce(mintedNonce));
     }
 
-    if (arms.suppress) {
-      // One-shot: the next turn's reporter is swallowed, so the host times out.
+    if (arms.suppress || turn === TURN_SUPPRESS) {
+      // One-shot: this turn's reporter is swallowed, so the host times out.
       arms.suppress = false;
       publishArms();
-      publishWrapper('suppressed a report for ' + String(nonce) + ' (timeout leg armed->fired)');
+      controlLine('E-TIMEOUT', 'caused', 'expect=timeout turn=' + String(turn));
+      publishWrapper('turn ' + String(turn) + ': suppressed the report -- the host will time out');
       return;
     }
 
+    // Forward the ORIGINAL argument: the bootstrap reporter decodes the JSON text
+    // itself, so re-encoding it here would double-encode the nonce.
     if (typeof originalReport === 'function') {
       originalReport(nonce, maxNodes);
     }
 
-    if (arms.replay && typeof nonce === 'string' && nonce !== '') {
+    if ((arms.replay || turn === TURN_REPLAY) && hasNonce) {
       arms.replay = false;
       publishArms();
+      controlLine('D-REPLAY-AFTER-TTL', 'caused', 'expect=unknown-nonce turn=' + String(turn));
       window.setTimeout(function () {
-        load('nonce=' + encodeURIComponent(nonce) + '&d=' + encodePayload(validOutlineJson()));
-        issued.push('D-REPLAY-AFTER-TTL ' + String(nonce) + ' (+' + String(BEACON_TIMEOUT_MS + 250) + 'ms)');
-        controlLine('D-REPLAY-AFTER-TTL', 'sent', 'expect=unknown-nonce');
+        load('nonce=' + encodeURIComponent(mintedNonce) + '&d=' + encodePayload(validOutlineJson()));
+        issued.push('D-REPLAY-AFTER-TTL ' + String(mintedNonce) + ' (+' + String(BEACON_TIMEOUT_MS + 250) + 'ms)');
         publishLog();
-        publishWrapper('replayed ' + String(nonce) + ' after the TTL');
+        publishWrapper('replayed ' + String(mintedNonce) + ' after the TTL');
       }, BEACON_TIMEOUT_MS + 250);
     }
   };
@@ -737,25 +801,34 @@ export function mount(ctx) {
   suppressEl.addEventListener('click', function () {
     arms.suppress = true;
     publishArms();
-    controlLine('E-TIMEOUT', 'armed', 'expect=timeout (drive one turn)');
+    controlLine('E-TIMEOUT', 'manual', 'expect=timeout on the next report');
   });
   replayEl.addEventListener('click', function () {
     arms.replay = true;
     publishArms();
-    controlLine('D-REPLAY-AFTER-TTL', 'armed', 'expect=unknown-nonce (drive one turn)');
+    controlLine('D-REPLAY-AFTER-TTL', 'manual', 'expect=unknown-nonce on the next report');
   });
 
-  /* A small documented surface for a FUTURE host-side driver (a Toolsmith item;
-     no row in this suite depends on it). */
+  /* A small documented surface for a FUTURE host-side driver. NOT reachable by the
+     tester today: the only host->child eval is report_statement, which calls the
+     reporter and defines no other hook. The schedule above is what makes the two
+     turn-coupled legs driveable without this surface. */
   window.__QA3244_BEACON__ = {
     lastNonce: function () { return lastNonce; },
     issued: function () { return issued.slice(); },
-    arms: function () { return { suppress: arms.suppress, replay: arms.replay }; }
+    arms: function () { return { suppress: arms.suppress, replay: arms.replay }; },
+    turns: function () { return reportCalls; },
+    schedule: function () { return { replayOnTurn: TURN_REPLAY, suppressOnTurn: TURN_SUPPRESS }; },
+    arm: function (name) {
+      if (name === 'suppress') { arms.suppress = true; } else if (name === 'replay') { arms.replay = true; } else { return false; }
+      publishArms();
+      return true;
+    }
   };
 
   publishArms();
   publishLog();
-  publishWrapper('wrapper installed (pass-through until armed)');
+  publishWrapper('wrapper installed (self-arming: turn ' + String(TURN_REPLAY) + ' replays, turn ' + String(TURN_SUPPRESS) + ' suppresses)');
   root.setAttribute('data-qa3244-beacon-ready', 'true');
 
   // Issued on a floating continuation so mount() resolves synchronously and a
@@ -1133,6 +1206,49 @@ function selfCheck(item) {
       if (!moduleText.includes('__FREDO_REPORT_OUTLINE__')) {
         problems.push('the wrapper does not take over the host reporter');
       }
+      // The two turn-coupled controls MUST self-arm off the report-call index. A
+      // companion turn evals the reporter exactly once, and no role holds a
+      // native-input instrument, so a post-mount gesture cannot be driven at all —
+      // a fixture that regressed to gesture-only arming would make both legs
+      // undrivable while still reading green. The generator aborts here so that
+      // cannot happen silently (the always-on self-check IS the pin).
+      //
+      // Assert the exact DECLARATIONS and the schedule's USE — a bare substring
+      // presence check is satisfiable by a variable that is never referenced
+      // (G-476: a pin whose literal unrelated text can satisfy is not a gate).
+      for (const declaration of [
+        'var TURN_REPLAY = 1;',
+        'var TURN_SUPPRESS = 2;',
+        'reportCalls += 1;',
+        'var turn = reportCalls;',
+        'turn === TURN_REPLAY',
+        'turn === TURN_SUPPRESS',
+      ]) {
+        if (!moduleText.includes(declaration)) {
+          problems.push(
+            'the turn-coupled controls are not self-arming on the report-call index ' +
+              '(missing `' +
+              declaration +
+              '`): a companion turn evals the reporter exactly once, so no post-mount ' +
+              'gesture is reachable'
+          );
+        }
+      }
+      // ...and the capture/replay must DECODE the reporter's argument: after the
+      // host-side JSON-literal carrier, the argument is JSON TEXT, not the nonce.
+      // A wrapper that replayed it raw would replay a nonce the host never minted
+      // and pass the leg for the wrong reason.
+      if (!moduleText.includes('JSON.parse(nonce)')) {
+        problems.push(
+          'the beacon wrapper does not JSON.parse the reporter argument, so it would replay ' +
+            'the JSON text of the nonce rather than the minted nonce'
+        );
+      }
+      // The replay must re-issue the DECODED nonce — `encodeURIComponent(nonce)` here
+      // would be the raw JSON text again.
+      if (!moduleText.includes('encodeURIComponent(mintedNonce)')) {
+        problems.push('the replay does not re-issue the DECODED nonce');
+      }
       if (!moduleText.includes('oversize')) problems.push('the oversize control is missing');
       if (!moduleText.includes('missing-nonce')) problems.push('the missing-nonce control is missing');
       if (!moduleText.includes('unknown-nonce')) problems.push('the unknown-nonce control is missing');
@@ -1327,8 +1443,8 @@ function summary(built) {
     beaconIngressControls: {
       fixture: BEACON_CONTROL_ID,
       readWith:
-        'A native accessibility (UIA) text read of the installed-<id> window, corroborated by a native ' +
-        'window capture. Never a tauri_webview_* call.',
+        'The host\'s own telemetry_spans installed.beacon.ingress rows (the authoritative receipt). ' +
+        'The child\'s rendered mirror is corroboration only; never a tauri_webview_* call.',
       receipt:
         'One ' + BEACON_INGRESS_SPAN_NAME + ' span per attempt in telemetry_spans, carrying the typed reason.',
       controls: BEACON_CONTROLS,
@@ -1337,8 +1453,8 @@ function summary(built) {
       why:
         'Every installed-* window is unreachable by tauri_webview_execute_js / dom_snapshot / ' +
         'find_element / screenshot ("Request timeout after 2000ms", #3147). So each package drives ' +
-        'itself on mount and renders its results as text, and its mutation levers are its OWN ' +
-        'visible controls.',
+        'itself on mount and renders its results as text, its mutation levers are its OWN visible ' +
+        'controls, and the beacon fixture\'s two turn-coupled legs self-arm off the report-call index.',
     },
   };
 }

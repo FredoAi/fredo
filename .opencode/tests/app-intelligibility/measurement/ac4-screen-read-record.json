@@ -1,8 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "ac": "AC-4",
   "status": "awaiting-live-run",
-  "note": "The AC-4 record slot. It is filled by build-ac4-record.mjs from a LIVE run's telemetry_spans capture. The nulls below mean NOT YET MEASURED -- they are a slot, never a number (G-511: a fabricated or placeholder measurement is worse than no record).",
+  "note": "The AC-4 record slot. It is filled by build-ac4-record.mjs from a LIVE run's telemetry_spans capture. The nulls below mean NOT YET MEASURED -- they are a slot, never a number (G-511: a fabricated or placeholder measurement is worse than no record). Schema v2: the AC-4 NUMBER is outline.utf8Bytes (the outline leg's measured size, which varies with the screen); screenshot.encodedImageTokens is retained as rig-cost context for NFR-1 and is density-invariant, so it is NOT the limit.",
   "runIdentity": {
     "commit": null,
     "capturedAt": null,
@@ -12,7 +12,9 @@
   "outline": {
     "utf8Bytes": null,
     "nodeCount": null,
-    "truncated": null
+    "truncated": null,
+    "bytesHeadroom": null,
+    "bindingCap": null
   },
   "screenshot": {
     "encodedImageTokens": null

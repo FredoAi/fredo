@@ -853,20 +853,160 @@ mod tests {
 
     // ── 4. The statement + the projector carrier ─────────────────────────────
 
+    /// The RAW body of `report_statement`'s nonce argument — the text BETWEEN the
+    /// single quotes, exactly as the child's JS engine receives it (JS escapes
+    /// still in it).
+    ///
+    /// This is the reader half the round-2 pin lacked: the contract is what the
+    /// literal EVALUATES to, not how it is spelled.
+    fn nonce_literal_raw_body(statement: &str) -> String {
+        let call = ["window.", REPORT_FUNCTION, "("].concat();
+        let open = statement.find(&call).expect("the reporter call") + call.len();
+        assert_eq!(
+            statement.as_bytes()[open],
+            b'\'',
+            "the nonce must sit in a single-quoted JS string literal"
+        );
+        let suffix = format!("', {BEACON_MAX_NODES});");
+        assert!(
+            statement.ends_with(&suffix),
+            "the call must end exactly `{suffix}`: {statement}"
+        );
+        statement[open + 1..statement.len() - suffix.len()].to_string()
+    }
+
+    /// The JSON text the literal evaluates FROM: the raw body with the JS escapes
+    /// removed (`\\` → `\`, `\'` → `'`) — the sibling's technique
+    /// (`theme_push.rs`'s statement pins). Feeding this to `serde_json::from_str`
+    /// is exactly what the bootstrap's `JSON.parse` does at runtime.
+    fn nonce_literal_json_text(raw_body: &str) -> String {
+        raw_body.replace("\\\\", "\\").replace("\\'", "'")
+    }
+
+    /// The nonce carrier's CONTRACT: the statement's literal, evaluated, is the
+    /// nonce that was minted — and the child decodes it back to exactly that.
+    ///
+    /// **Mutations that must turn this red:**
+    /// - deleting the child-side decode from `bootstrap.js` reddens
+    ///   [`the_bootstrap_reporter_decodes_its_nonce_argument`] (the JS half);
+    /// - making `report_statement` emit the nonce bare (dropping the JSON
+    ///   serialization) reddens the `json_text` assertion below (the Rust half).
+    /// The round-2 pin asserted only that the literal *opened with* `'` — a shape a
+    /// broken serialization also has — which is why the defect shipped green.
     #[test]
-    fn the_report_statement_ships_the_projector_and_a_json_literal_nonce() {
-        let statement = report_statement("abc-123").expect("statement");
+    fn the_report_statement_literal_evaluates_back_to_the_minted_nonce() {
+        let nonce = "abc-123";
+        let statement = report_statement(nonce).expect("statement");
+
         // The projector is shipped INSIDE the statement (one algorithm, two carriers).
         assert!(statement.contains(PROJECTOR_GLOBAL));
         assert!(statement.contains("simplifyDom"));
-        // The reporter in bootstrap.js is invoked with a single-quoted JSON literal.
+        // ...and the reporter is called once, with the node cap, in the shipped shape.
         let call = ["window.", REPORT_FUNCTION, "("].concat();
-        assert!(statement.contains(&call));
-        let open = statement.find(&call).expect("call") + call.len();
-        assert_eq!(statement.as_bytes()[open], b'\'', "the nonce is a string literal");
-        let mut tail = format!(", {BEACON_MAX_NODES}");
-        tail.push(')');
-        assert!(statement.contains(&tail));
+        assert_eq!(
+            statement.matches(&call).count(),
+            1,
+            "exactly ONE reporter call, never a second uplink path"
+        );
+
+        // THE CONTRACT: the literal's body IS the JSON-quoted nonce, so a reader
+        // that JSON-decodes it (the bootstrap's `JSON.parse`) gets the minted nonce
+        // back. Shape alone (`starts with a quote`) is what blessed the defect.
+        let raw = nonce_literal_raw_body(&statement);
+        let json_text = nonce_literal_json_text(&raw);
+        assert_eq!(
+            serde_json::to_string(nonce).expect("json"),
+            json_text,
+            "the literal body must be the JSON text of the nonce"
+        );
+        let decoded: String = serde_json::from_str(&json_text).expect("the literal body is JSON");
+        assert_eq!(decoded, nonce, "the literal must evaluate back to the minted nonce");
+        // Non-vacuity: the JSON text really is QUOTED, so a carrier that forgot the
+        // decode would present `"abc-123"` (with the quotes) — the shipped defect.
+        assert!(json_text.starts_with('"') && json_text.ends_with('"'));
+        assert_ne!(json_text, nonce, "a quoted carrier must differ from the bare nonce");
+    }
+
+    /// Mirrors `theme_push.rs`'s hostile-value pin: a nonce carrying a quote, a
+    /// backslash, a line separator and a script-closing fragment must (i) never
+    /// close the JS literal early and (ii) still round-trip byte-exactly.
+    #[test]
+    fn a_hostile_nonce_cannot_escape_the_string_literal() {
+        // A JSON-breaking, source-breaking value — the same shape the sibling pins.
+        let nonce = "a'\\\u{2028}</script>\"b";
+        let statement = report_statement(nonce).expect("statement");
+        let raw = nonce_literal_raw_body(&statement);
+
+        // Every single quote in the RAW literal body must be escaped, so the value
+        // can never close the string early and land in a SOURCE position. A
+        // substring check cannot see the difference (`\');` still CONTAINS `');`),
+        // so this is a walk over the raw body (as the sibling's pin does) — the
+        // UNESCAPED JSON text legitimately carries an unescaped `'`.
+        let characters: Vec<char> = raw.chars().collect();
+        for (index, character) in characters.iter().enumerate() {
+            if *character != '\'' {
+                continue;
+            }
+            let escaped = index > 0 && characters[index - 1] == '\\';
+            assert!(
+                escaped,
+                "an unescaped single quote at char {index} could close the literal: {statement}"
+            );
+        }
+        // Non-vacuity: the hostile nonce really does carry a quote (and a backslash),
+        // so the walk above could have failed.
+        assert!(nonce.contains('\''), "the hostile nonce must contain a single quote");
+        assert!(nonce.contains('\\'), "the hostile nonce must contain a backslash");
+        assert!(nonce.contains('\u{2028}'), "the hostile nonce must contain a line separator");
+
+        // And it still decodes back to exactly the nonce that went in.
+        let json_text = nonce_literal_json_text(&raw);
+        let decoded: String =
+            serde_json::from_str(&json_text).expect("the hostile value still holds valid JSON");
+        assert_eq!(decoded, nonce, "the hostile value round-trips byte-exactly");
+    }
+
+    /// The CHILD-SIDE half of the carrier, which had no pin at all: the shipped
+    /// `bootstrap.js` must define the reporter the statement calls **and decode its
+    /// argument**, exactly as `__FREDO_APPLY_THEME__` decodes its own payload.
+    ///
+    /// This is a guard against SILENT RE-REMOVAL of the decode — **not** the truth
+    /// proof. The truth proof is the round-trip pin above plus the live accepted
+    /// uplink (an `installed.beacon.ingress` row with `reason=accepted`): cargo has
+    /// no JS runtime, so no Rust assertion can evaluate the child's source.
+    #[test]
+    fn the_bootstrap_reporter_decodes_its_nonce_argument() {
+        let source = scheme::BOOTSTRAP_SCRIPT;
+        let definition = format!("window.{REPORT_FUNCTION} = function");
+        let start = source
+            .find(&definition)
+            .unwrap_or_else(|| panic!("bootstrap.js must define {definition}"));
+        // The reporter's own body: from its definition to the wire use. Both must be
+        // IN that region — a `JSON.parse` elsewhere in the file (e.g. the theme
+        // wrapper) would otherwise satisfy a whole-file presence check vacuously.
+        let wire = "image.src";
+        let wire_at = source[start..]
+            .find(wire)
+            .unwrap_or_else(|| panic!("the reporter must issue the beacon load ({wire})"))
+            + start;
+        let reporter = &source[start..wire_at];
+        let decode_at = reporter.find("JSON.parse(nonce)").unwrap_or_else(|| {
+            panic!(
+                "the reporter must decode its JSON-literal argument before putting it on the \
+                 wire (the host `eval`s JSON text, so a raw carrier presents a nonce the host \
+                 never minted and every beacon is rejected `unknown-nonce`)"
+            )
+        });
+        assert!(
+            decode_at < reporter.len(),
+            "the decode must precede the wire use inside the reporter"
+        );
+        // ...and the theme wrapper keeps its own decode (the sibling precedent this
+        // shape was copied from) — a drift here would be a second, silent carrier bug.
+        assert!(
+            source.contains("window.__FREDO_APPLY_THEME__"),
+            "bootstrap.js must keep the theme push entry point"
+        );
     }
 
     /// The installed-tier carrier and the main-webview projector are the SAME

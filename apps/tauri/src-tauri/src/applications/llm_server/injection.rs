@@ -64,6 +64,13 @@ pub struct CompanionInjectionSpan {
     /// The number of nodes the injected screen outline carries (Spec #3244, ST-6;
     /// AC-4) — the `outline` leg's size alongside its byte count.
     pub simplified_html_nodes: i64,
+    /// Did a cap bite the injected outline (Spec #3244 rework; AC-4) — the outline's
+    /// own truncation flag, carried so the AC-4 record's `truncated` / `bindingCap`
+    /// are derived from the run's receipt rather than hand-asserted. REQUIRED (no
+    /// `serde(default)`): the webview and the host ship together, and a silently
+    /// defaulted `false` would make a truncated outline read as "not truncated" —
+    /// a plausible-but-wrong number, which is exactly what G-511 forbids.
+    pub simplified_html_truncated: bool,
     /// A content digest of the screenshot (freshness witness).
     pub screenshot_digest: String,
     /// A content digest of the screen outline (freshness witness).
@@ -159,6 +166,7 @@ mod tests {
             screenshot_bytes: 2048,
             simplified_html_bytes: 512,
             simplified_html_nodes: 9,
+            simplified_html_truncated: true,
             screenshot_digest: "0a1b2c3d4e5f6071".to_string(),
             simplified_html_digest: "1122334455667788".to_string(),
             image_tokens: Some(1120),
@@ -201,6 +209,7 @@ mod tests {
             "screenshotBytes",
             "simplifiedHtmlBytes",
             "simplifiedHtmlNodes",
+            "simplifiedHtmlTruncated",
             "screenshotDigest",
             "simplifiedHtmlDigest",
             "imageTokens",
@@ -210,6 +219,7 @@ mod tests {
         assert_eq!(object["taught"], serde_json::json!(false));
         assert_eq!(object["perAppEntries"], serde_json::json!(0));
         assert_eq!(object["simplifiedHtmlNodes"], serde_json::json!(9));
+        assert_eq!(object["simplifiedHtmlTruncated"], serde_json::json!(true));
         assert_eq!(object["imageTokens"], serde_json::json!(1120));
     }
 
@@ -228,6 +238,7 @@ mod tests {
             "screenshotBytes": 2048,
             "simplifiedHtmlBytes": 512,
             "simplifiedHtmlNodes": 9,
+            "simplifiedHtmlTruncated": false,
             "screenshotDigest": "0a1b2c3d4e5f6071",
             "simplifiedHtmlDigest": "1122334455667788",
         });
@@ -248,6 +259,38 @@ mod tests {
             stored.get("imageTokens").is_none(),
             "an unmeasured turn must not carry an imageTokens key: {stored}"
         );
+    }
+
+    /// Spec #3244 (AC-4): `simplifiedHtmlTruncated` is a REQUIRED wire field — no
+    /// `serde(default)`. A webview payload that omits it is REFUSED, so a truncated
+    /// outline can never be silently recorded as "not truncated" (a
+    /// plausible-but-wrong number, which is exactly what G-511 forbids).
+    #[test]
+    fn the_truncation_flag_is_required_and_never_defaulted() {
+        let without_flag = serde_json::json!({
+            "appId": "qa3244-untaught",
+            "taught": false,
+            "perAppEntries": 0,
+            "descriptionBytes": 42,
+            "screenshotBytes": 2048,
+            "simplifiedHtmlBytes": 512,
+            "simplifiedHtmlNodes": 9,
+            "screenshotDigest": "0a1b2c3d4e5f6071",
+            "simplifiedHtmlDigest": "1122334455667788",
+        });
+        assert!(
+            serde_json::from_value::<CompanionInjectionSpan>(without_flag).is_err(),
+            "a payload with no simplifiedHtmlTruncated must be refused, never defaulted"
+        );
+        // The flag is carried verbatim in both polarities (a real derived value).
+        for truncated in [false, true] {
+            let facts = CompanionInjectionSpan {
+                simplified_html_truncated: truncated,
+                ..sample()
+            };
+            let stored = serde_json::to_value(&facts).expect("serialize");
+            assert_eq!(stored["simplifiedHtmlTruncated"], serde_json::json!(truncated));
+        }
     }
 
     /// Freshness (AC-3): two records of the SAME facts still differ by identity —

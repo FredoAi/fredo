@@ -51,6 +51,10 @@ export interface CompanionInjectionFacts {
   /** The injected outline's node count (Spec #3244, ST-6; AC-4) — its size
    *  alongside the byte count. */
   readonly simplifiedHtmlNodes: number;
+  /** Did a cap bite the injected outline (Spec #3244 rework; AC-4) — the span's
+   *  own truncation flag, so the AC-4 record's `truncated`/`bindingCap` are
+   *  derived from the run's receipt instead of hand-asserted. */
+  readonly simplifiedHtmlTruncated: boolean;
   readonly screenshotDigest: string;
   readonly simplifiedHtmlDigest: string;
 }
@@ -102,6 +106,7 @@ export function buildCompanionInjectionFacts(
     screenshotBytes: utf8ByteLength(input.screenshotPngBase64),
     simplifiedHtmlBytes: utf8ByteLength(outlineJson),
     simplifiedHtmlNodes: input.outline.nodes.length,
+    simplifiedHtmlTruncated: input.outline.truncated,
     screenshotDigest: contentDigest(input.screenshotPngBase64),
     simplifiedHtmlDigest: contentDigest(outlineJson),
   };

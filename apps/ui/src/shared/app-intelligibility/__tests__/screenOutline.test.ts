@@ -183,8 +183,28 @@ describe('the injection facts (the live receipt)', () => {
     expect(facts.descriptionBytes).toBe(utf8ByteLength('A sample reader app.'));
     expect(facts.screenshotBytes).toBe(utf8ByteLength('iVBORw0KGgo='));
     expect(facts.simplifiedHtmlBytes).toBe(outlineBytes(outline));
+    expect(facts.simplifiedHtmlNodes).toBe(1);
+    expect(facts.simplifiedHtmlTruncated).toBe(false);
     expect(facts.screenshotDigest).toBe(contentDigest('iVBORw0KGgo='));
     expect(facts.simplifiedHtmlDigest).toBe(contentDigest(serializeOutline(outline)));
+  });
+
+  it('carries the outline truncation flag, so the AC-4 record is derived from the run', () => {
+    // The flag the AC-4 record's `truncated` / `bindingCap` come from: it must be
+    // the outline's OWN flag in both polarities, never a constant.
+    const truncated = buildCompanionInjectionFacts({
+      appId: 'qa3244-untaught',
+      outline: { nodes: outline.nodes, truncated: true },
+      screenshotPngBase64: 'iVBORw0KGgo=',
+    });
+    expect(truncated.simplifiedHtmlTruncated).toBe(true);
+    expect(
+      buildCompanionInjectionFacts({
+        appId: 'qa3244-untaught',
+        outline,
+        screenshotPngBase64: 'iVBORw0KGgo=',
+      }).simplifiedHtmlTruncated,
+    ).toBe(false);
   });
 
   it('carries the AC-5 negative witness (taught:false / perAppEntries:0)', () => {

@@ -36,8 +36,7 @@ halves of the claim are drivable:
   receipt can be checked against a string the tester can read;
 - the screen **changes**, so the freshness leg (AC-3: two turns separated by a visible change
   carry distinct digests) has something to change. Two levers, both the app's own:
-  - **a native click / keyboard activation of `[data-qa3244-mutate]`** — a real user action on a
-    real button; and
+  - a **keyboard activation of `[data-qa3244-mutate]`** — a real user action on a real button; and
   - `[data-qa3244-live]`, a line that advances every 1000 ms, so a change is guaranteed between
     any two turns even with no input.
 
@@ -56,8 +55,8 @@ hits, not as product special cases; see §5.
 
 Plays the **untrusted child**: it issues deliberately malformed screen-outline beacons at the host's
 own scheme handler and mirrors every attempt as visible text. Three controls fire on mount
-(oversize, missing nonce, unknown nonce); two are armed from the app's own visible buttons and need
-one companion turn (timeout, replay-after-TTL).
+(oversize, missing nonce, unknown nonce); two **self-arm off the report-call index** (turn 1 =
+replay-after-TTL, turn 2 = suppress) and need one companion turn each — no gesture.
 
 **The observable is the host's typed ingress reason** — one `installed.beacon.ingress` span per
 attempt in `telemetry_spans`. A beacon that merely does not crash is **not** a PASS. Full control
@@ -222,24 +221,26 @@ grant for the bridge command that returns the result. That is not a bug to work 
 installed tier's isolation property (#3147), reaffirmed here.
 
 A fixture that waits to be driven therefore cannot be driven at all. So **each package drives
-itself on mount** and **mirrors its results as rendered text**, and the tester reads that text with
-a capability-independent instrument:
+itself on mount** and **mirrors its results as rendered text**. The authoritative receipt for every
+row here is the **host's own `telemetry_spans` row** — the rendered text is corroboration a human can
+eyeball, never the gate.
 
-1. a **native accessibility (UIA) text read** of the installed window's own tree, and
-2. a **native window capture**, uploaded with `upload-evidence` as a `user-attachments` URL.
+The mutation and arming levers are the apps' **own affordances held on a declared schedule**: the
+untaught fixture's screen advances on its own 1000 ms live line, and the beacon fixture arms its two
+turn-coupled legs off the **report-call index** (turn 1 = replay, turn 2 = suppress). **No lever
+requires a post-mount gesture**, because no role holds a native-input instrument; a click-armed lever
+could not be driven at all, so the beacon fixture's buttons are a **manual override for a human**, not
+the mechanism. The generator's always-on self-check aborts the build if the schedule vars disappear, so
+a later edit cannot silently reintroduce a gesture-required lever.
 
-The mutation and arming levers are the apps' **own visible affordances** (a native click on a
-rendered `<button>`), never `execute_js`. For the turn-coupled beacon controls the authoritative
-receipt is still the **host's own** `telemetry_spans` row, not the child's rendering.
-
-**Never `tauri_webview_*` against an `installed-*` windowId.** Two limits the verdict must record:
-
-1. a native/UIA read is **not** a live-evidence token for the pipeline's `testing → audit` matcher
-   (`telemetry_spans` / `user-attachments` / `tauri_webview_*` / `getBoundingClientRect`), so the
-   round must also carry one genuine `telemetry_spans` receipt (which every row here names) — the
-   native capture is corroboration, never the primary;
-2. a **host-side read/inject path** into an `installed-*` document is a **Toolsmith** item, not a
-   fixture or a row. No row in this suite may be answered by an improvised one-off script.
+**Never `tauri_webview_*` against an `installed-*` windowId.** One limit the verdict must record: a
+native/UIA read or a native window capture is **not** a live-evidence token for the pipeline's
+`testing → audit` matcher (`telemetry_spans` / `user-attachments` / `tauri_webview_*` /
+`getBoundingClientRect`), so every round must carry its genuine `telemetry_spans` receipt (which every
+row here names) — a capture is corroboration, never the primary. And a **host-side read/inject path**
+into an `installed-*` document is a **Toolsmith** item that was considered and **refused** (it would be
+a general-purpose automation client / an arbitrary-code-execution seam); no row in this suite may be
+answered by an improvised one-off script.
 
 ### The mirror grammar (stable — rows cite these strings)
 

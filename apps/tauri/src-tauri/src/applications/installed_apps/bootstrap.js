@@ -244,6 +244,22 @@
 
   window.__FREDO_REPORT_OUTLINE__ = function (nonce, maxNodes) {
     try {
+      // The host `eval`s the nonce as JSON text INSIDE a single-quoted JS literal
+      // (the theme-push shape: data at a string position, never source), so the
+      // argument arrives as JSON and must be decoded here -- exactly as
+      // `__FREDO_APPLY_THEME__` decodes its payload. Without this decode the
+      // argument evaluates to the JSON text INCLUDING its quotes, so the uplink
+      // would present a nonce the host never minted and every beacon would be
+      // rejected `unknown-nonce`. A carrier that does not decode is refused
+      // rather than used, so a broken statement is a missing turn input (the
+      // host's typed timeout), never a wrong-nonce beacon.
+      if (typeof nonce === "string") {
+        try {
+          nonce = JSON.parse(nonce);
+        } catch (error) {
+          return;
+        }
+      }
       if (typeof nonce !== "string" || nonce === "") {
         return;
       }
