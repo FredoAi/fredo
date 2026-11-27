@@ -47,6 +47,14 @@ Yes (Spec #3144). **Settings → Installed applications** lists every applicatio
 
 Yes. The authoring kit — a generated theme package, a generated authoring surface with `check` and `pack`, and the authoring guide — lets you build an application **outside** this repository and install the resulting package through the same path any user takes. Start with [Building a Fredo application](authoring-applications.md): it states what you may rely on (the package format, the mount contract, the action surface, the colour names), what you may not (Fredo's internal modules), what each capability grants, how to declare your own data, and the accepted limitations of an installed application — including that it cannot join Fredo's keyboard navigation and cannot add backend actions of its own.
 
+### Can the companion work in an app Fredo was never taught — including one I installed myself?
+
+Yes (Spec #3244). Every app **declares a plain description of itself**, and on each companion turn Fredo automatically receives that description **plus a fresh look at the app's current screen** — a screenshot and a simplified map of what is on it. Nothing has to be taught per app: a Fredo app you installed from someone else is carried by exactly the same path as a built-in one. An app that declares **no** description is a visible, specific message rather than a silent no-op — Fredo tells you it cannot work in that app yet instead of doing nothing.
+
+Two things are worth knowing:
+- **The screen read is bounded and local.** Fredo keeps only a capped, text-only outline of the screen (120 elements / 8 KB) alongside the screenshot, and the whole pair is produced **on your machine, in-process — it never goes over the network**.
+- **A capture takes whatever is in front.** Fredo cannot raise a particular app's window, so if you have several app windows overlapping, the look Fredo gets can be of whichever is on top at that spot. Keep the app you are talking about in front. (Region-scoped ordering, #3246, is where this matters most.)
+
 ### Can I choose whether an app opens in the main window or in its own window?
 
 Yes — Spec #2955 adds a per-app window choice. Open **Settings → Apps** and, for each app, pick **Main window** (the default — the app opens inside the main Fredo window as one of Fredo's in-window apps) or **Own window** (the app opens in its own separate OS window). The choice is remembered per app and survives a restart. Separate windows are per-app singletons: opening an app whose separate window is already open brings that window to the front rather than creating a second. Apps that open several independent views at once stay in the main window, since a single separate window cannot represent several instances. Wherever you open the app — the launcher grid, the Open apps row, the companion's `open_app` skill, or `fredo open-app` — the same choice is honoured.

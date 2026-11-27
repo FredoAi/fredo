@@ -8898,6 +8898,44 @@ fn context_read_streak(issue: u32, actor: &str) -> usize {
 /// SINGLE event-log read. Fix Plan + Development Summary read `entering`; Tests Runs
 /// reads `ending`. This replaces the four independent formulas that diverged
 /// (G-427; #3120's Fix Plans skipped round 5).
+///
+/// WHAT A ROUND IS (the semantic this function must implement): a round is a TESTING
+/// cycle, so the ONLY events that create one are a `testing` entry and a REWORK
+/// re-entry into implementation (`from` = `testing` or `post-audit`). A backward
+/// RESCOPE (`implementation → planning → implementation`, the "loop back to Phase 2"
+/// scope-redesign leg) is a RE-PLAN of the round that is already open — it creates no
+/// round and must not move any stamp.
+///
+/// What follows, stated exactly because this is where it went wrong (#3244):
+/// - The round basis is the `(testing, rework)` PAIR ONLY. `impl_entries` is NOT a
+///   term: it counts every implementation entry, so every rescope inflated it by one,
+///   monotonically, for as long as the spec lived. On #3244 one rescope + one rework
+///   made `impl_entries` reach 3, so the Fix Plan stamped "round 3" and the
+///   Development Summary — flushed later again — stamped "round 4", on an issue whose
+///   round was 2. `testing_entries` and `rework_re_entries` are rescope-blind by
+///   construction (`planning` is not a rework source), which is why `ending` was
+///   correct all along and only `entering` drifted.
+/// - `entering = max(testing, rework) + 1`, NOT `rework + 1`: this flush runs BEFORE
+///   the leg's own `phase.started` is appended (see the ordering note in the
+///   `transition` arm — it must, or a first entry looks like a rework). At that
+///   moment the leg in flight is not yet counted, so on a first rework
+///   (`testing_entries == 1`, `rework_re_entries == 0`) the entered round is 2, which
+///   `rework + 1` alone would report as 1. The `max(...)` is what keeps BOTH positions
+///   right: the flush-time position (leg not yet in the log) and a later flush
+///   (leg now in the log — e.g. a Development Summary flushed after the rework entry),
+///   where `testing` and `rework` have caught up.
+///
+/// WHAT "AGREE" MEANS: the artifacts top DIFFERENT rounds BY DESIGN — `ending` is the
+/// round whose verdict is being posted, `entering` is the round being started, so on a
+/// rework leg they are consecutive (round 1's verdict lands as round 2 opens). The
+/// guarantee is NOT that the numbers are equal, it is that they can never disagree
+/// about the SAME round: both entering artifacts (Fix Plan + Development Summary) read
+/// the identical number, `ending` tops the round the verdict belongs to, and neither
+/// can be inflated by a re-plan of a round that already exists — `entering` is bounded
+/// by `max(testing, rework) + 1`, so it names at most the round the in-flight leg is
+/// entering (the one event not yet appended). #3244 produced three numbers for one
+/// round precisely because `entering` was derived from `impl_entries`, a base that
+/// counts re-plans of the same round and so grew without bound.
 fn round_authority(issue: u32) -> (u32, u32) {
     let events = read_issue_events(issue);
     let testing_entries = events.iter()
@@ -8907,11 +8945,12 @@ fn round_authority(issue: u32) -> (u32, u32) {
         .filter(|e| e.event_name == "phase.started" && e.phase == "implementation"
             && matches!(e.attributes.get("from").map(|s| s.as_str()), Some("testing") | Some("post-audit")))
         .count() as u32;
-    let impl_entries = events.iter()
-        .filter(|e| e.event_name == "phase.started" && e.phase == "implementation")
-        .count() as u32;
+    // `ending` keeps its `rework + 1` term: a `post-audit → implementation` restart
+    // opens a round by rework without a new testing entry, so the ending round can be
+    // one ahead of the testing count. Both terms are rescope-blind, so `ending` was
+    // correct for all three positions already — only `entering` had to change.
     let ending = testing_entries.max(rework_re_entries + 1).max(1);
-    let entering = (impl_entries + 1).max(testing_entries + 1).max(1);
+    let entering = testing_entries.max(rework_re_entries) + 1;
     (ending, entering)
 }
 

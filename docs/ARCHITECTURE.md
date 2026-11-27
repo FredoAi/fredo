@@ -706,13 +706,23 @@ enablement work in Fredo**.
   back. `telemetry_logs` is not an accepted receipt (gate gap M9).
 - **Typed failure, never a blind turn (R-2c).** When a target's pair cannot be produced (the app is not
   mounted in the dispatching webview, or the host capture yields nothing), the composer surfaces a typed
-  sentence on the shipped reply surface and does **not** dispatch. **Known limitation, disclosed:** the
-  DOM-outline leg is readable only for a built-in app mounted in the dispatching webview. A SEPARATE
-  webview (an installed app) has no host-readable DOM, and its outline cannot be relayed by a new command
-  because the installed tier is pinned to EXACTLY ONE command
-  (`capabilities/installed-app-commands.json`: `allow-installed-app-invoke` only, pinned by
-  `runtime::capability_guard`). Such a target therefore takes the typed-signal path until that boundary
-  is revisited by a human decision.
+  sentence on the shipped reply surface and does **not** dispatch.
+- **The installed tier's outline leg — the boundary WAS revisited, by explicit human decision (Spec #3244
+  ST-7).** This section previously recorded that a separate webview (an installed app) has no host-readable
+  DOM and must take the typed-signal path "until that boundary is revisited by a human decision". **That
+  decision has been taken** (Option A, 2026-11-26, after a four-option review), and the leg now works:
+  `applications/installed_apps/beacon.rs` evals a reporter into the installed document which performs a
+  **same-origin sub-resource load** to `/__fredo/beacon`, and the host's own `fredoapp` scheme handler
+  observes it. **No command, no capability, and no ACL change** — the installed tier is still pinned to
+  exactly one command (`allow-installed-app-invoke`), which is precisely why the uplink rides the scheme
+  handler rather than a new command. The ingress is size-bounded, nonce-gated (`unknown`/`expired`/replayed
+  dropped), timed out, and emits a typed `installed.beacon.ingress` span on every attempt. The handler's
+  fifth contract and the security rationale are documented under the `scheme.rs` contract section below
+  ("owns five things and nothing else"); the transport's protections are in
+  [SECURITY.md → Screenshot Application](SECURITY.md#screenshot-application).
+  **Known limitation, still true and now measured:** a target-framed capture takes whatever is **top-most**
+  at the target's rectangle — there is no mechanism to raise an installed window — so with overlapping
+  windows a capture can pick up another app's panel (#3244 round 2, proved by a one-variable control).
 
 
 **Wireframe's pointer surface.** Wireframe is driven by **23 pointer-reachable controls** — 12 arrange +
