@@ -221,8 +221,18 @@ The `capture_screen_region` command captures physical screen pixels via the `xca
 - Returns base64-encoded PNG — no file system writes
 - Multi-monitor aware but only captures the specified region
 
+**Spec #3244 added two further commands on the same surface, both granted to the BUILT-IN window class only:**
+
+- **`capture_target_region`** — captures a physical-pixel rectangle **resolved for a target application**, so the companion's per-turn screen read is framed on the app the user is talking about rather than the whole monitor. It **delegates verbatim to `capture_screen_region`** (`xcap::Monitor` stays the only producer) and returns the same base64 PNG with no file-system write. It resolves the rect by a **DOM recipe for an in-window built-in** or, for a separate installed window, by the host geometry read below; an unknown id or an unopened target is a **typed null**, never a best-effort capture of something else.
+- **`installed_app_screen_rect`** — reads a live installed window's **client-area physical rectangle**. It reports geometry only; it captures nothing and returns no pixels.
+
+**The authority boundary is unchanged and is the point:** these two are added to `permissions/app/default.toml` — the **built-in** window class's permission set — and the **installed tier's single capability grants neither**. An installed application still reaches exactly one command (`installed_app_invoke`), so an installed document can neither read its own screen rect nor capture anything. `capabilities/installed-app-commands.json`, `runtime/capability_guard.rs` and the installed-tier exact-set invariant are **byte-unchanged** by the slice, and the audit verified them so (`SEC-1`).
+
+**The companion's screen-read path is the consumer of both,** and it is worth stating what that means: the per-turn injected pair (screenshot + simplified-HTML outline) carries **whatever is rendered in the target application** into that turn's model input. It is produced **in-process, on-device, with no network call** — the same posture as voice capture — and the outline is bounded (`SCREEN_OUTLINE_MAX_NODES` / `SCREEN_OUTLINE_MAX_BYTES`) before it is injected.
+
 **Limitations:**
 - Can capture any visible content on the screen (including sensitive information)
+- **A capture is whatever is TOP-MOST at the target's rectangle.** The product has **no mechanism to raise or front an installed window**, so with overlapping installed windows a target-framed capture can pick up another application's panel. Observed and proved in #3244's round 2 (`screenshotBytes` 223308 → 74232, distinct digest, once every other window was closed). Region-scoped ordering (#3246) is where this bites hardest.
 - Intended for use by AI companion capabilities requiring visual context
 
 ---

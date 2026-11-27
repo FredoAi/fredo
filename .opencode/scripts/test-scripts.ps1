@@ -2830,10 +2830,14 @@ Root cause class: defect
 *Authored by Software Architect*
 "@
     [System.IO.File]::WriteAllText((Join-Path $planDraftDir "fix-plan.md"), $authored, [System.Text.UTF8Encoding]::new($false))
-    # Simulate a prior entry into implementation (this is a rework re-entry).
-    $ev = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-authored-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{},"message":"started implementation"}'
+    # Simulate a prior rework leg's log: the implementation entry this round is
+    # re-entering FROM testing, so the log necessarily carries a testing cycle.
+    # (`round_authority` reads the round from the testing/rework pair; a bare
+    # implementation entry with no testing cycle is not a rework and is round 1.)
+    $impl = '{"ts":"2026-08-10T00:00:00.000000000+00:00","event_id":"fixplan-authored-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{"phase":"implementation","from":"planning"},"message":"started implementation"}'
+    $test = '{"ts":"2026-08-10T00:00:01.000000000+00:00","event_id":"fixplan-authored-2","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"testing","outcome":"success","attempt":1,"correlation_id":"issue-' + $issueNum + '","attributes":{"phase":"testing","from":"implementation"},"message":"started testing"}'
     New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
-    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$ev`n", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$impl`n$test`n", [System.Text.UTF8Encoding]::new($false))
 
     $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
     $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
@@ -2908,6 +2912,215 @@ Root cause class: scope
     if ($joined -match "## Fix Plan \(round 3\)") { throw "Off-by-one fix-plan round recurred: $joined" }
     if (Test-Path "$draftDir/fix-plan.md") { throw "fix-plan.md draft should be consumed after posting" }
     return "audit-restart fix plan stamped round 2 on #$issueNum"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# THE ROUND SEMANTICS PIN (#3244). A backwards RESCOPE re-plans the round that is
+# already open; it does not create a round. This fixture replays #3244's OWN
+# append-only log shape -- the signature that produced three different numbers for
+# one round on the live record:
+#
+#   implementation <- planning        (initial entry)          round 1
+#   planning       <- implementation  (the rescope's first leg: the PAIR is the point)
+#   implementation <- planning        (the rescope re-entry)   STILL round 1
+#   testing        <- implementation  (round 1's testing)      round 1 ends
+#   implementation <- testing         (the rework)             round 2 opens
+#
+# Expected: Tests Runs reads the ENDING round (1), while Fix Plan and Development
+# Summary read the ENTERING round (2). The artifacts top ADJACENT rounds BY DESIGN,
+# and both entering artifacts must name the SAME round. What must never appear is a
+# round the log does not contain (the defect stamped 3 and 4 here).
+#
+# The assertion is SEMANTIC, not arithmetic: it drives the real posting path over a
+# real event log and reads the headers an agent would read. A formula that merely
+# "looks right" cannot pass it -- the pre-fix `impl_entries + 1` derivation passed
+# every arithmetic shape check and still stamped round 3.
+Test-Script "a rescope does not create a round (Fix Plan + Development Summary + Tests Runs agree)" {
+  $url = Mock-IssueCreate "temp: rescope round semantics" "rescope round scratch" "implementation"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draftDir = ".opencode/tmp/$issueNum"
+  try {
+    # -- the event log: #3244's shape, verbatim ------------------------------
+    function Ev([string]$id, [int]$sec, [string]$phase, [string]$from) {
+      $fromAttr = if ($from) { '"from":"' + $from + '",' } else { "" }
+      return '{"ts":"2026-08-10T00:00:' + $sec.ToString("00") + '.000000000+00:00","event_id":"' + $id +
+             '","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum +
+             '"},"phase":"' + $phase + '","outcome":"success","attributes":{' + $fromAttr +
+             '"phase":"' + $phase + '"},"message":"started ' + $phase + '"}'
+    }
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    # PHASE 1 is the position #3244's Fix Plan was stamped from: the rework leg's own
+    # phase.started is NOT yet in the log (the flush runs before the transition records
+    # it). Here impl_entries = 2 (initial + rescope), testing = 1, rework = 0.
+    $log = @(
+      (Ev "rr-expl-1" 1 "implementation" "planning"),      # initial entry      -> round 1
+      (Ev "rr-plan-1" 2 "planning"       "implementation"),# the rescope, leg 1 (the PAIR)
+      (Ev "rr-impl-2" 3 "implementation" "planning"),      # the rescope re-entry -> STILL round 1
+      (Ev "rr-test-1" 4 "testing"        "implementation") # round 1's testing ends
+    ) -join "`n"
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", $log + "`n", [System.Text.UTF8Encoding]::new($false))
+
+    # -- PHASE 1: the rework leg's flush (Fix Plan + Tests Runs) ----------------
+    # This is #3244's single flush, which emitted "Fix Plan (round 3)" and
+    # "Tests Runs (round 1)" seconds apart. Both drafts land together, BEFORE the leg's
+    # own phase.started is appended.
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    $fixPlan = @"
+Root cause class: defect
+
+## Failed ACs
+
+- AC2: the rescope's new observable was never wired.
+
+## Root Cause (file:line)
+
+- apps/tauri/src/lib.rs:100 - anchor measured against a stale pane.
+
+## Fix Scope
+
+- [ ] ST-9 Wire the rescope's observable.
+
+*Authored by Software Architect*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "fix-plan.md"), $fixPlan, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "tests-runs.md"), "Verdict: FAIL (1 AC still open)`n`nSELECT ... FROM telemetry_spans ... rows=0`n`n*Authored by Tester*", [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
+
+    $joined = (@(Mock-IssueComments $issueNum) -join "`n")
+    $fixRound = [regex]::Match($joined, "## Fix Plan \(round (\d+)\)")
+    if (-not $fixRound.Success) { throw "no round-stamped Fix Plan posted: $joined" }
+    if ($fixRound.Groups[1].Value -ne "2") {
+      throw "a rescope must not create a round: the rework enters round 2, got round $($fixRound.Groups[1].Value) (Fix Plan). #3244 stamped round 3 here"
+    }
+    # The verdict tops the ENDING round, which is the round that just closed: round 1.
+    $trRound = [regex]::Match($joined, "## Tests Runs \(round (\d+)\)")
+    if (-not $trRound.Success) { throw "no round-stamped Tests Runs posted: $joined" }
+    if ($trRound.Groups[1].Value -ne "1") {
+      throw "the ending round is 1 (one testing cycle has closed), got round $($trRound.Groups[1].Value). #3244 correctly stamped round 1 here"
+    }
+
+    # -- PHASE 2: the rework entry lands, then the Development Summary flushes --
+    # This is the position #3244's Development Summary (round 4) was stamped from:
+    # impl_entries is now 3 (initial + rescope + rework) and the round is still 2.
+    $rework = (Ev "rr-impl-3" 5 "implementation" "testing")
+    [System.IO.File]::AppendAllText(".opencode/state/issues/$issueNum.jsonl", $rework + "`n", [System.Text.UTF8Encoding]::new($false))
+
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "dev-summary.md"), "Round work summary.`n`n*Authored by developer*", [System.Text.UTF8Encoding]::new($false))
+
+    $out2 = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $out2Str = if ($out2 -is [array]) { $out2 -join "`n" } else { "$out2" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $out2Str" }
+
+    $joined = (@(Mock-IssueComments $issueNum) -join "`n")
+
+    # -- the fixture's SHAPE, asserted before the numbers --------------------
+    # The expected stamps below are NOT a coincidence: they are the specification
+    # for THIS log shape (one rescope + one rework, #3244's signature). Assert the
+    # shape explicitly so that if the log ever grows a second testing cycle or a
+    # second rework, this test fails on the SHAPE and says so, instead of silently
+    # re-baselining to numbers nobody re-derived.
+    $logText = Get-Content ".opencode/state/issues/$issueNum.jsonl" -Raw
+    # Count the EVENT's phase field, not every mention: `phase` also appears inside
+    # `attributes`, so a naive substring count doubles.
+    $shapeTesting = @($logText -split "`n" | Where-Object { $_ -match '"phase":"testing","outcome"' }).Count
+    $shapeRework  = @($logText -split "`n" | Where-Object { $_ -match '"from":"testing"' }).Count
+    if ($shapeTesting -ne 1) { throw "fixture shape drifted: expected 1 testing entry (one closed round), found $shapeTesting" }
+    if ($shapeRework -ne 1) { throw "fixture shape drifted: expected 1 rework entry (one round opened by rework), found $shapeRework" }
+
+    # -- the SEMANTIC assertions --------------------------------------------
+    # 1) Both ENTERING artifacts name the SAME round (the defect split them 3/4).
+    $fixRound = [regex]::Match($joined, "## Fix Plan \(round (\d+)\)")
+    $devRound = [regex]::Match($joined, "## Development Summary \(round (\d+)\)")
+    if (-not $fixRound.Success) { throw "no round-stamped Fix Plan posted: $joined" }
+    if (-not $devRound.Success) { throw "no round-stamped Development Summary posted: $joined" }
+    if ($fixRound.Groups[1].Value -ne $devRound.Groups[1].Value) {
+      throw "entering artifacts disagree on one round: Fix Plan says round $($fixRound.Groups[1].Value), Development Summary says round $($devRound.Groups[1].Value)"
+    }
+    # 2) Both entering artifacts name round 2 -- not 1 (under-count) and not 3+
+    #    (the rescope inflating the round count).
+    if ($devRound.Groups[1].Value -ne "2") {
+      throw "a rescope must not create a round: the Development Summary reads round 2, got round $($devRound.Groups[1].Value). #3244 stamped round 4 here"
+    }
+    if ($fixRound.Groups[1].Value -ne "2") {
+      throw "a rescope must not create a round: the rework enters round 2, got round $($fixRound.Groups[1].Value) (Fix Plan)"
+    }
+    # 3) No artifact may name a round the log does not contain: one testing cycle
+    #    closed + one rework opened = rounds 1..2. Round 0, 3+ is the defect.
+    $trRound = [regex]::Match($joined, "## Tests Runs \(round (\d+)\)")
+    if ($trRound.Success) {
+      if ([int]$trRound.Groups[1].Value -gt 2) { throw "Tests Runs names round $($trRound.Groups[1].Value), beyond the log's 2 rounds - a phantom round: $joined" }
+      if ([int]$trRound.Groups[1].Value -lt 1) { throw "Tests Runs names round 0 - the verdict belongs to the closed round 1: $joined" }
+    }
+    return "rescope is rescope-blind: Fix Plan + Dev Summary both round 2, Tests Runs round 1 (flush-time AND post-entry) (#$issueNum)"
+  } finally {
+    Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
+    Mock-Cleanup $issueNum
+    $global:LASTEXITCODE = 0
+  }
+}
+
+# The ORDINARY rework must keep working: NO rescope, just the first FAIL rework.
+# This is the control for the pin above: a formula that fixed #3244 by breaking the
+# plain case (e.g. deriving `entering` from the rework count alone, which is 0 at
+# flush time and would say round 1) would pass the rescope test and fail here.
+Test-Script "the ordinary first rework still enters round 2 (no rescope)" {
+  $url = Mock-IssueCreate "temp: plain rework round" "plain rework scratch" "implementation"
+  if ($LASTEXITCODE -ne 0) { throw "gh issue create failed: $url" }
+  $urlStr = if ($url -is [array]) { $url -join "" } else { "$url" }
+  $m = [regex]::Match($urlStr, "issues/(\d+)")
+  if (-not $m.Success) { throw "Could not parse issue number from: $urlStr" }
+  $issueNum = [int]$m.Groups[1].Value
+  $draftDir = ".opencode/tmp/$issueNum"
+  try {
+    $impl = '{"ts":"2026-08-10T00:00:01.000000000+00:00","event_id":"pr-impl-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"implementation","outcome":"success","attributes":{"phase":"implementation","from":"planning"},"message":"started implementation"}'
+    $test = '{"ts":"2026-08-10T00:00:02.000000000+00:00","event_id":"pr-test-1","event_name":"phase.started","actor":"orchestrator","entity":{"issueId":"' + $issueNum + '"},"phase":"testing","outcome":"success","attributes":{"phase":"testing","from":"implementation"},"message":"started testing"}'
+    New-Item -ItemType Directory -Path ".opencode/state/issues" -Force | Out-Null
+    # The rework leg's own phase.started is NOT yet appended: this is FLUSH TIME,
+    # which is exactly the position a same-base `rework + 1` formula gets wrong (0 + 1 = 1).
+    [System.IO.File]::WriteAllText(".opencode/state/issues/$issueNum.jsonl", "$impl`n$test`n", [System.Text.UTF8Encoding]::new($false))
+
+    New-Item -ItemType Directory -Path $draftDir -Force | Out-Null
+    $fixPlan = @"
+Root cause class: defect
+
+## Failed ACs
+
+- AC1: the widget never rendered.
+
+## Root Cause (file:line)
+
+- apps/ui/src/widget.tsx:40 - guard inverted.
+
+## Fix Scope
+
+- [ ] ST-2 Un-invert the guard.
+
+*Authored by Software Architect*
+"@
+    [System.IO.File]::WriteAllText((Join-Path $draftDir "fix-plan.md"), $fixPlan, [System.Text.UTF8Encoding]::new($false))
+
+    $out = & rust-script $ps --issue $issueNum --agent orchestrator --action post-comments 2>&1
+    $outStr = if ($out -is [array]) { $out -join "`n" } else { "$out" }
+    if ($LASTEXITCODE -ne 0) { throw "post-comments failed (exit $LASTEXITCODE): $outStr" }
+
+    $joined = (@(Mock-IssueComments $issueNum) -join "`n")
+    if ($joined -notmatch "## Fix Plan \(round 2\)") {
+      throw "the ordinary first rework must enter round 2 (flush-time: 1 testing entry, 0 rework entries), got: $joined"
+    }
+    if ($joined -match "## Fix Plan \(round 1\)") { throw "round 1 is the round being fixed, never the round being entered: $joined" }
+    if ($joined -match "## Fix Plan \(round 3\)") { throw "the ordinary rework must not drift to round 3: $joined" }
+    return "ordinary first rework enters round 2 (flush-time position) (#$issueNum)"
   } finally {
     Remove-Item ".opencode/tmp/$issueNum" -Recurse -Force -ErrorAction SilentlyContinue
     Mock-Cleanup $issueNum
