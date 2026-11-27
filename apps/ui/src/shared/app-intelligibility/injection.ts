@@ -1,5 +1,6 @@
 /**
  * Spec #3244 ST-4 — the per-turn injection record (the live receipt).
+ * Extended by Spec #3243 ST-3 with the order loop's three per-turn facts.
  *
  * # Why this module exists
  *
@@ -25,15 +26,72 @@
  * app (`mission-monitor` carries a per-app GROUNDING registrar —
  * `MissionMonitorPanel.tsx:881` — which is selection metadata, not enablement).
  *
- * Pure by construction: no React, no DOM, no IPC, no side effects.
+ * # The order-loop facts (Spec #3243 ST-3; AC-4 / R-4a)
+ *
+ * Three REQUIRED fields turn AC-4 from an invariant you can only read in the
+ * source into a run-derived receipt:
+ *
+ *   - `placementId` — the placement identity this turn belongs to (`''` when
+ *     Fredo is not placed, which is the ungrounded composer's published
+ *     contract). Read from the module-scoped placement store at build time, so
+ *     every turn carries the identity it actually ran under and two placements
+ *     can never share one — with no per-call-site wiring to forget;
+ *   - `orderActionCount` / `orderSurfaceDigest` — how many actions the target app
+ *     DECLARES and a content digest of that table (`0` / the empty-table digest
+ *     when it declares none).
+ *
+ * All three are REQUIRED on the wire with no `serde(default)` on the Rust side: a
+ * defaulted `''` would make a real placement read as unplaced, which is exactly
+ * the plausible-but-wrong number the receipt exists to prevent (G-511).
+ *
+ * Pure by construction: no React, no DOM, no IPC, no side effects. The only
+ * state it reads is the module-scoped placement store — the run's own state.
  */
 
+import { readPlacement } from '../placement/placementStore';
 import {
   contentDigest,
   serializeOutline,
   utf8ByteLength,
   type ScreenOutline,
 } from './screenOutline';
+
+/**
+ * The declared order surface of the app a turn is aimed at, as the receipt needs
+ * it (`0` actions / the empty digest when the app declares none).
+ *
+ * Structurally typed on purpose: the order surface's own declaration
+ * (`shared/order/orderActions.ts`) is assignable to this without an import, so
+ * the receipt has no compile-time dependency on another capsule's module.
+ */
+export interface OrderSurfaceFactSource {
+  readonly actions: readonly {
+    readonly id: string;
+    readonly risk: string;
+    readonly undoable: boolean;
+  }[];
+}
+
+/**
+ * The `orderSurfaceDigest` value for an app that declares NO order surface.
+ *
+ * A constant derived from the canonical empty table (never a hand-typed hex
+ * string), so the "declares none" reading is recomputable from this module.
+ */
+export const EMPTY_ORDER_SURFACE_DIGEST: string = contentDigest(
+  canonicalOrderSurface({ actions: [] }),
+);
+
+/**
+ * The canonical serialization of a declared order surface: one `[id, risk,
+ * undoable]` triple per action, in declaration (offer) order.
+ *
+ * Declaration order is part of the surface's identity — it is the order the
+ * model is offered — so it is preserved here rather than sorted.
+ */
+function canonicalOrderSurface(surface: OrderSurfaceFactSource): string {
+  return JSON.stringify(surface.actions.map((action) => [action.id, action.risk, action.undoable]));
+}
 
 /**
  * The injection facts of ONE companion turn — the payload the Rust
@@ -57,7 +115,24 @@ export interface CompanionInjectionFacts {
   readonly simplifiedHtmlTruncated: boolean;
   readonly screenshotDigest: string;
   readonly simplifiedHtmlDigest: string;
+  /**
+   * The placement identity this turn belongs to (Spec #3243 ST-3; R-4a) — `''`
+   * when Fredo is not placed. REQUIRED on the wire, never defaulted.
+   */
+  readonly placementId: string;
+  /**
+   * How many actions the target app DECLARES for orders (Spec #3243 ST-3; R-1a)
+   * — `0` when it declares none. REQUIRED on the wire, never defaulted.
+   */
+  readonly orderActionCount: number;
+  /**
+   * A content digest of the declared order-surface table (Spec #3243 ST-3) — the
+   * empty-table digest when the app declares none. REQUIRED on the wire, never
+   * defaulted.
+   */
+  readonly orderSurfaceDigest: string;
 }
+
 
 /**
  * The description+pair path's per-app enablement sources.
@@ -87,17 +162,29 @@ export interface CompanionInjectionInput {
   readonly description?: string;
   readonly outline: ScreenOutline;
   readonly screenshotPngBase64: string;
+  /**
+   * The app's DECLARED order surface, when the run resolved one (Spec #3243
+   * ST-3). Absent ⇔ the app declares none ⇒ `orderActionCount: 0` and the
+   * empty-table digest — a real zero, never a missing key.
+   */
+  readonly orderSurface?: OrderSurfaceFactSource;
 }
 
 /**
  * Derive the injection facts from the turn's OWN inputs (R-4b: the numbers come
  * from the run, never a constant). Byte counts are UTF-8 bytes of exactly what
  * crossed into the turn; digests are content fingerprints of the same values.
+ *
+ * The placement identity is read from the module-scoped placement store AT BUILD
+ * TIME, so the facts carry the placement the turn actually ran under (AC-4's
+ * receipt) rather than a value a call site could pass in stale or forget.
  */
 export function buildCompanionInjectionFacts(
   input: CompanionInjectionInput,
 ): CompanionInjectionFacts {
   const outlineJson = serializeOutline(input.outline);
+  const orderSurface = input.orderSurface;
+  const placement = readPlacement();
   return {
     appId: input.appId,
     taught: pairPathTaught(),
@@ -109,5 +196,11 @@ export function buildCompanionInjectionFacts(
     simplifiedHtmlTruncated: input.outline.truncated,
     screenshotDigest: contentDigest(input.screenshotPngBase64),
     simplifiedHtmlDigest: contentDigest(outlineJson),
+    placementId: placement === null ? '' : placement.placementId,
+    orderActionCount: orderSurface === undefined ? 0 : orderSurface.actions.length,
+    orderSurfaceDigest:
+      orderSurface === undefined
+        ? EMPTY_ORDER_SURFACE_DIGEST
+        : contentDigest(canonicalOrderSurface(orderSurface)),
   };
 }
