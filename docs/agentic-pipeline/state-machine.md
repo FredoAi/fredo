@@ -195,13 +195,117 @@ Validation:       <what the script checked and passed, or what is blocking entry
 Doc references:   <pipeline.md#..., github.md#..., staffing.md#...>
 --- (orchestrator only: orchestration snapshot) ---
 Impl plan:          <plan # or "none">
-Spec branch ahead:  <count of commits on spec/<N> not on main>
+Spec branch ahead:  <count of commits on spec/<N> not on main, or "unknown (<why>)">
 Evidence on plan:   <true/false — tester posted ## Tests Runs>
 A2A file:           <.opencode/tmp/<issue>/triage.md or "none">
 Spec branch:        <spec/<N> or "absent">
 Open blocked:       <count of open blocked issues>
 ====================
 ```
+
+### Measurement integrity — "couldn't measure" is not "measured zero" (#3241)
+
+A gate that DECIDES on a measurement must distinguish three states: the value is
+zero, the value is non-zero, and **the measurement did not complete**. Collapsing
+the third into the second is a defect of the same class as a test that passes in
+both the correct and the defective world (G-520): an observation that cannot tell
+the two apart is not an observation — and here it *reads as an authoritative
+verdict*, which makes it the more dangerous member.
+
+The machine carries this as the `Measured<T>` type (`Known(T)` / `Unknown(String)`).
+`Unknown` carries a message that **names the failed step and its stderr**
+(`could not fetch origin/spec/3241: <git stderr>`), never a bare `None` — so an
+operator can tell "nothing to deliver" from "could not check". A deciding caller
+must resolve the type **explicitly**: it either takes a semantic arm on `Known`, or
+fails with the measurement error. There is no default, because a default is exactly
+how the third state gets read as the second.
+
+**The two probes that carry it:**
+
+| Probe | Returns | What a failure must NOT be read as |
+|-------|---------|-------------------------------------|
+| `spec_branch_ahead(issue)` | `Measured<u64>` — commits on `spec/<N>` beyond `main` | "0 commits ahead" ⇒ *the developer must push* |
+| `merged_spec_pr_count(issue)` | `Result<Measured<usize>>` — MERGED spec PRs for `spec/<N>` | "no merged PR" ⇒ *the work is nowhere* |
+| `remote_branch_state(branch)` | `Measured<bool>` — is the ref on `origin`? | "absent" ⇒ *the branch is LOST* |
+
+**The three-way delivery decision in `ensure_spec_pr` gains a fourth arm.** Its
+semantic arms are unchanged — *absent + no merged PR* ⇒ LOST branch (fail closed),
+*present + no commits* ⇒ nothing to deliver, *present + merged* ⇒ NO-PR round — and
+the fourth is:
+
+> **UNKNOWN ⇒ fail with a measurement error, naming the failed step.** Never a
+> semantic arm.
+
+Both measured terms are terms of the SAME decision, so **both** must resolve before
+any arm is taken: fixing one and leaving the other leaves the gate able to reach a
+wrong arm by the other path. The live proof: on #3241 the `implementation → testing`
+gate refused with *"the developer must push"* while the same context block printed
+`Spec branch ahead: 3`, and an immediate retry of the identical command succeeded —
+a transient `git fetch` failure produced a false, role-accusing diagnosis, and the
+remedy it named (re-dispatch the developer) would have burned a full round on a
+finished branch.
+
+**Two sites are deliberately FAIL-OPEN, and there the fix is legibility, not
+direction.** `serving_currency_ok`'s post-merge bypass must not hard-error on an
+unknown — failing closed there would re-create the post-merge dead-end the bypass
+exists to remove — so an unknown keeps the *semantic fallback* (treated as
+not-merged) and is **named** in an emitted line saying which term was unreadable and
+why the fallback is intentional. The rule is that an unknown must not *silently*
+become a semantic state; where the fallback is correct by design, the silence is
+still the defect.
+
+**`remote_branch_state` deliberately does NOT use `git ls-remote --exit-code`.** Its
+exit status conflates absence with an unreadable transport (both non-zero), which is
+precisely the conflation at issue. The unambiguous probe is plain
+`git ls-remote origin <refspec>`: one `<sha>\t<ref>` line when present, **empty
+output** when absent, an error only when the read itself failed.
+
+Pins live in `test-scripts.ps1` ("Failure-vs-zero measurement integrity (#3241)"),
+one per arm-pair and each asserting **both** the property (the two outcomes are
+distinguishable) **and the literal strings** — so a future re-wording reddens the
+pin instead of silently re-conflating the arms.
+
+### C1: a generated-artefact-only commit does not owe a re-serve
+
+C1 (`check_env_evidence`) accepts a served commit whose **product subtree** is
+unchanged from the intended tip — a docs/pipeline-only commit after a live capture
+does not invalidate product evidence. A product change still requires a re-serve.
+
+**The exemption is a NAMED-PATH list (`GENERATED_SCHEMA_ARTEFACTS`), never a glob
+and never a directory.** Exactly three paths are exempt from the product diff:
+
+```
+apps/tauri/src-tauri/gen/schemas/acl-manifests.json
+apps/tauri/src-tauri/gen/schemas/desktop-schema.json
+apps/tauri/src-tauri/gen/schemas/windows-schema.json
+```
+
+**The reason they qualify, stated so a future candidate can be tested against it:**
+these files are **derived from `COMMAND_MANIFEST` by `build.rs` (`tauri_build`)**,
+and `COMMAND_MANIFEST` is what the tree *is* — behaviour is fixed by the manifest,
+not by its own machine-readable self-description. A command-surface change already
+touches `src/runtime/command_manifest.rs` (NOT exempt), so a real behavioural
+change still forces a re-serve through that path. Only the *artefact-only*
+regeneration is exempt.
+
+**Deliberately NOT exempt:** any other file under `apps/` (a `.rs`, a capability, a
+bundled asset) and `gen/schemas/capabilities.json` — it is not one of the three
+files the staleness gate validates, so it keeps owing a re-serve. The exemption
+exists because the `validate`-stage schema-staleness gate now makes an
+artefact-only schema commit **routine**, and re-serving for a commit that cannot
+alter runtime behaviour would restart the app mid-capture on every command-adding
+slice. A general "generated files don't count" rule is explicitly rejected: it
+would let a slice ship real generated product output and skip the proof that it
+was re-served.
+
+**Pinned red-then-green** in `test-scripts.ps1` ("C1 generated-artefact
+exemption"). `check_env_evidence` returns `absent` in mock mode, so the pin cannot
+be a mock branch (dead code that cannot fail). Instead it parses the real
+named-path list out of `GENERATED_SCHEMA_ARTEFACTS` and runs the **real pathspec**
+against a throwaway git repo, asserting three discriminating outcomes: a
+schemas-only delta is UNCHANGED (accepted); the **same** delta without the
+exemption is CHANGED (proving the list is load-bearing); and a real `apps/**`
+change is CHANGED (proving C1 still protects the product re-serve).
 
 ### Inputs the script reads
 - Issue `state`, `labels`, `title`, `body`.

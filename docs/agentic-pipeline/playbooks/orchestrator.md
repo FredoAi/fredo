@@ -39,9 +39,73 @@ The Orchestrator is the pipeline's **flow owner**. It runs the pipeline end-to-e
 
    **Docs-phase authoring (an Architect cannot create a worktree):** when the deliverable is documentation, use the split that worked on #3116 — the Architect authors an EXACT patch file (e.g. `.opencode/tmp/<issue>/doc-fix.md`) naming each file and its replacement text, and a Developer applies it in its own worktree and commits on `spec/<N>`. The Architect owns the normative wording; the Developer owns the apply, the commit and the push. Brief it explicitly — do not dispatch the Architect to edit the served tree, and never apply the patch yourself. A further revision round repeats the same split with a new patch file.
 
-8. **Handle blockers** — request the `block`/`unblock` actions on stalled work; intervene within the 4h SLA; route underspecified plan items back to triage; escalate >3 PR rejections to the human with what was tried. **Model-availability triage (G-048):** if a SINGLE subagent role returns EMPTY dispatches across consecutive attempts with ZERO state-machine calls while sibling roles on the same harness work, suspect that role's configured model/provider availability, block with the recorded reason, and escalate to the human — re-dispatching the same role wastes rounds. **Maintain the observations log** `.opencode/tmp/<issue>/observations.md`: append each blocker's root cause, PR-rejection pattern, triage ambiguity, or machine friction you see while orchestrating (agent-tagged, one line each). This is the live input the Curator distills into durable lessons after the audit. Do not wait for the audit to surface a pipeline defect you already saw.
+8. **Handle blockers** — request the `block`/`unblock` actions on stalled work; intervene within the 4h SLA; route underspecified plan items back to triage; escalate >3 PR rejections to the human with what was tried. **Model-availability triage (G-048):** if a SINGLE subagent role returns EMPTY dispatches across consecutive attempts with ZERO state-machine calls while sibling roles on the same harness work, suspect that role's configured model/provider availability, block with the recorded reason, and escalate to the human — re-dispatching the same role wastes rounds. **Maintain the observations log** `.opencode/tmp/<issue>/observations.md`: append each blocker's root cause, PR-rejection pattern, triage ambiguity, or machine friction you see while orchestrating (agent-tagged, one line each). This is the live input the Curator distills into durable lessons after the audit. Do not wait for the audit to surface a pipeline defect you already saw. **The file is APPEND-ONLY by nature — READ it, then EDIT with a unique anchor; never `write` a freshly-composed file over it.** `write` silently discards every earlier entry, and the losses are unrecoverable when the discarded text was the only place a machine defect was recorded (observed #3241: the same file was overwritten three times in one run by this habit).
 9. **Run `transition → testing`** once the developer pushed to `spec/<N>` (implementation gate: commits beyond main) — this applies the `testing` label and auto-creates the spec PR; **dispatch the tester** to run the QA Plan from the plan issue. **Inline the G-104 evidence-renderability guard in every tester brief** (evidence frames named WITHOUT image extensions in prose; `.png`/`.jpeg` tokens only on lines that also carry an `https://` URL; descriptive link labels). **Cite the POSTED comment as the plan source** (`## Triage Plan` on the feature issue). **Before dispatching the tester, ensure `spec/<N>` is synced with `main`'s pipeline config** — run `--action sync-spec-branch` (the machine merges `origin/main`; you hold no `git merge` grant, so the hand form fails on the sandbox and leaves the branch stale): the tester's sandbox permissions come from the working tree's `opencode.json`, and a stale spec branch silently re-blocks the tester. **The same served tree also supplies the agent's PLAYBOOK and the common rules** — a rule or doc fix merged to `main` after the branch forked is invisible to every agent in the spec until this sync (G-239). **Serving currency (G-052): put the repo root on the spec tip with the MACHINE — `--action align-root`.** It fetches, resolves `origin/spec/<N>`, refuses (naming every path) when an uncommitted path would be overwritten, and never forces or drops a stash; **`align-root` is the sanctioned checkout step** — you DO hold a `git checkout` grant (the older "no `checkout` grant" note is stale), but the hand-run preserve/align/restore dance is not the sanctioned path and risks the exact overwrite/`opencode.json`-shadow failures `align-root` refuses by design — never force, never drop a stash. `sync-spec-branch` handles the `origin/main` merge side (step 6). **A transition that FAILED has not moved the phase (G-054).** Fix the cause, then RE-RUN the transition and read the phase and round the machine now records BEFORE dispatching the role it gates — an attempted transition is not a handoff, and a role dispatched on intent runs outside the phase model, freezes the round counter and forces a supersede on evidence that was fine (observed #3192: the refusal was the repo root sitting on `main`; the tester was dispatched anyway). **State the verdict-line literal in every tester brief:** the `Verdict:` line must START with the bare token (`Verdict: **PASS**`), never a bold-prefixed form, because the draft-flush gate is prefix-strict even though the verdict reader is bold-tolerant (G-013; observed #3116).
 10. On tester pass, **run `transition testing → audit`** — this auto-merges the spec PR (the branch survives so evidence URLs keep rendering), then **dispatch the Auditor** (`auditor.md`) for the independent verdict. **After the Auditor's verdict, dispatch the Curator (`curator.md`) for a curation pass — at EVERY audit gate, success or restart.** On a restart it distills the failure into a durable lesson before the re-run (step 14); on success it distills the Orchestrator's `observations.md` (pipeline friction) and curates the guardrail store before cleanup (step 12). The Curator never runs on the restart path alone — a passing run still carries captured observations that must be curated.
+
+### When a refusal's remedy is a ROLE ACTION you are about to take, re-derive the fact first
+
+**A refusal is evidence about the MEASUREMENT, not only about the world.** When a
+transition refuses and the remedy it names is a role action *you are about to take* —
+re-dispatch a developer, restart to an earlier phase, re-run an agent — **re-derive
+that fact independently before taking it.** One cheap command, before the dispatch:
+
+- the refusal says **"the developer must push"** → run
+  `git log --oneline origin/spec/<N>` and confirm the branch really is empty of
+  commits beyond main before re-dispatching the developer.
+
+**Why this lives in the playbook and not in a guard:** *no gate refuses a
+re-dispatch of a developer who already finished, and no test reddens; that is why
+it belongs in the playbook rather than in a guard. A guard cannot catch a
+correct-looking action; only a reader can.*
+
+The failure mode is invisible at the moment you trigger it: a re-dispatch of a
+developer whose work is already pushed **looks byte-identical to correct
+behaviour** — the developer comes back "there is nothing to do", or re-does work,
+and you have spent a full round on a branch that was complete the whole time.
+Nothing in the machinery objects, because the machine was not refusing the work —
+it was reporting a measurement it could not complete (the `Measured<T>` UNKNOWN arm,
+see [state-machine.md](../state-machine.md#measurement-integrity--couldnt-measure-is-not-measured-zero-3241)).
+The symptom is a refusal whose remedy is an action you control.
+
+**The specific instance that found the defect (#3241):** `implementation → testing`
+refused with *"the developer must push before implementation → testing"* while the
+same context block printed `Spec branch ahead: 3`, and an immediate retry of the
+identical command **succeeded** (`SPEC PR CREATED`). Independently verified:
+`origin/spec/3241` was 3 commits beyond `origin/main`. A transient `git fetch`
+failure had produced a confident, role-accusing diagnosis; the remedy it named
+(re-dispatch the developer) would have burned a full round. The machine-side defect
+is fixed (an unmeasured gate now fails with a **measurement error** naming the
+failed step, and never wears the semantic accusation) — **this check stays anyway.**
+It is cheap, it is the only thing standing between a transient network blip and a
+wasted round, and it is exactly the kind of correct-looking action no guard can
+catch.
+
+**The rule generalises past transitions (G-523).** Any refusal, refusal-shaped
+report, or gate message whose remedy is an action YOU control is a claim about a
+measurement before it is a claim about the world — so the re-derivation is one cheap
+command, and a retry of the identical command is a legitimate second reading rather
+than a double action. Three corollaries follow. (a) A refusal that **contradicts
+another line of the same context block** is a measurement defect, never a state fact:
+trust neither line until you derive the fact by hand. (b) When two conjoined terms
+feed one decision, both must resolve before you accept any arm — fixing one leaves
+the gate able to reach a wrong arm by the other path. (c) Route the machine half to
+the Machinist with the failing step, the string it emitted, and the derivation you
+ran; do not patch the machine yourself, and do not edit the record to match.
+
+**A correct change whose timing is wrong is a wrong action (observation, #3241).**
+This run's sharpest instance: committing regenerated generated artefacts was the
+correct doctrine, and committing them when the decision was first made would have
+moved the head under a live capture and destroyed the tester's evidence. The
+precedent the human endorsed: *the doctrine is right, but its timing is subordinated
+to not destroying a capture.* Sequence the correct change after the verdict (and
+name the re-serve it owes) rather than abandoning or arguing it — and prefer the
+repair that makes both satisfiable at once. Here a **narrow, named-path** tolerance
+(exempt exactly the generated paths a change cannot re-prove, keyed per path and
+never by class) removed the tension entirely: the doctrine and the capture became
+compatible, which is a better answer than picking a loser. That is **G-522** applied
+to a gate — widen by enumerating the justified members, prove both directions, and
+never "exempt anything generated".
 
 ### Retry rounds (tester FAIL → implementation)
 
