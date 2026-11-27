@@ -1,23 +1,21 @@
 {
   "schemaVersion": 2,
   "ac": "AC-4",
-  "status": "awaiting-live-run",
-  "note": "The AC-4 record slot. It is filled by build-ac4-record.mjs from a LIVE run's telemetry_spans capture. The nulls below mean NOT YET MEASURED -- they are a slot, never a number (G-511: a fabricated or placeholder measurement is worse than no record). Schema v2: the AC-4 NUMBER is outline.utf8Bytes (the outline leg's measured size, which varies with the screen); screenshot.encodedImageTokens is retained as rig-cost context for NFR-1 and is density-invariant, so it is NOT the limit.",
   "runIdentity": {
-    "commit": null,
-    "capturedAt": null,
-    "appId": null,
-    "injectionSpanId": null
+    "commit": "e7ef02df1b0d8b1d64be613578eb9f2ae5e5d637",
+    "capturedAt": "2026-11-27T02:19:53.000Z",
+    "appId": "qa3244-dense-160",
+    "injectionSpanId": "7dc0e294e-bf34-40b6-94fa-d1948ffe4cf0"
   },
   "outline": {
-    "utf8Bytes": null,
-    "nodeCount": null,
-    "truncated": null,
-    "bytesHeadroom": null,
-    "bindingCap": null
+    "utf8Bytes": 7980,
+    "nodeCount": 74,
+    "truncated": true,
+    "bytesHeadroom": 212,
+    "bindingCap": "bytes"
   },
   "screenshot": {
-    "encodedImageTokens": null
+    "encodedImageTokens": 247
   },
   "capsInForce": {
     "maxNodes": 120,
