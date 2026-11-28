@@ -22,6 +22,19 @@
 //! crate (a platform module depending on a domain crate is the correct
 //! direction). What must never exist is the reverse.
 
+// Dead code is a BUILD FAILURE here, never a warning to live with
+// (Spec #3201 ST-12, added at review 2026-11-28).
+//
+// The extraction's `dead_code` count went 35 -> 0 across ST-5 with no
+// suppression, and that zero is evidence ONLY while nothing silences the lint:
+// a clean `cargo check` is exactly what a suppressed tree prints too. This deny
+// makes an orphan un-ignorable, and `tests/no_dead_code_suppression.rs` refuses
+// the attribute that would route around it — including the case this deny
+// cannot see, a suppression parked on an item that is not dead yet.
+//
+// Not `#[allow]`-able by accident: a suppression for this lint fails the pin.
+#![deny(dead_code)]
+
 use async_trait::async_trait;
 
 pub mod attrs;
