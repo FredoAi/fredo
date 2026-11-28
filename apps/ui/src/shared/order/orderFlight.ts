@@ -247,10 +247,19 @@ export function resetOrderFlightForTests(): void {
  * the tree boundary through this module too — same reason as the flight, and it
  * is deliberately NOT a second source of truth: `confirmOrder` is still the only
  * mint site, and this record only says WHICH invocation to show.
+ *
+ * `appName` rides HERE rather than being read from the flight at render time
+ * (ST-FP3). The dialog lives in component state and therefore SURVIVES a flight
+ * loss, but a name read from the flight does not — confirming through a null
+ * flight executed with `appName === ''` and settled as `Done - <label> in `, and
+ * the user was told Fredo had carried out their order *in no app at all*. The
+ * name is known at dispatch time, so it travels with the decision.
  */
 export interface OrderConfirmationRequest {
   readonly invocation: import('./orderActions').OrderInvocation;
   readonly label: string;
+  /** The app resolved AT SUBMIT — the name the dialog and both controls carry. */
+  readonly appName: string;
 }
 
 let pendingConfirmation: OrderConfirmationRequest | null = null;

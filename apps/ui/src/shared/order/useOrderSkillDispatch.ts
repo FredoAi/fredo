@@ -35,13 +35,42 @@
  * confirmation-shaped argument: `args` reaches only `buildOrderInvocation`'s
  * fingerprint, and the classification itself is the REGISTRY's.
  *
- * # One action per order (AC-5's NARROW reading), and the multi-selection refusal
+ * # One action per order (AC-5's NARROW reading), and the per-turn funnel
  *
  * The plan's AC-5 decision is binding: this slice proves the narrow reading
  * against its four declared actions, and must NOT be read as the general claim.
- * So when a selection carries more than one action, exactly ONE runs (the first
- * resolvable) and the rest are refused with typed copy — never a loop over the
- * selection, which is the defect the F-21 row counts document changes to catch.
+ * So when a turn carries more than one selection, exactly ONE step runs plus at
+ * most one lawful LOOKUP ahead of it (R-5b), and the rest are refused with typed
+ * copy — never a loop over the selection, which is the defect the F-21 row counts
+ * document changes to catch.
+ *
+ * # Why the funnel is NOT "first selection wins, refuse the rest"
+ *
+ * That naive rule would refuse R-5b's lawful `read` → `changing` pair, which is
+ * F-22's subject, and would redden a sound row. The rule implemented below
+ * arbitrates by the DECLARED RISK (the registry's, never the model's):
+ *
+ *   - the FIRST selection of a turn always runs;
+ *   - a second runs ONLY when the first was a `read` and the second is the ACT
+ *     (`changing`/`destructive`) — the one permitted two-step shape;
+ *   - everything else is refused, in the shipped copy, naming the app AND the
+ *     displaced action (`orderSupersededReply`). Two reads, an act-then-read and
+ *     a three-step chain are all refused rather than executed.
+ *
+ * R-5c rides the same accumulation point (and is the reason it must exist): a
+ * step that classifies `unknown` HALTS the chain, so every later selection in the
+ * turn is refused and never executes. Before this funnel each event dispatched
+ * independently, so nothing enforced that at all.
+ *
+ * # The turn boundary is the SHIPPED terminal signal, never a second timer
+ *
+ * The hook opens the window on the first `order` selection and closes it on
+ * `llm-done` / `llm-error` — the same terminal events the transport already uses
+ * to complete a generation (`TauriAdapter.llmChatWithSkills`), so the funnel adds
+ * no timer and no second settle mechanism. A DIRECT `dispatchOrderSelection` call
+ * (a test, the in-repo lever) that declares no turn is its own single-selection
+ * turn, which is byte-equivalent to the pre-funnel behaviour — the green-green
+ * control that keeps every single-selection row correct and refusal-free.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -59,6 +88,7 @@ import {
   orderNeedsConfirmationReply,
   orderPerformedReply,
   orderRefusedUnknownReply,
+  orderSupersededReply,
   orderUndoReply,
 } from './orderReply';
 import {
@@ -212,18 +242,148 @@ function settleReply(text: string): void {
   speakCompanionReply(text);
 }
 
-/**
- * Dispatch one `order` selection WITHOUT a model or a pointer — the in-repo
- * induction lever's landing point, and the seam every row drives.
- *
- * Returns the outcome so a test/lever can assert what happened, and pushes the
- * user-visible reply as a side effect (the same one reply per order).
- */
-export function dispatchOrderSelection(
-  selection: { readonly action?: unknown; readonly arguments?: unknown } | null | undefined,
-): OrderDispatchOutcome {
-  if (selection === null || selection === undefined) return { kind: 'ignored' };
+/* ------------------------------------------------------------------------- */
+/* The per-turn funnel (AC-5 / R-5a / R-5b / R-5c)                            */
+/* ------------------------------------------------------------------------- */
 
+/**
+ * What one turn has done so far.
+ *
+ * `seen` counts the selections that RAN (a refused one changes nothing, so a
+ * refusal can never widen the chain); `acted` records that the turn's one ACT
+ * has run; `halted` records that a step could not be classified, after which
+ * nothing else may run (R-5c — a failed lookup never becomes a blind act).
+ */
+interface OrderTurnState {
+  seen: number;
+  acted: boolean;
+  halted: boolean;
+}
+
+/**
+ * The open turn, or `null` when no turn is accumulating.
+ *
+ * Module-scoped for the same reason as the flight and the placement: the
+ * selections of ONE turn are dispatched from the Home tree with no React owner
+ * that could hold them, and the turn must survive a composer re-render between
+ * two selections of the same generation.
+ */
+let currentTurn: OrderTurnState | null = null;
+
+/**
+ * Open a turn window. The dispatcher hook calls this implicitly on the turn's
+ * first selection; `llm-done`/`llm-error` close it (see the hook below), so the
+ * window IS the shipped generation, never a second timer.
+ */
+export function beginOrderTurn(): void {
+  currentTurn = { seen: 0, acted: false, halted: false };
+}
+
+/** Close the turn window. A selection after this starts a fresh turn. */
+export function endOrderTurn(): void {
+  currentTurn = null;
+}
+
+/** The open turn's reading, or `null`. Diagnostics/tests only. */
+export function readOrderTurn(): Readonly<OrderTurnState> | null {
+  return currentTurn === null ? null : { ...currentTurn };
+}
+
+/** Drop the open turn. TEST ONLY — the `llm-done` path closes it in product. */
+export function resetOrderTurnForTests(): void {
+  currentTurn = null;
+}
+
+/** How one selection is admitted to the turn it arrived in. */
+type TurnAdmission = 'run' | 'superseded' | 'halted';
+
+function isActRisk(invocation: OrderInvocation): boolean {
+  return invocation.risk === 'changing' || invocation.risk === 'destructive';
+}
+
+/**
+ * THE ARBITRATION. At most one ACTION per turn, with `read` steps permitted
+ * ahead of it (R-5b) — and nothing permitted after it (R-5a).
+ *
+ * Deliberately NOT "first selection wins, refuse the rest": that naive rule
+ * refuses R-5b's lawful lookup-then-act, which is a real product behaviour
+ * (F-22), not a defect. The rule is stated over the DECLARED risk, which is the
+ * registry's and never the model's:
+ *
+ *   1. a halted turn admits nothing (R-5c);
+ *   2. an `unknown` classification is admitted only so the GATE can refuse it in
+ *      its own words — it never runs and it halts the chain;
+ *   3. the first selection is admitted;
+ *   4. after the act, nothing is admitted (a second act, or an act-then-read);
+ *   5. before the act, only an ACT is admitted (so a second `read` is refused —
+ *      a lookup after a lookup is not a lookup-then-act);
+ *   6. everything else — a second read, a two-act pair, a three-step chain — is
+ *      refused.
+ */
+function admitToTurn(invocation: OrderInvocation, turn: OrderTurnState): TurnAdmission {
+  if (turn.halted) return 'halted';
+  // An unclassifiable step is handed to the gate, whose `refused-unknown` arm
+  // owns that sentence. It must not become the turn's act.
+  if (invocation.risk === 'unknown') return 'run';
+  if (turn.seen === 0) return 'run';
+  if (turn.acted) return 'superseded';
+  return isActRisk(invocation) ? 'run' : 'superseded';
+}
+
+/**
+ * Record what a step that RAN did to the turn.
+ *
+ * `unknown` halts (R-5c); an act closes the turn's one action slot (R-5a). A
+ * `read` records only that it ran, which is what lets exactly one later act
+ * follow it (R-5b) while a second read cannot.
+ */
+function recordTurnStep(invocation: OrderInvocation, turn: OrderTurnState): void {
+  turn.seen += 1;
+  if (invocation.risk === 'unknown') {
+    turn.halted = true;
+    return;
+  }
+  if (isActRisk(invocation)) turn.acted = true;
+}
+
+/** The action's declared label, for copy — the id when it does not resolve. */
+function declaredLabelFor(appId: string, actionId: string): string {
+  return (
+    readOrderSurface(appId)?.actions.find((candidate) => candidate.id === actionId)?.label ?? actionId
+  );
+}
+
+/**
+ * Refuse a DISPLACED selection with the shipped copy (R-5a).
+ *
+ * It pushes and speaks the sentence but deliberately does NOT settle the flight:
+ * the record belongs to the step that actually ran, and marking a real execution
+ * `refused` because a second order arrived alongside it would be the UI lying
+ * about the first. The sentence is the user's only signal for the dropped one,
+ * which is exactly the gap the silent single-slot overwrite left behind.
+ */
+function refuseDisplaced(appName: string, label: string): OrderDispatchOutcome {
+  const text = orderSupersededReply(appName, label);
+  settleReply(text);
+  return { kind: 'refused', text };
+}
+
+/**
+ * Refuse a selection because the turn's chain HALTED (R-5c). A halted chain is a
+ * fault in the first step, so this is the unknown-refusal class — not the
+ * "one thing at a time" sentence, which would describe a different condition.
+ */
+function refuseHalted(appName: string): OrderDispatchOutcome {
+  const text = orderRefusedUnknownReply(appName);
+  settleReply(text);
+  return { kind: 'refused', text };
+}
+
+/** The body of one dispatch, with a turn guaranteed open. */
+function dispatchWithinTurn(
+  selection: { readonly action?: unknown; readonly arguments?: unknown },
+): OrderDispatchOutcome {
+  const turn = currentTurn as OrderTurnState;
   const actionId = typeof selection.action === 'string' ? selection.action.trim() : '';
   const placement = readPlacement();
   // AC-3's subject: the app resolved AT SUBMIT. With no placement there is no
@@ -234,11 +394,20 @@ export function dispatchOrderSelection(
 
   const invocation = buildOrderInvocation(appId, actionId, readArgBag(selection.arguments));
   if (invocation === null) {
+    // No dispatchable order at all: nothing later in this turn can be reasoned
+    // about against a declared shape, so the chain halts here too.
+    turn.halted = true;
     const text = orderRefusedUnknownReply(appName);
     beginOrderFlight({ orderId: `order-${Date.now()}`, appId, appName });
     settleOrderFlight({ state: 'refused', text });
     settleReply(text);
     return { kind: 'refused', text };
+  }
+
+  const admission = admitToTurn(invocation, turn);
+  if (admission === 'halted') return refuseHalted(appName);
+  if (admission === 'superseded') {
+    return refuseDisplaced(appName, declaredLabelFor(invocation.appId, invocation.actionId));
   }
 
   // AC-3's record is created at SUBMIT, before the gate: the ticker names the
@@ -250,6 +419,7 @@ export function dispatchOrderSelection(
   });
 
   const outcome = routeInvocation(invocation, appName);
+  recordTurnStep(invocation, turn);
 
   if (outcome.kind === 'needs-confirmation') {
     // A confirmation is NOT a refusal: the order is understood and awaiting the
@@ -257,12 +427,10 @@ export function dispatchOrderSelection(
     // "can't carry out" copy, which describes a fault.
     awaitOrderConfirmation();
     // The label is needed for the copy; read it from the declared surface.
-    const declaredLabel = readOrderSurface(invocation.appId)?.actions.find(
-      (candidate) => candidate.id === invocation.actionId,
-    )?.label ?? invocation.actionId;
+    const declaredLabel = declaredLabelFor(invocation.appId, invocation.actionId);
     // Hand the INVOCATION to the surface that renders the dialog (two React
     // trees, one module store — the same reason the flight is module-scoped).
-    requestOrderConfirmation({ invocation, label: declaredLabel });
+    requestOrderConfirmation({ invocation, label: declaredLabel, appName });
     settleReply(orderNeedsConfirmationReply(appName, declaredLabel));
     return outcome;
   }
@@ -280,6 +448,31 @@ export function dispatchOrderSelection(
   settleOrderFlight({ state, text: outcome.text });
   settleReply(outcome.text);
   return outcome;
+}
+
+/**
+ * Dispatch one `order` selection WITHOUT a model or a pointer — the in-repo
+ * induction lever's landing point, and the seam every row drives.
+ *
+ * A call while a turn is open joins THAT turn (and is arbitrated against what the
+ * turn already did). A call with no turn open is its own single-selection turn —
+ * identical in behaviour to the pre-funnel dispatcher, which is what keeps every
+ * one-selection row correct and refusal-free.
+ *
+ * Returns the outcome so a test/lever can assert what happened, and pushes the
+ * user-visible reply as a side effect (the same one reply per order).
+ */
+export function dispatchOrderSelection(
+  selection: { readonly action?: unknown; readonly arguments?: unknown } | null | undefined,
+): OrderDispatchOutcome {
+  if (selection === null || selection === undefined) return { kind: 'ignored' };
+  if (currentTurn !== null) return dispatchWithinTurn(selection);
+  currentTurn = { seen: 0, acted: false, halted: false };
+  try {
+    return dispatchWithinTurn(selection);
+  } finally {
+    currentTurn = null;
+  }
 }
 
 /**
@@ -398,6 +591,13 @@ export function clearOrderFlightState(): void {
 /**
  * The hook. Mounted ONCE beside `useAppOpenRequests` / `useDoomModeSkill` in the
  * Home tree — the fourth filter on the ONE channel.
+ *
+ * **The turn window's open/close is the SHIPPED generation boundary, not a new
+ * timer.** The first `order` selection of a turn opens it; `llm-done` and
+ * `llm-error` close it — the same two terminal events `TauriAdapter.
+ * llmChatWithSkills` already uses to finish a generation (`finish()` on either).
+ * A turn that emits several selections therefore accumulates them into ONE
+ * arbitration window with no second settle mechanism and no timeout of our own.
  */
 export function useOrderSkillDispatch(): void {
   const handleSkillCall = useCallback((payload: LlmSkillCall | null | undefined) => {
@@ -405,6 +605,9 @@ export function useOrderSkillDispatch(): void {
     const args = payload.arguments as
       | { readonly [ORDER_ACTION_ARG]?: unknown; readonly [ORDER_ARGUMENTS_ARG]?: unknown }
       | undefined;
+    // Open the turn on its first selection; later selections of the SAME turn
+    // join it and are arbitrated against what it already did.
+    if (readOrderTurn() === null) beginOrderTurn();
     dispatchOrderSelection({
       action: args?.[ORDER_ACTION_ARG],
       arguments: args?.[ORDER_ARGUMENTS_ARG],
@@ -419,6 +622,8 @@ export function useOrderSkillDispatch(): void {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let unlistenDone: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
 
     void adapterBridge
       .listen<LlmSkillCall>('llm-skill-call', (payload) => {
@@ -435,9 +640,47 @@ export function useOrderSkillDispatch(): void {
         // A registration failure must never escape the hook (dev/no-Tauri).
       });
 
+    // The turn boundary: the generation's own terminal events. Registered
+    // alongside the selection channel so a turn that emits its selections and
+    // then completes is closed exactly once — and so the NEXT turn starts with a
+    // fresh window (a second user order is a second order).
+    void adapterBridge
+      .listen<void>('llm-done', () => {
+        endOrderTurn();
+      })
+      .then((off) => {
+        if (disposed) {
+          off();
+          return;
+        }
+        unlistenDone = off;
+      })
+      .catch(() => {
+        // Same contract as the selection channel: never escape the hook.
+      });
+
+    void adapterBridge
+      .listen<string>('llm-error', () => {
+        // A failed generation ends its turn too: its selections are already
+        // arbitrated, and nothing more arrives for it.
+        endOrderTurn();
+      })
+      .then((off) => {
+        if (disposed) {
+          off();
+          return;
+        }
+        unlistenError = off;
+      })
+      .catch(() => {
+        // Same contract as the selection channel: never escape the hook.
+      });
+
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenDone?.();
+      unlistenError?.();
     };
   }, []);
 }

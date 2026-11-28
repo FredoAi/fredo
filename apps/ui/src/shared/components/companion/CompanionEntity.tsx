@@ -61,6 +61,8 @@ import { createCompanionSpeechSink } from '../../companion/companionSpeechSink';
 import {
   clearPlacement,
   placeFredo,
+  readPlacement,
+  rescopePlacement,
 } from '../../placement/placementStore';
 import { isPerformanceGateActive } from '../../doom-mode/performanceGate';
 import { subscribeOrderFlight, readOrderFlight as readOrderFlightRecord, subscribeOrderConfirmationRequest } from '../../order/orderFlight';
@@ -1697,13 +1699,39 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     const resolvedPlacementAppName = composerOpen ? composerTarget.appName : null;
     useEffect(() => {
       if (resolvedPlacementAppId === null) {
-        // The transition away from a resolved target: discard (AC-4). Idempotent,
-        // so a StrictMode double effect cannot flap it.
+        // Case 3 — the transition away from a resolved target: discard (AC-4).
+        // Idempotent, so a StrictMode double effect cannot flap it.
         clearPlacement();
         return;
       }
-      // The transition INTO a resolved target: a NEW identity, always — including
-      // for the same app, because two placements of one app are two placements.
+      const live = readPlacement();
+      if (live !== null) {
+        // Case 1 — THE MOVE. A resolved-target change while the composer stays
+        // OPEN re-scopes the live placement IN PLACE: the app the NEXT order
+        // targets follows the move (R-3b / F-17), while the identity an in-flight
+        // order was begun under is RETAINED (AC-3 — a move does not end a
+        // placement, so the record stays readable and the ticker keeps naming the
+        // original app).
+        //
+        // This case exists because `placeFredo` conflates scope with identity:
+        // it sets `appId` AND rotates `placementId` in one operation, which is
+        // the only way this effect could honour R-3b, and the reason a mid-flight
+        // move used to orphan the flight.
+        if (live.appId !== resolvedPlacementAppId) {
+          rescopePlacement(
+            resolvedPlacementAppId,
+            resolvedPlacementAppName ?? resolvedPlacementAppId,
+          );
+          return;
+        }
+        // Same app, still open: nothing to re-scope and NOT a new placement.
+        return;
+      }
+      // Case 2 (the composer went false → true) and case 4 (a LATE resolution —
+      // the composer is open, nothing is placed yet, and the app resolves a render
+      // or two after open, because frames are measured post-mount): both MINT. A
+      // new identity, always, including for the same app (R-4a) — and a
+      // late-resolving open is grounded rather than left empty.
       placeFredo(resolvedPlacementAppId, resolvedPlacementAppName ?? resolvedPlacementAppId);
     }, [resolvedPlacementAppId, resolvedPlacementAppName]);
 
@@ -1752,6 +1780,13 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // is the placement ending, which unmounts this tree.
     const [pendingConfirmation, setPendingConfirmation] = useState<OrderInvocation | null>(null);
     const [pendingLabel, setPendingLabel] = useState('');
+    // Spec #3243 ST-FP3 — the dialog's app name travels WITH the decision, never
+    // read from the flight at render time. The flight can go away mid-choice (a
+    // placement change), while the dialog survives in state: reading the name
+    // from a null flight executed the change with `appName === ''`, and settled
+    // as `Done - <label> in ` — the user confirmed a change in Wireframe and the
+    // sentence named no app at all.
+    const [pendingAppName, setPendingAppName] = useState('');
 
     // The dispatcher stores `needs-confirmation` in the flight and needs a way to
     // hand the INVOCATION to this tree (two React trees, one module store). It
@@ -1759,6 +1794,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     useEffect(() => subscribeOrderConfirmationRequest((request) => {
       setPendingConfirmation(request.invocation);
       setPendingLabel(request.label);
+      setPendingAppName(request.appName);
     }), []);
 
     // ── #3244 ST-4 — the typed screen-unavailable signal (R-2c) ───────────────
@@ -2153,18 +2189,21 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             i.e. the user's own click. There is deliberately no keyboard path. */}
         <OrderConfirmation
           invocation={pendingConfirmation}
-          appName={pendingConfirmation === null ? '' : (orderFlight?.appName ?? '')}
+          // ST-FP3 — the decision's OWN app name, never a read off the flight.
+          appName={pendingConfirmation === null ? '' : pendingAppName}
           label={pendingLabel}
           onConfirm={() => {
             if (pendingConfirmation === null) return;
-            confirmOrderExecution(pendingConfirmation, orderFlight?.appName ?? '');
+            confirmOrderExecution(pendingConfirmation, pendingAppName);
             setPendingConfirmation(null);
             setPendingLabel('');
+            setPendingAppName('');
           }}
           onCancel={() => {
-            cancelOrderExecution(orderFlight?.appName ?? '', pendingLabel);
+            cancelOrderExecution(pendingAppName, pendingLabel);
             setPendingConfirmation(null);
             setPendingLabel('');
+            setPendingAppName('');
           }}
         />
 
