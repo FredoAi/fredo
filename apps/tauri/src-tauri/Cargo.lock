@@ -1942,6 +1942,7 @@ dependencies = [
  "tauri-plugin-mcp-bridge",
  "tauri-plugin-shell",
  "tauri-runtime",
+ "telemetry-domain",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -7622,6 +7623,18 @@ dependencies = [
  "dunce",
  "embed-resource",
  "toml 1.1.2+spec-1.1.0",
+]
+
+[[package]]
+name = "telemetry-domain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

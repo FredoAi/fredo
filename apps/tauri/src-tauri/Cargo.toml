@@ -1,3 +1,17 @@
+[workspace]
+# Spec #3201 — `apps/tauri/src-tauri` is a cargo workspace so the agent-telemetry
+# domain rules can live in a separate compilation unit that CANNOT reach the Tauri
+# platform (AC1/AC6). `"."` is the `fredo` application crate itself; the member is
+# the domain crate. Keeping both in one workspace means one `Cargo.lock`, one
+# dependency resolution, and one shared target dir.
+#
+# The boundary is enforced by the RESOLVED graph
+# (`.opencode/scripts/verify-domain-boundary.ps1`, `cargo tree -p telemetry-domain`),
+# not by review: `telemetry-domain` must resolve to no `tauri*` and no
+# `fredo`/`fredo_lib` node. The reverse edge — `fredo` depending on
+# `telemetry-domain` — is the CORRECT direction and is deliberately permitted.
+members = [".", "crates/telemetry-domain"]
+
 [package]
 name = "fredo"
 version = "0.2.5"
@@ -48,6 +62,12 @@ serde_json = "1"
 syn = { version = "2", default-features = false }
 
 [dependencies]
+# Spec #3201 ST-1 — the agent-telemetry domain crate (workspace member above).
+# The edge points platform → domain, which is the CORRECT direction; the reverse
+# is what the boundary guard forbids. Present from ST-1 rather than later because
+# without it cargo's default-member selection never compiles the new crate, and a
+# `cargo check` that skips the member would be a vacuous receipt for the skeleton.
+telemetry-domain = { path = "crates/telemetry-domain" }
 # Spec #3192 ST-2 — `tray-icon` enables the native tray, its menu and icon
 # (`infrastructure/tray.rs`); `image-png` decodes the shipped `icons/32x32.png`
 # fallback when the bundle icon is not populated. Both crates (`tray-icon` 0.21,
