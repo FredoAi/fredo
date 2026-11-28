@@ -2,7 +2,7 @@
 //! R-3a/R-3b).
 //!
 //! Field metadata is derived from the REAL P1.1 row structs
-//! ([`super::super::rows`]): the canonical camelCase names, the JSON value
+//! ([`telemetry_domain::rows`]): the canonical camelCase names, the JSON value
 //! kind (`string | number | boolean | json | object`), and nullability from
 //! `Option<T>`. The totality unit tests pin the tables against
 //! `CHAT_FIELDS`/`TOOL_USE_FIELDS`/`AGENT_SESSION_FIELDS` AND against the
@@ -26,7 +26,7 @@ use super::{CompareOp, EventTypeArg, QueryArg, QuerySpec};
 ///   into the JSON free-form.
 /// - `Object` — the synthetic composite-key envelope `key` (`sessionId`,
 ///   `correlationId`, `seq` — the per-row-type composite key documented in
-///   `rows.rs`); selection/arg sub-paths are free-form.
+///   `telemetry_domain::rows`); selection/arg sub-paths are free-form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum FieldType {
@@ -65,7 +65,7 @@ pub struct RowSchema {
     pub fields: &'static [FieldDef],
 }
 
-/// `state` compares against the serde wire form of [`super::super::rows::RowState`]
+/// `state` compares against the serde wire form of [`telemetry_domain::rows::RowState`]
 /// (PascalCase: `"Init"`, `"Update"`, `"Response"`, `"Timeout"`, `"Error"`).
 const STATE_FIELD: FieldDef = FieldDef {
     name: "state",

@@ -40,7 +40,15 @@ Fredo accepts events from two sources. Hook/CLI input is unified into the canoni
 
 ## Communication Layer (`infrastructure/comm/`)
 
-The `comm` module holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small — the v1 contract engine (ECE), the OpenCode/Hook adapter, and the OTLP→ECE adapter were deleted; the RTDB row pipeline (`infrastructure/rtdb/`) is the only delivery path.
+The `comm` module holds the single IPC emitter and the adapter trait. Since the RTDB row pipeline became the only delivery path it is deliberately small — the v1 contract engine (ECE), the OpenCode/Hook adapter, and the OTLP→ECE adapter were deleted; the RTDB row pipeline (`infrastructure/rtdb/`) is the only delivery path.
+
+**The canonical wire vocabulary is no longer here.** `FredoEvent` and its enums (`EventType`, `EventProvider`, `Transport`, `EventState`) live in the domain crate (Spec #3201), `crates/telemetry-domain/src/event.rs`, together with the shared GenAI attribute-extraction rules, the row model with its merge rules, and the ingest classifier. What `comm/` keeps is exactly the part that reaches the platform: `bus.rs` (the `EventBus` emitter), `adapter.rs` (the `CommAdapter` trait), and `adapters/internal.rs` (the `fredo emit` enrichment). `comm/mod.rs` deliberately carries **no** `pub use event::{…}` re-export, so a consumer cannot keep addressing the moved vocabulary through this module.
+
+**Direction invariant — the dependency runs one way, and that one way is correct.** `comm/adapter.rs` and `comm/adapters/internal.rs` import the vocabulary and **stay in the platform**, so the edge is **platform → domain crate**:
+
+> The crate must never depend on the platform; a platform module depending on a domain crate is the correct direction.
+
+The reverse edge is what the boundary criterion forbids, and it is asserted on the **resolved** graph (`.opencode/scripts/verify-domain-boundary.ps1`) rather than on manifests, because a manifest-only check cannot see a transitively re-exposed platform crate. A guard that forbade the correct direction would redden on working code — worse than no guard.
 
 ### Core Types
 
@@ -52,11 +60,10 @@ The `comm` module holds the canonical wire types and the single IPC emitter. Sin
 
 ```
 infrastructure/comm/adapters/
-├── internal.rs            — InternalAdapter: enriches CLI events with server-side defaults
-├── parent_prompt_cache.rs — bounded parent-prompt cache helpers (shared with the row classifier)
+└── internal.rs            — InternalAdapter: enriches CLI events with server-side defaults
 ```
 
-The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registry constants, `resolve_op_name`, `otlp_attrs_to_map`, `otlp_attrs_to_payload`, `extract_messages_text`, `req_11_event_state_from_span`, `is_subagent_span`, `TurnTokenDerivation`) were **relocated verbatim to `infrastructure/rtdb/attrs.rs`** — one shared extract-rule implementation for the live classifier and the canonical backfill (NFR-6).
+The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registry constants, `resolve_op_name`, `otlp_attrs_to_map`, `otlp_attrs_to_payload`, `extract_messages_text`, `req_11_event_state_from_span`, `is_subagent_span`, `TurnTokenDerivation`), together with the bounded parent-prompt cache helpers (`req_1_cache_parent_prompt` and friends — formerly `comm/adapters/parent_prompt_cache.rs`), live in the domain crate at `crates/telemetry-domain/src/attrs.rs` and `crates/telemetry-domain/src/classifier/relationship.rs` (Spec #3201) — one shared extract-rule implementation for the live classifier and the canonical backfill (NFR-6).
 
 ---
 
@@ -73,14 +80,16 @@ The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registr
                 │                          │
                 ▼                          ▼
    Raw ingestion on receipt      RTDB ingest classifier
-   (otlp/raw.rs →                (rtdb/ingest.rs — shared
-   telemetry_spans/metrics/      helpers in rtdb/attrs.rs;
-   logs; zero dropped,           correlation maps + relationship
-   independent of delivery)      registry re-keying)
+   (otlp/raw.rs →                (crates/telemetry-domain/src/
+   telemetry_spans/metrics/      classifier/ — shared rules in
+   logs; zero dropped,           crates/telemetry-domain/src/
+   independent of delivery)      attrs.rs; correlation maps +
+                                 relationship registry re-keying)
                 │                          │
                 │                          ▼
                 │                  Vec<RowUpsert> → Rtdb
-                │                  (merge rules → durable seq
+                │                  (crate merge rules →
+                │                   durable seq
                 │                   → subscriptions)
                 │                          │
                 │              FlushLoop (~5 ms cadence)
@@ -105,7 +114,7 @@ The pure GenAI-attribute extraction helpers the v1 OTLP adapter carried (registr
 
 When the user interacts with the UI directly (e.g. clicking a button), the flow uses `adapterBridge.invoke(command, args)` → Tauri IPC command → Rust application handler; the resulting rows flow back through the same subscription path.
 
-No raw `FredoEvent` crosses IPC (it is the CLI wire format only); the `"fredo-stream-event"` channel carries only projected envelope families — RTDB `RowDelivery`/`RowDeliveryBatch`, application-data `ApplicationDeliveryBatch`, and the stream-health heartbeat `StreamHealthEnvelope` (`{"streamHealth": …}`, Spec #3064). The **ingest classifier** (`rtdb/ingest.rs`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `rtdb/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
+No raw `FredoEvent` crosses IPC (it is the CLI wire format only); the `"fredo-stream-event"` channel carries only projected envelope families — RTDB `RowDelivery`/`RowDeliveryBatch`, application-data `ApplicationDeliveryBatch`, and the stream-health heartbeat `StreamHealthEnvelope` (`{"streamHealth": …}`, Spec #3064). The **ingest classifier** (`crates/telemetry-domain/src/classifier/`) maps every span/event onto canonical row upserts unconditionally, never gated by subscriptions (R-4a) — that is what makes replay work. Merge rules (KeepFirst / LastNonZero / LastWins, `crates/telemetry-domain/src/merge.rs`) keep init-time data intact across patches; the per-key durable `seq` (`rtdb/store.rs`) guards against stale patches. `telemetry_spans` is never touched by RTDB code (`rtdb/store.rs` asserts the invariant).
 
 ### Replay + Live Boundary (P2.3, F-33 fix)
 
@@ -126,7 +135,7 @@ With Mission Monitor open on a very large corpus (~42k rows), sustained live age
 
 ### Parent-Child Compositing — Cross-Session Merging
 
-Parent-child session merging happens in the **ingest classifier's relationship registry** (row pipeline), not in any adapter. Registration sources (ported from the ECE, `rtdb/ingest.rs`): the OTel span-link `parent.session_id` attribute (primary) and the `session.parent_id` attribute (fallback), with the internal tool-execution-agent exclusion (`build`/`plan`) applied at registration.
+Parent-child session merging happens in the **ingest classifier's relationship registry** (row pipeline, `crates/telemetry-domain/src/classifier/relationship.rs`), not in any adapter. Registration sources (ported from the ECE): the OTel span-link `parent.session_id` attribute (primary) and the `session.parent_id` attribute (fallback), with the internal tool-execution-agent exclusion (`build`/`plan`) applied at registration.
 
 - **`child_to_parent` / `parent_to_children`** maps (capped at 10,000 entries, oldest-first eviction) mirror the deleted ECE registry.
 - When a child→parent relationship registers, the child's EXISTING rows are COPIED under the parent key (session_id = parent, correlation_id = the child's own per-turn id) carrying the `parent_session_id` + `composited_child_session_id` stamps; every LATER child row also gets a parent-keyed copy while the relationship is registered. **`kind: remove` is ONLY ever emitted for retention eviction — a re-key NEVER removes rows.**
@@ -141,7 +150,7 @@ Typed rows on the embedded PostgreSQL cluster (the shipped default) behind an LR
 
 ### Row types + queries
 
-Three canonical tables on the active engine (embedded PostgreSQL) — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`. Every row carries a **`provider`** attribution derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else the documented `unknown` fallback — never the model provider carried by `telemetry_spans.provider`), resolved by ONE shared rule (`rtdb/attrs.rs::resolve_provider_token`) used by both the live classifier and a one-shot re-derivation pass (`rtdb/backfill.rs`, gated by its own marker under an independent key) that upgrades a pre-existing migration-defaulted row **in place at the row's own `(session_id, correlation_id)`** — it never re-mints a key, so it creates no parallel rows. The column is appended by an idempotent migration as `provider TEXT NOT NULL DEFAULT 'unknown'`.
+Three canonical tables on the active engine (embedded PostgreSQL) — `chat_rows`, `tool_use_rows`, `agent_session_rows` — one row per composite key `(session_id, correlation_id)` with a durable per-key monotonic `seq`. The **RTDB query language** (`rtdb/query.rs`) is GraphQL-inspired: `chat(sessionId = "s1") { userMessage, promptTokens }` — typed root per row type, typed-column args with SQL pushdown, hard-named validation errors (typos and type mismatches are rejected, never silently empty). `subscribe_events`/`unsubscribe_events` register/unregister queries; every query gets a unique `queryId`. Every row carries a **`provider`** attribution derived from the OTLP resource identity `service.name` (`fredo-opencode-plugin` → `open_code`, `copilot-cli` → `copilot_cli`, else the documented `unknown` fallback — never the model provider carried by `telemetry_spans.provider`), resolved by ONE shared rule (`crates/telemetry-domain/src/attrs.rs::resolve_provider_token`) used by both the live classifier and a one-shot re-derivation pass (`rtdb/backfill.rs`, gated by its own marker under an independent key) that upgrades a pre-existing migration-defaulted row **in place at the row's own `(session_id, correlation_id)`** — it never re-mints a key, so it creates no parallel rows. The column is appended by an idempotent migration as `provider TEXT NOT NULL DEFAULT 'unknown'`.
 
 The orphaned `contract_events` table (a pre-RTDB v1 data artifact) has zero code references; it is not part of the PostgreSQL store and destructive data cleanup is out of scope.
 
@@ -260,15 +269,13 @@ src-tauri/src/
 |       +-- theme_state.rs      — the `ThemePayload`/`ThemeToken` transport types and the backend's in-memory theme mirror the handler inlines at serve time, with a system-colour fallback so a first paint is never unstyled
 |       +-- theme_push.rs       — exactly `installed_apps_push_theme`: validate the host's resolved token values (custom-property names only, 256-token cap), write the mirror, and `Webview::eval` the theme into every live `installed-*` window (no database, no file)
 +-- infrastructure/
-    +-- comm/                   — Canonical wire types + the single IPC emitter
-    |   +-- mod.rs              — re-exports: FredoEvent, EventBus, CommAdapter, InternalAdapter
-    |   +-- event.rs            — FredoEvent (CLI wire format), EventType, EventProvider, Transport, EventState
+    +-- comm/                   — The single IPC emitter + the adapter trait
+    |   +-- mod.rs              — re-exports: EventBus, CommAdapter, InternalAdapter (deliberately NO `event::` re-export — that vocabulary moved to the domain crate, Spec #3201)
     |   +-- bus.rs              — EventBus (emit_row_delivery_batch — the ONLY RTDB emission path)
     |   +-- adapter.rs          — CommAdapter trait
     |   +-- adapters/
     |       +-- mod.rs
     |       +-- internal.rs     — InternalAdapter (fredo emit enrichment)
-    |       +-- parent_prompt_cache.rs — bounded parent-prompt cache helpers
     +-- companion/              — Shared companion runtime helpers (Spec #2857)
     |   +-- models.rs           — required model-file manifest (pinned names/sizes/SHA-256) + on-disk probe
     |   +-- performance_mode.rs — `PerformanceModeState` (provider-agnostic companion voice/audio suppression gate; read by `voice/` + `llm_server/` without importing `applications/doom`) (Spec #2970)
@@ -279,17 +286,14 @@ src-tauri/src/
     |   +-- state.rs            — `Stt*` IPC wire types (camelCase), incl. the `readyMs` / `phase` / `limitMs` observables and the `MAX_AUDIO_CLIP_MS` bound
     |   +-- commands.rs         — stt_list_devices, stt_start, stt_stop, stt_cancel, stt_status, stt_take_audio_clip
     +-- rtdb/                   — RTDB row store — the production event pipeline
-    |   +-- attrs.rs            — pure GenAI-attribute helpers + registry constants (relocated from the deleted v1 adapter)
-    |   +-- rows.rs             — ChatRow / ToolUseRow / AgentSessionRow + field tables
-    |   +-- merge.rs            — KeepFirst / LastNonZero / LastWins merge rules
     |   +-- store.rs            — RtdbStore (engine-selected; never touches telemetry_spans)
     |   +-- cache.rs            — LRU row cache + write-behind queue + retention knobs
     |   +-- project.rs          — RowDelivery / RowDeliveryBatch projection
     |   +-- query/              — the RTDB query language (parse + schema validation)
     |   +-- subscriptions.rs    — SubscriptionRegistry
     |   +-- flush.rs            — FlushLoop (coalescing windows, 512-row chunking, replay settle markers)
-    |   +-- commands.rs         — Rtdb orchestrator + subscribe_events/unsubscribe_events
-    |   +-- ingest.rs           — IngestClassifier (spans/events → row upserts; relationship registry)
+    |   +-- health.rs           — ingest-pipeline liveness heartbeat (Spec #3064)
+    |   +-- commands.rs         — Rtdb orchestrator + subscribe_events/unsubscribe_events; `impl RowSink for Rtdb` (the domain crate's one port into the platform)
     |   +-- backfill.rs         — canonical backfill from telemetry_spans (read-only)
     +-- application_data/           — application-owned declared tables (declaration → projection → read/watch)
     |   +-- declaration.rs      — declaration model + hard named validation
@@ -333,6 +337,26 @@ src-tauri/src/
 
 ```
 
+The agent-telemetry domain rules do **not** live under `src/` — they are a workspace member at `apps/tauri/src-tauri/crates/telemetry-domain/`, a crate that cannot reach the Tauri platform (Spec #3201; AC1's guard asserts it against the resolved graph). Its modules are the four that moved out of `infrastructure/rtdb/`, plus the wire vocabulary that moved out of `infrastructure/comm/event.rs`:
+
+```
+crates/telemetry-domain/src/
++-- lib.rs                      — the crate root; the `RowSink` port (the domain rules' ONE dependency on the hosting platform, implemented by `rtdb/commands.rs`)
++-- event.rs                    — FredoEvent (CLI wire format), EventType, EventProvider, Transport, EventState (moved from `infrastructure/comm/event.rs`)
++-- attrs.rs                    — pure GenAI-attribute helpers + registry constants (moved from `infrastructure/rtdb/attrs.rs`)
++-- rows.rs                     — ChatRow / ToolUseRow / AgentSessionRow + field tables (moved from `infrastructure/rtdb/rows.rs`)
++-- merge.rs                    — KeepFirst / LastNonZero / LastWins merge rules (moved from `infrastructure/rtdb/merge.rs`)
++-- classifier/                 — IngestClassifier, split by row family (moved from `infrastructure/rtdb/ingest.rs`)
+    +-- mod.rs                  — the classifier + its port-facing entry points
+    +-- session.rs              — the agent-session row family (`run_agent` spans)
+    +-- turn.rs                 — the chat-turn row family + the per-turn token deltas
+    +-- tool.rs                 — the tool-use row family (`execute_tool` spans)
+    +-- agent.rs                — per-span classification, agent identity, span timing
+    +-- relationship.rs         — child→parent registration, the re-key, instruction injection, and the parent-prompt cache helpers (moved from `infrastructure/comm/adapters/parent_prompt_cache.rs`)
+```
+
+The dependency rule is deliberately narrow: general-purpose libraries only, no `tauri`, no settings store, no `path` dependency escaping `crates/`. The permitted edge points the other way — platform modules depend on this crate (`rtdb/store.rs`, `rtdb/backfill.rs`, `rtdb/commands.rs`, `application_data/*`, `comm/adapter.rs`, `comm/adapters/internal.rs`); the reverse must never exist.
+
 ### Capability Traits
 
 | Trait | Meaning |
@@ -359,14 +383,17 @@ The `DynamicTableStore` (`infrastructure/storage/application_store.rs`) provides
 
 **Packaging / install + acquisition mode (slice 5).** The embedded-PostgreSQL runtime's acquisition is explicit and **build-time enforced** (`applications/pg_supervisor/acquisition.rs`): the crate default is `runtime-download` (first-run archive fetch, ~0 B installer growth), and an optional compile-time `bundled` Cargo feature embeds the archive (no first-run network; one build-time fetch, documented as outside Fredo's SHA-pinned integrity surface). The `runtime-download` mode acquires the archive through ONE SHA-256-pinned streaming engine (skip-if-verified, `Range` resume, prefix-seeded streaming digest, delete-on-mismatch, bounded retry — the same engine that verifies Companion model files); the `bundled` feature instead embeds the archive via the crate's build-time fetch (no first-run network), outside Fredo's SHA-pinned integrity surface. On `runtime-download` (Windows x86_64) the verified archive is then **extracted by Fredo** (`extraction.rs`): the digest is re-verified against the committed pin and the archive is unpacked with Fredo's own streaming tar/gz extractor, stripping the archive's single top-level component so `bin/`, `lib/`, and `share/` sit directly under the installation directory, which is then marked trusted with the crate version pinned to the exact `18.6.0` — so `postgresql_embedded` adopts the tree and performs **no** archive/version download (`install()`/fetch is never reached). `bundled` keeps the crate's embedded-archive extraction inside `install()` (trust and the version pin are applied only on `runtime-download`); other platforms keep the crate's own self-fetch (documented follow-up). The unpacked payload is the same either way (~164 MB extracted); `bundled` moves the acquisition point, it does not shrink the on-disk footprint. **Spec #3005 removed the `cutover_release_gate`** and the engine selector — PostgreSQL is the unconditional shipped engine (fresh-install-only; a pre-existing legacy SQLite file is ignored byte-for-byte).
 
-**Idempotency**: `application_store_insert` uses `INSERT OR IGNORE`. Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. Delivery-level idempotency in the row pipeline is guaranteed by the RTDB durable per-key `seq` (`rtdb/store.rs` `next_seq`, seeded from MAX(seq) in storage — store.rs:628) plus the merge rules (`rtdb/merge.rs`) that drop stale patches — no adapter re-delivers events.
+**Idempotency**: `application_store_insert` uses `INSERT OR IGNORE`. Duplicate inserts with the same unique key silently succeed without UNIQUE constraint errors. Delivery-level idempotency in the row pipeline is guaranteed by the RTDB durable per-key `seq` (`rtdb/store.rs` `next_seq`, seeded from MAX(seq) in storage — store.rs:628) plus the merge rules (`crates/telemetry-domain/src/merge.rs`) that drop stale patches — no adapter re-delivers events.
 
 ### Infrastructure vs Applications
 
 | Layer | Contains | Does NOT contain |
 |-------|----------|-----------------|
 | `applications/` | Models, service logic, state, Tauri command handlers | Shared platform code |
-| `infrastructure/` | FredoEvent (CLI wire), EventBus, CommAdapter, RTDB row store + ingest classifier, SettingsStore, DynamicTableStore, IPC socket, CLI parser, OTLP receivers | Business logic |
+| `infrastructure/` | EventBus, CommAdapter, InternalAdapter, RTDB row **store** (durable seq, cache, flush, subscriptions, query, projection, health), SettingsStore, DynamicTableStore, IPC socket, CLI parser, OTLP receivers | Domain classification rules, and state owned by an application |
+| `crates/telemetry-domain/` | The agent-telemetry **domain rules**: the `FredoEvent` wire vocabulary, the shared GenAI attribute-extraction rules (NFR-6), the canonical row model + merge rules, and the ingest classifier with its relationship registry | Anything that reaches the platform — no `tauri`, no settings store, no store/flush/subscription machinery |
+
+The row asserting that `infrastructure/` carries no domain rules is **true because those rules were moved to a crate, not because the boundary was always clean.** Until Spec #3201 the ingest classifier and the `attrs`/`rows`/`merge` rules — the most domain-rich code in the repository — sat in `infrastructure/`, so the same table was self-contradictory. The extraction is what makes the "Does NOT contain" column a fact the compiler enforces: `crates/telemetry-domain` is a workspace member whose resolved dependency graph cannot reach the platform, and a platform module depending on it is the correct direction (see `## Communication Layer`).
 
 ---
 
@@ -377,7 +404,7 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 ### gRPC Receiver (`:4317`)
 - Implements `TraceService`, `MetricsService`, `LogsService` via `tonic`
 - Receives OTLP protobuf from OpenCode
-- **Raw ingestion on receipt**: every span/metric/log in each export is persisted via `otlp/raw.rs` → `SpanStore::insert_raw_spans`, before and independent of row classification — no span dropped (R1/R2). Row classification runs the RTDB ingest classifier (`rtdb/ingest.rs`) on the same export. Metrics and logs are persisted to `telemetry_metrics`/`telemetry_logs` on both legs.
+- **Raw ingestion on receipt**: every span/metric/log in each export is persisted via `otlp/raw.rs` → `SpanStore::insert_raw_spans`, before and independent of row classification — no span dropped (R1/R2). Row classification runs the RTDB ingest classifier (`crates/telemetry-domain/src/classifier/`) on the same export. Metrics and logs are persisted to `telemetry_metrics`/`telemetry_logs` on both legs.
 
 ### HTTP Receiver (`:4318`)
 - Axum server handling `POST /v1/traces`, `/v1/metrics`, `/v1/logs`
@@ -386,7 +413,7 @@ Fredo implements the OpenTelemetry Protocol as a **local-only collector** — no
 - Same raw-ingestion-on-receipt behavior as the gRPC leg
 
 ### Trace→Session Correlation
-The RTDB ingest classifier (`rtdb/ingest.rs`) maintains the correlation maps (ported from the deleted v1 adapter, same caps and eviction semantics) and processes them during OTLP span classification:
+The RTDB ingest classifier (`crates/telemetry-domain/src/classifier/`) maintains the correlation maps (ported from the deleted v1 adapter, same caps and eviction semantics) and processes them during OTLP span classification:
 
 - **`trace_to_session`**: Built from `gen_ai.conversation.id` and `session.id` span attributes during span processing
 - **`session_to_parent`**: Built from OTel span links (`parent.session_id` link attribute,  REQ-6) as the primary path, with fallback to `session.parent_id` span attributes for backward compatibility (REQ-9). Supports order-independent parent-child detection regardless of OTLP batch arrival order.
@@ -1005,8 +1032,8 @@ Mission Monitor is the row-driven agent activity graph (ReactFlow). It derives i
 - **Graph builder**: `useMissionMonitor()` → `lib/rowDerivation.ts` derives ReactFlow nodes/edges from ALL typed chat/tool rows (cross-session, not filtered by sessionId) so the selected session's chat chain is complete. `insert` creates nodes, `update` merges metadata (spread-merge; init-time data survives), `end`-state rows set final status. `task` dispatches split out of the tool-association path into SubagentNode state (keyed by task correlationId, gated by the `build`/`plan` internal-agent exclusion) — the SubagentNode is the dispatch's sole representation. **Embedded chat tools**: resolved non-task tool calls attach to the anchor chat node's payload (`AgentNodePayload.tools`, deterministically `byStartTimeThenCorrId`-ordered) instead of creating a companion node; the standalone ToolsNode class was deleted. **Transitional-turn suppression**: completed chat nodes with an empty `agentReply` (a transitional tool-call turn) are suppressed at emission (builder state kept intact) and the chain re-anchors to the nearest visible chat node. Row payloads are parsed at most once per row object per session (a module-scoped memo guarded by the raw JSON string, #2893) and the tool-row sort is a plain comparator, so a mount derive over a large corpus no longer blocks the main thread.
 - **Node types**: Agent (Chat) and SubagentNode (driven from the parent's `task` row + the classifier's parent-child compositing stamps, not from subagent chat rows). The standalone ToolsNode was removed: chat tool calls render inside the chat node as an embedded `── TOOLS (N) ──` accordion, hidden entirely when the chat has no tool calls. The dead ToolNode/FileNode machinery was removed.
 - **Tool call details**: double-clicking any part of an embedded tool accordion item opens the scoped tool-call detail view (`ToolCallDetailView`: Status/Duration/Input/Output) via `stopPropagation`, so ReactFlow's `onNodeDoubleClick` never selects the parent chat node. Single-click still toggles only the item's expansion. Missing call details degrade to safe absent-states.
-- **Recursive delegation tree**: tool ownership and nesting extend to every depth of the delegation chain. A subagent's tools attach to that subagent's own embedded tools section (never the root chat node); nested `task` dispatches render sub-subagent nodes, producing readable multi-level chains. The classifier's relationship registry (`rtdb/ingest.rs`) propagates the parent-session relationship, with the `build`/`plan` internal-agent exclusion applied at registration, so per-subagent ownership holds at every depth.
-- **SubagentNode payload extraction**: the node displays subagent identity from the parent `task` row's canonical payload keys — projected by the classifier's attr extractors (`rtdb/attrs.rs`) from the plugin's child-completion flat span attrs (`child_session_id` / `child_agent` / `child_total_tokens` / `child_total_cost_usd` / `child_total_messages`) onto `childSessionId` / `childAgent` / `childTokens` / `childCost` / `childMessages`, plus the per-family token breakdown. TOTAL = sum of the four families when the breakdown is present, else falls back to aggregate `childTokens`. Instruction/output text extraction follows lifecycle-aware priorities.
+- **Recursive delegation tree**: tool ownership and nesting extend to every depth of the delegation chain. A subagent's tools attach to that subagent's own embedded tools section (never the root chat node); nested `task` dispatches render sub-subagent nodes, producing readable multi-level chains. The classifier's relationship registry (`crates/telemetry-domain/src/classifier/relationship.rs`) propagates the parent-session relationship, with the `build`/`plan` internal-agent exclusion applied at registration, so per-subagent ownership holds at every depth.
+- **SubagentNode payload extraction**: the node displays subagent identity from the parent `task` row's canonical payload keys — projected by the classifier's attr extractors (`crates/telemetry-domain/src/attrs.rs`) from the plugin's child-completion flat span attrs (`child_session_id` / `child_agent` / `child_total_tokens` / `child_total_cost_usd` / `child_total_messages`) onto `childSessionId` / `childAgent` / `childTokens` / `childCost` / `childMessages`, plus the per-family token breakdown. TOTAL = sum of the four families when the breakdown is present, else falls back to aggregate `childTokens`. Instruction/output text extraction follows lifecycle-aware priorities.
 - **Edge types**: a `calls` edge connects each SubagentNode to its parent ChatNode (`EDGE_STYLES.calls`). The SubagentNode companion column renders right of the chat chain, lanes stepping rightward per nesting level. No Tool→File edges — the non-chat tool/file node classes were removed.
 - **Detail Panel**: slide-in panel on node click showing type/ID/token counts/timestamps/duration plus an Estimated Cost row for node targets. Hides on background click or Escape. Start/End derive from the row's span-timing fields (`startedAtNs`/`endedAtNs`), converted by the graph builder to RFC3339 `payload.startTime`/`payload.endTime`.
 - **Session token bar**: a compact flex strip at the top of the Mission Monitor main view — the first (top) row of the panel, above the canvas — shows the selected session's token usage as six figures (`In:`/`Ca:`/`Re:`/`Ou:` parent-only, plus `SUBAGENTS` and `TOTAL`). Cache = `cacheReadTokens` only. Session totals derive from the session's chat rows via `computeSessionTokenTotals()` plus the SUBAGENTS figure via `computeSubagentTokenTotals()`. **Estimated cost** is subagent-inclusive: parent Σ `cost_usd` + Σ `childCost` over qualifying task keys.
@@ -1024,7 +1051,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 
 | Subsystem | Bound | Mechanism |
 |-----------|-------|-----------|
-| RTDB classifier correlation maps (9) | 10,000 entries each | Oldest-first eviction (`MAP_CAPACITY`, `rtdb/ingest.rs`) |
+| RTDB classifier correlation maps (9) | 10,000 entries each | Oldest-first eviction (`MAP_CAPACITY`, `crates/telemetry-domain/src/attrs.rs`) |
 | RTDB relationship registry `child_to_parent`/`parent_to_children` | 10,000 entries | Oldest-first eviction |
 | RTDB emission batch | 512 rows | `RTDB_MAX_EMISSION_BATCH` chunking (`rtdb/flush.rs`) |
 | RTDB replay drain | Background (`spawn_blocking`) | Never blocks the main thread (F-33) |
@@ -1036,10 +1063,12 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | TerminalState `output_buffer` | 10 MB | Oldest data truncated when cap exceeded |
 
 **Rust backend bounds** are in `apps/tauri/src-tauri/src/`:
-- `infrastructure/rtdb/ingest.rs` — correlation + relationship map caps with oldest-first eviction at every write site
 - `infrastructure/rtdb/cache.rs` — LRU row cache + bounded write-behind queue
 - `infrastructure/telemetry/mod.rs` — Span stack pop on completion
 - `applications/terminal/state.rs` — Output buffer cap
+
+…and, for the rules that moved out of `src/` (Spec #3201), in `apps/tauri/src-tauri/crates/telemetry-domain/src/`:
+- `classifier/` + `attrs.rs` (`MAP_CAPACITY`) — correlation + relationship map caps with oldest-first eviction at every write site
 
 **Frontend bounds** are in `apps/ui/src/`:
 - `shared/contexts/StreamContext.tsx` — bounded row-mutation log + replay-drain registry
@@ -1053,7 +1082,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 | Integration | How it works |
 |-------------|-------------|
 | **OpenCode OTLP plugin** | The `fredo-opencode-plugin` exports OTLP metrics, logs, and traces directly to `127.0.0.1:4317` (gRPC) via the OpenTelemetry SDK. It is a native OpenCode **V2** plugin: the module default-exports `Plugin.define({ id: "fredo", setup })` and consumes the host's event stream through `ctx.event.subscribe` — **V2-only**, with no V1 hooks-object export, no V1 shim and no dual export. Capture is **default-on** (the `FREDO_TELEMETRY` opt-out disables it). Replaces the previous CLI-based `fredo opencode-plugin` event forwarding. |
-| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`rtdb/ingest.rs`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `rtdb/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
+| **OTLP telemetry** | Configure OpenCode to send OTLP to `127.0.0.1:4317` (gRPC) or `127.0.0.1:4318` (HTTP). Fredo persists every raw span/metric/log on receipt — provider-agnostic, no span dropped — and classifies spans into RTDB rows via the ingest classifier (`crates/telemetry-domain/src/classifier/`), which resolves the canonical op by `gen_ai.operation.name` (`run_agent`/`chat`/`execute_tool`, helpers in `crates/telemetry-domain/src/attrs.rs`) with generic heuristics and derives row state from `endTimeUnixNano` (present → Response, absent → Init). Raw span names (`fredo.session`, `fredo.llm`, `fredo.tool.*`, or any provider's) are preserved as received in `telemetry_spans`. |
 | **GitHub Copilot CLI OTLP** | The Copilot CLI exports OTLP **HTTP** (plaintext `http://127.0.0.1:4318`; the CLI offers no gRPC) with `OTEL_SERVICE_NAME=copilot-cli` — no Fredo-side configuration. Fredo persists the raw signals and the SAME classifier maps them, attributing `provider = copilot_cli` from the resource `service.name` via the one shared rule. Two Copilot specifics are handled **provider-scoped** (so OpenCode rows stay byte-identical): its `invoke_agent` root is promoted to an agent-session row (an `invoke_agent` span with any other/absent identity still maps to a chat row), and a chat row that *continues* an exchange re-carries that exchange's captured prompt (Copilot splits one turn across two `chat` spans; OpenCode re-emits the prompt on every span). Tool outcome/duration fall back to `error.type` + span timing when the flat OpenCode keys are absent; content is off by default (structural rows only). Enablement + the exact non-silent degradation: `docs/telemetry-reference.md` §4. |
 | **`fredo emit` CLI** | Named-pipe `CliCommand::EmitEvent` → `InternalAdapter::enrich` → RTDB row classifier. Payload-shape conventions in `.opencode/skills/fredo-cli-events/SKILL.md`. |
 | **`fredo open-app` CLI (#2893)** | Named-pipe `CliCommand::OpenApp` → the app's request registry emits `app-open-request` to the `main` window → the webview resolves the identity with the launcher's whole-query matcher and opens the application through the home window opener, then confirms the structured outcome. Bounded: 5 s confirmation / 10 s child; an unknown identity opens nothing and exits non-zero; app-not-running keeps the shared exit-2 fallback. Since Spec #2955 the open honours the app's per-app window presentation (main window vs its own window). Documented in `docs/CLI_GUIDE.md`. |
@@ -1063,7 +1092,7 @@ All subsystems have bounded growth — preventing the progressive degradation (s
 
 ### Classifier Row-State Mapping
 
-The ingest classifier derives each row's `state` from span timing (helpers relocated to `rtdb/attrs.rs`): `endTimeUnixNano` present → `Response`, absent → `Init`; session (`run_agent`) spans always stay `Init` (REQ-609). Token deltas (`promptTokens`, `cacheReadTokens`) are per-turn DELTAS against the classifier's session-cumulative baselines (ported verbatim into `rtdb/ingest.rs::derive_turn_tokens` — clamped ≥ 0 with baseline reset on compaction/out-of-order; `cacheReadTokens` is injected ONLY as the derived per-turn delta, never the raw cumulative). Subagent-session markers (`is_subagent`, `agent.type`) are preserved in the row payload; the payload projector (`otlp_attrs_to_payload`) injects the canonical fields (`userMessage`, `agentReply`, `promptTokens`, `completionTokens`, `reasoningTokens`, `childSessionId`/`childTokens`/… ) so the frontend reads one canonical path (contract-trust rule — no multi-path fallbacks). The plugin emits `is_subagent`/`agent.type` on the parent's task span and child-completion flat attrs (`child_session_id`, `child_total_tokens`, …) — the projector maps them onto camelCase keys.
+The ingest classifier derives each row's `state` from span timing (helpers in `crates/telemetry-domain/src/attrs.rs`): `endTimeUnixNano` present → `Response`, absent → `Init`; session (`run_agent`) spans always stay `Init` (REQ-609). Token deltas (`promptTokens`, `cacheReadTokens`) are per-turn DELTAS against the classifier's session-cumulative baselines (`crates/telemetry-domain/src/classifier/turn.rs::derive_turn_tokens` — clamped ≥ 0 with baseline reset on compaction/out-of-order; `cacheReadTokens` is injected ONLY as the derived per-turn delta, never the raw cumulative). Subagent-session markers (`is_subagent`, `agent.type`) are preserved in the row payload; the payload projector (`otlp_attrs_to_payload`) injects the canonical fields (`userMessage`, `agentReply`, `promptTokens`, `completionTokens`, `reasoningTokens`, `childSessionId`/`childTokens`/… ) so the frontend reads one canonical path (contract-trust rule — no multi-path fallbacks). The plugin emits `is_subagent`/`agent.type` on the parent's task span and child-completion flat attrs (`child_session_id`, `child_total_tokens`, …) — the projector maps them onto camelCase keys.
 
 ---
 
@@ -1383,7 +1412,7 @@ All commands registered in `generate_handler![]` in `lib.rs`:
 | `apps/vscode-extension` | VS Code webview host | `apps/tauri` |
 | `apps/tools-mcp` | Node.js MCP/SSE backend (Redis Streams) | Not yet reimplemented |
 | `apps/ai-sidecar` | Node.js AI CLI sidecar | PTY-based `terminal` application |
-| `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP-based ingest classifier (`rtdb/`) |
+| `apps/marketplace-plugin` | Original hook-based OpenCode plugin | OTLP receiver + the ingest classifier in the domain crate (`crates/telemetry-domain/src/classifier/`) |
 | `applications/llm` (the retired in-process `LlmEngine` + `llama-cpp-2`) | Direct in-process llama.cpp bindings requiring a CMake/VS native build | The in-process `llama-cpp-4` engine (`applications/llm_server/engine/`) — #3141 replaced the intermediate managed `llama-server` child process with it |
 | UI: agents, chatbot, embeddings, memory, telemetry | Stub applications | Consolidated into Mission Monitor |
 

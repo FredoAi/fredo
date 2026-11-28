@@ -173,7 +173,7 @@ $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"  # Copilot def
 ```
 
 - `OTEL_SERVICE_NAME=copilot-cli` takes the exact `copilot-cli` branch of the
-  shared rule (`rtdb/attrs.rs::resolve_provider_token`); the CLI's documented
+  shared rule (`crates/telemetry-domain/src/attrs.rs::resolve_provider_token`); the CLI's documented
   default `github-copilot` is also caught by the `contains("copilot")`
   fallback. Both map to `copilot_cli` — no Fredo-side configuration.
 - **Credential rule:** do NOT set `OTEL_EXPORTER_OTLP_HEADERS`. The export is
@@ -186,7 +186,7 @@ $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "false"  # Copilot def
 ### 4.2 Provider token rule (the one shared extract rule)
 
 `provider` is resolved **only** from the OTLP **resource** `service.name`
-(`rtdb/attrs.rs::resolve_provider_token`, NFR-6 — the same function the live
+(`crates/telemetry-domain/src/attrs.rs::resolve_provider_token`, NFR-6 — the same function the live
 classifier and the canonical backfill use):
 
 | resource `service.name` | row `provider` |
