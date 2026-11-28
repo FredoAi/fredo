@@ -21,6 +21,7 @@ import {
   clearPlacement,
   placeFredo,
   readPlacement,
+  rescopePlacement,
   resetPlacementForTests,
   subscribePlacement,
 } from '../placementStore';
@@ -140,6 +141,110 @@ describe('#3243 ST-1 — placementStore (the placement lifecycle)', () => {
       expect(listener).toHaveBeenCalledTimes(1);
       expect(readPlacement()).toBeNull();
       unsubscribe();
+    });
+  });
+
+  /**
+   * ST-FP2 — the placement's SCOPE is separated from its IDENTITY.
+   *
+   * `placeFredo` sets `appId` AND rotates `placementId` in one operation, so a
+   * resolved-target change could only be honoured by minting — which orphaned an
+   * in-flight order's record (it is keyed on the id). `rescopePlacement` updates
+   * the app IN PLACE and retains the identity.
+   *
+   * The defect world each pin rejects:
+   *   - "re-scope rotates the id" ⇒ the in-flight flight becomes unreadable and
+   *     the ticker disappears mid-order (AC-3's sharpest failure);
+   *   - "re-scope mutates `startedAtSeq`" ⇒ the `companion.injection` receipt's
+   *     identity stops being byte-stable, and re-scopes start counting as mints;
+   *   - "re-scope replaces the record wholesale" ⇒ the identity is silently new
+   *     and two placements can collide.
+   */
+  describe('ST-FP2 — a RE-SCOPE updates the app but RETAINS the identity', () => {
+    it('retains placementId AND startedAtSeq while the app follows the move', () => {
+      const first = placeFredo('wireframe', 'Wireframe')!;
+      const rescoped = rescopePlacement('mission-monitor', 'Mission Monitor');
+
+      expect(rescoped).not.toBeNull();
+      // The SCOPE followed the move (R-3b / F-17 — the next order targets it).
+      expect(rescoped!.appId).toBe('mission-monitor');
+      expect(rescoped!.appName).toBe('Mission Monitor');
+      // The IDENTITY did NOT rotate (AC-3 — a move does not end a placement).
+      expect(rescoped!.placementId).toBe(first.placementId);
+      expect(rescoped!.startedAtSeq).toBe(first.startedAtSeq);
+      // …and the store holds the re-scoped value.
+      expect(readPlacement()).toBe(rescoped);
+      expect(readPlacement()!.placementId).toBe(first.placementId);
+    });
+
+    it('NOTIFIES on a real re-scope — a subscriber sees the app change', () => {
+      placeFredo('wireframe', 'Wireframe');
+      const listener = vi.fn();
+      const unsubscribe = subscribePlacement(listener);
+
+      rescopePlacement('mission-monitor', 'Mission Monitor');
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    });
+
+    it('is a NO-OP for an already-live app (no notification, no new record)', () => {
+      const placed = placeFredo('wireframe', 'Wireframe')!;
+      const listener = vi.fn();
+      const unsubscribe = subscribePlacement(listener);
+
+      const again = rescopePlacement('wireframe', 'Wireframe');
+
+      expect(again).toBe(placed);
+      expect(listener).not.toHaveBeenCalled();
+      unsubscribe();
+    });
+
+    it('is a NO-OP when nothing is placed — a late first resolution must MINT, not re-scope', () => {
+      const listener = vi.fn();
+      const unsubscribe = subscribePlacement(listener);
+
+      expect(rescopePlacement('wireframe', 'Wireframe')).toBeNull();
+
+      expect(readPlacement()).toBeNull();
+      expect(listener).not.toHaveBeenCalled();
+      unsubscribe();
+    });
+
+    it('is a NO-OP for a blank app id — no resolved target is not a re-scope', () => {
+      const placed = placeFredo('wireframe', 'Wireframe')!;
+      expect(rescopePlacement('', 'Nowhere')).toBeNull();
+      expect(rescopePlacement('   ', 'Nowhere')).toBeNull();
+      expect(readPlacement()).toBe(placed);
+      expect(readPlacement()!.appId).toBe('wireframe');
+    });
+
+    it('falls back to the app id when the re-scoped display name is blank', () => {
+      placeFredo('wireframe', 'Wireframe');
+      const rescoped = rescopePlacement('mission-monitor', '   ')!;
+      expect(rescoped.appName).toBe('mission-monitor');
+    });
+
+    it('FREEZES the re-scoped placement, so a consumer cannot mutate the live scope', () => {
+      placeFredo('wireframe', 'Wireframe');
+      const rescoped = rescopePlacement('mission-monitor', 'Mission Monitor')!;
+      expect(Object.isFrozen(rescoped)).toBe(true);
+      expect(() => {
+        (rescoped as { appId: string }).appId = 'tampered';
+      }).toThrow();
+      expect(readPlacement()!.appId).toBe('mission-monitor');
+    });
+
+    it('two PLACEMENTS still mint two distinct ids after a re-scope (F-18 stays green)', () => {
+      // The green-green control: a re-scope is NOT a mint, so it must not perturb
+      // the mint counter's meaning. A mint is what F-18 drives.
+      const first = placeFredo('wireframe', 'Wireframe')!;
+      rescopePlacement('mission-monitor', 'Mission Monitor');
+      clearPlacement();
+      const second = placeFredo('wireframe', 'Wireframe')!;
+
+      expect(second.placementId).not.toBe(first.placementId);
+      expect(second.startedAtSeq).toBeGreaterThan(first.startedAtSeq);
     });
   });
 

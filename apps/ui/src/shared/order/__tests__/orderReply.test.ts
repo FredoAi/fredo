@@ -23,6 +23,7 @@ import {
   orderNothingToUndoReply,
   orderPerformedReply,
   orderRefusedUnknownReply,
+  orderSupersededReply,
   orderUndoReply,
 } from '../orderReply';
 
@@ -165,5 +166,59 @@ describe('orderReply — the notices are the dialog copy source too', () => {
     expect(ORDER_IRREVERSIBLE_NOTICE).toBe('This cannot be undone.');
     expectPlainAscii(ORDER_UNDOABLE_NOTICE);
     expectPlainAscii(ORDER_IRREVERSIBLE_NOTICE);
+  });
+});
+
+describe('orderReply — R-5a: a DISPLACED selection gets its own sentence', () => {
+  it('names BOTH the displaced action and the app, and says it was not carried out', () => {
+    const reply = orderSupersededReply(APP, LABEL);
+    expect(reply).toContain(LABEL);
+    expect(reply).toContain(APP);
+    expect(reply).toContain('not carried out');
+    expectPlainAscii(reply);
+    // Not empty, and not a bare acknowledgement.
+    expect(reply.trim().length).toBeGreaterThan(0);
+  });
+
+  it('POSITIVELY asserts the ABSENCE of the unknown-refusal wording (G-505)', () => {
+    // The order WAS understood — it simply arrived alongside another one. The
+    // user's next action is "ask me for it on its own", never "reword it", so
+    // borrowing the classification-failure sentence describes the wrong
+    // condition. This is the assertion the QA row checks, so it must be a
+    // positive assertion of absence, not an implicit one.
+    const superseded = orderSupersededReply(APP, LABEL);
+    const refused = orderRefusedUnknownReply(APP);
+    expect(superseded).not.toContain("can't carry out");
+    expect(superseded).not.toContain("couldn't");
+    expect(superseded).not.toContain('no app in front of me');
+    expect(superseded).not.toBe(refused);
+    // …and it names the NEXT action, which the refusal does not.
+    expect(superseded.toLowerCase()).toContain('ask me');
+  });
+
+  it('is not the CANCELLATION sentence either — the user decided nothing here', () => {
+    const superseded = orderSupersededReply(APP, LABEL);
+    expect(superseded).not.toContain('Cancelled');
+    expect(superseded).not.toContain('Nothing was changed');
+    expect(superseded).toContain('not carried out');
+  });
+
+  it('a blank app drops the app clause rather than naming a wrong app', () => {
+    // The ungrounded case, and the same reason `orderRefusedUnknownReply` has a
+    // no-name variant (UIUX-D7): it still names the displaced ACTION, which is
+    // the part the user needs in order to ask for it again.
+    const ungrounded = orderSupersededReply('', LABEL);
+    expect(ungrounded).toContain(LABEL);
+    expect(ungrounded).not.toContain(' in .');
+    expect(ungrounded).not.toContain("can't carry out");
+    expectPlainAscii(ungrounded);
+    expect(ungrounded).not.toBe(orderSupersededReply(APP, LABEL));
+  });
+
+  it('a blank label degrades to a typed sentence instead of naming nothing', () => {
+    const reply = orderSupersededReply(APP, '   ');
+    expect(reply.trim().length).toBeGreaterThan(0);
+    expect(reply).toContain(APP);
+    expect(reply).toContain('not carried out');
   });
 });

@@ -121,6 +121,53 @@ export function clearPlacement(): void {
   notify();
 }
 
+/**
+ * Re-SCOPE the live placement: point it at a DIFFERENT app while keeping the
+ * SAME identity (ST-FP2, AC-3 / R-3b).
+ *
+ * # Why this exists, and what it fixes
+ *
+ * `placeFredo` conflates two different facts in one operation: the SCOPE (which
+ * app the NEXT order targets) and the IDENTITY (which placement this is).
+ *
+ *   - The scope MUST follow a move: R-3b / F-17 require the next order's default
+ *     target to be the NEW app, and the dispatcher reads the target from the
+ *     placement.
+ *   - The identity MUST NOT rotate on a move: `orderFlight.ts:20-43` states that
+ *     a move does not end a placement, and keys an in-flight order's record on
+ *     the placement identity. Minting a new identity mid-order orphaned the
+ *     record — `readOrderFlight()` filtered it out, the settle early-returned
+ *     `null` without notifying, and the ticker vanished.
+ *
+ * So a resolved-target change re-scopes IN PLACE. Nothing else about the
+ * placement moves: `placementId` and `startedAtSeq` are RETAINED byte-for-byte,
+ * which is what keeps the `companion.injection` receipt stable across a move (it
+ * carries `placementId` with no sequence alongside it) and keeps "two
+ * placements mint two distinct ids" true — a re-scope is NOT a mint.
+ *
+ * A no-op when nothing is placed (there is nothing to re-scope — a late first
+ * resolution must MINT, and the caller decides that) or when the app is blank or
+ * already the live one.
+ */
+export function rescopePlacement(appId: string, appName: string): Placement | null {
+  if (current === null) return null;
+  const trimmedId = appId.trim();
+  if (trimmedId === '') return null;
+  const trimmedName = appName.trim() === '' ? trimmedId : appName.trim();
+  if (current.appId === trimmedId && current.appName === trimmedName) return current;
+
+  current = Object.freeze({
+    // RETAINED: the identity a flight (and a receipt) was begun under.
+    placementId: current.placementId,
+    startedAtSeq: current.startedAtSeq,
+    // ADVANCED: the scope the NEXT order targets (R-3b / F-17).
+    appId: trimmedId,
+    appName: trimmedName,
+  });
+  notify();
+  return current;
+}
+
 /** The live placement, or `null` when Fredo is not placed. */
 export function readPlacement(): Placement | null {
   return current;
