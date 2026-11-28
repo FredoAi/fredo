@@ -20,3 +20,9 @@
 //! The permitted edge points the other way: platform modules may depend on this
 //! crate (a platform module depending on a domain crate is the correct
 //! direction). What must never exist is the reverse.
+
+pub mod attrs;
+pub mod event;
+
+#[cfg(test)]
+mod event_tests;

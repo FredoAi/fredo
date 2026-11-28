@@ -14,7 +14,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::infrastructure::comm::event::EventState;
+use crate::event::EventState;
 
 // ── OTel GenAI semantic-convention registry keys (current names) ──────────────
 // Emission source of truth: apps/opencode-plugin/src/genai-conventions.ts.

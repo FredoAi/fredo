@@ -8,7 +8,7 @@
 //! - EventState enum with PascalCase serialization
 //! - Builder pattern for FredoEvent
 
-use crate::infrastructure::comm::*;
+use crate::event::*;
 
 #[cfg(test)]
 mod event_type_tests {

@@ -9,18 +9,22 @@
 //! Spec 1, GitHub issue #26: Communication Layer Foundation
 
 pub mod adapters;
-pub mod event;
 pub mod bus;
 pub mod adapter;
 
-pub use event::{FredoEvent, FredoEventError, EventType, EventProvider, Transport, EventState};
+// Spec #3201 ST-2 — the wire vocabulary MOVED to `telemetry-domain`: it is domain
+// vocabulary, and relocating it together with the extraction rules is what makes
+// the NFR-6 single-definition form hold (there is no converter, so nothing can
+// drift). `comm/mod.rs`'s re-export of these names is re-pointed in ST-7a, which
+// owns this file; it is deliberately NOT carried here as a compatibility shim —
+// a `pub use` that let a consumer keep saying `comm::event::…` is exactly the
+// coupling this spec removes.
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;
 
 #[cfg(test)]
 mod tests {
-    mod event_tests;
     mod adapter_tests;
     mod ipc_tests;
 }
