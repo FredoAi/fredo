@@ -31,3 +31,13 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+# Structured logging. Spec #3201 ST-5: the classifier's 14 diagnostic sites
+# (`target: "fredo::rtdb::ingest"`) moved with the code VERBATIM — deleting them
+# would be a behaviour change (the platform's log filtering keys on that
+# target), and a hand-rolled abstraction in their place would be exactly the
+# wrapper this spec forbids. `tracing` is a general-purpose library (the crate
+# rule in `lib.rs`), and it is ALREADY resolved in this workspace's graph at the
+# same version via the fredo crate (`Cargo.toml:120`), so this edge adds **no
+# new external package** to `Cargo.lock` — only a dependency line on the
+# existing `telemetry-domain` [[package]] block (N-5's measurable form).
+tracing = "0.1"

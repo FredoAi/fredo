@@ -11,8 +11,9 @@
 //! it is supposed to be independent of.
 //!
 //! The dependency rule is deliberately narrow: general-purpose libraries only
-//! (`serde`, `serde_json`, `anyhow`, `chrono`, `async-trait`, `uuid`). There is
-//! no `tauri`, no settings store, and no `path` dependency escaping `crates/`.
+//! (`serde`, `serde_json`, `anyhow`, `chrono`, `async-trait`, `uuid`,
+//! `tracing`). There is no `tauri`, no settings store, and no `path` dependency
+//! escaping `crates/`.
 //! `.opencode/scripts/verify-domain-boundary.ps1` asserts it against the
 //! **resolved** graph, so a transitively re-exposed platform crate is caught even
 //! when the forbidden name never appears in this manifest.
@@ -24,6 +25,7 @@
 use async_trait::async_trait;
 
 pub mod attrs;
+pub mod classifier;
 pub mod event;
 pub mod merge;
 pub mod rows;
