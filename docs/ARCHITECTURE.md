@@ -964,7 +964,11 @@ The animated companion on the Home panel renders the **shared `FredoAvatar` comp
   `companion.injection` receipt as the REQUIRED `placementId` (`''` when unplaced) — so two placements of
   the same app are provably two placements and nothing is recalled across them; the store is transient
   (never persisted) and holds no transcript. The placed app DECLARES its order surface
-  (`shared/order/orderActions.ts`); the receipt carries `orderActionCount` + `orderSurfaceDigest` (the
+  (`shared/order/orderActions.ts`) and REGISTERS it on its own mount — Wireframe's shell
+  calls `registerWireframeOrderSurface()` in a mount effect and disposes it in the
+  cleanup, so the registry an order is classified against holds a live surface only while
+  the app that owns it is mounted (a declaration with no call site leaves the registry
+  empty and every order `unknown`); the receipt carries `orderActionCount` + `orderSurfaceDigest` (the
   derived empty-table digest when the app declares none), so "this app exposes no actions" is a
   run-derived zero rather than an assumption. `classifyOrder` maps each declared action to a closed
   `read | changing | destructive | unknown` class and **fails closed**: an unknown app, an unknown action
