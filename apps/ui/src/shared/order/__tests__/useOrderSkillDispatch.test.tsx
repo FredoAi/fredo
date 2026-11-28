@@ -70,6 +70,17 @@ beforeEach(() => {
   resetCompanionComposerBridgeForTests();
   resetWireframeStoreForTests();
 
+  // FIXTURE — NOT the integration. #3243 round 2 (D1) found that this row
+  // registered the surface HERE while the PRODUCT registered it nowhere, so the
+  // whole dispatch suite exercised a state no user could reach and stayed green
+  // over a broken product. It is kept, because a dispatcher unit test legitimately
+  // seeds its inputs, and it is LABELLED because the seeding is what hid the
+  // missing wiring: the surface's real lifetime belongs to the Wireframe shell's
+  // mount (`applications/wireframe/components/WireframeEditor.tsx`), and the row
+  // that proves that (`applications/wireframe/__tests__/
+  // orderSurfaceRegistration.test.tsx`) calls NO registration of its own.
+  // Removing this call would only break these rows; removing the PRODUCTION call
+  // is the defect these rows cannot see.
   disposeSurface = registerWireframeOrderSurface();
   // The default document is EMPTY, so seed a shape — every order action under
   // test needs one to act on. This is the fixture the shipped store's own suite

@@ -114,6 +114,52 @@ describe('wireframeOrderSurface — exactly FOUR declared actions, one per class
     expect(irreversible.consequence).toBe(WIREFRAME_NEW_DOCUMENT_ACTION.consequence);
     dispose();
   });
+
+  it('the returned disposer CLEARS the registration (the unmount path)', () => {
+    // #3243 round 2 (D1): this suite previously CALLED `dispose()` above and
+    // never observed it — the dispose path was invoked and never proven. It is
+    // proven here against the Wireframe app id specifically, because that is the
+    // entry the PRODUCT's mount creates: a cleanup wired to the wrong
+    // registration, or no cleanup at all, leaves the surface live after the app
+    // is gone, and a leaked cleanup from an earlier mount clears the surface a
+    // newer mount owns.
+    //
+    // HONEST LABEL: this row is GREEN ON THE PRE-FIX TREE — it registers for
+    // itself, so it is a green-green control for the dispose contract, NOT a
+    // discriminator of the missing production wiring. The defect it would catch
+    // is the mirror image (a registration that outlives its app), which the
+    // pre-fix tree cannot exhibit. Do not count it as a second red-then-green
+    // cycle.
+    const dispose = registerWireframeOrderSurface();
+    expect(listOrderSurfaceAppIds()).toContain(WIREFRAME_APP_ID);
+
+    dispose();
+
+    expect(listOrderSurfaceAppIds()).not.toContain(WIREFRAME_APP_ID);
+    expect(readOrderSurface(WIREFRAME_APP_ID)).toBeNull();
+    // And the actions are unreachable, not merely unlisted: the classifier is
+    // fail-closed over an absent surface.
+    expect(classifyOrder(WIREFRAME_APP_ID, WIREFRAME_FILL_ACTION.id).risk).toBe('unknown');
+  });
+
+  it('register → dispose → register leaves EXACTLY ONE live entry (no stale disposer)', () => {
+    // The remount shape, in the Wireframe-specific path: the first registration's
+    // disposer is STALE once the second registration lands, so a cleanup that
+    // deletes unconditionally would empty the registry here — the "goes empty at
+    // the wrong moment" failure that reads exactly like a missing registration.
+    const disposeFirst = registerWireframeOrderSurface();
+    const disposeSecond = registerWireframeOrderSurface();
+    expect(listOrderSurfaceAppIds().filter((id) => id === WIREFRAME_APP_ID)).toHaveLength(1);
+
+    // The stale disposer is a NO-OP: it must not clear the live surface.
+    disposeFirst();
+    expect(listOrderSurfaceAppIds()).toContain(WIREFRAME_APP_ID);
+    expect(readOrderSurface(WIREFRAME_APP_ID)?.actions).toHaveLength(4);
+
+    // The current disposer still works.
+    disposeSecond();
+    expect(listOrderSurfaceAppIds()).not.toContain(WIREFRAME_APP_ID);
+  });
 });
 
 describe('wireframeOrderSurface — G-522: no app-table change, no store edit', () => {
@@ -150,14 +196,24 @@ describe('wireframeOrderSurface — G-522: no app-table change, no store edit', 
     expect(history.entries()).toEqual([]);
   });
 
-  it('the raw Wireframe sources contain no order-surface import (the app is not edited)', () => {
-    // A source sweep over the APP tree: the order module imports the app, never
-    // the reverse. A reverse edge would mean this slice changed the app.
-    const offenders = Object.entries(WIREFRAME_SOURCES).filter(([path, source]) => {
-      if (path.includes('__tests__')) return false;
-      return /shared\/order/.test(source);
-    });
-    expect(offenders.map(([path]) => path)).toEqual([]);
+  it('the raw Wireframe sources import the order surface in EXACTLY ONE file — the mount', () => {
+    // INVERTED IN PLACE by #3243 round 2 (D1). This row used to assert that the
+    // app tree contained NO `shared/order` reference, because ST-4 shipped the
+    // surface DECLARATION only and the app was not to be edited. That reading is
+    // precisely what let the registration go missing from the product: the
+    // declaration existed, nothing called it, and every order classified
+    // `unknown`. The corrected design is ONE reverse edge, at ONE site — the
+    // shell that owns the app's lifetime (`WireframeShell`).
+    //
+    // The property this row still protects is CARDINALITY, not absence: a second
+    // call site would re-open "which registration is authoritative", and a
+    // registration in some other wireframe module would put the surface's
+    // lifetime somewhere other than the app's mount.
+    const importers = Object.entries(WIREFRAME_SOURCES)
+      .filter(([path]) => !path.includes('__tests__'))
+      .filter(([, source]) => /shared\/order/.test(source))
+      .map(([path]) => path);
+    expect(importers).toEqual(['/src/applications/wireframe/components/WireframeEditor.tsx']);
     // Non-vacuity: the sweep really read files.
     expect(Object.keys(WIREFRAME_SOURCES).length).toBeGreaterThan(20);
   });

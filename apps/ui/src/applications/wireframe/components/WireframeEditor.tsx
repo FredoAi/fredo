@@ -27,6 +27,7 @@ import {
   COMPANION_GROUNDING_VERSION,
   registerCompanionGrounding,
 } from '../../../shared/companion/grounding';
+import { registerWireframeOrderSurface } from '../../../shared/order/wireframeOrderSurface';
 import { getApplications } from '../../applicationRegistry';
 import { formatGeometry } from '../model/geometry';
 import { WIREFRAME_APP_ID } from '../model/document';
@@ -58,6 +59,18 @@ function WireframeShell(): React.ReactElement {
   const { document, selectedIds, snapToGrid, view, filePath, dirty, panMode } = state;
 
   const [newDialogOpen, setNewDialogOpen] = useState(false);
+
+  // #3243 ST-4/D1 — the shell OWNS the moment Wireframe's order actions become
+  // addressable. `registerWireframeOrderSurface` is a plain function that has to
+  // be CALLED: an import side effect would make the surface live in every tree
+  // that merely links the module, and a TEST that registered it itself is how the
+  // registration went missing from the product for a whole round. Register on
+  // mount, dispose in the cleanup — the returned disposer carries an identity
+  // guard, so a remount's registration REPLACES this one and this cleanup then
+  // no-ops instead of clearing the surface a newer mount owns. This is the ONE
+  // production call site; a second one would re-open "which registration is
+  // authoritative".
+  useEffect(() => registerWireframeOrderSurface(), []);
 
   // #3151 ST-2 (AC5) — this shell owns the Wireframe selection, so it registers the
   // application-level companion grounding source. The provider reads the store
