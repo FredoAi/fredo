@@ -1,0 +1,521 @@
+{
+  "baselineCommit": "3f940ad29872d47a6bdcbff53aa8e91789a1400f",
+  "comment": "Spec #3201 ST-6 — PRE-EXTRACTION RowUpsert capture. Produced by a run of tests/st6_capture.rs at baseline commit 3f940ad; never hand-edited. `updatedAt` is the wall clock and is normalised to <WALL_CLOCK>; every other field and the changedFields list are byte-compared.",
+  "corpus": [
+    "content-on",
+    "content-off",
+    "tool-failure",
+    "session-only",
+    "turn-split"
+  ],
+  "envelopes": [
+    {
+      "envelope": "content-on",
+      "ingestCount": 3,
+      "records": [
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "provider",
+            "totalTokens",
+            "rawJson"
+          ],
+          "kind": "agentSession",
+          "row": {
+            "agentName": null,
+            "correlationId": "ses_copilot_fixture_1_1",
+            "endedAtNs": 9000000000,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":150,\"gen_ai.conversation.id\":\"ses_copilot_fixture_1\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.usage.input_tokens\":1200,\"gen_ai.usage.output_tokens\":150,\"github.copilot.agent.type\":\"builtin\",\"info\":{\"turnInputTokens\":1200,\"turnOutputTokens\":150},\"promptTokens\":1200,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_1",
+            "startedAtNs": 1000000000,
+            "state": "Init",
+            "totalCostUsd": null,
+            "totalMessages": null,
+            "totalTokens": 1350,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "userMessage",
+            "agentReply",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": "I will add the doc comment.",
+            "cacheReadTokens": null,
+            "completionTokens": 150,
+            "compositedChildSessionId": null,
+            "correlationId": "ses_copilot_fixture_1_2",
+            "costUsd": null,
+            "endedAtNs": 4000000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 1200,
+            "provider": "copilot_cli",
+            "rawJson": "{\"agentReply\":\"I will add the doc comment.\",\"completionTokens\":150,\"gen_ai.conversation.id\":\"ses_copilot_fixture_1\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Add a doc comment to src/main.rs\\\"}]}]\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"I will add the doc comment.\\\"}]}]\",\"gen_ai.provider.name\":\"github\",\"gen_ai.request.model\":\"auto\",\"gen_ai.request.stream\":true,\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.cache_read.input_tokens\":1100,\"gen_ai.usage.input_tokens\":1200,\"gen_ai.usage.output_tokens\":150,\"info\":{\"modelID\":\"gpt-4o\",\"text\":\"Add a doc comment to src/main.rs\",\"turnInputTokens\":1200,\"turnOutputTokens\":150},\"model\":\"gpt-4o\",\"part\":{\"text\":\"I will add the doc comment.\"},\"promptTokens\":1200,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\",\"userMessage\":\"Add a doc comment to src/main.rs\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_1",
+            "startedAtNs": 1100000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": "Add a doc comment to src/main.rs"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "toolName",
+            "toolSuccess",
+            "durationMs",
+            "toolInputJson",
+            "toolOutputJson",
+            "isSubagent",
+            "rawJson"
+          ],
+          "kind": "toolUse",
+          "row": {
+            "correlationId": "ses_copilot_fixture_1_3",
+            "durationMs": 500,
+            "endedAtNs": 4600000000,
+            "isSubagent": false,
+            "provider": "copilot_cli",
+            "rawJson": "{\"gen_ai.conversation.id\":\"ses_copilot_fixture_1\",\"gen_ai.operation.name\":\"execute_tool\",\"gen_ai.provider.name\":\"github\",\"gen_ai.tool.call.arguments\":\"{\\\"path\\\":\\\"src/main.rs\\\"}\",\"gen_ai.tool.call.id\":\"call_fixture_1\",\"gen_ai.tool.call.result\":\"\\\"fn main() {}\\\"\",\"gen_ai.tool.name\":\"readFile\",\"gen_ai.tool.type\":\"function\",\"input\":\"{\\\"path\\\":\\\"src/main.rs\\\"}\",\"output\":\"\\\"fn main() {}\\\"\",\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_1",
+            "startedAtNs": 4100000000,
+            "state": "Response",
+            "toolError": null,
+            "toolInputJson": "{\"path\":\"src/main.rs\"}",
+            "toolName": "readFile",
+            "toolOutputJson": "\"fn main() {}\"",
+            "toolSuccess": true,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        }
+      ]
+    },
+    {
+      "envelope": "content-off",
+      "ingestCount": 3,
+      "records": [
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "provider",
+            "totalTokens",
+            "rawJson"
+          ],
+          "kind": "agentSession",
+          "row": {
+            "agentName": null,
+            "correlationId": "ses_copilot_fixture_2_1",
+            "endedAtNs": 18000000000,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":90,\"gen_ai.conversation.id\":\"ses_copilot_fixture_2\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.usage.input_tokens\":700,\"gen_ai.usage.output_tokens\":90,\"github.copilot.agent.type\":\"builtin\",\"info\":{\"turnInputTokens\":700,\"turnOutputTokens\":90},\"promptTokens\":700,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_2",
+            "startedAtNs": 10000000000,
+            "state": "Init",
+            "totalCostUsd": null,
+            "totalMessages": null,
+            "totalTokens": 790,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": null,
+            "cacheReadTokens": null,
+            "completionTokens": 90,
+            "compositedChildSessionId": null,
+            "correlationId": "ses_copilot_fixture_2_2",
+            "costUsd": null,
+            "endedAtNs": 13000000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 700,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":90,\"gen_ai.conversation.id\":\"ses_copilot_fixture_2\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.provider.name\":\"github\",\"gen_ai.request.model\":\"auto\",\"gen_ai.request.stream\":true,\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.cache_read.input_tokens\":600,\"gen_ai.usage.input_tokens\":700,\"gen_ai.usage.output_tokens\":90,\"info\":{\"modelID\":\"gpt-4o\",\"turnInputTokens\":700,\"turnOutputTokens\":90},\"model\":\"gpt-4o\",\"promptTokens\":700,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_2",
+            "startedAtNs": 10100000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": null
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "toolName",
+            "toolSuccess",
+            "durationMs",
+            "isSubagent",
+            "rawJson"
+          ],
+          "kind": "toolUse",
+          "row": {
+            "correlationId": "ses_copilot_fixture_2_3",
+            "durationMs": 500,
+            "endedAtNs": 13600000000,
+            "isSubagent": false,
+            "provider": "copilot_cli",
+            "rawJson": "{\"gen_ai.conversation.id\":\"ses_copilot_fixture_2\",\"gen_ai.operation.name\":\"execute_tool\",\"gen_ai.provider.name\":\"github\",\"gen_ai.tool.call.id\":\"call_fixture_2\",\"gen_ai.tool.name\":\"readFile\",\"gen_ai.tool.type\":\"function\",\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_2",
+            "startedAtNs": 13100000000,
+            "state": "Response",
+            "toolError": null,
+            "toolInputJson": null,
+            "toolName": "readFile",
+            "toolOutputJson": null,
+            "toolSuccess": true,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        }
+      ]
+    },
+    {
+      "envelope": "tool-failure",
+      "ingestCount": 3,
+      "records": [
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "provider",
+            "totalTokens",
+            "rawJson"
+          ],
+          "kind": "agentSession",
+          "row": {
+            "agentName": null,
+            "correlationId": "ses_copilot_fixture_3_1",
+            "endedAtNs": 28000000000,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":80,\"gen_ai.conversation.id\":\"ses_copilot_fixture_3\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.usage.input_tokens\":600,\"gen_ai.usage.output_tokens\":80,\"github.copilot.agent.type\":\"builtin\",\"info\":{\"turnInputTokens\":600,\"turnOutputTokens\":80},\"promptTokens\":600,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_3",
+            "startedAtNs": 20000000000,
+            "state": "Init",
+            "totalCostUsd": null,
+            "totalMessages": null,
+            "totalTokens": 680,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": null,
+            "cacheReadTokens": null,
+            "completionTokens": 80,
+            "compositedChildSessionId": null,
+            "correlationId": "ses_copilot_fixture_3_2",
+            "costUsd": null,
+            "endedAtNs": 23000000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 600,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":80,\"gen_ai.conversation.id\":\"ses_copilot_fixture_3\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.provider.name\":\"github\",\"gen_ai.request.model\":\"auto\",\"gen_ai.request.stream\":true,\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"tool_calls\"}]}},\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.cache_read.input_tokens\":500,\"gen_ai.usage.input_tokens\":600,\"gen_ai.usage.output_tokens\":80,\"info\":{\"modelID\":\"gpt-4o\",\"turnInputTokens\":600,\"turnOutputTokens\":80},\"model\":\"gpt-4o\",\"promptTokens\":600,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_3",
+            "startedAtNs": 20100000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": null
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "toolName",
+            "toolSuccess",
+            "toolError",
+            "durationMs",
+            "isSubagent",
+            "rawJson"
+          ],
+          "kind": "toolUse",
+          "row": {
+            "correlationId": "ses_copilot_fixture_3_3",
+            "durationMs": 500,
+            "endedAtNs": 23600000000,
+            "isSubagent": false,
+            "provider": "copilot_cli",
+            "rawJson": "{\"error.type\":\"ToolExecutionError\",\"gen_ai.conversation.id\":\"ses_copilot_fixture_3\",\"gen_ai.operation.name\":\"execute_tool\",\"gen_ai.provider.name\":\"github\",\"gen_ai.tool.call.id\":\"call_fixture_3\",\"gen_ai.tool.name\":\"applyPatch\",\"gen_ai.tool.type\":\"function\",\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_3",
+            "startedAtNs": 23100000000,
+            "state": "Response",
+            "toolError": "ToolExecutionError",
+            "toolInputJson": null,
+            "toolName": "applyPatch",
+            "toolOutputJson": null,
+            "toolSuccess": false,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        }
+      ]
+    },
+    {
+      "envelope": "session-only",
+      "ingestCount": 2,
+      "records": [
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "provider",
+            "totalTokens",
+            "rawJson"
+          ],
+          "kind": "agentSession",
+          "row": {
+            "agentName": null,
+            "correlationId": "ses_copilot_fixture_4_1",
+            "endedAtNs": 36000000000,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":50,\"gen_ai.conversation.id\":\"ses_copilot_fixture_4\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.usage.input_tokens\":350,\"gen_ai.usage.output_tokens\":50,\"github.copilot.agent.type\":\"builtin\",\"info\":{\"turnInputTokens\":350,\"turnOutputTokens\":50},\"promptTokens\":350,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_4",
+            "startedAtNs": 30000000000,
+            "state": "Init",
+            "totalCostUsd": null,
+            "totalMessages": null,
+            "totalTokens": 400,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "userMessage",
+            "agentReply",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": "It is the entry point.",
+            "cacheReadTokens": null,
+            "completionTokens": 50,
+            "compositedChildSessionId": null,
+            "correlationId": "ses_copilot_fixture_4_2",
+            "costUsd": null,
+            "endedAtNs": 33000000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 350,
+            "provider": "copilot_cli",
+            "rawJson": "{\"agentReply\":\"It is the entry point.\",\"completionTokens\":50,\"gen_ai.conversation.id\":\"ses_copilot_fixture_4\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"What does src/main.rs do?\\\"}]}]\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"It is the entry point.\\\"}]}]\",\"gen_ai.provider.name\":\"github\",\"gen_ai.request.model\":\"auto\",\"gen_ai.request.stream\":true,\"gen_ai.response.finish_reasons\":{\"arrayValue\":{\"values\":[{\"stringValue\":\"stop\"}]}},\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.cache_read.input_tokens\":300,\"gen_ai.usage.input_tokens\":350,\"gen_ai.usage.output_tokens\":50,\"info\":{\"modelID\":\"gpt-4o\",\"text\":\"What does src/main.rs do?\",\"turnInputTokens\":350,\"turnOutputTokens\":50},\"model\":\"gpt-4o\",\"part\":{\"text\":\"It is the entry point.\"},\"promptTokens\":350,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\",\"userMessage\":\"What does src/main.rs do?\"}",
+            "seq": 1,
+            "sessionId": "ses_copilot_fixture_4",
+            "startedAtNs": 30100000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": "What does src/main.rs do?"
+          }
+        }
+      ]
+    },
+    {
+      "envelope": "turn-split",
+      "ingestCount": 4,
+      "records": [
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "provider",
+            "totalTokens",
+            "rawJson"
+          ],
+          "kind": "agentSession",
+          "row": {
+            "agentName": null,
+            "correlationId": "e2e-copilotsplit2933_1",
+            "endedAtNs": 1700001005000000000,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":53,\"gen_ai.conversation.id\":\"e2e-copilotsplit2933\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.input_tokens\":20478,\"gen_ai.usage.output_tokens\":53,\"info\":{\"modelID\":\"gpt-4o\",\"turnInputTokens\":20478,\"turnOutputTokens\":53},\"model\":\"gpt-4o\",\"promptTokens\":20478,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "e2e-copilotsplit2933",
+            "startedAtNs": 1700001000000000000,
+            "state": "Init",
+            "totalCostUsd": null,
+            "totalMessages": null,
+            "totalTokens": 20531,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "userMessage",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": null,
+            "cacheReadTokens": null,
+            "completionTokens": 39,
+            "compositedChildSessionId": null,
+            "correlationId": "e2e-copilotsplit2933_2",
+            "costUsd": null,
+            "endedAtNs": 1700001000300000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 10184,
+            "provider": "copilot_cli",
+            "rawJson": "{\"completionTokens\":39,\"gen_ai.conversation.id\":\"e2e-copilotsplit2933\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Read hello.txt and reply with its exact contents.\\\"}]}]\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"tool_call\\\",\\\"id\\\":\\\"call_split_1\\\",\\\"name\\\":\\\"view\\\",\\\"arguments\\\":{\\\"path\\\":\\\"hello.txt\\\"}}]}]\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.input_tokens\":10184,\"gen_ai.usage.output_tokens\":39,\"info\":{\"modelID\":\"gpt-4o\",\"text\":\"Read hello.txt and reply with its exact contents.\",\"turnInputTokens\":10184,\"turnOutputTokens\":39},\"model\":\"gpt-4o\",\"promptTokens\":10184,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\",\"userMessage\":\"Read hello.txt and reply with its exact contents.\"}",
+            "seq": 1,
+            "sessionId": "e2e-copilotsplit2933",
+            "startedAtNs": 1700001000100000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": "Read hello.txt and reply with its exact contents."
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "toolName",
+            "toolSuccess",
+            "durationMs",
+            "toolInputJson",
+            "toolOutputJson",
+            "isSubagent",
+            "rawJson"
+          ],
+          "kind": "toolUse",
+          "row": {
+            "correlationId": "e2e-copilotsplit2933_3",
+            "durationMs": 10,
+            "endedAtNs": 1700001000160000000,
+            "isSubagent": false,
+            "provider": "copilot_cli",
+            "rawJson": "{\"gen_ai.conversation.id\":\"e2e-copilotsplit2933\",\"gen_ai.operation.name\":\"execute_tool\",\"gen_ai.provider.name\":\"github\",\"gen_ai.tool.call.arguments\":\"{\\\"path\\\":\\\"hello.txt\\\"}\",\"gen_ai.tool.call.id\":\"call_split_1\",\"gen_ai.tool.call.result\":\"fredo-copilot-2933-sentinel\\n\",\"gen_ai.tool.name\":\"view\",\"input\":\"{\\\"path\\\":\\\"hello.txt\\\"}\",\"output\":\"fredo-copilot-2933-sentinel\\n\",\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\"}",
+            "seq": 1,
+            "sessionId": "e2e-copilotsplit2933",
+            "startedAtNs": 1700001000150000000,
+            "state": "Response",
+            "toolError": null,
+            "toolInputJson": "{\"path\":\"hello.txt\"}",
+            "toolName": "view",
+            "toolOutputJson": "fredo-copilot-2933-sentinel\n",
+            "toolSuccess": true,
+            "updatedAt": "<WALL_CLOCK>"
+          }
+        },
+        {
+          "changedFields": [
+            "startedAtNs",
+            "endedAtNs",
+            "updatedAt",
+            "state",
+            "provider",
+            "userMessage",
+            "agentReply",
+            "promptTokens",
+            "completionTokens",
+            "model",
+            "rawJson"
+          ],
+          "kind": "chat",
+          "row": {
+            "agentReply": "fredo-copilot-2933-sentinel",
+            "cacheReadTokens": null,
+            "completionTokens": 14,
+            "compositedChildSessionId": null,
+            "correlationId": "e2e-copilotsplit2933_4",
+            "costUsd": null,
+            "endedAtNs": 1700001000500000000,
+            "model": "gpt-4o",
+            "parentSessionId": null,
+            "promptTokens": 10241,
+            "provider": "copilot_cli",
+            "rawJson": "{\"agentReply\":\"fredo-copilot-2933-sentinel\",\"completionTokens\":14,\"gen_ai.conversation.id\":\"e2e-copilotsplit2933\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"tool\\\",\\\"parts\\\":[{\\\"type\\\":\\\"tool_call_response\\\",\\\"id\\\":\\\"call_split_1\\\",\\\"response\\\":\\\"fredo-copilot-2933-sentinel\\\\n\\\"}]}]\",\"gen_ai.operation.name\":\"chat\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"fredo-copilot-2933-sentinel\\\"}]}]\",\"gen_ai.provider.name\":\"github\",\"gen_ai.response.model\":\"gpt-4o\",\"gen_ai.usage.input_tokens\":10241,\"gen_ai.usage.output_tokens\":14,\"info\":{\"modelID\":\"gpt-4o\",\"turnInputTokens\":10241,\"turnOutputTokens\":14},\"model\":\"gpt-4o\",\"part\":{\"text\":\"fredo-copilot-2933-sentinel\"},\"promptTokens\":10241,\"service.name\":\"copilot-cli\",\"service.version\":\"1.0.88\",\"userMessage\":\"Read hello.txt and reply with its exact contents.\"}",
+            "seq": 1,
+            "sessionId": "e2e-copilotsplit2933",
+            "startedAtNs": 1700001000310000000,
+            "state": "Response",
+            "updatedAt": "<WALL_CLOCK>",
+            "userMessage": "Read hello.txt and reply with its exact contents."
+          }
+        }
+      ]
+    }
+  ]
+}
