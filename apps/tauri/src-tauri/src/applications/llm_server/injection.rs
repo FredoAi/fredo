@@ -75,6 +75,20 @@ pub struct CompanionInjectionSpan {
     pub screenshot_digest: String,
     /// A content digest of the screen outline (freshness witness).
     pub simplified_html_digest: String,
+    /// The placement identity this turn belongs to (Spec #3243 ST-3; R-4a) — `''`
+    /// when Fredo is not placed.
+    ///
+    /// REQUIRED (no `serde(default)`): a defaulted `''` would make a REAL
+    /// placement read as unplaced, which is exactly the plausible-but-wrong value
+    /// this field exists to prevent (G-511).
+    pub placement_id: String,
+    /// How many actions the target application DECLARES for orders (Spec #3243
+    /// ST-3; R-1a) — `0` when it declares none. REQUIRED (no `serde(default)`).
+    pub order_action_count: i64,
+    /// A content digest of the declared order-surface table (Spec #3243 ST-3) —
+    /// the empty-table digest when the app declares none. REQUIRED (no
+    /// `serde(default)`).
+    pub order_surface_digest: String,
     /// The screenshot's ENCODED visual-token count (Spec #3244, ST-6; AC-4) — the
     /// engine's `MediaPlan::image_tokens` for the turn's image leg.
     ///
@@ -169,8 +183,32 @@ mod tests {
             simplified_html_truncated: true,
             screenshot_digest: "0a1b2c3d4e5f6071".to_string(),
             simplified_html_digest: "1122334455667788".to_string(),
+            placement_id: "9c9a2f4e-7b21-4c6a-9e2d-1f0b3d5c7a11".to_string(),
+            order_action_count: 4,
+            order_surface_digest: "aabbccddeeff0011".to_string(),
             image_tokens: Some(1120),
         }
+    }
+
+    /// The webview's own payload: every input fact the webview sends, including
+    /// the three order-loop receipt fields, and NO `imageTokens` key (the engine
+    /// fills that one AFTER the turn).
+    fn webview_payload() -> serde_json::Value {
+        serde_json::json!({
+            "appId": "qa3244-untaught",
+            "taught": false,
+            "perAppEntries": 0,
+            "descriptionBytes": 42,
+            "screenshotBytes": 2048,
+            "simplifiedHtmlBytes": 512,
+            "simplifiedHtmlNodes": 9,
+            "simplifiedHtmlTruncated": false,
+            "screenshotDigest": "0a1b2c3d4e5f6071",
+            "simplifiedHtmlDigest": "1122334455667788",
+            "placementId": "9c9a2f4e-7b21-4c6a-9e2d-1f0b3d5c7a11",
+            "orderActionCount": 4,
+            "orderSurfaceDigest": "aabbccddeeff0011",
+        })
     }
 
     /// The record names itself the way the QA reads it back and carries the
@@ -196,7 +234,8 @@ mod tests {
     }
 
     /// The witness fields are the CAMEL-CASE keys the QA plan names, so a reader
-    /// queries exactly `taught` / `perAppEntries`.
+    /// queries exactly `taught` / `perAppEntries` — plus the three order-loop
+    /// receipt fields (Spec #3243 ST-3), which must be PRESENT on every record.
     #[test]
     fn the_attributes_use_the_camel_case_witness_keys() {
         let stored = serde_json::to_value(sample()).expect("serialize");
@@ -212,6 +251,9 @@ mod tests {
             "simplifiedHtmlTruncated",
             "screenshotDigest",
             "simplifiedHtmlDigest",
+            "placementId",
+            "orderActionCount",
+            "orderSurfaceDigest",
             "imageTokens",
         ] {
             assert!(object.contains_key(key), "the facts must carry `{key}`: {stored}");
@@ -220,7 +262,60 @@ mod tests {
         assert_eq!(object["perAppEntries"], serde_json::json!(0));
         assert_eq!(object["simplifiedHtmlNodes"], serde_json::json!(9));
         assert_eq!(object["simplifiedHtmlTruncated"], serde_json::json!(true));
+        assert_eq!(
+            object["placementId"],
+            serde_json::json!("9c9a2f4e-7b21-4c6a-9e2d-1f0b3d5c7a11")
+        );
+        assert_eq!(object["orderActionCount"], serde_json::json!(4));
+        assert_eq!(object["orderSurfaceDigest"], serde_json::json!("aabbccddeeff0011"));
         assert_eq!(object["imageTokens"], serde_json::json!(1120));
+    }
+
+    /// The real wire shape the WEBVIEW sends deserializes into the record with
+    /// the three order-loop values carried verbatim (G-413: feed the wire, not
+    /// the authoring type).
+    #[test]
+    fn the_webview_wire_shape_carries_the_order_loop_receipt_values() {
+        let facts: CompanionInjectionSpan =
+            serde_json::from_value(webview_payload()).expect("the webview payload deserializes");
+        assert_eq!(
+            facts.placement_id,
+            "9c9a2f4e-7b21-4c6a-9e2d-1f0b3d5c7a11"
+        );
+        assert_eq!(facts.order_action_count, 4);
+        assert_eq!(facts.order_surface_digest, "aabbccddeeff0011");
+
+        // An UNPLACED turn is a real value, not an absent key: `''` / `0` / the
+        // empty-table digest still serialize as present fields.
+        let unplaced = CompanionInjectionSpan {
+            placement_id: String::new(),
+            order_action_count: 0,
+            order_surface_digest: "empty".to_string(),
+            ..facts
+        };
+        let stored = serde_json::to_value(&unplaced).expect("serialize");
+        assert_eq!(stored["placementId"], serde_json::json!(""));
+        assert_eq!(stored["orderActionCount"], serde_json::json!(0));
+        assert_eq!(stored["orderSurfaceDigest"], serde_json::json!("empty"));
+    }
+
+    /// Spec #3243 ST-3 — each of the three new fields is REQUIRED on the wire (no
+    /// `serde(default)`). A payload omitting `placementId` would otherwise make a
+    /// REAL placement read as unplaced — the plausible-but-wrong value G-511
+    /// forbids — so the payload is REFUSED, never defaulted.
+    #[test]
+    fn the_order_loop_receipt_fields_are_required_and_never_defaulted() {
+        for missing in ["placementId", "orderActionCount", "orderSurfaceDigest"] {
+            let mut payload = webview_payload();
+            payload
+                .as_object_mut()
+                .expect("object payload")
+                .remove(missing);
+            assert!(
+                serde_json::from_value::<CompanionInjectionSpan>(payload).is_err(),
+                "a payload with no `{missing}` must be refused, never defaulted"
+            );
+        }
     }
 
     /// Spec #3244 ST-6 (AC-4): `imageTokens` is NOT a webview input — the engine
@@ -230,20 +325,8 @@ mod tests {
     #[test]
     fn the_image_token_readout_is_filled_from_the_run_never_the_webview() {
         // The webview's own payload: every input fact, no imageTokens key.
-        let webview_payload = serde_json::json!({
-            "appId": "qa3244-untaught",
-            "taught": false,
-            "perAppEntries": 0,
-            "descriptionBytes": 42,
-            "screenshotBytes": 2048,
-            "simplifiedHtmlBytes": 512,
-            "simplifiedHtmlNodes": 9,
-            "simplifiedHtmlTruncated": false,
-            "screenshotDigest": "0a1b2c3d4e5f6071",
-            "simplifiedHtmlDigest": "1122334455667788",
-        });
         let mut facts: CompanionInjectionSpan =
-            serde_json::from_value(webview_payload).expect("the webview payload deserializes");
+            serde_json::from_value(webview_payload()).expect("the webview payload deserializes");
         assert_eq!(facts.image_tokens, None, "the webview carries no image tokens");
 
         // The engine's readout fills it (the AC-4 number).
@@ -267,17 +350,11 @@ mod tests {
     /// plausible-but-wrong number, which is exactly what G-511 forbids).
     #[test]
     fn the_truncation_flag_is_required_and_never_defaulted() {
-        let without_flag = serde_json::json!({
-            "appId": "qa3244-untaught",
-            "taught": false,
-            "perAppEntries": 0,
-            "descriptionBytes": 42,
-            "screenshotBytes": 2048,
-            "simplifiedHtmlBytes": 512,
-            "simplifiedHtmlNodes": 9,
-            "screenshotDigest": "0a1b2c3d4e5f6071",
-            "simplifiedHtmlDigest": "1122334455667788",
-        });
+        let mut without_flag = webview_payload();
+        without_flag
+            .as_object_mut()
+            .expect("object payload")
+            .remove("simplifiedHtmlTruncated");
         assert!(
             serde_json::from_value::<CompanionInjectionSpan>(without_flag).is_err(),
             "a payload with no simplifiedHtmlTruncated must be refused, never defaulted"

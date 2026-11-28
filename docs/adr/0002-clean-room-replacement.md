@@ -7,7 +7,8 @@
   never maintain two authoritative capability paths — is
   carried instead by the ADR-8 composer
   (`apps/ui/src/shared/companion/composerBridge.ts`, `composerTarget.ts`) and by the companion's
-  exactly three static skills `open_app` / `close_app` / `doom_mode`. There is no migration
+  static skills `open_app` / `close_app` / `doom_mode`, which Spec #3243 widened to four by
+  appending `order` (the first three unchanged). There is no migration
   order and no migration phase left to bound.
 
 ## Context

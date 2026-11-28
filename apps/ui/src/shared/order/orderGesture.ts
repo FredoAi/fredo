@@ -9,8 +9,8 @@
  * precedence implementation the launcher bar already ships, applied to a
  * different field.
  *
- * So this module is an ADAPTER: every decision is DELEGATED to
- * `shared`-external `launcherSpaceHold.ts`
+ * So this module is an ADAPTER: every decision is DELEGATED to the shipped
+ * `launcherSpaceHold.ts`
  * (`resolveSpaceKeyDown` / `resolveSpaceKeyUp` / `spaceWriteForVerdict` /
  * `HOLD_THRESHOLD_MS` / `HOLD_PENDING_CUE_MS` / `HOLD_FALLBACK_SPACE`). It adds
  * exactly the two facts the order field introduces and nothing else:

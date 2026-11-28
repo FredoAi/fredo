@@ -190,6 +190,31 @@ impl SkillRegistry {
         registry
     }
 
+    /// The order-loop registry: the shipped three PLUS the static `order` skill
+    /// (Spec #3243, ST-3). Offer order is `open_app`, `close_app`, `doom_mode`,
+    /// `order`.
+    ///
+    /// Additive: [`Self::with_app_control_and_doom`] keeps its shipped
+    /// three-skill declaration (and its pins) untouched, and the three shipped
+    /// declarations are registered by the SAME constructors — so their names,
+    /// order, descriptions and parameter schemas are byte-identical to the
+    /// pre-change baseline by construction, not by a copied literal.
+    ///
+    /// `order` is a STATIC declaration like the other three: nothing is
+    /// generated per application and no application publishes a catalogue. The
+    /// declaration itself lives in
+    /// [`crate::applications::llm_server::order_offer`] beside the surface that
+    /// owns it; this constructor is the ONE registration site.
+    pub fn with_order_support() -> Self {
+        let mut registry = Self::with_app_control_and_doom();
+        registry.register(CompanionSkill::new(
+            crate::applications::llm_server::order_offer::ORDER_SKILL,
+            crate::applications::llm_server::order_offer::ORDER_SKILL_DESCRIPTION,
+            crate::applications::llm_server::order_offer::order_parameters(),
+        ));
+        registry
+    }
+
     /// Register a skill. A name already present is **replaced in place**, so the
     /// offer order of the remaining skills is stable.
     pub fn register(&mut self, skill: CompanionSkill) -> &mut Self {
@@ -457,6 +482,57 @@ mod tests {
         // The shipped constructors are untouched by the addition (their pins).
         assert_eq!(SkillRegistry::with_open_app().len(), 1);
         assert_eq!(SkillRegistry::with_app_control().len(), 2);
+    }
+
+    #[test]
+    fn with_order_support_registers_the_four_static_skills_in_order() {
+        let registry = SkillRegistry::with_order_support();
+        assert_eq!(registry.len(), 4);
+        let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![OPEN_APP_SKILL, CLOSE_APP_SKILL, DOOM_MODE_SKILL, "order"],
+            "offer order is open_app, close_app, doom_mode, order (Spec #3243 ST-3)"
+        );
+
+        let order = registry.get("order").expect("registered under its name");
+        assert_eq!(
+            order.parameters["required"],
+            json!(["action"]),
+            "`order` requires exactly `action`"
+        );
+        let properties: Vec<&str> = order.parameters["properties"]
+            .as_object()
+            .expect("the order schema declares properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            properties,
+            vec!["action", "arguments"],
+            "the offered `order` schema is CLOSED at action + arguments (AC-7)"
+        );
+
+        // The shipped constructors are untouched by the addition (their pins).
+        assert_eq!(SkillRegistry::with_open_app().len(), 1);
+        assert_eq!(SkillRegistry::with_app_control().len(), 2);
+        assert_eq!(SkillRegistry::with_app_control_and_doom().len(), 3);
+    }
+
+    /// The three shipped declarations are registered by the SAME constructors
+    /// `with_order_support` chains through, so a caller cannot get a registry
+    /// where one of the first three drifted while `order` was added.
+    #[test]
+    fn with_order_support_keeps_the_three_shipped_declarations_byte_identical() {
+        let widened = SkillRegistry::with_order_support();
+        let shipped = SkillRegistry::with_app_control_and_doom();
+        let widened_skills: Vec<&CompanionSkill> = widened.list().collect();
+        for (index, expected) in shipped.list().enumerate() {
+            assert_eq!(
+                widened_skills[index], expected,
+                "shipped skill #{index} drifted when `order` was added"
+            );
+        }
     }
 
     #[test]

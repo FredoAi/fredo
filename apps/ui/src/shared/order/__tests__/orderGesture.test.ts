@@ -5,10 +5,17 @@
  *
  * 1. **Delegation, not re-derivation.** The precedence table below is written
  *    against the ORDER field's own input shape, but every verdict is the shipped
- *    function's. The mutation the plan names — reordering the shipped
- *    precedence — reddens this suite AND `launcherSpaceHold.test.ts` together,
+ *    function's. A mutation that changes the shipped decision (verified by
+ *    REMOVING the `voiceUsable` guard, which makes a voice-less host arm) reddens
+ *    this suite AND `launcherSpaceHold.test.ts` together — 3 failures each —
  *    because there is one implementation. A second, hand-rolled table here would
  *    stay green while the launcher's reddened.
+ *
+ *    NOTE for a future reader: swapping two branches that both return
+ *    `'ordinary-space'` is NOT a valid mutation here — it is semantically a
+ *    no-op and stays green, which proves nothing about delegation. The mutation
+ *    must change an OUTCOME. This suite also carries a byte-unchanged control
+ *    over `launcherSpaceHold.ts`, so any edit to that file is caught directly.
  *
  * 2. **The cue constant is the shipped one.** `ORDER_HOLD_PENDING_CUE_MS` is
  *    asserted EQUAL to `HOLD_PENDING_CUE_MS` at import — never a second literal.

@@ -728,10 +728,15 @@ async fn run_status_pass(
 }
 
 /// The ONE skill offer of the live companion transport.
-/// The three shipped static skills and nothing generated: the companion is
-/// conversational only and executes no application command.
+///
+/// Four static skills and nothing generated: `open_app`, `close_app`,
+/// `doom_mode` (the shipped three, byte-identical) and `order` (Spec #3243,
+/// ST-3) — the companion carries out ONE action in the application Fredo is
+/// placed in, and still generates no per-application skill and consults no
+/// published surface. The accessor stays ZERO-argument and handle-free, so the
+/// typed and model-audio offers cannot drift and no state can change the offer.
 pub(crate) fn companion_skill_registry() -> SkillRegistry {
-    SkillRegistry::with_app_control_and_doom()
+    SkillRegistry::with_order_support()
 }
 
 /// Run ONE skill-capable turn through the SHIPPED tools path (ST-6).
@@ -1625,10 +1630,16 @@ mod tests {
         );
     }
 
-    // ── Spec #3152: the turn offer is exactly the three static skills ─────────
+    // ── Spec #3152 → re-cut by Spec #3243: the turn offer is FOUR static skills ─
 
-    /// AC2 pin — the LIVE transport's offer set is the three shipped static
-    /// skills and nothing generated.
+    /// AC2 pin, RE-CUT at Spec #3243 ST-3 — the LIVE transport's offer set is
+    /// FOUR static skills: the three shipped (`open_app`, `close_app`,
+    /// `doom_mode`, byte-identical) plus `order`, registered AFTER them.
+    ///
+    /// A plain count change is NOT the assertion (G-522): the four names are
+    /// pinned as an ORDERED list, so a rename or a reorder reddens this even at
+    /// `len() == 4`, and the first three are compared byte-identically against
+    /// the pre-change baseline literals.
     ///
     /// The Companion's typed send and its model-audio turn both obtain their
     /// registry from [`companion_skill_registry`], which is the value
@@ -1640,21 +1651,53 @@ mod tests {
     /// and consults no published surface, so "no publisher, no crash" is
     /// structural rather than defensive.
     #[test]
-    fn the_turn_offer_is_exactly_the_three_static_skills() {
+    fn the_turn_offer_is_exactly_the_four_static_skills() {
         let registry = companion_skill_registry();
         let names: Vec<&str> = registry.list().map(|skill| skill.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["open_app", "close_app", "doom_mode"],
-            "the turn offer is exactly the three shipped static skills, in order"
+            vec!["open_app", "close_app", "doom_mode", "order"],
+            "the turn offer is the four static skills, in offer order"
         );
-        assert_eq!(registry.len(), 3, "no application-named skill is offered");
+        assert_eq!(registry.len(), 4, "no application-named skill is offered");
         assert!(
             registry.get("wireframe").is_none(),
             "no application-named skill is offered"
         );
 
-        // R-2b: reading it again returns the same three names — the offer is a
+        // The three shipped declarations are byte-identical to their pre-change
+        // baseline (name + description + parameters) — the widening added ONE
+        // member and changed nothing about the other three.
+        for (index, expected) in static_offer_baseline().iter().enumerate() {
+            let skill = registry
+                .list()
+                .nth(index)
+                .expect("the three shipped skills are still offered");
+            assert_eq!(skill.name, expected.0, "shipped skill #{index} was renamed");
+            assert_eq!(
+                skill.description, expected.1,
+                "shipped skill #{index}'s description drifted"
+            );
+            assert_eq!(
+                skill.parameters,
+                expected.2,
+                "shipped skill #{index}'s parameters drifted"
+            );
+        }
+
+        // The fourth member is the closed `order` schema (AC-7's offer side).
+        let order = registry.get("order").expect("`order` is offered");
+        assert_eq!(order.description, crate::applications::llm_server::order_offer::ORDER_SKILL_DESCRIPTION);
+        let order_parameters = order.parameters["properties"]
+            .as_object()
+            .expect("the order schema declares properties");
+        assert_eq!(
+            order_parameters.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["action", "arguments"],
+            "the offered `order` schema declares exactly action + arguments"
+        );
+
+        // R-2b: reading it again returns the same four names — the offer is a
         // pure function of no state at all.
         let again = companion_skill_registry();
         let again_names: Vec<&str> = again.list().map(|skill| skill.name.as_str()).collect();
@@ -1693,9 +1736,47 @@ mod tests {
             "the accessor must take no AppHandle: {accessor}"
         );
         assert!(
-            accessor.contains("SkillRegistry::with_app_control_and_doom()"),
+            accessor.contains("SkillRegistry::with_order_support()"),
             "the accessor is the ONE construction site: {accessor}"
         );
+    }
+
+    /// The pre-change baseline of the three shipped static skills, as literals.
+    ///
+    /// Deliberately transcribed rather than derived from the constructors: a
+    /// literal baseline is what makes a reworded description or a changed
+    /// parameter FAIL, instead of silently agreeing with itself (the same reason
+    /// `tests/companion_offer_static_only.rs` carries its own copy).
+    fn static_offer_baseline() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+        vec![
+            (
+                "open_app",
+                "Open a Fredo desktop app/application by the name the user said. Use ONLY for an explicit open request.",
+                json!({
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"]
+                }),
+            ),
+            (
+                "close_app",
+                "Close an open Fredo desktop app/application by the name the user said. Use ONLY for an explicit close request.",
+                json!({
+                    "type": "object",
+                    "properties": { "app": { "type": "string" } },
+                    "required": ["app"]
+                }),
+            ),
+            (
+                "doom_mode",
+                "Use ONLY when the user explicitly asks Fredo to enter or leave Doom Mode.",
+                json!({
+                    "type": "object",
+                    "properties": { "action": { "type": "string" } },
+                    "required": ["action"]
+                }),
+            ),
+        ]
     }
 
     // ── Spec #2970 ST-4: the Doom Mode audio-leg suppression gate (R-4.a) ──────
