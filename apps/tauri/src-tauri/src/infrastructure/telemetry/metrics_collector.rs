@@ -14,8 +14,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 // Forward references — actual types from the codebase.
-use crate::infrastructure::comm::event::EventState;
-pub use crate::infrastructure::comm::event::FredoEvent;
+use telemetry_domain::event::EventState;
+pub use telemetry_domain::event::FredoEvent;
 pub use crate::infrastructure::storage::span_store::SpanStore;
 pub use crate::infrastructure::storage::SettingsStore;
 use crate::infrastructure::telemetry::backoff::ErrorBackoff;

@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::infrastructure::comm::event::{EventState, FredoEvent};
+use telemetry_domain::event::{EventState, FredoEvent};
 use crate::infrastructure::storage::span_store::SpanStore;
 use crate::infrastructure::storage::SettingsStore;
 

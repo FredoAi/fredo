@@ -58,13 +58,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use fredo_lib::infrastructure::comm::event::{
+use telemetry_domain::event::{
     EventProvider, EventState, EventType, FredoEvent, Transport,
 };
 use fredo_lib::infrastructure::rtdb::cache::RtdbCache;
 use fredo_lib::infrastructure::rtdb::commands::Rtdb;
 use fredo_lib::infrastructure::rtdb::flush::{FlushLoop, RowEmitter};
-use fredo_lib::infrastructure::rtdb::ingest::IngestClassifier;
+use telemetry_domain::classifier::IngestClassifier;
 use fredo_lib::infrastructure::rtdb::store::RtdbStore;
 use fredo_lib::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
 use fredo_lib::infrastructure::storage::engine::{

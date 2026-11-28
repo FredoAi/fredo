@@ -1,0 +1,43 @@
+# telemetry-domain — the RTDB classification rules as a crate that CANNOT reach
+# the Tauri platform (Spec #3201, AC1/AC6).
+#
+# Dependency rule, enforced by the resolved-graph guard ST-8 ships
+# (`.opencode/scripts/verify-domain-boundary.ps1`): every dependency here is a
+# general-purpose library. There is no `tauri*`, no `fredo`/`fredo_lib`, no
+# settings store, and no `path` dependency that escapes `crates/` — the crate is
+# a leaf of the dependency graph by construction, not by convention.
+#
+# `serde`/`serde_json`/`chrono`/`async-trait`/`uuid` are all ALREADY resolved in
+# `apps/tauri/src-tauri/Cargo.lock` at these versions, so adding this package
+# introduces exactly one new `[[package]]` (itself) and zero new external names.
+#
+# `uuid` carries the `v4` feature because the wire vocabulary that moves here
+# byte-identically (`comm/event.rs`) mints event ids with `Uuid::new_v4()`. It is
+# not an optional extra: without it the moved file cannot compile unchanged, and
+# changing the file is exactly what NFR-6 forbids.
+[package]
+name = "telemetry-domain"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "telemetry_domain"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+# Structured logging. Spec #3201 ST-5: the classifier's 14 diagnostic sites
+# (`target: "fredo::rtdb::ingest"`) moved with the code VERBATIM — deleting them
+# would be a behaviour change (the platform's log filtering keys on that
+# target), and a hand-rolled abstraction in their place would be exactly the
+# wrapper this spec forbids. `tracing` is a general-purpose library (the crate
+# rule in `lib.rs`), and it is ALREADY resolved in this workspace's graph at the
+# same version via the fredo crate (`Cargo.toml:120`), so this edge adds **no
+# new external package** to `Cargo.lock` — only a dependency line on the
+# existing `telemetry-domain` [[package]] block (N-5's measurable form).
+tracing = "0.1"

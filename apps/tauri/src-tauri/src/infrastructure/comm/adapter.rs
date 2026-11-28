@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use anyhow::Result;
-use super::event::{EventProvider, FredoEvent, Transport};
+use telemetry_domain::event::{EventProvider, FredoEvent, Transport};
 
 /// Trait for event adapters that can transform or route FredoEvents.
 ///

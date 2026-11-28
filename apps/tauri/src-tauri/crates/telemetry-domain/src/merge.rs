@@ -23,7 +23,7 @@
 //!   Guards token/cost/duration fields against #586-style zero-delta wipes
 //!   and #2723-style cumulative contamination.
 
-use crate::infrastructure::rtdb::rows::{
+use crate::rows::{
     AgentSessionRow, ChatRow, RowState, ToolUseRow,
 };
 use serde::{Deserialize, Serialize};
@@ -176,7 +176,7 @@ impl FallbackValue for bool {
 
 impl FallbackValue for String {
     fn is_fallback(&self) -> bool {
-        self == crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN
+        self == crate::attrs::PROVIDER_UNKNOWN
     }
 }
 
@@ -373,8 +373,8 @@ pub fn apply_agent_session_patch(row: &mut AgentSessionRow, patch: &AgentSession
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
-    use crate::infrastructure::rtdb::rows::{
+    use crate::attrs::PROVIDER_UNKNOWN;
+    use crate::rows::{
         AgentSessionRow, AGENT_SESSION_FIELDS, ChatRow, CHAT_FIELDS, RowState, ToolUseRow,
         TOOL_USE_FIELDS,
     };
@@ -1154,12 +1154,12 @@ mod tests {
             composited_child_session_id: Some("ses_c".to_string()),
             raw_json: "{}".to_string(),
         };
-        let json = serde_json::to_value(&row).ok().expect("serialize ChatRow");
+        let json = serde_json::to_value(&row).expect("serialize ChatRow");
         let obj = json.as_object().expect("object");
         for key in CHAT_FIELDS {
             assert!(obj.contains_key(*key), "ChatRow JSON missing camelCase key {key}");
         }
-        let back: ChatRow = serde_json::from_value(json).ok().expect("deserialize ChatRow");
+        let back: ChatRow = serde_json::from_value(json).expect("deserialize ChatRow");
         assert_eq!(back, row);
     }
 
@@ -1183,14 +1183,14 @@ mod tests {
             is_subagent: Some(true),
             raw_json: "{}".to_string(),
         };
-        let json = serde_json::to_value(&tool).ok().expect("serialize ToolUseRow");
+        let json = serde_json::to_value(&tool).expect("serialize ToolUseRow");
         for key in TOOL_USE_FIELDS {
             assert!(
                 json.as_object().expect("object").contains_key(*key),
                 "ToolUseRow JSON missing camelCase key {key}"
             );
         }
-        let back: ToolUseRow = serde_json::from_value(json).ok().expect("deserialize ToolUseRow");
+        let back: ToolUseRow = serde_json::from_value(json).expect("deserialize ToolUseRow");
         assert_eq!(back, tool);
 
         let session = AgentSessionRow {
@@ -1208,7 +1208,7 @@ mod tests {
             agent_name: Some("build".to_string()),
             raw_json: "{}".to_string(),
         };
-        let json = serde_json::to_value(&session).ok().expect("serialize AgentSessionRow");
+        let json = serde_json::to_value(&session).expect("serialize AgentSessionRow");
         for key in AGENT_SESSION_FIELDS {
             assert!(
                 json.as_object().expect("object").contains_key(*key),
@@ -1216,7 +1216,7 @@ mod tests {
             );
         }
         let back: AgentSessionRow =
-            serde_json::from_value(json).ok().expect("deserialize AgentSessionRow");
+            serde_json::from_value(json).expect("deserialize AgentSessionRow");
         assert_eq!(back, session);
     }
 
@@ -1231,9 +1231,9 @@ mod tests {
             (RowState::Error, "Error"),
         ];
         for (state, name) in states {
-            let json = serde_json::to_value(state).ok().expect("serialize RowState");
+            let json = serde_json::to_value(state).expect("serialize RowState");
             assert_eq!(json.as_str(), Some(name));
-            let back: RowState = serde_json::from_value(json).ok().expect("deserialize RowState");
+            let back: RowState = serde_json::from_value(json).expect("deserialize RowState");
             assert_eq!(back, state);
             assert_eq!(back.as_str(), name.to_lowercase());
         }
@@ -1246,14 +1246,13 @@ mod tests {
             (MergeRule::LastNonZero, "LastNonZero"),
         ];
         for (rule, name) in rules {
-            let json = serde_json::to_value(rule).ok().expect("serialize MergeRule");
+            let json = serde_json::to_value(rule).expect("serialize MergeRule");
             assert_eq!(json.as_str(), Some(name));
         }
         // The CHAT_MERGE table itself serializes with its declared field/rule
         // names intact (Serialize-only — the tables are compile-time
         // declarations, never deserialized from untrusted input).
-        let table_json =
-            serde_json::to_value(CHAT_MERGE).ok().expect("serialize CHAT_MERGE");
+        let table_json = serde_json::to_value(CHAT_MERGE).expect("serialize CHAT_MERGE");
         let entries = table_json.as_array().expect("array");
         assert_eq!(entries.len(), CHAT_MERGE.len());
         for (entry, declared) in entries.iter().zip(CHAT_MERGE) {

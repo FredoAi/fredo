@@ -530,7 +530,7 @@ pub async fn run_watch_flush_task(registry: Arc<WatchRegistry>) {
 mod tests {
     use super::*;
     use crate::infrastructure::application_data::envelope::ApplicationDeliveryBatch;
-    use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
+    use telemetry_domain::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
     use serde_json::json;
 
     #[derive(Default)]

@@ -14,12 +14,23 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::infrastructure::comm::event::EventState;
+use crate::event::EventState;
 
 // ── OTel GenAI semantic-convention registry keys (current names) ──────────────
 // Emission source of truth: apps/opencode-plugin/src/genai-conventions.ts.
 // `pub(crate)`: the RTDB IngestClassifier reuses the SAME verified extract
 // paths — one source of truth for the attribute keys.
+//
+// Spec #3201 ST-3 — the crate's public surface is DELIBERATELY seven items, and
+// the rule is set equality, not a count: the `pub` set must equal, by name, the
+// set that the files REMAINING in the platform import (`rtdb/store.rs`,
+// `application_data/session_rollup.rs`, `rtdb/backfill.rs`). Those seven are
+// `PROVIDER_UNKNOWN`, `resolve_op_name`, `ATTR_CONVERSATION_ID`,
+// `CC_ATTR_SESSION_ID`, `OP_CHAT_CANON`, `OP_SESSION`, `OP_TOOL_PREFIX`.
+// Everything else stays `pub(crate)`. `resolve_provider_token` is NOT among them:
+// its only call site is inside this file, and it appears outside it only in doc
+// comments, so widening it would be over-widening — the one failure mode AC1's
+// dependency guard is structurally blind to (widening changes no dependency edge).
 pub(crate) const ATTR_OPERATION_NAME: &str = "gen_ai.operation.name";
 pub(crate) const ATTR_INPUT_MESSAGES: &str = "gen_ai.input.messages";
 pub(crate) const ATTR_OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
@@ -31,7 +42,7 @@ pub(crate) const ATTR_USAGE_CACHE_READ_INPUT_TOKENS: &str = "gen_ai.usage.cache_
 pub(crate) const ATTR_USAGE_CACHE_CREATION_INPUT_TOKENS: &str =
     "gen_ai.usage.cache_creation.input_tokens";
 pub(crate) const ATTR_RESPONSE_MODEL: &str = "gen_ai.response.model";
-pub(crate) const ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
+pub const ATTR_CONVERSATION_ID: &str = "gen_ai.conversation.id";
 pub(crate) const ATTR_TOOL_NAME: &str = "gen_ai.tool.name";
 pub(crate) const ATTR_TOOL_CALL_ARGUMENTS: &str = "gen_ai.tool.call.arguments";
 pub(crate) const ATTR_TOOL_CALL_RESULT: &str = "gen_ai.tool.call.result";
@@ -47,7 +58,7 @@ pub(crate) const ATTR_AGENT_NAME: &str = "gen_ai.agent.name";
 pub(crate) const ATTR_SERVICE_NAME: &str = "service.name";
 /// Documented fallback token for an unresolvable CLI identity (R7 — mirrors the
 /// fallback already used at `otlp/raw.rs:131`). Never empty.
-pub(crate) const PROVIDER_UNKNOWN: &str = "unknown";
+pub const PROVIDER_UNKNOWN: &str = "unknown";
 /// Resolved CLI-provider tokens (Spec #2932 ST-1). `pub(crate)`: the Spec #2933
 /// ST-2 `invoke_agent` → session promotion is scoped to the exact `copilot_cli`
 /// token, resolved through the SAME shared rule ([`resolve_provider_token`],
@@ -56,7 +67,7 @@ pub(crate) const PROVIDER_OPEN_CODE: &str = "open_code";
 pub(crate) const PROVIDER_COPILOT_CLI: &str = "copilot_cli";
 
 // ── Flat Claude-Code convention fallback keys (secondary only) ────────────────
-pub(crate) const CC_ATTR_SESSION_ID: &str = "session.id";
+pub const CC_ATTR_SESSION_ID: &str = "session.id";
 pub(crate) const CC_ATTR_INPUT_TOKENS: &str = "input_tokens";
 pub(crate) const CC_ATTR_OUTPUT_TOKENS: &str = "output_tokens";
 pub(crate) const CC_ATTR_MODEL: &str = "model";
@@ -97,9 +108,9 @@ const OP_LEGACY_PERMISSION: &str = "permission";
 const OP_LEGACY_ELICITATION: &str = "elicitation";
 
 // ── Canonical op names produced by `resolve_op_name` ──────────────────────────
-pub(crate) const OP_SESSION: &str = "session";
-pub(crate) const OP_CHAT_CANON: &str = "chat";
-pub(crate) const OP_TOOL_PREFIX: &str = "tool.";
+pub const OP_SESSION: &str = "session";
+pub const OP_CHAT_CANON: &str = "chat";
+pub const OP_TOOL_PREFIX: &str = "tool.";
 
 /// Bounded-map capacity shared by every correlation/relationship cache.
 /// `pub(crate)`: the RTDB IngestClassifier applies the SAME cap to its ported
@@ -171,7 +182,7 @@ pub(crate) struct TurnTokenDerivation {
 /// `attrs` MUST be the merged resource+span attribute map so the Copilot
 /// promotion can see the resource `service.name` via the shared
 /// [`resolve_provider_token`] rule (NFR-6).
-pub(crate) fn resolve_op_name(span_name: &str, attrs: &Map<String, Value>) -> Option<String> {
+pub fn resolve_op_name(span_name: &str, attrs: &Map<String, Value>) -> Option<String> {
     if let Some(op) = attrs.get(ATTR_OPERATION_NAME).and_then(|v| v.as_str()) {
         match op {
             OP_NAME_SESSION => return Some(OP_SESSION.to_string()),

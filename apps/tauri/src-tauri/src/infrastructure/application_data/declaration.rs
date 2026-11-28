@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::infrastructure::rtdb::rows::RowState;
+use telemetry_domain::rows::RowState;
 
 /// Backend-managed reserved column names. They are never declared by an application
 /// (validation rejects them) and never writable by an application-originated write

@@ -27,7 +27,7 @@ use opentelemetry_proto::tonic::collector::{
     trace::v1::ExportTraceServiceRequest,
 };
 
-use crate::infrastructure::comm::event::Transport;
+use telemetry_domain::event::Transport;
 use crate::infrastructure::telemetry::backoff::ErrorBackoff;
 use crate::infrastructure::telemetry::metrics_collector::SpanStoreMetricsExt;
 use crate::infrastructure::otlp::grpc::{otlp_logs_to_records, otlp_metrics_to_points};

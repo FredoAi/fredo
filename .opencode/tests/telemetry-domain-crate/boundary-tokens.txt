@@ -1,0 +1,10 @@
+tauri::
+tauri_
+fredo_lib::
+SettingsStore
+crate::infrastructure
+crate::applications
+Rtdb::
+&Rtdb
+: Rtdb
+Arc<Rtdb>

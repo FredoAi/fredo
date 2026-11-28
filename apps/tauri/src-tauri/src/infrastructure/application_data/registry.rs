@@ -754,7 +754,7 @@ mod tests {
     use crate::infrastructure::application_data::declaration::{
         ColumnOwner, DataSource, Retention, SessionRollupKind, SessionRollupProjection,
     };
-    use crate::infrastructure::rtdb::rows::RowState;
+    use telemetry_domain::rows::RowState;
     use crate::infrastructure::storage::engine::EngineHandle;
 
     /// The canonical (post-rename) `mission-monitor.sessions` declaration — the

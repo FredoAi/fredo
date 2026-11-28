@@ -47,15 +47,17 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::Manager;
+use telemetry_domain::rows::{
+    AgentSessionRow, ChatRow, RowKey as DomainRowKey, RowKind as DomainRowKind, RowUpsert, ToolUseRow,
+    AGENT_SESSION_FIELDS, CHAT_FIELDS, TOOL_USE_FIELDS,
+};
+use telemetry_domain::RowSink;
 
 use crate::infrastructure::rtdb::cache::RtdbCache;
 use crate::infrastructure::rtdb::flush::{FlushLoop, DEFAULT_FLUSH_MS};
 use crate::infrastructure::rtdb::project::{RowChangeKind, RowDelivery, RowKey, RowSnapshot};
 use crate::infrastructure::rtdb::query::{
     parse, validate, CompareOp, EventTypeArg, QueryArg, ValidatedQuery,
-};
-use crate::infrastructure::rtdb::rows::{
-    AgentSessionRow, ChatRow, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS, TOOL_USE_FIELDS,
 };
 use crate::infrastructure::rtdb::store::{EvictedKey, RowKind, SqlValue};
 use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
@@ -76,11 +78,30 @@ pub struct RegisteredQuery {
 /// A live row mutation entering the pipeline. The classifier (P3.1) builds
 /// the merged row and calls [`Rtdb::ingest_row_upsert`] with the camelCase
 /// names of the fields its merge patch touched.
+///
+/// **Spec #3201 boundary name.** The crate owns the row union as
+/// [`telemetry_domain::RowUpsert`]; this is the platform's name for the same
+/// three variants over the same field structs. The two are bridged by
+/// [`impl From<RowUpsert> for IngestRow`] — a three-arm move that copies no
+/// field and recomputes no value (a *rename at the boundary*, never a
+/// translation layer). `IngestRow` keeps the name because its `impl` block
+/// below reaches store/project plumbing ([`RowKind`], [`RowKey`],
+/// [`RowSnapshot`]) that must stay platform-side.
 #[derive(Clone, Debug)]
 pub enum IngestRow {
     Chat(ChatRow),
     ToolUse(ToolUseRow),
     AgentSession(AgentSessionRow),
+}
+
+impl From<RowUpsert> for IngestRow {
+    fn from(upsert: RowUpsert) -> Self {
+        match upsert {
+            RowUpsert::Chat(row) => IngestRow::Chat(row),
+            RowUpsert::ToolUse(row) => IngestRow::ToolUse(row),
+            RowUpsert::AgentSession(row) => IngestRow::AgentSession(row),
+        }
+    }
 }
 
 impl IngestRow {
@@ -126,6 +147,20 @@ impl IngestRow {
             IngestRow::Chat(row) => RowSnapshot::Chat(row),
             IngestRow::ToolUse(row) => RowSnapshot::ToolUse(row),
             IngestRow::AgentSession(row) => RowSnapshot::AgentSession(row),
+        }
+    }
+}
+
+/// The spec's one boundary *conversion* (§1 edge 5): the crate's three-variant
+/// discriminant → the store's, which additionally carries the physical table
+/// name ([`RowKind::table`]). A type translation only — no extraction rule is
+/// involved, so NFR-6's byte-comparability surface is untouched.
+impl From<DomainRowKind> for RowKind {
+    fn from(kind: DomainRowKind) -> Self {
+        match kind {
+            DomainRowKind::Chat => RowKind::Chat,
+            DomainRowKind::ToolUse => RowKind::ToolUse,
+            DomainRowKind::AgentSession => RowKind::AgentSession,
         }
     }
 }
@@ -355,6 +390,75 @@ impl Rtdb {
                 self.flush.enqueue(delivery);
             }
         }
+    }
+}
+
+// ── The domain port (Spec #3201 AC6) ────────────────────────────────────────
+
+/// `Rtdb` is the platform implementation of the domain crate's ONE outward
+/// dependency. The classifier holds `Arc<dyn RowSink>` and never names `Rtdb`.
+///
+/// The write delegates to the existing inherent
+/// [`Rtdb::ingest_row_upsert`] — the trait is that method's shape with the
+/// crate's `RowUpsert` name and the read accessors the classifier actually
+/// calls (§4 of the plan). Each read dispatches on the crate's [`DomainRowKind`]
+/// and is mapped to the concrete cache accessor: the classifier already
+/// branches on row kind at every read site, so this is the same boundary
+/// conversion the write path uses, used once.
+#[async_trait::async_trait]
+impl RowSink for Rtdb {
+    async fn ingest_row_upsert(
+        &self,
+        upsert: RowUpsert,
+        changed_fields: &[String],
+    ) -> Result<usize> {
+        Rtdb::ingest_row_upsert(self, IngestRow::from(upsert), changed_fields).await
+    }
+
+    async fn get_row(
+        &self,
+        kind: DomainRowKind,
+        session_id: &str,
+        correlation_id: &str,
+    ) -> Result<Option<RowUpsert>> {
+        match kind {
+            DomainRowKind::Chat => Ok(self
+                .cache
+                .get_chat(session_id, correlation_id)
+                .await?
+                .map(RowUpsert::Chat)),
+            DomainRowKind::ToolUse => Ok(self
+                .cache
+                .get_tool_use(session_id, correlation_id)
+                .await?
+                .map(RowUpsert::ToolUse)),
+            DomainRowKind::AgentSession => Ok(self
+                .cache
+                .get_agent_session(session_id, correlation_id)
+                .await?
+                .map(RowUpsert::AgentSession)),
+        }
+    }
+
+    async fn keys_for_session(
+        &self,
+        kind: DomainRowKind,
+        session_id: &str,
+    ) -> Result<Vec<DomainRowKey>> {
+        let keys = match kind {
+            DomainRowKind::Chat => self.cache.chat_keys_for_session(session_id).await?,
+            DomainRowKind::ToolUse => self.cache.tool_keys_for_session(session_id).await?,
+            DomainRowKind::AgentSession => {
+                self.cache.agent_session_keys_for_session(session_id).await?
+            }
+        };
+        Ok(keys
+            .into_iter()
+            .map(|(session_id, correlation_id)| DomainRowKey {
+                session_id,
+                correlation_id,
+            })
+            .collect())
     }
 }
 

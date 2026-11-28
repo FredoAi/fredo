@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::comm::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
+use telemetry_domain::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
 
 /// Emit a FredoEvent into the running application (classified into RTDB rows).
 #[derive(Parser, Debug)]

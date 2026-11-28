@@ -7,7 +7,7 @@ use anyhow::Result;
 use uuid::Uuid;
 use chrono::Utc;
 use super::super::adapter::CommAdapter;
-use super::super::event::{EventProvider, FredoEvent, Transport};
+use telemetry_domain::event::{EventProvider, FredoEvent, Transport};
 
 /// InternalAdapter validates and enriches incoming FredoEvents.
 ///

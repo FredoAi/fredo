@@ -53,8 +53,8 @@ use anyhow::Result;
 use serde_json::{Map, Value as JsonValue};
 use sqlx::Row as _;
 
-use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
-use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
+use telemetry_domain::attrs::PROVIDER_UNKNOWN;
+use telemetry_domain::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 
 use super::declaration::SessionRollupProjection;
 
@@ -623,7 +623,7 @@ impl ObservedGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::rows::RowState;
+    use telemetry_domain::rows::RowState;
 
     fn config() -> SessionRollupProjection {
         SessionRollupProjection {

@@ -156,7 +156,7 @@ $env:OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = "true"   # optional; d
 
 Copilot's content capture is **off by default** — the rows are then structural (provider, session, model, per-call tokens, tool name/outcome/duration) with `userMessage`/`agentReply`/tool arguments/result absent; that absence is the documented, non-silent degradation, not a broken extractor. Fredo never handles Copilot credentials (do not set `OTEL_EXPORTER_OTLP_HEADERS`). Note: the CLI's own `help monitoring` text claims a plaintext `http://` endpoint disables export — **false for v1.0.88** (verified empirically). Full detail: `docs/telemetry-reference.md` §4.
 
-OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`), persisted raw on receipt, and classified into canonical rows by the RTDB ingest classifier (`infrastructure/rtdb/ingest.rs`) — the row pipeline is the only delivery path.
+OTLP spans are received by the OTLP receivers (`infrastructure/otlp/`), persisted raw on receipt, and classified into canonical rows by the RTDB ingest classifier (`crates/telemetry-domain/src/classifier/`) — the row pipeline is the only delivery path.
 
 ### What OTLP data does Fredo ingest?
 
@@ -223,9 +223,9 @@ No — dictation is model audio only, so there is no dictated transcript and no 
 
 ### What is the Communication Layer?
 
-The `comm` module (`infrastructure/comm/`) holds the canonical wire types and the single IPC emitter. Since the RTDB row pipeline became the only delivery path it is deliberately small:
+The `comm` module (`infrastructure/comm/`) holds the single IPC emitter and the adapter trait. Since the RTDB row pipeline became the only delivery path it is deliberately small — the canonical `FredoEvent` wire vocabulary moved to the domain crate (`apps/tauri/src-tauri/crates/telemetry-domain/src/event.rs`, Spec #3201), and `comm/mod.rs` carries no `event::` re-export:
 
-- **`FredoEvent`** — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
+- **`FredoEvent`** (domain crate) — the CLI wire format (`fredo emit`) and classifier input: id, eventType, state, provider, transport, sessionId, correlationId, toolName, payload, error, metadata, timestamp. Serialized as camelCase. It is the CLI wire format and classifier input — it never crosses IPC to the webview.
 - **`EventBus`** — the single emitter for the `"fredo-stream-event"` Tauri IPC channel: RTDB `RowDeliveryBatch` envelopes via `emit_row_delivery_batch`, application-data `ApplicationDeliveryBatch` envelopes (`{"applicationBatch": …}`) via `emit_application_delivery_batch`, and the stream-health liveness heartbeat (`{"streamHealth": …}`) via `emit_stream_health` (Spec #3064).
 - **`CommAdapter`** trait — implemented by `InternalAdapter` (the `fredo emit` enrichment).
 
@@ -233,10 +233,10 @@ Raw `FredoEvent` never crosses IPC; the channel carries only projected envelope 
 
 ### What is the RTDB row pipeline?
 
-The production event pipeline (`infrastructure/rtdb/`):
+The production event pipeline (`infrastructure/rtdb/`, with the classification rules in the `telemetry-domain` crate at `apps/tauri/src-tauri/crates/telemetry-domain/`):
 
-- **`ingest.rs`** — the IngestClassifier maps every OTLP span / CLI event onto canonical row upserts unconditionally (this is what makes replay work). Owns the correlation maps and the parent-child relationship registry.
-- **`attrs.rs`** — the single shared implementation of the GenAI-attribute extract helpers used by both the live classifier and the canonical backfill.
+- **`classifier/`** (domain crate) — the IngestClassifier maps every OTLP span / CLI event onto canonical row upserts unconditionally (this is what makes replay work). Owns the correlation maps and the parent-child relationship registry.
+- **`attrs.rs`** (domain crate) — the single shared implementation of the GenAI-attribute extract helpers used by both the live classifier and the canonical backfill.
 - **`store.rs` / `cache.rs`** — rows (`chat_rows` / `tool_use_rows` / `agent_session_rows`) on the embedded PostgreSQL cluster (the shipped default since Spec #2979) behind an LRU cache + write-behind queue.
 - **`flush.rs`** — coalescing windows, batch chunking, and per-query replay-complete settle markers.
 - **`query/`** — the GraphQL-inspired typed query language, e.g. `chat(sessionId = "s1") { userMessage }`.

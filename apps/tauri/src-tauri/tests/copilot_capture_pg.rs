@@ -70,13 +70,13 @@ use serde_json::{json, Value};
 use fredo_lib::infrastructure::storage::{EngineHandle, PgEngine, StoreEngine};
 use fredo_lib::PgRuntime;
 
-use fredo_lib::infrastructure::comm::event::Transport;
+use telemetry_domain::event::Transport;
 use fredo_lib::infrastructure::rtdb::cache::RtdbCache;
 use fredo_lib::infrastructure::rtdb::commands::Rtdb;
 use fredo_lib::infrastructure::rtdb::flush::{FlushLoop, RowEmitter};
-use fredo_lib::infrastructure::rtdb::ingest::IngestClassifier;
+use telemetry_domain::classifier::IngestClassifier;
 use fredo_lib::infrastructure::rtdb::project::RowDelivery;
-use fredo_lib::infrastructure::rtdb::rows::{
+use telemetry_domain::rows::{
     AgentSessionRow, ChatRow, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS, TOOL_USE_FIELDS,
 };
 use fredo_lib::infrastructure::rtdb::store::RtdbStore;
@@ -140,7 +140,10 @@ async fn make_classifier(pool: &sqlx::PgPool) -> (Arc<IngestClassifier>, Arc<Rtd
     });
     let flush = Arc::new(FlushLoop::new(emitter));
     let rtdb = Arc::new(Rtdb::new(cache, registry, flush));
-    let classifier = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
+    // Spec #3201 ST-7g: the classifier takes the `Arc<dyn RowSink>` port; the typed
+    // binding is the unsizing coercion site (no box, no adapter).
+    let sink_view: Arc<dyn telemetry_domain::RowSink> = rtdb.clone();
+    let classifier = Arc::new(IngestClassifier::new(sink_view));
     (classifier, rtdb, sink)
 }
 
@@ -338,7 +341,7 @@ async fn content_on_fixture_maps_the_full_copilot_field_set(pool: &sqlx::PgPool)
         "the live capture emits no `gen_ai.agent.name` for the builtin agent → agentName absent \
          (real-shape correction: the pre-capture fixture assumed `copilot`)"
     );
-    assert_eq!(session.state, fredo_lib::infrastructure::rtdb::rows::RowState::Init);
+    assert_eq!(session.state, telemetry_domain::rows::RowState::Init);
     assert_eq!(session.started_at_ns, Some(1_000_000_000));
     assert_eq!(session.ended_at_ns, Some(9_000_000_000));
     assert_field_set(&session, AGENT_SESSION_FIELDS, "agent_session row");
@@ -368,7 +371,7 @@ async fn content_on_fixture_maps_the_full_copilot_field_set(pool: &sqlx::PgPool)
     );
     assert_eq!(chat_row.cost_usd, None, "Copilot emits no per-turn cost");
     assert_eq!(chat_row.model.as_deref(), Some("gpt-4o"));
-    assert_eq!(chat_row.state, fredo_lib::infrastructure::rtdb::rows::RowState::Response);
+    assert_eq!(chat_row.state, telemetry_domain::rows::RowState::Response);
     assert_field_set(&chat_row, CHAT_FIELDS, "chat row");
 
     // content-on ⇒ the content keys are PRESENT in rawJson (the R-3.2 control).
@@ -640,7 +643,8 @@ async fn replayed_identical_copilot_export_is_idempotent_across_classifiers(pool
     let counts_before = rtdb.cache().store().row_counts().await.expect("counts");
 
     // A fresh classifier (the process-restart shape) replaying the same export.
-    let restarted = Arc::new(IngestClassifier::new(Arc::clone(&rtdb)));
+    let restart_sink: Arc<dyn telemetry_domain::RowSink> = rtdb.clone();
+    let restarted = Arc::new(IngestClassifier::new(restart_sink));
     ingest_fixture(&restarted, CONTENT_ON).await;
 
     assert_eq!(

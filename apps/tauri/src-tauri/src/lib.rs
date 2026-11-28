@@ -108,7 +108,7 @@ use infrastructure::rtdb::cache::{
     prune_with_knobs, run_writer_task as run_rtdb_writer_task, RtdbCache,
 };
 use infrastructure::rtdb::commands::{Rtdb, RtdbState};
-use infrastructure::rtdb::ingest::{IngestClassifier, IngestClassifierState};
+use telemetry_domain::classifier::{IngestClassifier, IngestClassifierState};
 use infrastructure::rtdb::flush::{run_flush_task, FlushLoop};
 use infrastructure::rtdb::health::{
     spawn_publisher as spawn_stream_health_publisher, stream_health_force, StreamHealthMonitor,
@@ -751,7 +751,11 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // maps (ported from the deleted v1 adapter + ECE relationship
             // registry) and classifies spans/events into row upserts. The
             // OTLP receivers + IPC dispatcher consume this state.
-            let classifier = IngestClassifierState::new(IngestClassifier::new(Arc::clone(&rtdb)));
+            // Spec #3201 ST-7g: `IngestClassifier::new(sink)` — the port is
+            // `Arc<dyn RowSink>` and `Rtdb` is its one implementation. The typed
+            // binding is the unsizing coercion site (no box, no adapter).
+            let sink: Arc<dyn telemetry_domain::RowSink> = rtdb.clone();
+            let classifier = IngestClassifierState::new(IngestClassifier::new(sink));
             app.manage(rtdb);
             app.manage(classifier);
 

@@ -59,7 +59,7 @@ use fredo_lib::infrastructure::application_data::registry::DeclarationRegistry;
 use fredo_lib::infrastructure::application_data::lifecycle::prune_declared_tables_at;
 use fredo_lib::infrastructure::application_data::projection::DeclaredChangeKind;
 use fredo_lib::infrastructure::application_data::store::{ApplicationDataStore, TableMeta, Tombstone};
-use fredo_lib::infrastructure::rtdb::rows::RowState;
+use telemetry_domain::rows::RowState;
 use fredo_lib::infrastructure::storage::engine::{
     begin_read_only, ensure_settings_schema, StorageEngineState,
 };

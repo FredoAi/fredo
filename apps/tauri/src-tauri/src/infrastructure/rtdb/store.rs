@@ -49,9 +49,9 @@ use sqlx::{PgPool, Row as _};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
+use telemetry_domain::attrs::PROVIDER_UNKNOWN;
 use crate::infrastructure::rtdb::project::{RowKey, RowSnapshot};
-use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
+use telemetry_domain::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
 use crate::infrastructure::storage::{EngineHandle, StoreEngine};
 
 // ── Constants ────────────────────────────────────────────────────────────────

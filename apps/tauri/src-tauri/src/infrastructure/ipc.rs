@@ -36,7 +36,7 @@ fn resolve_socket_name_with(get: impl Fn(&str) -> Option<String>) -> String {
 pub enum CliCommand {
     /// Generic Fredo event emission — speaks the FredoEvent contract directly.
     EmitEvent {
-        event: crate::infrastructure::comm::event::FredoEvent,
+        event: telemetry_domain::event::FredoEvent,
     },
     /// Open a Fredo app window by identity (Spec #2893). The server waits for
     /// the webview's `confirm_app_open_request` before answering the CLI.
@@ -275,7 +275,7 @@ async fn dispatch_doom_export_dataset(
 /// (mock/CLI shapes per the fredo-cli-events skill conventions — real
 /// OTLP-derived rows remain the primary shape).
 async fn dispatch_emit_event(
-    event: crate::infrastructure::comm::event::FredoEvent,
+    event: telemetry_domain::event::FredoEvent,
     app: &AppHandle,
 ) -> CliResponse {
     // Use InternalAdapter to enrich the event with server-side defaults
@@ -287,7 +287,7 @@ async fn dispatch_emit_event(
     // Spec #2788 P3.1: the classifier maps the event's payload fields onto
     // RTDB rows (mock/CLI shapes per the fredo-cli-events skill conventions —
     // real OTLP-derived rows remain the primary shape).
-    let classifier = app.state::<crate::infrastructure::rtdb::ingest::IngestClassifierState>();
+    let classifier = app.state::<telemetry_domain::classifier::IngestClassifierState>();
     let rows = classifier.ingest_event(&enriched).await;
     tracing::debug!(target: "fredo::rtdb::ingest", rows = rows, "IPC emit classified into RTDB rows");
 

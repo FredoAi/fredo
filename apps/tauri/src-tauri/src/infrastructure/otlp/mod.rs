@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::infrastructure::rtdb::ingest::IngestClassifier;
+use telemetry_domain::classifier::IngestClassifier;
 use crate::infrastructure::storage::span_store::SpanStore;
 
 /// AppHandle-free dependency bundle for the OTLP receivers.
@@ -174,7 +174,7 @@ pub(crate) mod test_support {
     use crate::infrastructure::rtdb::cache::RtdbCache;
     use crate::infrastructure::rtdb::commands::Rtdb;
     use crate::infrastructure::rtdb::flush::{FlushLoop, RowEmitter};
-    use crate::infrastructure::rtdb::ingest::IngestClassifier;
+    use telemetry_domain::classifier::IngestClassifier;
     use crate::infrastructure::rtdb::store::RtdbStore;
     use crate::infrastructure::rtdb::subscriptions::SubscriptionRegistry;
     use crate::infrastructure::storage::engine::EngineHandle;
