@@ -77,6 +77,12 @@ permissions = [
   "allow-stt-audio-capability",
   "allow-llm-chat-with-skills",
   "allow-llm-chat-with-status",
+  # Spec #3243 ST-8 — the in-repo order-selection lever (`order_skill_lever_take`).
+  # Granted to the built-in window class only, and the command itself stays INERT
+  # unless `FREDO_ORDER_SKILL_LEVER` is exactly `1`/`true`/`on` (G-469): the grant
+  # is reachability, never arming. Without it the lever is a dead surface, so the
+  # unarmed control cannot be read and no armed selection can be produced.
+  "allow-order-skill-lever-take",
   "allow-capture-screen-region",
   # Spec #3244 ST-3 — the reusable target-capture seam (a physical-pixel rect,
   # delegated to `capture_screen_region`) and the host window-geometry read (an
