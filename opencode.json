@@ -74,6 +74,11 @@
                 { "action": "shell", "resource": "gh pr view*", "effect": "allow" },
                 { "action": "shell", "resource": "gh pr list*", "effect": "allow" },
                 { "action": "shell", "resource": "gh pr checks*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/launch-artifact-probe.ps1*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
+                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" },
                 { "action": "shell", "resource": "* && *", "effect": "deny" },
                 { "action": "shell", "resource": "*&*", "effect": "deny" },
                 { "action": "shell", "resource": "*;*", "effect": "deny" },
@@ -82,12 +87,7 @@
                 { "action": "shell", "resource": "*|*", "effect": "deny" },
                 { "action": "shell", "resource": "* || *", "effect": "deny" },
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
-                { "action": "shell", "resource": "powershell -File .opencode/scripts/launch-artifact-probe.ps1*", "effect": "allow" },
-                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
-                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" }
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "ui-ux-expert": {
@@ -274,15 +274,6 @@
                 { "action": "shell", "resource": "node*", "effect": "allow" },
                 { "action": "shell", "resource": "rustc*", "effect": "allow" },
                 { "action": "shell", "resource": "Remove-Item .opencode/*", "effect": "allow" },
-                { "action": "shell", "resource": "* && *", "effect": "deny" },
-                { "action": "shell", "resource": "*&*", "effect": "deny" },
-                { "action": "shell", "resource": "*;*", "effect": "deny" },
-                { "action": "shell", "resource": "*&&*", "effect": "deny" },
-                { "action": "shell", "resource": "*||*", "effect": "deny" },
-                { "action": "shell", "resource": "*|*", "effect": "deny" },
-                { "action": "shell", "resource": "* || *", "effect": "deny" },
-                { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "shell", "resource": "git rm*", "effect": "allow" },
                 { "action": "shell", "resource": "powershell -File .opencode/skills/telemetry-query/telemetry-query.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "git checkout -- *", "effect": "allow" },
@@ -310,7 +301,17 @@
                 { "action": "external_directory", "resource": "*", "effect": "deny" },
                 { "action": "external_directory", "resource": "~/.cargo/registry/src/**", "effect": "allow" },
                 { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
-                { "action": "shell", "resource": "git restore*", "effect": "allow" }
+                { "action": "shell", "resource": "git restore*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/cargo-isolated.ps1*", "effect": "allow" },
+                { "action": "shell", "resource": "* && *", "effect": "deny" },
+                { "action": "shell", "resource": "*&*", "effect": "deny" },
+                { "action": "shell", "resource": "*;*", "effect": "deny" },
+                { "action": "shell", "resource": "*&&*", "effect": "deny" },
+                { "action": "shell", "resource": "*||*", "effect": "deny" },
+                { "action": "shell", "resource": "*|*", "effect": "deny" },
+                { "action": "shell", "resource": "* || *", "effect": "deny" },
+                { "action": "shell", "resource": "* ; *", "effect": "deny" },
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "tester": {
@@ -391,15 +392,6 @@
                 { "action": "shell", "resource": "copilot*", "effect": "allow" },
                 { "action": "shell", "resource": "powershell -File .opencode/scripts/run-exitcode.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "cargo build*", "effect": "allow" },
-                { "action": "shell", "resource": "* && *", "effect": "deny" },
-                { "action": "shell", "resource": "*&*", "effect": "deny" },
-                { "action": "shell", "resource": "*;*", "effect": "deny" },
-                { "action": "shell", "resource": "*&&*", "effect": "deny" },
-                { "action": "shell", "resource": "*||*", "effect": "deny" },
-                { "action": "shell", "resource": "*|*", "effect": "deny" },
-                { "action": "shell", "resource": "* || *", "effect": "deny" },
-                { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "shell", "resource": "cargo run*", "effect": "allow" },
                 { "action": "shell", "resource": "gh run view*", "effect": "allow" },
                 { "action": "shell", "resource": "powershell -File scripts/doom/*", "effect": "allow" },
@@ -426,7 +418,18 @@
                 { "action": "shell", "resource": "opencode*", "effect": "allow" },
                 { "action": "shell", "resource": "Get-FileHash*", "effect": "allow" },
                 { "action": "shell", "resource": "powershell -File .opencode/tests/*", "effect": "allow" },
-                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" }
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/cargo-isolated.ps1*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/window-a11y.ps1*", "effect": "allow" },
+                { "action": "shell", "resource": "* && *", "effect": "deny" },
+                { "action": "shell", "resource": "*&*", "effect": "deny" },
+                { "action": "shell", "resource": "*;*", "effect": "deny" },
+                { "action": "shell", "resource": "*&&*", "effect": "deny" },
+                { "action": "shell", "resource": "*||*", "effect": "deny" },
+                { "action": "shell", "resource": "*|*", "effect": "deny" },
+                { "action": "shell", "resource": "* || *", "effect": "deny" },
+                { "action": "shell", "resource": "* ; *", "effect": "deny" },
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "machinist": {
@@ -465,6 +468,11 @@
                 { "action": "shell", "resource": "git show*", "effect": "allow" },
                 { "action": "shell", "resource": "git fetch*", "effect": "allow" },
                 { "action": "shell", "resource": "git remote*", "effect": "allow" },
+                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "edit", "resource": "docs/agentic-pipeline/permissions.md", "effect": "allow" },
+                { "action": "shell", "resource": "git worktree list*", "effect": "allow" },
+                { "action": "shell", "resource": "git rev-parse*", "effect": "allow" },
                 { "action": "shell", "resource": "* && *", "effect": "deny" },
                 { "action": "shell", "resource": "*&*", "effect": "deny" },
                 { "action": "shell", "resource": "*;*", "effect": "deny" },
@@ -473,12 +481,7 @@
                 { "action": "shell", "resource": "*|*", "effect": "deny" },
                 { "action": "shell", "resource": "* || *", "effect": "deny" },
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "edit", "resource": "docs/agentic-pipeline/permissions.md", "effect": "allow" },
-                { "action": "shell", "resource": "git worktree list*", "effect": "allow" },
-                { "action": "shell", "resource": "git rev-parse*", "effect": "allow" }
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "toolsmith": {
@@ -518,6 +521,13 @@
                 { "action": "shell", "resource": "git show*", "effect": "allow" },
                 { "action": "shell", "resource": "git fetch*", "effect": "allow" },
                 { "action": "shell", "resource": "git remote*", "effect": "allow" },
+                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
+                { "action": "shell", "resource": "cargo*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/cargo-isolated.ps1*", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/window-a11y.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "* && *", "effect": "deny" },
                 { "action": "shell", "resource": "*&*", "effect": "deny" },
                 { "action": "shell", "resource": "*;*", "effect": "deny" },
@@ -526,11 +536,7 @@
                 { "action": "shell", "resource": "*|*", "effect": "deny" },
                 { "action": "shell", "resource": "* || *", "effect": "deny" },
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
-                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" }
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "curator": {
@@ -566,6 +572,9 @@
                 { "action": "shell", "resource": "git show*", "effect": "allow" },
                 { "action": "shell", "resource": "git fetch*", "effect": "allow" },
                 { "action": "shell", "resource": "git remote*", "effect": "allow" },
+                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/test-scripts.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "* && *", "effect": "deny" },
                 { "action": "shell", "resource": "*&*", "effect": "deny" },
                 { "action": "shell", "resource": "*;*", "effect": "deny" },
@@ -574,10 +583,7 @@
                 { "action": "shell", "resource": "*|*", "effect": "deny" },
                 { "action": "shell", "resource": "* || *", "effect": "deny" },
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "shell", "resource": "powershell -File .opencode/scripts/test-scripts.ps1*", "effect": "allow" }
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "auditor": {
@@ -610,6 +616,10 @@
                 { "action": "shell", "resource": "git show*", "effect": "allow" },
                 { "action": "shell", "resource": "git fetch*", "effect": "allow" },
                 { "action": "shell", "resource": "git remote*", "effect": "allow" },
+                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
+                { "action": "external_directory", "resource": "*", "effect": "deny" },
+                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
+                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" },
                 { "action": "shell", "resource": "* && *", "effect": "deny" },
                 { "action": "shell", "resource": "*&*", "effect": "deny" },
                 { "action": "shell", "resource": "*;*", "effect": "deny" },
@@ -618,11 +628,7 @@
                 { "action": "shell", "resource": "*|*", "effect": "deny" },
                 { "action": "shell", "resource": "* || *", "effect": "deny" },
                 { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
-                { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
-                { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "skill", "resource": "webview-security-evidence", "effect": "allow" },
-                { "action": "shell", "resource": "powershell -File .opencode/scripts/inspect-webview-config.ps1*", "effect": "allow" }
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         },
         "orchestrator": {
@@ -723,15 +729,6 @@
                 { "action": "shell", "resource": "Set-Content .opencode/*", "effect": "allow" },
                 { "action": "shell", "resource": "*..*", "effect": "deny" },
                 { "action": "shell", "resource": "$env:OPENCODE_ENABLE_TELEMETRY*", "effect": "allow" },
-                { "action": "shell", "resource": "* && *", "effect": "deny" },
-                { "action": "shell", "resource": "*&*", "effect": "deny" },
-                { "action": "shell", "resource": "*;*", "effect": "deny" },
-                { "action": "shell", "resource": "*&&*", "effect": "deny" },
-                { "action": "shell", "resource": "*||*", "effect": "deny" },
-                { "action": "shell", "resource": "*|*", "effect": "deny" },
-                { "action": "shell", "resource": "* || *", "effect": "deny" },
-                { "action": "shell", "resource": "* ; *", "effect": "deny" },
-                { "action": "shell", "resource": "* | *", "effect": "deny" },
                 { "action": "shell", "resource": "$env:OPENCODE_ENABLE_TELEMETRY*gh *", "effect": "deny" },
                 { "action": "shell", "resource": "$env:OPENCODE_ENABLE_TELEMETRY*git push*", "effect": "deny" },
                 { "action": "shell", "resource": "$env:OPENCODE_ENABLE_TELEMETRY*git merge*", "effect": "deny" },
@@ -747,7 +744,16 @@
                 { "action": "shell", "resource": "Remove-Item .git/index.lock*", "effect": "allow" },
                 { "action": "external_directory", "resource": "~/.local/share/opencode/**", "effect": "deny" },
                 { "action": "external_directory", "resource": "*", "effect": "deny" },
-                { "action": "shell", "resource": "git restore*", "effect": "allow" }
+                { "action": "shell", "resource": "git restore*", "effect": "allow" },
+                { "action": "shell", "resource": "* && *", "effect": "deny" },
+                { "action": "shell", "resource": "*&*", "effect": "deny" },
+                { "action": "shell", "resource": "*;*", "effect": "deny" },
+                { "action": "shell", "resource": "*&&*", "effect": "deny" },
+                { "action": "shell", "resource": "*||*", "effect": "deny" },
+                { "action": "shell", "resource": "*|*", "effect": "deny" },
+                { "action": "shell", "resource": "* || *", "effect": "deny" },
+                { "action": "shell", "resource": "* ; *", "effect": "deny" },
+                { "action": "shell", "resource": "* | *", "effect": "deny" }
             ]
         }
     },
