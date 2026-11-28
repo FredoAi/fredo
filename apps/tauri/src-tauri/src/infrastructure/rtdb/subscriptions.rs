@@ -353,7 +353,7 @@ fn numeric_compare(a: &serde_json::Number, b: &serde_json::Number, op: CompareOp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
+    use telemetry_domain::rows::{AgentSessionRow, ChatRow, RowState, ToolUseRow};
     use serde_json::json;
 
     // ── Fixtures ────────────────────────────────────────────────────────────

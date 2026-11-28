@@ -6,9 +6,9 @@
 //! - Stamps missing defaults (id, timestamp, transport, session_id)
 //! - Accepts events with provider: Internal and transport: Hook
 
-use crate::infrastructure::comm::*;
 use crate::infrastructure::comm::adapters::internal::InternalAdapter;
 use crate::infrastructure::comm::adapter::CommAdapter;
+use telemetry_domain::event::{EventProvider, EventState, EventType, FredoEvent, Transport};
 
 #[cfg(test)]
 mod internal_adapter_validation_tests {

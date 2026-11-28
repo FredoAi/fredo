@@ -187,12 +187,12 @@ mod tests {
         };
         assert_eq!(
             event.event_type,
-            crate::infrastructure::comm::event::EventType::ToolUse
+            telemetry_domain::event::EventType::ToolUse
         );
-        assert_eq!(event.state, crate::infrastructure::comm::event::EventState::Init);
+        assert_eq!(event.state, telemetry_domain::event::EventState::Init);
         assert_eq!(
             event.provider,
-            crate::infrastructure::comm::event::EventProvider::Internal
+            telemetry_domain::event::EventProvider::Internal
         );
         assert_eq!(event.session_id, "test-session");
         assert_eq!(event.tool_name, Some("test-tool".into()));

@@ -31,7 +31,7 @@ use opentelemetry_proto::tonic::collector::{
 use opentelemetry_proto::tonic::common::v1::{any_value, AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1 as otlp_metrics;
 
-use crate::infrastructure::comm::event::Transport;
+use telemetry_domain::event::Transport;
 use crate::infrastructure::telemetry::metrics_collector::{MetricPoint, MetricType, SpanStoreMetricsExt};
 use crate::infrastructure::otlp::raw::raw_spans_from_export;
 use crate::infrastructure::otlp::ReceiverContext;

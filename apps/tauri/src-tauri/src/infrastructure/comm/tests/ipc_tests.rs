@@ -5,7 +5,7 @@
 //! - fredo emit CLI constructs FredoEvent, sends over IPC
 //! - fredo emit --file - reads from stdin
 
-use crate::infrastructure::comm::*;
+use telemetry_domain::event::{EventProvider, EventState, EventType, FredoEvent};
 
 #[cfg(test)]
 mod cli_command_serialization_tests {

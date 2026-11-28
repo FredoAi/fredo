@@ -15,10 +15,10 @@ pub mod adapter;
 // Spec #3201 ST-2 — the wire vocabulary MOVED to `telemetry-domain`: it is domain
 // vocabulary, and relocating it together with the extraction rules is what makes
 // the NFR-6 single-definition form hold (there is no converter, so nothing can
-// drift). `comm/mod.rs`'s re-export of these names is re-pointed in ST-7a, which
-// owns this file; it is deliberately NOT carried here as a compatibility shim —
-// a `pub use` that let a consumer keep saying `comm::event::…` is exactly the
-// coupling this spec removes.
+// drift). Spec #3201 ST-7a re-pointed this module's own consumers at the crate and
+// deliberately carries NO re-export of `event::{…}` names here — a `pub use` that
+// let a consumer keep saying `comm::event::…` is exactly the coupling this spec
+// removes.
 pub use bus::EventBus;
 pub use adapter::CommAdapter;
 pub use adapters::internal::InternalAdapter;

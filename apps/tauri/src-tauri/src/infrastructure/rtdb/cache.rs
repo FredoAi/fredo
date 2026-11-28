@@ -36,7 +36,7 @@ use std::time::Duration;
 use tauri::Manager;
 
 use crate::infrastructure::rtdb::commands::{Rtdb, RtdbState};
-use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
+use telemetry_domain::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use crate::infrastructure::rtdb::store::{RowKind, RtdbStore};
 use crate::infrastructure::storage::SettingsStore;
 
@@ -606,7 +606,7 @@ pub fn read_knobs(app_store: &SettingsStore) -> (i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::rows::RowState;
+    use telemetry_domain::rows::RowState;
     use crate::infrastructure::rtdb::store::{
         RTDB_DEFAULT_MAX_ROWS, RTDB_DEFAULT_RETENTION_DAYS, RTDB_MAX_ROWS_KEY,
         RTDB_RETENTION_DAYS_KEY,

@@ -81,16 +81,20 @@ use serde_json::{json, Map, Value};
 use sqlx::Row as _;
 use tauri::Manager;
 
-use crate::infrastructure::rtdb::attrs::{
+use telemetry_domain::attrs::{
     resolve_op_name, ATTR_CONVERSATION_ID, CC_ATTR_SESSION_ID, OP_CHAT_CANON, OP_SESSION,
     OP_TOOL_PREFIX, PROVIDER_UNKNOWN,
 };
-use crate::infrastructure::comm::event::Transport;
+use telemetry_domain::event::Transport;
 use crate::infrastructure::rtdb::commands::RtdbState;
-use crate::infrastructure::rtdb::ingest::{
+use telemetry_domain::classifier::{
     IngestClassifier, IngestClassifierState, ProviderReattribution,
 };
-use crate::infrastructure::rtdb::store::RowKind;
+// Spec #3201 ST-7g (NFR-6 leg): the row-kind discriminant the classifier takes is
+// the CRATE's — the same one `reattribute_provider` is typed on. It carries no
+// `table()` method, so no physical-schema dependency is introduced; the variants
+// and match arms below are identical to `rtdb::store::RowKind`.
+use telemetry_domain::rows::RowKind;
 use crate::infrastructure::storage::engine::{begin_read_only, CanonicalReader, EngineHandle};
 use crate::infrastructure::storage::SettingsStore;
 
@@ -515,7 +519,12 @@ pub async fn run_startup_provider_rebackfill(app: &tauri::AppHandle, engine: Arc
     }
 
     let rtdb = app.state::<RtdbState>();
-    let classifier = IngestClassifier::new(Arc::clone(rtdb.inner()));
+    // Spec #3201 ST-7g (NFR-6 leg): the classifier takes the object-safe port, so
+    // the composition root hands over a `dyn RowSink` view of itself. The
+    // assignment's type annotation is the unsizing coercion site — no box, no
+    // adapter, and `Rtdb` stays the one implementation.
+    let sink: Arc<dyn telemetry_domain::RowSink> = rtdb.inner().clone();
+    let classifier = IngestClassifier::new(sink);
 
     match provider_rebackfill_pass(app_store.inner().as_ref(), &classifier, &engine).await {
         Ok(None) => {

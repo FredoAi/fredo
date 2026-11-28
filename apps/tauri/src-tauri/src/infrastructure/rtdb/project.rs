@@ -21,7 +21,7 @@
 //! practice and unresolvable paths are skipped).
 
 use crate::infrastructure::rtdb::query::EventTypeArg;
-use crate::infrastructure::rtdb::rows::{AgentSessionRow, ChatRow, ToolUseRow};
+use telemetry_domain::rows::{AgentSessionRow, ChatRow, ToolUseRow};
 use serde::{Deserialize, Serialize};
 
 /// Composite row identity — mirrors the store key
@@ -217,7 +217,7 @@ fn insert_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::rows::{CHAT_FIELDS, RowState};
+    use telemetry_domain::rows::{CHAT_FIELDS, RowState};
     use serde_json::json;
 
     fn chat_row(seq: i64, agent_reply: Option<&str>) -> ChatRow {

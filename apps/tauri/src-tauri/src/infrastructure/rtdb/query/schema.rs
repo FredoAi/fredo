@@ -440,7 +440,7 @@ fn render_value(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::rows::{
+    use telemetry_domain::rows::{
         AgentSessionRow, ChatRow, RowState, ToolUseRow, AGENT_SESSION_FIELDS, CHAT_FIELDS,
         TOOL_USE_FIELDS,
     };
