@@ -990,7 +990,13 @@ The animated companion on the Home panel renders the **shared `FredoAvatar` comp
   module-scoped placement store (`shared/placement/placementStore.ts`), carried on every turn's
   `companion.injection` receipt as the REQUIRED `placementId` (`''` when unplaced) — so two placements of
   the same app are provably two placements and nothing is recalled across them; the store is transient
-  (never persisted) and holds no transcript. The placed app DECLARES its order surface
+  (never persisted) and holds no transcript. **A MOVE re-scopes the placement in place** — a resolved-target
+  change while the composer stays open updates the placement's app and RETAINS its `placementId` /
+  `startedAtSeq` (`rescopePlacement`), because a move does not end a placement: the in-flight order's record
+  stays readable (keyed on that identity, `shared/order/orderFlight.ts`) and keeps naming the app resolved at
+  submit, while the NEXT order targets the new app; only a leave-then-reopen mints a new identity. The
+  confirmation carries the app name it was published for, so the dialog and both of its controls name that
+  app even if the flight goes away mid-choice. The placed app DECLARES its order surface
   (`shared/order/orderActions.ts`) and REGISTERS it on its own mount — Wireframe's shell
   calls `registerWireframeOrderSurface()` in a mount effect and disposes it in the
   cleanup, so the registry an order is classified against holds a live surface only while
@@ -1003,7 +1009,15 @@ The animated companion on the Home panel renders the **shared `FredoAvatar` comp
   `destructive` invocation executes only against an **unconsumed, fingerprint-matching user-minted
   grant** (`shared/order/confirmGate.ts`) consumed once by the confirmation control's own user event —
   structurally, the model has no channel to mint one — and an undoable change registers exactly one undo
-  record whose closure is the APP's own inverse (no second history). The outcome is rendered from the one
+  record whose closure is the APP's own inverse (no second history). **A turn selects at most one ACT:**
+  the dispatcher accumulates a generation's `order` selections in arrival order (`useOrderSkillDispatch`
+  `beginOrderTurn`/`endOrderTurn`, opened on the turn's first selection and closed on the shipped
+  `llm-done`/`llm-error` terminal events — no second timer), admits `read` steps ahead of exactly one
+  `changing`/`destructive` act (the only lawful two-step shape), and REFUSES every later selection in typed
+  copy that names both the displaced action and the app (`orderSupersededReply` — never the
+  classification-failure wording, which describes a different condition). A step classifying `unknown`
+  HALTS its turn, so a failed lookup can never become a blind act. The single-selection case is unchanged
+  and emits no refusal. The outcome is rendered from the one
   copy source `shared/order/orderReply.ts` and spoken through `shared/companion/companionSpeech.ts` (one
   utterance at a time; a host with no voice records `claimed: false` and the sentence routes to the
   polite region instead). The order field's **hold-Space gesture** is FIELD-SCOPED: it delegates every

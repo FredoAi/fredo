@@ -25,9 +25,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ORDER_SKILL_NAME,
+  beginOrderTurn,
   cancelOrderExecution,
   confirmOrderExecution,
   dispatchOrderSelection,
+  endOrderTurn,
+  readOrderTurn,
+  resetOrderTurnForTests,
   undoOrderExecution,
 } from '../useOrderSkillDispatch';
 import { resetOrderGrantsForTests } from '../confirmGate';
@@ -35,6 +39,7 @@ import { resetOrderSurfacesForTests } from '../actionRisk';
 import { resetOrderUndoForTests } from '../orderUndo';
 import {
   ORDER_FLIGHT_STATES,
+  readOrderConfirmationRequest,
   readOrderFlight,
   resetOrderFlightForTests,
 } from '../orderFlight';
@@ -45,6 +50,7 @@ import {
 } from '../../placement/placementStore';
 import { resetCompanionSpeechForTests } from '../../companion/companionSpeech';
 import { resetCompanionComposerBridgeForTests } from '../../companion/composerBridge';
+import { registerAppOpenReplyPusher } from '../../components/companion/skillBridge';
 import {
   getSnapshot,
   dispatch as dispatchGoogle,  resetWireframeStoreForTests,
@@ -60,15 +66,30 @@ import { undoOrderExecution } from '../useOrderSkillDispatch';
 
 let disposeSurface: (() => void) | null = null;
 
+/**
+ * The replies the dispatcher pushed through the shipped bridge (AC-1's visible
+ * arm). Registered here so a row can assert the SENTENCE a refusal emits — the
+ * whole point of AC-5 is that the displaced selection is *said*, and a row that
+ * only counted document changes could not see a silent drop.
+ */
+let pushedReplies: string[] = [];
+let unregisterPusher: (() => void) | null = null;
+
 beforeEach(() => {
   resetOrderGrantsForTests();
   resetOrderSurfacesForTests();
   resetOrderUndoForTests();
   resetOrderFlightForTests();
+  resetOrderTurnForTests();
   resetPlacementForTests();
   resetCompanionSpeechForTests();
   resetCompanionComposerBridgeForTests();
   resetWireframeStoreForTests();
+
+  pushedReplies = [];
+  unregisterPusher = registerAppOpenReplyPusher((reply) => {
+    pushedReplies.push(reply.text);
+  });
 
   // FIXTURE — NOT the integration. #3243 round 2 (D1) found that this row
   // registered the surface HERE while the PRODUCT registered it nowhere, so the
@@ -101,10 +122,13 @@ beforeEach(() => {
 afterEach(() => {
   disposeSurface?.();
   disposeSurface = null;
+  unregisterPusher?.();
+  unregisterPusher = null;
   resetOrderGrantsForTests();
   resetOrderSurfacesForTests();
   resetOrderUndoForTests();
   resetOrderFlightForTests();
+  resetOrderTurnForTests();
   resetPlacementForTests();
   resetCompanionSpeechForTests();
   resetCompanionComposerBridgeForTests();
@@ -412,5 +436,264 @@ describe('the flight records the SUBMIT-time app and the published state vocabul
     const state = readOrderFlight()?.state;
     expect(state).toBeDefined();
     expect(ORDER_FLIGHT_STATES).toContain(state as never);
+  });
+});
+
+/* ------------------------------------------------------------------------- */
+/* AC-5 / R-5a / R-5b / R-5c — the per-turn funnel                            */
+/* ------------------------------------------------------------------------- */
+
+/** The superseded-sentence discriminator: the app AND "not carried out". */
+function supersededReplies(): string[] {
+  return pushedReplies.filter((text) => text.includes('not carried out'));
+}
+
+describe('AC-5 / R-5a — a superseding selection is REFUSED with typed copy', () => {
+  it('two `read` selections: exactly one runs and the second is refused BY NAME (never silent)', () => {
+    // The shipped defect: `read` is granted unconditionally (`confirmGate.ts:170`),
+    // so BOTH ran and neither reply mentioned the other. The discriminator is the
+    // REPLY, not the document — both are `read`, so nothing changes either way.
+    const documentBefore = getSnapshot().document;
+
+    beginOrderTurn();
+    const first = dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    const second = dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    endOrderTurn();
+
+    // The first ran…
+    expect(first.kind).toBe('performed');
+    // …the second was refused, not executed a second time.
+    expect(second.kind).toBe('refused');
+    // The document is untouched by either (this row's discriminator is the copy).
+    expect(getSnapshot().document).toBe(documentBefore);
+
+    const superseded = supersededReplies();
+    expect(superseded).toHaveLength(1);
+    // It names the app and the displaced action, and says what happened.
+    expect(superseded[0]).toContain('Wireframe');
+    expect(superseded[0]).toContain('Describe selection');
+    // The refusal is a REAL reply on the surface, not silence.
+    expect(pushedReplies).toHaveLength(2);
+    expect(pushedReplies).toContain(superseded[0]);
+  });
+
+  it('two `changing` selections: exactly ONE dialog renders AND the displaced action is named', () => {
+    // The shipped defect: the single-slot `pendingConfirmation` was overwritten
+    // (`orderFlight.ts:263-266`), so the FIRST selection vanished — never
+    // confirmed, cancelled, refused or mentioned. One dialog was still correct;
+    // the silent drop was the defect.
+    const elementId = firstShapeId();
+    const before = fillOf(elementId);
+
+    beginOrderTurn();
+    const first = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    const second = dispatchOrderSelection({
+      action: 'wireframe.element.delete',
+      arguments: { elementId },
+    });
+    endOrderTurn();
+
+    expect(first.kind).toBe('needs-confirmation');
+    expect(second.kind).toBe('refused');
+
+    // Exactly ONE confirmation was published, and it is the FIRST one — the
+    // superseded selection never reached the slot.
+    const pending = readOrderConfirmationRequest();
+    expect(pending).not.toBeNull();
+    expect(pending?.invocation.actionId).toBe('wireframe.element.fill');
+    expect(pending?.label).toBe('Fill element');
+
+    // Nothing ran (both are gated), so the document is untouched.
+    expect(fillOf(elementId)).toBe(before);
+
+    // The displaced action is NAMED in a typed refusal — the sentence that did
+    // not exist before this fix.
+    const superseded = supersededReplies();
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]).toContain('Delete element');
+    expect(superseded[0]).toContain('Wireframe');
+  });
+
+  it('the superseded sentence does NOT borrow the unknown-refusal wording (G-505)', () => {
+    // The order was understood; only its count was wrong. Borrowing the
+    // classification-failure copy would tell the user to reword a sentence Fredo
+    // parsed perfectly. The QA row positively asserts this absence.
+    beginOrderTurn();
+    dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    endOrderTurn();
+
+    const superseded = supersededReplies();
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]).not.toContain("can't carry out");
+    expect(superseded[0]).not.toContain("couldn't");
+    expect(superseded[0]).not.toContain('no app in front of me');
+    expect(superseded[0]).not.toContain('Cancelled');
+    // …and it names the user's actual next action.
+    expect(superseded[0]?.toLowerCase()).toContain('ask me');
+  });
+});
+
+describe('R-5b — lookup-then-act still runs BOTH legs, in order (F-22 MUST stay green)', () => {
+  it('`read` then `changing` both run: the read executes and the act reaches its dialog', () => {
+    // THE green-green control for AC-5. A funnel written as "first selection
+    // wins, refuse the rest" would refuse this pair and redden F-22 — the naive
+    // fix the plan warns about, and the reason the rule arbitrates by risk.
+    const elementId = firstShapeId();
+    const before = fillOf(elementId);
+
+    beginOrderTurn();
+    const read = dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    const act = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    endOrderTurn();
+
+    // The lookup RAN (not refused).
+    expect(read.kind).toBe('performed');
+    // The act is the turn's one action, and it still goes through the UNCHANGED
+    // gate — the user's confirm is still required.
+    expect(act.kind).toBe('needs-confirmation');
+    expect(readOrderConfirmationRequest()?.invocation.actionId).toBe('wireframe.element.fill');
+    // Nothing executed, so the document is untouched by either leg yet.
+    expect(fillOf(elementId)).toBe(before);
+
+    // NO refusal was emitted: the pair is lawful.
+    expect(supersededReplies()).toHaveLength(0);
+    expect(pushedReplies.filter((text) => text.includes("can't carry out"))).toHaveLength(0);
+  });
+
+  it('a three-step chain is refused: `read` → `changing` → `changing` runs only the first two', () => {
+    const elementId = firstShapeId();
+
+    beginOrderTurn();
+    const read = dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    const act = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    const third = dispatchOrderSelection({
+      action: 'wireframe.element.delete',
+      arguments: { elementId },
+    });
+    endOrderTurn();
+
+    expect(read.kind).toBe('performed');
+    expect(act.kind).toBe('needs-confirmation');
+    // The third step is past the turn's one action, so it is refused.
+    expect(third.kind).toBe('refused');
+    expect(supersededReplies()).toHaveLength(1);
+    expect(readOrderConfirmationRequest()?.invocation.actionId).toBe('wireframe.element.fill');
+  });
+
+  it('an act-then-read is refused: `changing` then `read` runs only the act', () => {
+    const elementId = firstShapeId();
+
+    beginOrderTurn();
+    const act = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    const read = dispatchOrderSelection({ action: 'wireframe.selection.describe', arguments: {} });
+    endOrderTurn();
+
+    expect(act.kind).toBe('needs-confirmation');
+    expect(read.kind).toBe('refused');
+    expect(supersededReplies()).toHaveLength(1);
+  });
+});
+
+describe('R-5c — a failed lookup HALTS the chain and never becomes a blind act (F-23)', () => {
+  it('an `unknown` first step refuses the later `changing` selection — the act does NOT run', () => {
+    // THE gap this funnel closes and the old per-event independence could not:
+    // each selection dispatched separately, so a failed lookup was followed by a
+    // blind act with nothing in between.
+    const elementId = firstShapeId();
+    const before = fillOf(elementId);
+
+    beginOrderTurn();
+    // An id the app does not declare ⇒ the classifier's fail-closed `unknown`.
+    const failedLookup = dispatchOrderSelection({
+      action: 'wireframe.not.a.declared.action',
+      arguments: {},
+    });
+    const blindAct = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    endOrderTurn();
+
+    // The lookup is refused in the unknown class…
+    expect(failedLookup.kind).toBe('refused');
+    if (failedLookup.kind === 'refused') {
+      expect(failedLookup.text).toContain("can't carry out");
+      expect(failedLookup.text).toContain('Wireframe');
+    }
+    // …the act after it is REFUSED, never run…
+    expect(blindAct.kind).toBe('refused');
+    // …no confirmation was published (the act never reached the gate's prompt)…
+    expect(readOrderConfirmationRequest()).toBeNull();
+    // …and the document is untouched: the blind act did not happen.
+    expect(fillOf(elementId)).toBe(before);
+  });
+
+  it('the turn records the halt, so a later selection of the same turn is refused too', () => {
+    beginOrderTurn();
+    dispatchOrderSelection({ action: 'wireframe.not.a.declared.action', arguments: {} });
+    expect(readOrderTurn()?.halted).toBe(true);
+    endOrderTurn();
+    expect(readOrderTurn()).toBeNull();
+  });
+});
+
+describe('THE GREEN-GREEN CONTROL — a single selection emits NO refusal', () => {
+  it('a lone `changing` selection: one needs-confirmation reply, zero supersede copy', () => {
+    // The control the whole funnel owes: with ONE selection the behaviour must be
+    // byte-equivalent to the pre-funnel dispatcher. Every existing row in this
+    // suite is the wider version of this same control.
+    const elementId = firstShapeId();
+
+    beginOrderTurn();
+    const outcome = dispatchOrderSelection({
+      action: 'wireframe.element.fill',
+      arguments: { elementId, fill: 'accent' },
+    });
+    endOrderTurn();
+
+    expect(outcome.kind).toBe('needs-confirmation');
+    expect(pushedReplies).toHaveLength(1);
+    expect(pushedReplies[0]).toContain('Needs your confirmation');
+    expect(pushedReplies[0]).toContain('Fill element');
+    expect(pushedReplies[0]).toContain('Wireframe');
+    expect(supersededReplies()).toHaveLength(0);
+  });
+
+  it('a lone `read` selection: one done, zero refusals', () => {
+    beginOrderTurn();
+    const outcome = dispatchOrderSelection({
+      action: 'wireframe.selection.describe',
+      arguments: {},
+    });
+    endOrderTurn();
+
+    expect(outcome.kind).toBe('performed');
+    expect(pushedReplies).toHaveLength(1);
+    expect(supersededReplies()).toHaveLength(0);
+  });
+
+  it('a direct call with NO turn open is its own single-selection turn (the lever path)', () => {
+    // What every pre-existing row in this suite does. It must not need a turn to
+    // behave correctly, and it must not leave a turn open behind it.
+    const outcome = dispatchOrderSelection({
+      action: 'wireframe.selection.describe',
+      arguments: {},
+    });
+    expect(outcome.kind).toBe('performed');
+    expect(readOrderTurn()).toBeNull();
+    expect(supersededReplies()).toHaveLength(0);
   });
 });

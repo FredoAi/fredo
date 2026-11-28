@@ -104,6 +104,33 @@ export function orderIrreversibleWarning(
 }
 
 /**
+ * A DISPLACED selection in a multi-selection turn (R-5a / R-5c, AC-5).
+ *
+ * One user order executes at most one step (plus at most one lawful lookup ahead
+ * of it, R-5b). Anything beyond that is REFUSED — and it must be *said*, not
+ * silently dropped: the shipped single-slot hand-off overwrote a displaced
+ * confirmation, so the user was never told their second order was ignored. This
+ * formatter is that sentence.
+ *
+ * It names BOTH the app and the displaced action (rule 1 above: the ticker is
+ * read later, and a bare "not carried out" is unreadable there) and it
+ * deliberately contains NEITHER `can't carry out` NOR `couldn't` (rule 2 /
+ * G-505): the order was understood perfectly well — it simply arrived alongside
+ * another one, and the user's next action is to ask for it on its own, not to
+ * reword a sentence Fredo failed to classify.
+ *
+ * A blank `appName` is the ungrounded composer (UIUX-D7): the sentence drops the
+ * app clause rather than naming a wrong app — it still names the action.
+ */
+export function orderSupersededReply(appName: string, label: string): string {
+  const name = typeof appName === 'string' ? appName.trim() : '';
+  const action = typeof label === 'string' ? label.trim() : '';
+  const what = action === '' ? 'the second thing' : action;
+  const where = name === '' ? '' : ` in ${name}`;
+  return `One thing at a time - ${what}${where} was not carried out. Ask me for it on its own.`;
+}
+
+/**
  * The confirmation's statement for an UNDOABLE change. It is bound to the
  * declared `undoable` datum (not a promise about what will be registered), and
  * it lives here so the dialog does not become a second copy source.

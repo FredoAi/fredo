@@ -50,6 +50,7 @@ export {
   orderNothingToUndoReply,
   orderPerformedReply,
   orderRefusedUnknownReply,
+  orderSupersededReply,
   orderUndoReply,
 } from './orderReply';
 

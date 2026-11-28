@@ -11,6 +11,7 @@ export {
   clearPlacement,
   placeFredo,
   readPlacement,
+  rescopePlacement,
   resetPlacementForTests,
   subscribePlacement,
   type Placement,
