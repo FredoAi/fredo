@@ -80,6 +80,30 @@ export const COMPANION_SPEECH_SEQ_ATTR = 'data-companion-speech-seq';
 let activeSink: CompanionSpeechSink | null = null;
 let currentReceipt: CompanionSpeechReceipt | null = null;
 let seq = 0;
+const receiptListeners = new Set<() => void>();
+
+function publishReceipt(next: CompanionSpeechReceipt | null): void {
+  if (currentReceipt === next) return;
+  currentReceipt = next;
+  // Snapshot: a listener may unsubscribe while being notified.
+  for (const listener of [...receiptListeners]) listener();
+}
+
+/**
+ * Subscribe to receipt changes — the `useSyncExternalStore` listener contract,
+ * so a reply surface can stamp the DOM mirror from the seam's OWN record rather
+ * than from a copy it has to keep in sync.
+ *
+ * The snapshot is the receipt object itself, which is replaced only on a real
+ * change (`publishReceipt` above), so `getSnapshot` is referentially stable
+ * between speaks.
+ */
+export function subscribeCompanionSpeech(listener: () => void): () => void {
+  receiptListeners.add(listener);
+  return () => {
+    receiptListeners.delete(listener);
+  };
+}
 
 /**
  * Register the platform sink. Returns the unregister function (idempotent; a
@@ -108,7 +132,7 @@ export function speakCompanionReply(text: string): void {
   cancelCompanionSpeech();
 
   if (text.trim() === '') {
-    currentReceipt = null;
+    publishReceipt(null);
     return;
   }
 
@@ -126,7 +150,9 @@ export function speakCompanionReply(text: string): void {
     }
   }
 
-  currentReceipt = { text, seq, claimed };
+  // Notify AFTER the record is complete, so a listener reading the snapshot in
+  // its own callback sees the new value.
+  publishReceipt({ text, seq, claimed });
 }
 
 /**
@@ -152,9 +178,10 @@ export function readCompanionSpeechReceipt(): CompanionSpeechReceipt | null {
   return currentReceipt;
 }
 
-/** Test-only: drop the sink, the receipt and the seq counter. */
+/** Test-only: drop the sink, the receipt, the seq counter and the subscribers. */
 export function resetCompanionSpeechForTests(): void {
   activeSink = null;
   currentReceipt = null;
   seq = 0;
+  receiptListeners.clear();
 }

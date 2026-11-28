@@ -47,10 +47,22 @@ import { readCompanionAppRefs } from '../../installed-apps/companionTargetRefs';
 import { getWindowSnapshot } from '../../window-system/windowStore';
 import { readCompanionGrounding } from '../../companion/grounding';
 import { buildTurnScreenContext } from '../../app-intelligibility/screenContext';
-import {
-  buildCompanionInjectionFacts,
-} from '../../app-intelligibility/injection';
+import { buildCompanionInjectionFacts } from '../../app-intelligibility/injection';
 import type { CompanionInjectionFacts } from '../../app-intelligibility/injection';
+import {
+  COMPANION_SPEECH_SEQ_ATTR,
+  COMPANION_SPOKEN_ATTR,
+  cancelCompanionSpeech,
+  readCompanionSpeechReceipt,
+  registerCompanionSpeechSink,
+  subscribeCompanionSpeech,
+} from '../../companion/companionSpeech';
+import { createCompanionSpeechSink } from '../../companion/companionSpeechSink';
+import {
+  clearPlacement,
+  placeFredo,
+} from '../../placement/placementStore';
+import { isPerformanceGateActive } from '../../doom-mode/performanceGate';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -448,6 +460,7 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       state, setState, teleport, hideMessage, notifyInteraction, setInUse,
       sendDuringReply, replyLeaveGraceMs, setReplyInFlight, setQueuedSendCount,
       composerOpen, openComposer, closeComposer, teleportSeq, composerRequestSeq,
+      voiceEnabled, replyInFlight,
     } = useCompanion();
     const { animState, message, isVisible, isAutoHidden, isHosting } = state;
 
@@ -565,7 +578,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
     // active capture session) and is a control-plane `stt:state` event — never an
     // RTDB row — so it is the ONE additive signal the avatar selector needs for
     // `listening`. Nothing else in the voice path changes.
-    const { listening: captureActive } = useVoiceDictation();
+    //
+    // Spec #3243 ST-8 — the SAME hook also supplies the order field's capture
+    // lifecycle (`start`/`stop`/`cancel`). Reusing it is what keeps ONE speech
+    // path: a second hook instance would be a second `stt:state` subscription and
+    // a second `stt_start` caller on the same app-global session.
+    const {
+      listening: captureActive,
+      start: startVoiceCapture,
+      stop: stopVoiceCapture,
+      cancel: cancelVoiceCapture,
+    } = useVoiceDictation();
     // Spec #3223 ST-4 — the ONE Doom engagement read. A primitive boolean from the
     // module-scoped store, so the armour can never diverge from the palette layer
     // and a remount (seat ⇄ away overlay) re-reads the same phase. Passed to the
@@ -1640,6 +1663,62 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       ? buildTurnTarget(resolveBaseTargetApp(), '')
       : { appId: null, appName: null, grounding: null, explicit: false };
 
+    // ── Spec #3243 ST-8 — the placement mint (AC-4's construction point) ───────
+    //
+    // A placement is "the instruction box open with a RESOLVED app target" (ST-1's
+    // contract), so the mint is keyed on the TRANSITION into that pair — and the
+    // clear on the transition away from it. This timing is the load-bearing half:
+    //
+    //   - Minting on a bridge subscription would leave `placementId` empty on
+    //     EVERY real user-initiated turn, because the avatar click sets
+    //     `composerOpen` and touches no bridge. A row asserting only "it is a
+    //     string" would then pass a product no user can reach.
+    //   - Minting unconditionally on `composerOpen` would make the ungrounded
+    //     composer (`No app in front of Fredo`) carry an identity, which is the
+    //     opposite defect: the published contract is `placementId === ''` when
+    //     unplaced, and that value must stay REACHABLE for the row to test it.
+    //
+    // `composerTarget` is recomputed per render (the chip's own live resolution),
+    // so the dependency is stated as two PRIMITIVES — never the object, whose
+    // identity changes every render and would re-mint in a loop.
+    const resolvedPlacementAppId = composerOpen ? composerTarget.appId : null;
+    const resolvedPlacementAppName = composerOpen ? composerTarget.appName : null;
+    useEffect(() => {
+      if (resolvedPlacementAppId === null) {
+        // The transition away from a resolved target: discard (AC-4). Idempotent,
+        // so a StrictMode double effect cannot flap it.
+        clearPlacement();
+        return;
+      }
+      // The transition INTO a resolved target: a NEW identity, always — including
+      // for the same app, because two placements of one app are two placements.
+      placeFredo(resolvedPlacementAppId, resolvedPlacementAppName ?? resolvedPlacementAppId);
+    }, [resolvedPlacementAppId, resolvedPlacementAppName]);
+
+    // ── Spec #3243 ST-7/ST-8 — the speech sink's lifecycle ─────────────────────
+    //
+    // ONE sink per hosting entity (the `registerAppOpenReplyPusher` shape): a
+    // stale unregister never detaches a newer sink. Registering on mount and
+    // cancelling on unmount is what makes "no utterance outlives its surface"
+    // true; the seam itself cancels on every supersede.
+    useEffect(() => {
+      const unregister = registerCompanionSpeechSink(createCompanionSpeechSink());
+      return () => {
+        cancelCompanionSpeech();
+        unregister();
+      };
+    }, []);
+
+    // The seam's own receipt, subscribed (not polled) — the reply surface stamps
+    // it as the DOM mirror so a live probe can read the seam with no second
+    // channel. `readCompanionSpeechReceipt` is the `getSnapshot`; the receipt
+    // object is replaced only on a real change, so it is referentially stable.
+    const speechReceipt = useSyncExternalStore(
+      subscribeCompanionSpeech,
+      readCompanionSpeechReceipt,
+      readCompanionSpeechReceipt,
+    );
+
     // ── #3244 ST-4 — the typed screen-unavailable signal (R-2c) ───────────────
     // A pair that cannot be produced must NOT become a blind turn. The signal
     // renders on the SAME reply surface a streamed reply uses (the shipped error
@@ -1856,6 +1935,17 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
           role={replyOnScreen ? 'region' : undefined}
           aria-label={replyOnScreen ? "Fredo's reply" : undefined}
           tabIndex={replyOnScreen ? 0 : undefined}
+          // Spec #3243 ST-7/ST-8 — the speech receipt's DOM mirror. Stamped from
+          // the seam's OWN record (subscribed, never polled), so a live probe can
+          // read the seam without a second channel. Present only while a receipt
+          // exists: an absent attribute is a truthful "nothing was handed over",
+          // where an empty string would read as a spoken empty sentence.
+          {...(speechReceipt !== null
+            ? {
+                [COMPANION_SPOKEN_ATTR]: speechReceipt.text,
+                [COMPANION_SPEECH_SEQ_ATTR]: String(speechReceipt.seq),
+              }
+            : {})}
           onFocus={replyOnScreen ? handleReplyFocus : undefined}
           onBlur={replyOnScreen ? handleReplyBlur : undefined}
           onPointerEnter={replyOnScreen ? handleReplyPointerEnter : undefined}
@@ -1977,6 +2067,28 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
             target={composerTarget}
             onSubmit={handleComposerSubmit}
             onDismiss={closeComposer}
+            // Spec #3243 ST-8 — the ONE existing announcement seam, exposed as a
+            // prop. It routes into THIS entity's single polite live region: no
+            // second region is created anywhere.
+            onAnnounce={setA11yAnnouncement}
+            // FAIL CLOSED: the gesture is offered only when voice is enabled and
+            // Doom Mode is not suppressing it, and a reply is not in flight.
+            voiceUsable={voiceEnabled && !isPerformanceGateActive()}
+            busy={replyInFlight}
+            // The capture lifecycle, on the shipped `useVoiceDictation` hook — the
+            // ONE speech path. `live` is the backend's own confirmation.
+            capture={{
+              start: () => {
+                void startVoiceCapture('companion');
+              },
+              stop: () => {
+                void stopVoiceCapture();
+              },
+              cancel: () => {
+                void cancelVoiceCapture();
+              },
+              live: captureActive,
+            }}
           />
         ) : null}
 
