@@ -22,7 +22,7 @@
 //! `state` is an ORDINARY field (`Init | Update | Response | Timeout | Error`)
 //! — lifecycle transitions become ordinary patches later (P2+); nothing about
 //! the row lifecycle is special-cased here. Every field has a total, explicit
-//! merge rule declared in [`crate::infrastructure::rtdb::merge`] — no implicit
+//! merge rule declared in [`crate::merge`] — no implicit
 //! last-wins (the #523/#586 ad-hoc-merge bug family fix class).
 
 use serde::{Deserialize, Serialize};
@@ -212,4 +212,52 @@ pub struct AgentSessionRow {
     /// Agent display name (`gen_ai.agent.name`).
     pub agent_name: Option<String>,
     pub raw_json: String,
+}
+
+/// Which of the three row families a mutation/read concerns — the crate's own
+/// three-variant discriminant (Spec #3201 §1 edge 5).
+///
+/// **Deliberately NOT the store's `RowKind`.** The platform's
+/// `rtdb::store::RowKind` additionally carries `table()` → physical table names
+/// (`"chat_rows"`, …), i.e. schema. A domain crate must not know table names,
+/// so the platform converts between the two in one `impl From` at the boundary
+/// (`rtdb/commands.rs`). This is the spec's **one** real conversion, and it is
+/// a *type* translation — no extraction rule is involved, so NFR-6's
+/// byte-comparability surface is untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RowKind {
+    Chat,
+    ToolUse,
+    AgentSession,
+}
+
+/// Composite row identity — the port's key type for
+/// [`crate::RowSink::keys_for_session`].
+///
+/// Two `String`s and nothing else: no platform behaviour and no store coupling,
+/// which is why it belongs beside the row model rather than in the projection
+/// layer.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowKey {
+    pub session_id: String,
+    pub correlation_id: String,
+}
+
+/// The row union entering and leaving the pipeline: exactly one of the three
+/// canonical row types (Spec #3201 §4 / NOTE-B).
+///
+/// This is the payload type of [`crate::RowSink`]. It is structurally the
+/// platform's `rtdb::commands::IngestRow` — the platform keeps that name and
+/// bridges with `impl From<RowUpsert> for IngestRow`, a three-arm move that
+/// copies no field and recomputes no value (a *rename at the boundary*, not a
+/// translation layer, so it is outside NFR-6's concern).
+///
+/// `PartialEq` is derived so a caller can compare emitted values across the
+/// extraction boundary (AC2's value equality), not merely their shape.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowUpsert {
+    Chat(ChatRow),
+    ToolUse(ToolUseRow),
+    AgentSession(AgentSessionRow),
 }

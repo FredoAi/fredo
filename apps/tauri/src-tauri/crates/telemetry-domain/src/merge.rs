@@ -23,7 +23,7 @@
 //!   Guards token/cost/duration fields against #586-style zero-delta wipes
 //!   and #2723-style cumulative contamination.
 
-use crate::infrastructure::rtdb::rows::{
+use crate::rows::{
     AgentSessionRow, ChatRow, RowState, ToolUseRow,
 };
 use serde::{Deserialize, Serialize};
@@ -176,7 +176,7 @@ impl FallbackValue for bool {
 
 impl FallbackValue for String {
     fn is_fallback(&self) -> bool {
-        self == crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN
+        self == crate::attrs::PROVIDER_UNKNOWN
     }
 }
 
@@ -373,8 +373,8 @@ pub fn apply_agent_session_patch(row: &mut AgentSessionRow, patch: &AgentSession
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::rtdb::attrs::PROVIDER_UNKNOWN;
-    use crate::infrastructure::rtdb::rows::{
+    use crate::attrs::PROVIDER_UNKNOWN;
+    use crate::rows::{
         AgentSessionRow, AGENT_SESSION_FIELDS, ChatRow, CHAT_FIELDS, RowState, ToolUseRow,
         TOOL_USE_FIELDS,
     };
