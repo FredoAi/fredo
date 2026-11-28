@@ -26,6 +26,7 @@ pub mod commands;
 pub mod doom_agent;
 pub mod engine;
 pub mod injection;
+pub mod order_lever;
 pub mod order_offer;
 pub mod skills;
 pub mod status;

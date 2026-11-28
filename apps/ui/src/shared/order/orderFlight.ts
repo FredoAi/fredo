@@ -229,4 +229,58 @@ export function resetOrderFlightForTests(): void {
   current = null;
   seq = 0;
   listeners.clear();
+  confirmationListeners.clear();
+  pendingConfirmation = null;
+}
+
+/* ------------------------------------------------------------------------- */
+/* The confirmation hand-off                                                   */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * A pending confirmation, published from the DISPATCHER (Home tree) to the
+ * SURFACE (this entity's tree).
+ *
+ * The flight store already carries `needs-confirmation` as a STATE, but a state
+ * alone cannot render a dialog: the dialog needs the `OrderInvocation` the user
+ * is deciding about, and only the dispatcher has it. So the invocation crosses
+ * the tree boundary through this module too — same reason as the flight, and it
+ * is deliberately NOT a second source of truth: `confirmOrder` is still the only
+ * mint site, and this record only says WHICH invocation to show.
+ */
+export interface OrderConfirmationRequest {
+  readonly invocation: import('./orderActions').OrderInvocation;
+  readonly label: string;
+}
+
+let pendingConfirmation: OrderConfirmationRequest | null = null;
+const confirmationListeners = new Set<(request: OrderConfirmationRequest) => void>();
+
+/**
+ * Publish a pending confirmation. Called by the dispatcher when the gate returns
+ * `needs-confirmation` — never on any other verdict (a `read` never prompts).
+ */
+export function requestOrderConfirmation(request: OrderConfirmationRequest): void {
+  pendingConfirmation = request;
+  for (const listener of [...confirmationListeners]) listener(request);
+}
+
+/** The pending confirmation, or `null` (a late mount re-reads it once). */
+export function readOrderConfirmationRequest(): OrderConfirmationRequest | null {
+  return pendingConfirmation;
+}
+
+/** The user answered (confirm or cancel) — drop the pending request. */
+export function clearOrderConfirmationRequest(): void {
+  pendingConfirmation = null;
+}
+
+/** Subscribe to confirmation requests. Returns the unsubscribe function. */
+export function subscribeOrderConfirmationRequest(
+  listener: (request: OrderConfirmationRequest) => void,
+): () => void {
+  confirmationListeners.add(listener);
+  return () => {
+    confirmationListeners.delete(listener);
+  };
 }

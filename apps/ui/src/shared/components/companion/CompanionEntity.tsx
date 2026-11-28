@@ -63,6 +63,18 @@ import {
   placeFredo,
 } from '../../placement/placementStore';
 import { isPerformanceGateActive } from '../../doom-mode/performanceGate';
+import { subscribeOrderFlight, readOrderFlight as readOrderFlightRecord, subscribeOrderConfirmationRequest } from '../../order/orderFlight';
+import type { OrderFlight, OrderFlightState } from '../../order/orderFlight';
+import {
+  canUndoOrder,
+  cancelOrderExecution,
+  confirmOrderExecution,
+  readOrderFlightState,
+  undoOrderExecution,
+} from '../../order/useOrderSkillDispatch';
+import type { OrderInvocation } from '../../order/orderActions';
+import { peekOrderUndoLabel } from '../../order/orderUndo';
+import { OrderConfirmation } from './OrderConfirmation';
 
 // #2883 ST-6 — the plan-declared ADDITIVE `SpeechBubble` props (`## API Contracts
 // & Data Models`). Typed here so this workstream compiles before ST-4 attaches
@@ -1719,6 +1731,36 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
       readCompanionSpeechReceipt,
     );
 
+    // ── Spec #3243 ST-8 — the order flight + the pending confirmation ─────────
+    //
+    // The flight is subscribed from the module store (not held in state): it must
+    // survive the composer card's own unmount, and the DISPATCHER that writes it
+    // lives in the Home tree. Reading it here is what lets the ticker keep naming
+    // the ORIGINAL app after the user moved (AC-3).
+    const orderFlight = useSyncExternalStore(
+      subscribeOrderFlight,
+      readOrderFlightState,
+      readOrderFlightState,
+    );
+    // The Undo affordance's datum. Derived from the flight (whose `seq` advances
+    // on every transition, including the settle that registers a record), so the
+    // control appears at the settle and is REMOVED when the registry is emptied —
+    // never rendered-but-disabled.
+    const undoLabel = orderFlight === null || !canUndoOrder() ? null : peekOrderUndoLabel();
+    // The pending confirmation's invocation. It lives in component state because
+    // it is a DECISION DIALOG, not a durable record: R-6c's "leaving drops it"
+    // is the placement ending, which unmounts this tree.
+    const [pendingConfirmation, setPendingConfirmation] = useState<OrderInvocation | null>(null);
+    const [pendingLabel, setPendingLabel] = useState('');
+
+    // The dispatcher stores `needs-confirmation` in the flight and needs a way to
+    // hand the INVOCATION to this tree (two React trees, one module store). It
+    // publishes through a module-level subscription below.
+    useEffect(() => subscribeOrderConfirmationRequest((request) => {
+      setPendingConfirmation(request.invocation);
+      setPendingLabel(request.label);
+    }), []);
+
     // ── #3244 ST-4 — the typed screen-unavailable signal (R-2c) ───────────────
     // A pair that cannot be produced must NOT become a blind turn. The signal
     // renders on the SAME reply surface a streamed reply uses (the shipped error
@@ -2089,8 +2131,42 @@ export const CompanionEntity = forwardRef<CompanionEntityHandle, CompanionEntity
               },
               live: captureActive,
             }}
+            // The ticker: the in-flight record, naming the app resolved at submit.
+            orderFlight={orderFlight}
+            // The Undo control's datum + handler. `undoLabel` is `null` when no
+            // record remains, so the control leaves the tree with its record.
+            undoLabel={undoLabel}
+            onUndoOrder={
+              undoLabel === null
+                ? undefined
+                : () => {
+                    undoOrderExecution(orderFlight?.appName ?? '');
+                  }
+            }
           />
         ) : null}
+
+        {/* ── Spec #3243 ST-5/ST-8 — the confirmation. **AC-7's last link.** ────
+            Mounted here (where the flight is) so a composer re-render cannot tear
+            an undecided confirmation down. `onConfirm` is wired to
+            `confirmOrderExecution` — the ONLY non-test entry into `confirmOrder`,
+            i.e. the user's own click. There is deliberately no keyboard path. */}
+        <OrderConfirmation
+          invocation={pendingConfirmation}
+          appName={pendingConfirmation === null ? '' : (orderFlight?.appName ?? '')}
+          label={pendingLabel}
+          onConfirm={() => {
+            if (pendingConfirmation === null) return;
+            confirmOrderExecution(pendingConfirmation, orderFlight?.appName ?? '');
+            setPendingConfirmation(null);
+            setPendingLabel('');
+          }}
+          onCancel={() => {
+            cancelOrderExecution(orderFlight?.appName ?? '', pendingLabel);
+            setPendingConfirmation(null);
+            setPendingLabel('');
+          }}
+        />
 
         {/* Interactive avatar wrapper — real click box is the avatar's layout
             width AND height (sm = 80 wide x 100 tall). The wrapper carries the

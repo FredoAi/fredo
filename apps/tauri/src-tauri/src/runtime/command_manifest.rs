@@ -106,6 +106,8 @@ pub const COMMAND_MANIFEST: &[&str] = &[
     "stt_audio_capability",
     "llm_chat_with_skills",
     "llm_chat_with_status",
+    // Spec #3243 ST-8 — the in-repo order-selection lever (inert unless armed).
+    "order_skill_lever_take",
     "capture_screen_region",
     // Spec #3244 ST-3 — the reusable target-capture seam (a physical-pixel rect)
     // and the host window-geometry read (an installed app's client-area rect).

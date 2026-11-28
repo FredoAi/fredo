@@ -1137,6 +1137,12 @@ pub fn run(launch: infrastructure::launch::LaunchMode) {
             // before the shipped `llm-done`. ADDITIVE — `llm_chat` /
             // `llm_chat_with_skills` unchanged.
             applications::llm_server::status::llm_chat_with_status,
+            // Spec #3243 ST-8 — the in-repo order-selection lever. INERT unless
+            // `FREDO_ORDER_SKILL_LEVER` arms it (an armed-by-default lever would
+            // make every AC-6/AC-8 row prove nothing — G-469). It produces a
+            // selection for the SAME `llm-skill-call` channel the model uses, so
+            // it is evidence for the gate rather than a shortcut around it.
+            applications::llm_server::order_lever::order_skill_lever_take,
             applications::screenshot::commands::capture_screen_region,
             // Spec #3244 ST-3 — the reusable target-capture seam: capture a
             // physical-pixel target rectangle FRESH via the shipped monitor

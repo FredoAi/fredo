@@ -27,6 +27,7 @@ import {
   COMPOSER_H,
   COMPOSER_MAX_H,
   COMPOSER_W,
+  ORDER_TICKER_ROW_H,
   REPLY_MARGIN,
   computeComposerPlacement,
   deriveAwayRegion,
@@ -45,6 +46,8 @@ import {
   DICTATION_CANCELLED_ANNOUNCEMENT,
   MODEL_AUDIO_LISTENING_ANNOUNCEMENT,
 } from '../../../applications/home/components/launcher/LauncherCommandBar';
+import type { OrderFlight } from '../../order/orderFlight';
+import type { OrderInvocation } from '../../order/orderActions';
 
 // ── Bound DOM / copy (Architect's names block — consumed verbatim) ───────────
 
@@ -93,6 +96,30 @@ export const COMPANION_COMPOSER_HINT_SR_ID = 'fredo-companion-composer-hint';
  */
 export const COMPANION_COMPOSER_CAPTURE_ATTR = 'data-order-capture';
 export type CompanionOrderCaptureState = 'idle' | 'armed' | 'starting' | 'listening';
+
+// ── Spec #3243 ST-8 — the order ticker + undo controls ──────────────────────
+/**
+ * The ticker ROW root. It is STATIC text in the accessibility tree, never a live
+ * region: its appearance is not an announcement. Making it live "so the states
+ * are easy to observe" would violate AC-3 on its own — the ONE polite region
+ * stays `CompanionEntity`'s, and this row is the durable *record* of an order
+ * (recognition over recall), not a notification.
+ */
+export const ORDER_TICKER_TESTID = 'fredo-order-ticker';
+/** The `data-order-state` attribute: the five states, read without parsing prose. */
+export const ORDER_TICKER_STATE_ATTR = 'data-order-state';
+/**
+ * The app the ORDER runs in — the app resolved at SUBMIT, NOT the app the user
+ * is in now. After a move the target chip names the new app while this keeps
+ * naming the original one: two claims, one subject each (G-475b).
+ */
+export const ORDER_TICKER_TARGET_APP_ATTR = 'data-order-target-app';
+/** The Undo control. REMOVED from the tree when its record is gone — never disabled. */
+export const ORDER_UNDO_TESTID = 'fredo-order-undo';
+/** `Undo <label>` — the control's own name, bound to the record's label. */
+export function orderUndoLabel(actionLabel: string): string {
+  return `Undo ${actionLabel}`;
+}
 
 /** Inner padding on the composer card (the textarea takes the rest). */
 const COMPOSER_PAD = 4;
@@ -147,6 +174,30 @@ export interface CompanionComposerProps {
    * (no gesture, no capture attribute beyond `idle`).
    */
   readonly capture?: CompanionCaptureControls;
+  /**
+   * Spec #3243 ST-8 — the in-flight order record to render, or `null`.
+   *
+   * The composer renders it; it does not own it. The record lives in the
+   * module-scoped `orderFlight` store because the DISPATCHER lives in the Home
+   * tree while the composer lives here — two React trees, so a ref or local
+   * state could not carry an order across that boundary (AC-3).
+   */
+  readonly orderFlight?: OrderFlight | null;
+  /**
+   * Spec #3243 ST-8 — activate the Undo control. Returns `true` when an undo
+   * landed, so the surface need not poll the registry to decide what to say.
+   */
+  readonly onUndoOrder?: () => void;
+  /** The newest undo record's label, for the control's accessible name. */
+  readonly undoLabel?: string | null;
+}
+
+/** The order ticker's own copy for the `running` state (see `orderReply.ts` for the rest). */
+export const ORDER_TICKER_WORKING_COPY = 'Working in {app}…';
+
+/** Format the running ticker text with the ORIGINAL app's name. */
+export function orderTickerWorkingText(appName: string): string {
+  return ORDER_TICKER_WORKING_COPY.replace('{app}', appName);
 }
 
 /** The capture lifecycle the caller supplies (see `capture` above). */
@@ -212,6 +263,7 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
   const {
     surface, focusNonce, avatarRect, avoidRect, viewport, target, onSubmit, onDismiss,
     onAnnounce, voiceUsable = false, busy = false, capture,
+    orderFlight, onUndoOrder, undoLabel,
   } = props;
 
   const [value, setValue] = useState('');
@@ -563,7 +615,14 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
     setTextHeight((current) => (current === next ? current : next));
   }, [value]);
 
-  const boxHeight = textHeight + COMPOSER_PAD * 2;
+  const targetCopy = resolvedTarget.copy;
+
+  // The ticker consumes one bounded row; the card's measured height includes it,
+  // so the placement arithmetic can never put the card on top of Fredo (G-253:
+  // derive from the rendered stack, never a nominal sum).
+  const hasTicker = orderFlight !== undefined && orderFlight !== null;
+
+  const boxHeight = textHeight + COMPOSER_PAD * 2 + (hasTicker ? ORDER_TICKER_ROW_H : 0);
   const avatar = avatarRect ?? fallbackAvatar(viewport);
   const placement = computeComposerPlacement({
     avatar,
@@ -572,8 +631,6 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
     size: { width: COMPOSER_W, height: boxHeight },
     avoid: avoidRect,
   });
-
-  const targetCopy = resolvedTarget.copy;
 
   // ── The gesture's rendered state (Spec #3243 ST-8) ──────────────────────────
   // `listening` is reachable ONLY once the capture is genuinely live, so a
@@ -604,7 +661,8 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
       height={`${placement.height}px`}
       zIndex={surface === 'overlay' ? 103 : 120}
       display="flex"
-      alignItems="flex-end"
+      flexDirection="column"
+      alignItems="stretch"
       gap="1"
       padding={`${COMPOSER_PAD}px`}
       bg="bg.surface"
@@ -615,6 +673,7 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
       borderRadius="md"
       boxShadow="dialog"
     >
+      <Box display="flex" alignItems="flex-end" gap="1">
       <Text
         data-testid={COMPANION_COMPOSER_TARGET_TESTID}
         flexShrink={0}
@@ -745,6 +804,62 @@ export function CompanionComposer(props: CompanionComposerProps): React.ReactEle
       >
         <Icon as={LuX} boxSize="16px" aria-hidden="true" />
       </chakra.button>
+      </Box>
+
+      {/* ── Spec #3243 ST-8 — the order ticker (STATIC, never a live region) ──
+          The durable record of the order, and the answer for a user who looks
+          back after moving to another app. Its appearance is deliberately NOT an
+          announcement: AC-3 requires the MOVE to be silent, and a live region
+          here would announce on every state change (the exact defect the plan
+          warns about). The text node carries the FULL sentence — CSS lineClamp
+          clips paint, never the accessible name. */}
+      {orderFlight !== undefined && orderFlight !== null && (
+        <Box
+          data-testid={ORDER_TICKER_TESTID}
+          {...{ [ORDER_TICKER_STATE_ATTR]: orderFlight.state }}
+          {...{ [ORDER_TICKER_TARGET_APP_ATTR]: orderFlight.appId }}
+          display="flex"
+          alignItems="center"
+          gap="1"
+          height={`${ORDER_TICKER_ROW_H}px`}
+          minWidth={0}
+        >
+          <Text
+            flex="1"
+            minWidth={0}
+            color="fg.muted"
+            fontSize="11px"
+            lineHeight={`${ORDER_TICKER_ROW_H}px`}
+            lineClamp={1}
+            // The sighted hover fallback; the accessible text is the full node.
+            title={orderFlight.text !== '' ? orderFlight.text : orderTickerWorkingText(orderFlight.appName)}
+          >
+            {orderFlight.text !== '' ? orderFlight.text : orderTickerWorkingText(orderFlight.appName)}
+          </Text>
+          {/* The Undo control is REMOVED from the tree once its record is gone —
+              never left rendered-but-disabled, which would be a dead control. */}
+          {orderFlight.state === 'done' && undoLabel !== undefined && undoLabel !== null && onUndoOrder !== undefined && (
+            <chakra.button
+              type="button"
+              data-testid={ORDER_UNDO_TESTID}
+              aria-label={orderUndoLabel(undoLabel)}
+              onClick={onUndoOrder}
+              flexShrink={0}
+              px="2"
+              height="20px"
+              borderRadius="sm"
+              fontSize="11px"
+              color="fg.muted"
+              bg="transparent"
+              cursor="pointer"
+              _hover={{ bg: 'bg.hover', color: 'fg.default' }}
+              _focusVisible={{ outline: '2px solid', outlineColor: 'accent.focusRing', outlineOffset: '2px' }}
+            >
+              Undo
+            </chakra.button>
+          )}
+        </Box>
+      )}
     </Box>
   );
 }

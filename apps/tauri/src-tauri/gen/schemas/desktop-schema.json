@@ -897,6 +897,12 @@
           "markdownDescription": "Enables the open_terminal_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the order_skill_lever_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-order-skill-lever-take",
+          "markdownDescription": "Enables the order_skill_lever_take command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pg_config_apply command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pg-config-apply",
@@ -1651,6 +1657,12 @@
           "type": "string",
           "const": "deny-open-terminal-window",
           "markdownDescription": "Denies the open_terminal_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the order_skill_lever_take command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-order-skill-lever-take",
+          "markdownDescription": "Denies the order_skill_lever_take command without any pre-configured scope."
         },
         {
           "description": "Denies the pg_config_apply command without any pre-configured scope.",
