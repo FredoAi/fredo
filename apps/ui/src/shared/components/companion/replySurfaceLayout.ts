@@ -686,6 +686,32 @@ export const COMPOSER_W = 320;
 export const COMPOSER_H = 40;
 /** Auto-grow cap: beyond this the textarea scrolls (UIUX-D3). */
 export const COMPOSER_MAX_H = 96;
+/**
+ * Spec #3243 ST-8 — the order ticker's single-line row height.
+ *
+ * The ticker is ONE line inside the composer card (a `lineClamp={1}` row with a
+ * `title` for the hover fallback — the same treatment the target chip uses), so
+ * the card's MAXIMUM height grows by exactly this much while the row is present.
+ *
+ * It is a NAMED constant with exactly one consumer (`composerMaxHeight` below)
+ * because a clearance or collision assertion written against a nominal `96`
+ * would be wrong by this row's full height the moment a ticker exists — and `96`
+ * is what the pre-ticker card was bounded at, so the stale number reads
+ * plausible (G-253: derive, never assume a nominal sum).
+ */
+export const ORDER_TICKER_ROW_H = 24;
+
+/**
+ * The composer card's maximum height, DERIVED from its parts.
+ *
+ * `COMPOSER_MAX_H` bounds the textarea's auto-grow; the order ticker adds one
+ * bounded row above it. Every clearance/collision assertion must read this
+ * function rather than either flat constant, so a future row is added in one
+ * place and cannot leave a stale nominal behind.
+ */
+export function composerMaxHeight(options?: { readonly withOrderTicker?: boolean }): number {
+  return COMPOSER_MAX_H + (options?.withOrderTicker === true ? ORDER_TICKER_ROW_H : 0);
+}
 /** The base gap constant; the FACING separation always respects the bound. */
 export const COMPOSER_GAP = 8;
 

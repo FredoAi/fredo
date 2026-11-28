@@ -8,8 +8,10 @@
 //! live consumer had been re-pointed (G-430).
 //!
 //! What remains: the engine ([`engine`]), the chat/skill/status surfaces
-//! ([`commands`], [`skills`], [`status`], [`doom_agent`]), the IPC message DTO
-//! ([`chat`]), and [`status_keys`] — the persisted key NAMES the migration keeps.
+//! ([`commands`], [`skills`], [`status`], [`doom_agent`]), the per-turn injection
+//! receipt ([`injection`]), the static `order` skill declaration ([`order_offer`],
+//! Spec #3243), the IPC message DTO ([`chat`]), and [`status_keys`] — the persisted
+//! key NAMES the migration keeps.
 //!
 //! ## Environment overrides (Spec #2944 ST-2, R-1.2; port retired by #3141)
 //!
@@ -24,6 +26,8 @@ pub mod commands;
 pub mod doom_agent;
 pub mod engine;
 pub mod injection;
+pub mod order_lever;
+pub mod order_offer;
 pub mod skills;
 pub mod status;
 pub mod status_keys;

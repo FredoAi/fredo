@@ -20,7 +20,7 @@ vi.mock('../../utils/adapterBridge', () => ({
 }));
 
 import { registerAppOpenReplyPusher } from '../../components/companion/skillBridge';
-import { DOOM_MODE_INACTIVE_STATUS, type DoomModeStatus } from '../types';
+import { DOOM_MODE_EVENT, DOOM_MODE_INACTIVE_STATUS, type DoomModeStatus } from '../types';
 import {
   DOOM_MODE_DISENGAGED_REPLY,
   DOOM_MODE_ENGAGED_REPLY,
@@ -66,7 +66,21 @@ async function mountWith(
     return undefined;
   });
   renderHook(() => useDoomModeSkill());
+  // `toHaveBeenCalledWith` is satisfied at CALL time, but `invokeMock` is async:
+  // the seed's RESULT is applied a tick later (`setStatus` → render → the
+  // `[status]` effect that populates the dispatcher's `statusRef`). Await the
+  // application, not just the invocation — otherwise a caller that races the
+  // still-unset `statusRef` reads the resting phase and mis-reports.
+  //
+  // `useDoomMode` registers its `doom-mode-changed` listener strictly AFTER it
+  // applies the seed, so that listen call is the observable "seed applied"
+  // sentinel; the `act` drain then flushes the render + `[status]` effect that
+  // writes `statusRef`.
   await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('get_doom_mode_status'));
+  await waitFor(() =>
+    expect(listenMock).toHaveBeenCalledWith(DOOM_MODE_EVENT, expect.any(Function)),
+  );
+  await act(async () => {});
 }
 
 beforeEach(() => {

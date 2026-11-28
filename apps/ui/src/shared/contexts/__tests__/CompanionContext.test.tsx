@@ -56,6 +56,11 @@ import {
 import type { CompanionSendDisposition } from '@/shared/contexts/CompanionContext';
 import { settingsService } from '@/applications/settings';
 import { adapterBridge } from '@/shared/utils/adapterBridge';
+import {
+  readCompanionSpeechReceipt,
+  registerCompanionSpeechSink,
+  resetCompanionSpeechForTests,
+} from '@/shared/companion/companionSpeech';
 
 // ── Module mocks / environment ──────────────────────────────────────────────
 //
@@ -786,15 +791,47 @@ describe('CompanionProvider — welcome on turn-on (#2870 ST-1 / R-2)', () => {
     expect(presence().message).toBe('', 'no second bubble on a re-affirmed ON');
   });
 
-  it('produces no audio/TTS on turn-on (visual-only greeting)', async () => {
+  // Spec #3243 ST-7 — RE-CUT, never deleted (G-522 / QA-D8).
+  //
+  // The claim this row has always made is that the GREETING is visual-only. Since
+  // #3243 an order OUTCOME is spoken, so an unqualified "no speechSynthesis call
+  // anywhere" reading is no longer true — but this sentence still is, and it is
+  // the property that keeps a turn-on from becoming an unsolicited utterance.
+  //
+  // Narrowed scope, stated so a later reader cannot read it as global silence:
+  //   * the welcome greeting, the joke stream and the game stay VISUAL-ONLY;
+  //   * an ORDER outcome (the companion speech seam, `companionSpeech.ts`) IS
+  //     spoken — and that seam is what is asserted silent here.
+  //
+  // Two readings, both product-observables (no mocking): the seam registered no
+  // sink call and holds no receipt, AND the platform's own synthesizer was not
+  // touched. The greeting appearing is the non-vacuity control — without it this
+  // row would pass on a turn-on that did nothing at all.
+  it('produces no audio/TTS on turn-on (visual-only greeting; ORDER outcomes are the spoken leg)', async () => {
     const synth = (window as unknown as { speechSynthesis?: { speak: (u: unknown) => void } }).speechSynthesis;
     const speakSpy = synth ? vi.spyOn(synth, 'speak') : null;
 
-    await mountProvider({ visible: false, timeoutS: 5 });
-    act(() => { api.setVisible(true); });
+    // The companion speech seam's own sink: if anything spoke, this hears it and
+    // a receipt appears. Both are how the turn-on stays silent BY THE PRODUCT.
+    resetCompanionSpeechForTests();
+    const seamSink = { speak: vi.fn(() => true), cancel: vi.fn() };
+    const unregisterSink = registerCompanionSpeechSink(seamSink);
 
-    if (speakSpy) expect(speakSpy).not.toHaveBeenCalled();
-    expect(presence().message).toBe(WELCOME_TEXT);
+    try {
+      await mountProvider({ visible: false, timeoutS: 5 });
+      act(() => { api.setVisible(true); });
+
+      if (speakSpy) expect(speakSpy).not.toHaveBeenCalled();
+      expect(seamSink.speak).not.toHaveBeenCalled();
+      expect(readCompanionSpeechReceipt()).toBeNull();
+
+      // Non-vacuity: the greeting really happened, so the silence above is a
+      // property of this turn-on rather than of an inert test.
+      expect(presence().message).toBe(WELCOME_TEXT);
+    } finally {
+      unregisterSink();
+      resetCompanionSpeechForTests();
+    }
   });
 });
 

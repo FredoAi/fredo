@@ -640,15 +640,16 @@ fn model_audio_surfaces_stay_on_their_ipc_side_of_the_boundary() {
 /// offer registry.
 ///
 /// The audio defect was the audio entry constructing its own
-/// `SkillRegistry::with_app_control_and_doom()` (three skills). Spec #3141 ST-3
-/// moved the audio entry from `chat.rs` onto the in-process engine stream, so this
-/// pin follows it to `commands/chat.rs` (`spawn_audio_chat`) and keeps the SAME
+/// `SkillRegistry::with_app_control_and_doom()` registry. Spec #3141 ST-3 moved
+/// the audio entry from `chat.rs` onto the in-process engine stream, so this pin
+/// follows it to `commands/chat.rs` (`spawn_audio_chat`) and keeps the SAME
 /// predicate: its registry SOURCE is `companion_skill_registry()`, and that ONE
-/// accessor IS the construction site (Spec #3152 retired the generated per-surface
-/// offer, so the accessor is now the single `SkillRegistry::with_app_control_and_doom()`
-/// call rather than a delegation to a generated builder). Positive-controlled: the
-/// scan must SEE the accessor definition, so a scan matching nothing can never
-/// pass.
+/// accessor IS the construction site (Spec #3152 retired the generated
+/// per-surface offer, so the accessor is now the single
+/// `SkillRegistry::with_order_support()` call rather than a delegation to a
+/// generated builder; Spec #3243 added the fourth static skill there). Positive-
+/// controlled: the scan must SEE the accessor definition, so a scan matching
+/// nothing can never pass.
 #[test]
 fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
     // (1) The audio path's registry source is the ONE shared accessor. The entry
@@ -689,7 +690,7 @@ fn the_model_audio_path_obtains_its_offer_from_the_one_shared_registry() {
         "the accessor must take no AppHandle: {accessor}"
     );
     assert!(
-        accessor.contains("SkillRegistry::with_app_control_and_doom()"),
+        accessor.contains("SkillRegistry::with_order_support()"),
         "the accessor must be the ONE construction site: {accessor}"
     );
 
