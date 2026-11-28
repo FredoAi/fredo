@@ -139,9 +139,15 @@ fn no_dead_code_suppression_under_crate() {
 
     let mut violations = Vec::new();
     for file in &files {
-        let Ok(source) = std::fs::read_to_string(file) else {
-            continue;
-        };
+        // An unreadable source file is a FAILED INSTRUMENT, never a silent pass
+        // (G-524): skipping it would let a suppression inside it go unseen while
+        // the scan reported a clean population.
+        let source = std::fs::read_to_string(file).unwrap_or_else(|err| {
+            panic!(
+                "cannot read {} — the scan's population is incomplete: {err}",
+                file.display()
+            )
+        });
         if let Some(needle) = suppression_in(&source) {
             violations.push(format!(
                 "  {}  --  matched `{}`\n      {}",
